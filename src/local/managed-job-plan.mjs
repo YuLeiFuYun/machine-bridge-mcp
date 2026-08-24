@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { MAX_MANAGED_JOB_DEPENDENCIES } from "./managed-job-dependency-metadata.mjs";
+import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
 
 const RESOURCE_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
@@ -52,9 +54,10 @@ export function publicResourceRegistry(resources = {}, { includePaths = false } 
 
 export function validatePlan(args, context) {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("job arguments must be an object");
-  const allowed = new Set(["name", "steps", "finally_steps", "temporary_files"]);
+  const allowed = new Set(["name", "depends_on", "steps", "finally_steps", "temporary_files"]);
   for (const key of Object.keys(args)) if (!allowed.has(key)) throw new Error(`job contains unknown field: ${key}`);
   const name = args.name === undefined ? "managed job" : boundedString(args.name, 128, "name").trim() || "managed job";
+  const dependsOn = args.depends_on === undefined ? null : validateDependencyIds(args.depends_on);
   const steps = validateSteps(args.steps, "steps", context);
   const finallySteps = validateSteps(args.finally_steps === undefined ? [] : args.finally_steps, "finally_steps", context, true);
   const temporaryFiles = validateTemporaryFiles(args.temporary_files === undefined ? [] : args.temporary_files);
@@ -62,6 +65,7 @@ export function validatePlan(args, context) {
   return {
     version: 1,
     name,
+    ...(dependsOn === null ? {} : { depends_on: dependsOn }),
     workspace: context.workspace,
     full_env: context.fullEnv,
     resources: referencedResources([...steps, ...finallySteps], context.resources),
@@ -69,6 +73,20 @@ export function validatePlan(args, context) {
     steps,
     finally_steps: finallySteps,
   };
+}
+
+function validateDependencyIds(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_MANAGED_JOB_DEPENDENCIES) {
+    throw new Error(`depends_on must contain 0-${MAX_MANAGED_JOB_DEPENDENCIES} managed job ids`);
+  }
+  const seen = new Set();
+  return value.map((item, index) => {
+    if (typeof item !== "string" || !MANAGED_JOB_ID.test(item)) throw new Error(`depends_on[${index}] must be a valid managed job id`);
+    if (seen.has(item)) throw new Error(`depends_on contains duplicate managed job id: ${item}`);
+    seen.add(item);
+    return item;
+  });
 }
 
 function validateTemporaryFiles(value) {

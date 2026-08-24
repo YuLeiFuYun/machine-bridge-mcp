@@ -1746,7 +1746,7 @@
   {
     "name": "run_local_command",
     "title": "Run registered local command",
-    "description": "Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Local foreground execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required.",
+    "description": "Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Local foreground execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -2222,7 +2222,7 @@
   {
     "name": "run_process",
     "title": "Run process directly",
-    "description": "Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Local foreground execution remains request-scoped. Remote execution is durable-first: the argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required.",
+    "description": "Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Local foreground execution remains request-scoped. Remote execution is durable-first: the argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -2477,7 +2477,7 @@
   {
     "name": "stage_job",
     "title": "Stage managed job draft",
-    "description": "Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan. Main and finally steps default to 600 seconds and may explicitly request up to 21600 seconds (six hours), so one continuous command can exceed 100 minutes without artificial step splitting.",
+    "description": "Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan. Optional depends_on declares existing executable managed-job dependencies so durable orchestration can use terminal job state instead of blind file polling; staged or already-failed dependencies are rejected. Main and finally steps default to 600 seconds and may explicitly request up to 21600 seconds (six hours), so one continuous command can exceed 100 minutes without artificial step splitting.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -2491,6 +2491,14 @@
         "name": {
           "type": "string",
           "maxLength": 128
+        },
+        "depends_on": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "pattern": "^job_[A-Za-z0-9_-]{24,}$"
+          }
         },
         "steps": {
           "type": "array",
@@ -2673,7 +2681,7 @@
   {
     "name": "start_job",
     "title": "Start managed job",
-    "description": "Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, and guaranteed-attempt finally steps. The independent local runner continues if the MCP connection disappears. On macOS, an authorized remote account job keeps a runner-owned idle-sleep assertion only after the runner ownership claim is confirmed and persisted account ownership is validated, then through admission, steps, cleanup, and terminal persistence; local managed jobs do not acquire this remote-continuity assertion, and it does not override explicit sleep or lid-close behavior. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments. Each main/finally step defaults to 600 seconds and may explicitly request up to 21600 seconds (six hours); use this managed-job surface when one continuous command legitimately needs more than the 600-second durable one-step process limit.",
+    "description": "Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, guaranteed-attempt finally steps, and optional depends_on links to existing managed jobs. The independent local runner continues if the MCP connection disappears. Dependencies are evaluated from durable managed-job terminal state rather than blind artifact polling: while an upstream job is active the dependent job remains queued in current_phase=dependency_wait without spawning its main child, then proceeds after all dependencies succeed or terminates with error_class=dependency_failed if an upstream later fails. Staged or already-failed dependencies are rejected before acceptance. On macOS, an authorized remote account job keeps a runner-owned idle-sleep assertion only after the runner ownership claim is confirmed and persisted account ownership is validated, then through dependency wait, admission, steps, cleanup, and terminal persistence; local managed jobs do not acquire this remote-continuity assertion, and it does not override explicit sleep or lid-close behavior. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments. Each main/finally step defaults to 600 seconds and may explicitly request up to 21600 seconds (six hours); use this managed-job surface when one continuous command legitimately needs more than the 600-second durable one-step process limit. For one coherent non-interactive workflow, prefer one multi-step managed job over a chain of one-step process carriers so host-visible event density stays bounded. Do not split a long task merely to satisfy an assumed host deadline, and do not use the user as a polling clock.",
     "availability": "write+direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -2691,6 +2699,14 @@
         "idempotency_key": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:-]{0,127}$"
+        },
+        "depends_on": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "pattern": "^job_[A-Za-z0-9_-]{24,}$"
+          }
         },
         "steps": {
           "type": "array",
@@ -2873,7 +2889,7 @@
   {
     "name": "list_jobs",
     "title": "List managed jobs",
-    "description": "List recent detached managed jobs and their lifecycle status without returning step output. Owner/local callers also receive coarse retained-state capacity counts, including unreadable retired cleanup blockers, without internal retired filenames or filesystem identities.",
+    "description": "List up to 50 recent detached managed jobs and their lifecycle status without returning step output. The durable retained-state store is larger than this response window so long workflows do not have to trade recovery depth for a small inventory payload. Owner/local callers also receive coarse retained-state capacity counts, including unreadable retired cleanup blockers, without internal retired filenames or filesystem identities. Hosted listing is an inventory operation, not a polling primitive; follow known jobs with read_job.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -2897,7 +2913,7 @@
   {
     "name": "read_job",
     "title": "Read managed job",
-    "description": "Return one managed job status plus bounded, resource-redacted step results. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.",
+    "description": "Return one managed job status plus bounded, resource-redacted step results. current_phase=dependency_wait means an accepted dependent job is waiting locally for declared depends_on jobs and has not spawned its main child; dependency_pending_count decreases as upstream jobs settle, all-success releases execution, and a later upstream failure terminates the dependent with result.error_class=dependency_failed. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Hosted active reads are server-paced: terminal settlement returns on the next bounded poll, nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. This reduces host-visible event density without shortening the managed job. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -2917,7 +2933,7 @@
           "minimum": 0,
           "maximum": 40000,
           "default": 0,
-          "description": "Bounded wait for a status/phase change or terminal state before returning. Local calls default to an immediate checkpoint; hosted relay discovery overrides the default and maximum to its paced long-poll contract."
+          "description": "Bounded wait for coalesced active progress or terminal state before returning. Local calls default to an immediate checkpoint; hosted relay discovery overrides the default and maximum to its paced long-poll contract."
         }
       },
       "required": [
@@ -2954,7 +2970,7 @@
   {
     "name": "exec_command",
     "title": "Execute shell command",
-    "description": "Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Local foreground execution remains request-scoped. Remote execution is durable-first: the shell argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required.",
+    "description": "Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Local foreground execution remains request-scoped. Remote execution is durable-first: the shell argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer one multi-step start_job or a repository umbrella command instead of a chain of one-step shell calls; this reduces host-visible event density without shortening execution.",
     "availability": "shell-exec",
     "annotations": {
       "readOnlyHint": false,

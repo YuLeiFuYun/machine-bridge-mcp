@@ -4,11 +4,11 @@ import { hostedManagedJobListStatus } from "./managed-job-hosted-status.mjs";
 import { publicStatus } from "./managed-job-projection.mjs";
 import { readJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
-import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
+import { managedJobCapacitySnapshot, MAX_JOBS, MAX_LISTED_JOBS } from "./managed-job-capacity.mjs";
 import { clampInteger } from "./numbers.mjs";
 
-export function listManagedJobs({ jobRoot, args, context, logger, reconcileStatus, assertKnownStatus }) {
-  const limit = clampInteger(args.limit, 20, 1, MAX_JOBS);
+export function listManagedJobs({ jobRoot, args, context, logger, reconcileStatus, assertKnownStatus, maximumLimit = MAX_LISTED_JOBS }) {
+  const limit = clampInteger(args.limit, 20, 1, Math.min(MAX_JOBS, maximumLimit));
   const jobs = [];
   for (const entry of safeReadDir(jobRoot)) {
     if (!MANAGED_JOB_ID.test(entry.name)) continue;

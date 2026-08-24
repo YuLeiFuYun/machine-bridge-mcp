@@ -809,12 +809,15 @@ try {
   assert(!firstStatus.daemon?.tools?.includes("write_file"), "review policy did not filter write_file");
   assert(!firstStatus.daemon?.tools?.includes("exec_command"), "review policy did not filter exec_command");
   assert(firstStatus.daemon?.readiness_verified === true, "first daemon was advertised before end-to-end readiness verification");
+  assert(firstStatus.tool_delivery?.remote_managed_job_read_nonterminal_progress_minimum_ms === 30_000,
+    "full server_info lost the hosted nonterminal progress coalescing contract");
   const compactFirstStatus = await callServerInfo(base, ownerAccessToken, 210, { detail: "summary" });
   assert(compactFirstStatus.detail === "summary" && compactFirstStatus.version === pkg.version
     && compactFirstStatus.authorization?.account?.role === "owner" && !("account_id" in compactFirstStatus.authorization.account)
     && compactFirstStatus.authorization?.effective_policy?.profile === "review"
     && compactFirstStatus.daemon?.connected === true && compactFirstStatus.daemon?.readiness_verified === true
     && compactFirstStatus.worker?.sockets_live?.ready === 1 && !("observability" in compactFirstStatus.worker)
+    && !("remote_managed_job_read_nonterminal_progress_minimum_ms" in compactFirstStatus.tool_delivery)
     && !("oauth" in compactFirstStatus) && !("tools" in compactFirstStatus),
   "remote compact server_info lost authority/readiness state or retained cold-path fields");
   const compactFirstStatusJson = JSON.stringify(compactFirstStatus);

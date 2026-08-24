@@ -1,5 +1,7 @@
 // @ts-check
 
+import { managedJobDependencyCount } from "./managed-job-dependency-metadata.mjs";
+
 /**
  * Return the review-safe job plan projection. Resource paths and values are absent by contract.
  * @param {{
@@ -7,6 +9,7 @@
  *   name?: unknown,
  *   workspace?: unknown,
  *   full_env?: unknown,
+ *   depends_on?: unknown[],
  *   resources?: Record<string, {kind?: unknown, size?: unknown, mode?: unknown, allowInsecurePermissions?: unknown}>,
  *   temporary_files?: unknown[],
  *   steps?: unknown[],
@@ -19,6 +22,7 @@ export function reviewablePlan(plan) {
     name: plan.name,
     workspace: plan.workspace,
     full_env: plan.full_env === true,
+    depends_on: Array.isArray(plan.depends_on) ? plan.depends_on : [],
     resources: Object.fromEntries(Object.entries(plan.resources || {}).map(([name, value]) => [name, {
       kind: value.kind,
       size: value.size ?? null,
@@ -51,7 +55,8 @@ export function projectManagedJobResult(result, { includeResourceAdmissionTiming
  * @param {{job_id?: unknown, name?: unknown, status?: unknown, created_at?: unknown, started_at?: unknown,
  * finished_at?: unknown, current_phase?: unknown, current_step?: unknown, approval?: unknown, plan_sha256?: unknown,
  * cleanup_guarantee?: unknown, error_class?: unknown, recovery_attempts?: unknown, result_persisted?: unknown,
- * terminal_record_error_class?: unknown, artifact_cleanup_pending?: unknown, artifact_cleanup_error_class?: unknown}} status
+ * terminal_record_error_class?: unknown, artifact_cleanup_pending?: unknown, artifact_cleanup_error_class?: unknown,
+ * dependency_total?: unknown, dependency_pending_count?: unknown}} status
  */
 export function publicStatus(status) {
   return {
@@ -72,5 +77,7 @@ export function publicStatus(status) {
     terminal_record_error_class: status.terminal_record_error_class ?? null,
     artifact_cleanup_pending: status.artifact_cleanup_pending === true,
     artifact_cleanup_error_class: status.artifact_cleanup_error_class ?? null,
+    dependency_total: managedJobDependencyCount(status.dependency_total),
+    dependency_pending_count: managedJobDependencyCount(status.dependency_pending_count),
   };
 }

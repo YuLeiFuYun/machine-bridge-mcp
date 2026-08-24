@@ -35,6 +35,7 @@ export function terminalStatusFromResult(status, result, options = {}) {
     status: result.status,
     current_phase: null,
     current_step: null,
+    ...(Object.hasOwn(status || {}, "dependency_pending_count") ? { dependency_pending_count: 0 } : {}),
     finished_at: result.finished_at,
     updated_at: options.updatedAt || result.finished_at,
     error_class: result.error_class || result.cleanup_error_class || null,

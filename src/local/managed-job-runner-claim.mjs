@@ -5,6 +5,7 @@ import { inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, re
 
 const RUNNER_CLAIM_BYTES = 1024;
 const RUNNER_CLAIM_WAIT_MS = 30_000;
+const RUNNER_CLAIM_PUBLICATION_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 
 export function publishProvisionalRunnerClaim(dir, pid, launchToken) {
   if (!/^[a-f0-9]{32}$/.test(String(launchToken || ""))) throw new Error("runner launch token is invalid");
@@ -59,16 +60,30 @@ export async function confirmRunnerClaim({
   throw new Error("runner ownership claim was not published before startup deadline");
 }
 
-export function readManagedJobRunnerClaim(file, message = "managed job runner claim is unreadable") {
+export function readManagedJobRunnerClaim(file, message = "managed job runner claim is unreadable", options = {}) {
   try {
-    const bytes = retryTransientMultipleLinksSync(() => readBoundedRegularFileSync(file, RUNNER_CLAIM_BYTES, "managed job runner claim", {
-      verifyPathIdentity: true,
-      rejectMultipleLinks: true,
-    }));
+    const readBytes = typeof options.readBytes === "function"
+      ? options.readBytes
+      : () => readBoundedRegularFileSync(file, RUNNER_CLAIM_BYTES, "managed job runner claim", {
+        verifyPathIdentity: true,
+        rejectMultipleLinks: true,
+      });
+    const bytes = readStableRunnerClaimBytes(readBytes);
     const claim = JSON.parse(bytes.toString("utf8"));
     if (!validRunnerClaim(claim)) throw new Error("managed job runner claim has an invalid shape");
     return claim;
   } catch (error) { throw new Error(message, { cause: error }); }
+}
+
+function readStableRunnerClaimBytes(readBytes) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try { return retryTransientMultipleLinksSync(readBytes); }
+    catch (error) {
+      if (error?.code !== "MBM_IDENTITY_CHANGED" || attempt === 4) throw error;
+      Atomics.wait(RUNNER_CLAIM_PUBLICATION_RETRY_BUFFER, 0, 0, 1);
+    }
+  }
+  throw new Error("runner claim publication retry did not settle");
 }
 
 function validRunnerClaim(claim) {

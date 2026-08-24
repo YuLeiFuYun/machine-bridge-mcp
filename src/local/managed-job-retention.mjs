@@ -1,17 +1,17 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
+import { managedJobDependencyProtection } from "./managed-job-dependency-retention.mjs";
 import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories, removeManagedJobDirectoryIfCurrent } from "./managed-job-directory-generation.mjs";
 import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
 import { runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { acquireJobTransitionLock } from "./managed-job-lock.mjs";
+import { JOB_RETENTION_MS, stagedPlanExpired, terminalEvictionPriority, terminalRetentionTime } from "./managed-job-retention-policy.mjs";
 import { atomicWriteJson, readJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus, persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { scrubTerminalJobArtifacts } from "./managed-job-terminal-maintenance.mjs";
-const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const STAGED_PLAN_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const PLAN_RETAINING_STATES = new Set(["staged", ...ACTIVE_JOB_STATES]);
-export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0 }) {
+export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0, protectedJobIds = new Set() }) {
   const reserved = Math.max(0, Math.min(MAX_JOBS, Math.floor(Number(reserveSlots) || 0)));
   const targetMaximum = MAX_JOBS - reserved;
   pruneRetiredManagedJobDirectories(jobRoot, logger);
@@ -20,7 +20,8 @@ export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0 }
     if (!MANAGED_JOB_ID.test(entry.name)) continue;
     if (!entry.isDirectory()) { logger.warn?.("managed job pruning retained wrong-type job state", { error_class: "integrity_error" }); continue; }
     const dir = join(jobRoot, entry.name);
-    let status; let mtime;
+    let status;
+    let mtime;
     let generation;
     try {
       status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
@@ -82,34 +83,27 @@ export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0 }
     }
     entries.push({ dir, status, mtime, generation });
   }
+  const dependencyProtection = managedJobDependencyProtection(entries, logger, protectedJobIds);
+  if (!dependencyProtection.complete) return;
   const finished = entries
     .filter(({ status }) => status && isTerminalManagedJobStatus(status.status))
     .sort((a, b) => terminalRetentionTime(b.status, b.mtime) - terminalRetentionTime(a.status, a.mtime));
   const now = Date.now();
   for (const item of finished) {
-    if (now - terminalRetentionTime(item.status, item.mtime) > JOB_RETENTION_MS) {
+    if (!dependencyProtection.ids.has(item.status.job_id)
+      && now - terminalRetentionTime(item.status, item.mtime) > JOB_RETENTION_MS) {
       removeManagedJobDirectoryIfCurrent(item.dir, item.generation);
     }
   }
   const retainedCount = () => managedJobCapacitySnapshot(jobRoot).retained_state;
   if (retainedCount() <= targetMaximum) return;
   const removable = entries
-    .filter(({ status }) => status && isTerminalManagedJobStatus(status.status))
+    .filter(({ status }) => status && isTerminalManagedJobStatus(status.status) && !dependencyProtection.ids.has(status.job_id))
     .sort((a, b) => terminalEvictionPriority(a.status) - terminalEvictionPriority(b.status) || terminalRetentionTime(a.status, a.mtime) - terminalRetentionTime(b.status, b.mtime));
   for (const item of removable) {
     if (retainedCount() <= targetMaximum) break;
     removeManagedJobDirectoryIfCurrent(item.dir, item.generation);
   }
-}
-function terminalEvictionPriority(status) { return status?.retention_class === "transient_process" ? 0 : 1; }
-function stagedPlanExpired(status, fallbackMtime) {
-  const createdAt = Date.parse(String(status?.created_at || ""));
-  const baseline = Number.isFinite(createdAt) ? createdAt : fallbackMtime;
-  return Number.isFinite(baseline) && Date.now() - baseline > STAGED_PLAN_RETENTION_MS;
-}
-function terminalRetentionTime(status, fallbackMtime) {
-  const finishedAt = Date.parse(String(status?.finished_at || ""));
-  return Number.isFinite(finishedAt) ? finishedAt : fallbackMtime;
 }
 function expireStagedJob(dir, status) {
   const finishedAt = new Date().toISOString();

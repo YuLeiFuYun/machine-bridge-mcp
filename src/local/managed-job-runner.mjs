@@ -56,6 +56,12 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
     catch { /* An uncommitted two-phase runner claim prevents this child from executing even if local kill delivery fails. */ }
     throw error;
   }
+  if (typeof options.onExit === "function") {
+    const alreadyExited = (child.exitCode !== undefined && child.exitCode !== null)
+      || (child.signalCode !== undefined && child.signalCode !== null);
+    if (alreadyExited) queueMicrotask(options.onExit);
+    else child.once?.("exit", options.onExit);
+  }
   child.unref();
   return pid;
 }

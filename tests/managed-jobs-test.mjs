@@ -7,11 +7,19 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../src/local/managed-job-hosted-status.mjs";
-import { managedJobReadWaitMs, waitForManagedJobRead } from "../src/local/managed-job-read-wait.mjs";
+import {
+  managedJobReadNonterminalProgressMinimumMs, managedJobReadWaitMs, waitForManagedJobRead,
+} from "../src/local/managed-job-read-wait.mjs";
+import { managedJobDependencySucceeded, readManagedJobDependencyStatus } from "../src/local/managed-job-dependencies.mjs";
+import { managedJobDependencyCount, managedJobDependencyLabel } from "../src/local/managed-job-dependency-metadata.mjs";
+import {
+  managedJobActiveChildRecoveryReady, publishManagedJobActiveChild, terminateManagedJobActiveChild,
+} from "../src/local/managed-job-active-child.mjs";
+import { MAX_JOBS, MAX_LISTED_JOBS } from "../src/local/managed-job-capacity.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
-import { normalizeResourceRegistry } from "../src/local/managed-job-plan.mjs";
+import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
-import { confirmRunnerClaim, publishProvisionalRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
+import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
 import { managedJobFinalStatus, persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
@@ -60,18 +68,21 @@ function testHostedManagedJobStatusProjection() {
     const projected = hostedManagedJobStatus({ status }, relayContext);
     assert(projected.host_turn_handoff_recommended === false && projected.status_polling_mode === "bounded_followup"
       && projected.tool_schema_generation === TOOL_SCHEMA_GENERATION && projected.host_turn_deadline_observable === false
+      && projected.host_terminal_receipt_observable === false && projected.same_response_followup_supported === true
       && projected.managed_job_detached_from_mcp_response === true,
       `active managed-job state ${status} did not preserve bounded same-turn follow-up`);
   }
   const terminal = hostedManagedJobStatus({ status: "succeeded" }, relayContext);
   assert(terminal.host_turn_handoff_recommended === false && terminal.status_polling_mode === "terminal"
-    && terminal.tool_schema_generation === TOOL_SCHEMA_GENERATION && terminal.host_turn_deadline_observable === false,
+    && terminal.tool_schema_generation === TOOL_SCHEMA_GENERATION && terminal.host_turn_deadline_observable === false
+    && terminal.host_terminal_receipt_observable === false && terminal.same_response_followup_supported === false,
     "terminal managed-job status retained active polling semantics");
   assert(Object.keys(hostedManagedJobStatus({ status: "running" }, {})).length === 0,
     "local managed-job status gained relay-only hosted-turn metadata");
   const activeListing = hostedManagedJobListStatus([{ status: "succeeded" }, { status: "cleaning" }], relayContext);
   assert(activeListing.host_turn_handoff_recommended === false && activeListing.status_polling_mode === "inventory"
-    && activeListing.tool_schema_generation === TOOL_SCHEMA_GENERATION && activeListing.host_turn_deadline_observable === false,
+    && activeListing.tool_schema_generation === TOOL_SCHEMA_GENERATION && activeListing.host_turn_deadline_observable === false
+    && activeListing.host_terminal_receipt_observable === false,
     "remote list_jobs did not remain an inventory surface");
   const terminalListing = hostedManagedJobListStatus([{ status: "succeeded" }], relayContext);
   assert(terminalListing.host_turn_handoff_recommended === false && terminalListing.status_polling_mode === "inventory",
@@ -85,7 +96,12 @@ async function testManagedJobReadWaitPacing() {
   assert(managedJobReadWaitMs({}, relayContext) === 40_000, "hosted read_job did not default to the host-safe server-side long-poll interval");
   assert(Math.ceil((100 * 60 * 1000) / managedJobReadWaitMs({}, relayContext)) <= 150,
     "the default hosted wait interval regained the prior high-density read_job amplification; this arithmetic is a density guard, not aggregate host-lifetime evidence");
+  assert(managedJobReadNonterminalProgressMinimumMs({}, relayContext) === 30_000
+    && Math.ceil((100 * 60 * 1000) / managedJobReadNonterminalProgressMinimumMs({}, relayContext)) <= 200,
+  "active hosted read_job progress lost its bounded nonterminal coalescing interval");
   assert(managedJobReadWaitMs({ wait_ms: 0 }, relayContext) === 0, "hosted read_job lost its explicit immediate-checkpoint override");
+  assert(managedJobReadNonterminalProgressMinimumMs({ wait_ms: 0 }, relayContext) === 0,
+    "explicit immediate read_job checkpoint unexpectedly gained a coalescing delay");
   assert(managedJobReadWaitMs({ wait_ms: 300_000 }, relayContext) === 300_000, "hosted read_job rejected its advertised maximum wait");
   assert(managedJobReadWaitMs({}, {}) === 0 && managedJobReadWaitMs({ wait_ms: 40_000 }, {}) === 40_000,
     "local read_job wait defaults or maximum drifted from the local contract");
@@ -108,6 +124,25 @@ async function testManagedJobReadWaitPacing() {
   assert(fullReads === 2, "hosted read_job repeatedly performed full runner reconciliation during one long-poll");
 
   clock = 0;
+  let dependencyPending = 2;
+  const dependencyProgress = () => ({
+    status: "queued", current_phase: "dependency_wait", current_step: null,
+    dependency_total: 2, dependency_pending_count: dependencyPending,
+  });
+  const dependencyProgressResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => dependencyProgress(),
+    readProgress: () => { dependencyPending = 1; return dependencyProgress(); },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(dependencyProgressResult.dependency_pending_count === 1
+    && dependencyProgressResult.managed_job_read_wait_ms === 30_000
+    && dependencyProgressResult.managed_job_read_nonterminal_progress_minimum_ms === 30_000
+    && dependencyProgressResult.managed_job_read_wait_timed_out === false,
+  "dependency progress was not coalesced into a bounded same-call hosted update");
+
+  clock = 0;
   const hostedMetadataResult = await waitForManagedJobRead({
     context: relayContext, args: { wait_ms: 5_000 },
     readCurrent: () => ({
@@ -123,6 +158,7 @@ async function testManagedJobReadWaitPacing() {
     sleep: async (ms) => { clock += ms; },
   });
   assert(hostedMetadataResult.managed_job_read_wait_timed_out === true
+    && hostedMetadataResult.managed_job_read_nonterminal_progress_minimum_ms === 5_000
     && hostedMetadataResult.host_turn_handoff_recommended === false
     && hostedMetadataResult.status_polling_mode === "bounded_followup"
     && hostedMetadataResult.tool_schema_generation === TOOL_SCHEMA_GENERATION
@@ -149,7 +185,7 @@ async function testManagedJobReadWaitPacing() {
   fullReads = 0;
   progressReads = 0;
   let currentStep = 0;
-  const progressResult = await waitForManagedJobRead({
+  const stepOnlyProgressResult = await waitForManagedJobRead({
     context: relayContext,
     readCurrent: () => { fullReads += 1; return { status: "running", current_phase: "steps", current_step: currentStep }; },
     readProgress: () => {
@@ -160,9 +196,83 @@ async function testManagedJobReadWaitPacing() {
     now: () => clock,
     sleep: async (ms) => { clock += ms; },
   });
-  assert(progressResult.current_step === 1 && progressResult.managed_job_read_wait_timed_out === false
-    && progressResult.managed_job_read_wait_ms === 10_000 && fullReads === 2 && progressReads === 2,
-  "hosted read_job did not return promptly through the authoritative full read when lightweight progress changed");
+  assert(stepOnlyProgressResult.current_step === 1 && stepOnlyProgressResult.managed_job_read_wait_timed_out === true
+    && stepOnlyProgressResult.managed_job_read_wait_ms === 40_000 && fullReads === 2 && progressReads === 8,
+  "current_step-only churn still woke hosted read_job and amplified one multi-step job into rapid host events");
+
+  clock = 0;
+  currentStep = 0;
+  const localStepProgressResult = await waitForManagedJobRead({
+    args: { wait_ms: 40_000 },
+    context: {},
+    readCurrent: () => ({ status: "running", current_phase: "steps", current_step: currentStep }),
+    readProgress: () => {
+      currentStep = 1;
+      return { status: "running", current_phase: "steps", current_step: currentStep };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(localStepProgressResult.current_step === 1 && clock === 5_000,
+    "host-only current_step coalescing accidentally changed the local explicit-wait progress contract");
+
+  clock = 0;
+  fullReads = 0;
+  progressReads = 0;
+  let currentPhase = "steps";
+  const phaseProgressResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => { fullReads += 1; return { status: "running", current_phase: currentPhase, current_step: 0 }; },
+    readProgress: () => {
+      progressReads += 1;
+      if (progressReads >= 2) currentPhase = "finally_steps";
+      return { status: "running", current_phase: currentPhase, current_step: 0 };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(phaseProgressResult.current_phase === "finally_steps" && phaseProgressResult.managed_job_read_wait_timed_out === false
+    && phaseProgressResult.managed_job_read_wait_ms === 30_000
+    && phaseProgressResult.managed_job_read_nonterminal_progress_minimum_ms === 30_000
+    && fullReads === 2 && progressReads === 6,
+  "nonterminal phase progress escaped the hosted coalescing window or lost its authoritative full read");
+
+  clock = 0;
+  progressReads = 0;
+  let transientPhase = "steps";
+  const transientProgressResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => ({ status: "running", current_phase: transientPhase, current_step: 0 }),
+    readProgress: () => {
+      progressReads += 1;
+      transientPhase = progressReads === 1 ? "finally_steps" : "steps";
+      return { status: "running", current_phase: transientPhase, current_step: 0 };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(transientProgressResult.current_phase === "steps"
+    && transientProgressResult.managed_job_read_wait_ms === 40_000
+    && transientProgressResult.managed_job_read_wait_timed_out === true,
+  "transient nonterminal progress that returned to the initial state still emitted a host-visible progress event");
+
+  clock = 0;
+  progressReads = 0;
+  let terminalStatus = "running";
+  const coalescedTerminalResult = await waitForManagedJobRead({
+    context: relayContext,
+    readCurrent: () => ({ status: terminalStatus, current_phase: terminalStatus === "running" ? "steps" : null, current_step: null }),
+    readProgress: () => {
+      progressReads += 1;
+      if (progressReads >= 2) terminalStatus = "succeeded";
+      return { status: terminalStatus, current_phase: terminalStatus === "running" ? "steps" : null, current_step: null };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  assert(coalescedTerminalResult.status === "succeeded" && coalescedTerminalResult.managed_job_read_wait_ms === 10_000
+    && coalescedTerminalResult.managed_job_read_wait_timed_out === false,
+  "terminal managed-job settlement was delayed until the nonterminal progress coalescing floor");
 
   const terminalResult = await waitForManagedJobRead({
     context: relayContext, args: { wait_ms: 0 },
@@ -201,6 +311,19 @@ async function setRunnerFixtureState(jobRoot, jobId, queued) {
 
 async function testRunnerClaimBoundary() {
   const processStartedAt = new Date(Date.now() - 1000).toISOString();
+  let publicationReads = 0;
+  const publicationClaim = readManagedJobRunnerClaim("synthetic-runner-claim", "synthetic runner claim is unreadable", {
+    readBytes: () => {
+      publicationReads += 1;
+      if (publicationReads === 1) {
+        throw Object.assign(new Error("runner claim identity changed while opening"), { code: "MBM_IDENTITY_CHANGED" });
+      }
+      return Buffer.from(`${JSON.stringify({ pid: process.pid, startedAt: processStartedAt })}\n`);
+    },
+  });
+  assert(publicationReads === 2 && publicationClaim.pid === process.pid,
+    "runner claim reader did not retry one concurrent atomic publication identity change");
+
   const directDir = join(root, "claim-direct");
   await mkdir(directDir, { recursive: true });
   const directFile = join(directDir, "runner.pid");
@@ -424,7 +547,7 @@ async function testManagedJobCapacityBoundary() {
     && capacityCommitError?.details?.capacity_commit_pending === true,
   "concurrent managed-job capacity commit did not fail with a structured retryable conflict");
   const terminalIds = [];
-  for (let index = 0; index < 50; index += 1) {
+  for (let index = 0; index < MAX_JOBS; index += 1) {
     const staged = terminalManager.stage({
       name: `terminal capacity ${index}`,
       steps: [{ argv: [process.execPath, "-e", ""] }],
@@ -432,7 +555,8 @@ async function testManagedJobCapacityBoundary() {
     terminalIds.push(staged.job_id);
     terminalManager.cancel({ job_id: staged.job_id });
   }
-  assert(terminalManager.list({ limit: 50 }).retained === 50, "terminal capacity fixture did not fill the retained-job limit");
+  assert(terminalManager.list({ limit: MAX_LISTED_JOBS }).retained === MAX_JOBS,
+    "terminal capacity fixture did not fill the retained-job limit");
   if (process.platform !== "win32") {
     const invalidKey = "capacity-presence-fail-closed";
     const invalidDigest = createHash("sha256")
@@ -444,7 +568,7 @@ async function testManagedJobCapacityBoundary() {
       name: "invalid deterministic capacity target",
       steps: [{ argv: [process.execPath, "-e", ""] }],
     }), "managed job directory is not a real directory");
-    assert(terminalManager.list({ limit: 50 }).retained === 50,
+    assert(terminalManager.list({ limit: MAX_LISTED_JOBS }).retained === MAX_JOBS,
       "failed deterministic target inspection evicted retained terminal history before admission failed");
     await rm(invalidDir, { force: true });
   }
@@ -453,7 +577,8 @@ async function testManagedJobCapacityBoundary() {
     steps: [{ argv: [process.execPath, "-e", ""] }],
   });
   const survivingTerminal = (await Promise.all(terminalIds.map((id) => exists(join(terminalRoot, id))))).filter(Boolean).length;
-  assert(survivingTerminal === 49 && terminalManager.list({ limit: 50 }).retained === 50,
+  assert(survivingTerminal === MAX_JOBS - 1
+    && terminalManager.list({ limit: MAX_LISTED_JOBS }).retained === MAX_JOBS,
     "full retained-job capacity did not evict exactly one safely removable terminal record for a new job");
   assert(terminalManager.read({ job_id: replacement.job_id }).status === "staged",
     "capacity reservation removed or failed to create the replacement staged job");
@@ -496,13 +621,18 @@ async function testManagedJobCapacityBoundary() {
     resources: {},
     recover: false,
   });
-  const protectedManaged = mixedManager.stage({
+  const protectedManaged = mixedManager.start({
     name: "explicit managed recovery result",
     steps: [{ argv: [process.execPath, "-e", ""] }],
   });
-  mixedManager.cancel({ job_id: protectedManaged.job_id });
+  await waitForJob(mixedManager, protectedManaged.job_id);
+  const dependencyProtector = mixedManager.stage({
+    name: "active plan retaining explicit dependency",
+    depends_on: [protectedManaged.job_id],
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
   const transientIds = [];
-  for (let index = 0; index < 49; index += 1) {
+  for (let index = 0; index < MAX_JOBS - 2; index += 1) {
     const transient = mixedManager.createJob({
       name: `transient helper ${index}`,
       steps: [{ argv: [process.execPath, "-e", ""] }],
@@ -517,11 +647,13 @@ async function testManagedJobCapacityBoundary() {
   assert(await exists(join(mixedRoot, protectedManaged.job_id)),
     "transient helper churn evicted an explicit managed-job recovery result while transient terminal history was removable");
   const survivingTransient = (await Promise.all(transientIds.map((id) => exists(join(mixedRoot, id))))).filter(Boolean).length;
-  assert(survivingTransient === 48 && mixedManager.list({ limit: 50 }).retained === 50,
+  assert(survivingTransient === MAX_JOBS - 3
+    && mixedManager.list({ limit: MAX_LISTED_JOBS }).retained === MAX_JOBS,
     "mixed retention pruning did not reclaim exactly one transient helper record at the hard capacity boundary");
+  mixedManager.cancel({ job_id: dependencyProtector.job_id });
   mixedManager.cancel({ job_id: transientReplacement.job_id });
   assert(!Object.hasOwn(mixedManager.read({ job_id: transientReplacement.job_id }), "retention_class")
-    && !mixedManager.list({ limit: 50 }).jobs.some((job) => Object.hasOwn(job, "retention_class")),
+    && !mixedManager.list({ limit: MAX_LISTED_JOBS }).jobs.some((job) => Object.hasOwn(job, "retention_class")),
   "internal transient-process retention class leaked through public managed-job projections");
 
   const stagedRoot = join(root, "capacity-staged-jobs");
@@ -534,7 +666,7 @@ async function testManagedJobCapacityBoundary() {
     logger: { warn() {} },
   });
   const stagedIds = [];
-  for (let index = 0; index < 50; index += 1) {
+  for (let index = 0; index < MAX_JOBS; index += 1) {
     stagedIds.push(stagedManager.stage({
       name: `staged capacity ${index}`,
       steps: [{ argv: [process.execPath, "-e", ""] }],
@@ -549,7 +681,7 @@ async function testManagedJobCapacityBoundary() {
   } catch (error) { capacityError = error; }
   assert(capacityError?.code === "limit_exceeded" && capacityError?.retryable === true,
     "fully active/staged managed-job capacity did not return a structured retryable limit error");
-  assert(stagedManager.list({ limit: 50 }).retained === 50,
+  assert(stagedManager.list({ limit: MAX_LISTED_JOBS }).retained === MAX_JOBS,
     "capacity reservation evicted a staged/active job to admit an overflow job");
 
   await rm(join(stagedRoot, stagedIds.pop()), { recursive: true, force: true });
@@ -559,17 +691,17 @@ async function testManagedJobCapacityBoundary() {
   try {
     stagedManager.stage({ name: "retired state capacity overflow", steps: [{ argv: [process.execPath, "-e", ""] }] });
   } catch (error) { retiredCapacityError = error; }
-  const ownerCapacityList = stagedManager.list({ limit: 50 });
+  const ownerCapacityList = stagedManager.list({ limit: MAX_LISTED_JOBS });
   assert(retiredCapacityError?.code === "limit_exceeded"
-    && retiredCapacityError?.details?.retained_state === 50
+    && retiredCapacityError?.details?.retained_state === MAX_JOBS
     && retiredCapacityError?.details?.retired_state === 1
     && retiredCapacityError?.details?.retired_unreadable === 1
-    && ownerCapacityList.retained === 49
-    && ownerCapacityList.capacity?.retained_state === 50
+    && ownerCapacityList.retained === MAX_JOBS - 1
+    && ownerCapacityList.capacity?.retained_state === MAX_JOBS
     && ownerCapacityList.capacity?.retired_state === 1
     && ownerCapacityList.capacity?.retired_unreadable === 1,
   "unreadable retired managed-job state escaped the hard retained-state capacity boundary or owner diagnostics");
-  const delegatedCapacityList = stagedManager.list({ limit: 50 }, { authority: { owner: false } });
+  const delegatedCapacityList = stagedManager.list({ limit: MAX_LISTED_JOBS }, { authority: { owner: false } });
   assert(!("capacity" in delegatedCapacityList), "non-owner list_jobs exposed global retained-state capacity diagnostics");
   await rm(retiredCapacityDir, { recursive: true, force: true });
 
@@ -580,19 +712,404 @@ async function testManagedJobCapacityBoundary() {
   try {
     stagedManager.stage({ name: "wrong-type state capacity overflow", steps: [{ argv: [process.execPath, "-e", ""] }] });
   } catch (error) { wrongTypeCapacityError = error; }
-  const wrongTypeList = stagedManager.list({ limit: 50 });
+  const wrongTypeList = stagedManager.list({ limit: MAX_LISTED_JOBS });
   assert(wrongTypeCapacityError?.code === "limit_exceeded"
-    && wrongTypeCapacityError?.details?.retained_state === 50
+    && wrongTypeCapacityError?.details?.retained_state === MAX_JOBS
     && wrongTypeCapacityError?.details?.job_state_unreadable === 1
-    && wrongTypeList.retained === 50
+    && wrongTypeList.retained === MAX_JOBS
     && wrongTypeList.jobs.some((job) => job.job_id === wrongTypeId && job.status === "unreadable")
-    && wrongTypeList.capacity?.retained_state === 50 && wrongTypeList.capacity?.job_state_unreadable === 1
+    && wrongTypeList.capacity?.retained_state === MAX_JOBS && wrongTypeList.capacity?.job_state_unreadable === 1
     && activeManagedJobs(stagedRoot).some((job) => job.job_id === wrongTypeId && job.status === "unreadable"),
   "wrong-type public managed-job state escaped retained-state capacity or destructive inventory");
-  const delegatedWrongTypeList = stagedManager.list({ limit: 50 }, { authority: { owner: false } });
+  const delegatedWrongTypeList = stagedManager.list({ limit: MAX_LISTED_JOBS }, { authority: { owner: false } });
   assert(!delegatedWrongTypeList.jobs.some((job) => job.job_id === wrongTypeId) && !("capacity" in delegatedWrongTypeList),
     "non-owner list_jobs exposed wrong-type global job state or capacity diagnostics");
   await rm(wrongTypePath, { force: true });
+}
+
+async function testManagedJobDependencies() {
+  const dependencyRoot = join(root, "dependency-jobs");
+  const manager = createManagedJobTestManager({
+    jobRoot: dependencyRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
+    resources: {},
+    recover: false,
+  });
+  const successMarker = join(workspace, "dependency-success-marker.txt");
+  const failureMarker = join(workspace, "dependency-failure-marker.txt");
+  await rm(successMarker, { force: true });
+  await rm(failureMarker, { force: true });
+
+  const upstream = manager.start({
+    name: "dependency upstream success",
+    steps: [{
+      argv: [process.execPath, "-e", "setTimeout(() => process.exit(0), 900)"],
+      timeout_seconds: 10,
+    }],
+  });
+  const downstream = manager.start({
+    name: "dependency downstream success",
+    depends_on: [upstream.job_id],
+    temporary_files: [{ name: "dependency-helper.txt", content: "ready\n" }],
+    steps: [{
+      argv: [process.execPath, "-e",
+        `const fs=require('node:fs'); if(fs.readFileSync(process.argv[1],'utf8')!=='ready\\n') process.exit(91); fs.writeFileSync(${JSON.stringify(successMarker)}, 'ran\\n')`,
+        "{{temp:dependency-helper.txt}}"],
+      timeout_seconds: 10,
+    }],
+  });
+  assert(downstream.dependency_total === 1 && downstream.recovery?.job_id === downstream.job_id
+    && downstream.recovery?.same_response_followup_supported === true,
+  "managed-job acceptance did not expose durable dependency/recovery metadata");
+  const waitDeadline = Date.now() + 10_000;
+  let waiting = null;
+  while (Date.now() < waitDeadline) {
+    const value = manager.read({ job_id: downstream.job_id });
+    if (value.current_phase === "dependency_wait") { waiting = value; break; }
+    if (!["queued", "running"].includes(value.status)) break;
+    await delay(25);
+  }
+  assert(waiting?.status === "queued" && waiting.dependency_total === 1 && waiting.dependency_pending_count === 1,
+    "dependent managed job did not remain in explicit pre-execution dependency_wait state");
+  assert(!(await exists(successMarker)), "dependent managed job spawned its child before the upstream dependency succeeded");
+  assert(!(await exists(join(dependencyRoot, downstream.job_id, "runtime", "files"))),
+    "dependency_wait materialized private temporary files before the job became executable");
+  const upstreamResult = await waitForJob(manager, upstream.job_id);
+  const downstreamResult = await waitForJob(manager, downstream.job_id);
+  assert(upstreamResult.status === "succeeded" && downstreamResult.status === "succeeded"
+    && downstreamResult.dependency_pending_count === 0 && await exists(successMarker),
+  "successful managed-job dependency did not release the downstream job exactly after terminal success");
+
+  const failingUpstream = manager.start({
+    name: "dependency upstream failure",
+    steps: [{
+      argv: [process.execPath, "-e", "setTimeout(() => process.exit(23), 900)"],
+      timeout_seconds: 10,
+    }],
+  });
+  const failureCleanupMarker = join(workspace, "dependency-failure-cleanup-marker.txt");
+  await rm(failureCleanupMarker, { force: true });
+  const blockedDownstream = manager.start({
+    name: "dependency downstream blocked",
+    depends_on: [failingUpstream.job_id],
+    temporary_files: [{ name: "cleanup-helper.txt", content: "cleanup-ready\n" }],
+    steps: [{
+      argv: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(failureMarker)}, 'must-not-run\\n')`],
+      timeout_seconds: 10,
+    }],
+    finally_steps: [{
+      argv: [process.execPath, "-e",
+        `const fs=require('node:fs'); if(fs.readFileSync(process.argv[1],'utf8')!=='cleanup-ready\\n') process.exit(92); fs.writeFileSync(${JSON.stringify(failureCleanupMarker)}, 'cleaned\\n')`,
+        "{{temp:cleanup-helper.txt}}"],
+      timeout_seconds: 10,
+    }],
+  });
+  const blockedWaitDeadline = Date.now() + 10_000;
+  while (Date.now() < blockedWaitDeadline) {
+    const value = manager.read({ job_id: blockedDownstream.job_id });
+    if (value.current_phase === "dependency_wait") break;
+    await delay(25);
+  }
+  assert(!(await exists(join(dependencyRoot, blockedDownstream.job_id, "runtime", "files"))),
+    "failed dependency fixture materialized private cleanup inputs while still waiting");
+  const failureStartedAt = Date.now();
+  const blockedResult = await waitForJob(manager, blockedDownstream.job_id);
+  assert(blockedResult.status === "failed" && blockedResult.error_class === "dependency_failed"
+    && blockedResult.dependency_pending_count === 0
+    && blockedResult.result?.error_class === "dependency_failed"
+    && blockedResult.result?.dependency_failure?.dependency_job_id === failingUpstream.job_id
+    && blockedResult.result?.dependency_failure?.dependency_status === "failed"
+    && blockedResult.result?.finally_steps?.[0]?.code === 0,
+  "failed upstream dependency did not propagate a structured dependency_failed terminal result");
+  assert(Date.now() - failureStartedAt < 10_000,
+    "failed dependency propagation regressed into a long blind artifact wait");
+  assert(!(await exists(failureMarker)), "dependency failure still spawned the downstream main child");
+  assert(await exists(failureCleanupMarker),
+    "dependency failure did not materialize cleanup inputs just-in-time for declared finally steps");
+
+  let alreadyFailed = null;
+  try {
+    manager.start({
+      name: "already failed dependency rejection",
+      depends_on: [failingUpstream.job_id],
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    });
+  } catch (error) { alreadyFailed = error; }
+  assert(alreadyFailed?.code === "conflict" && alreadyFailed?.retryable === false
+    && alreadyFailed?.details?.reason === "dependency_failed",
+    "already-failed dependency was accepted into another impossible long wait");
+
+  const recoveryMarker = join(workspace, "dependency-recovery-marker.txt");
+  await rm(recoveryMarker, { force: true });
+  const recoveryUpstream = manager.start({
+    name: "dependency recovery upstream",
+    steps: [{
+      argv: [process.execPath, "-e", "setTimeout(() => process.exit(0), 1500)"],
+      timeout_seconds: 10,
+    }],
+  });
+  const recoveryDownstream = manager.start({
+    name: "dependency wait runner recovery",
+    depends_on: [recoveryUpstream.job_id],
+    steps: [{
+      argv: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(recoveryMarker)}, 'recovered\\n')`],
+      timeout_seconds: 10,
+    }],
+  });
+  const recoveryWaitDeadline = Date.now() + 10_000;
+  let recoveryWaiting = null;
+  while (Date.now() < recoveryWaitDeadline) {
+    const value = manager.read({ job_id: recoveryDownstream.job_id });
+    if (value.current_phase === "dependency_wait") { recoveryWaiting = value; break; }
+    await delay(25);
+  }
+  assert(recoveryWaiting?.status === "queued", "dependency recovery fixture never entered dependency_wait");
+  const recoveryStatusPath = join(dependencyRoot, recoveryDownstream.job_id, "status.json");
+  const recoveryPrivateStatus = JSON.parse(await readFile(recoveryStatusPath, "utf8"));
+  const killedRunnerPid = Number(recoveryPrivateStatus.runner_pid || 0);
+  assert(killedRunnerPid > 0, "dependency recovery fixture did not expose its private runner pid");
+  process.kill(killedRunnerPid, "SIGKILL");
+  await waitForPidExit(killedRunnerPid, 10_000);
+  await delay(10_100);
+  const recoveryCheckpoint = manager.read({ job_id: recoveryDownstream.job_id });
+  assert(["queued", "running"].includes(recoveryCheckpoint.status) && recoveryCheckpoint.recovery_attempts === 1,
+    "dead dependency-wait runner was not relaunched as the original pre-execution job");
+  const recoveryResult = await waitForJob(manager, recoveryDownstream.job_id);
+  assert(recoveryResult.status === "succeeded" && recoveryResult.recovery_attempts === 1 && await exists(recoveryMarker),
+    "dependency-wait runner recovery ended in cleanup-only recovery or lost the downstream execution");
+
+  const orphanLateMarker = join(workspace, "dependency-orphan-late-marker.txt");
+  const orphanDownstreamMarker = join(workspace, "dependency-orphan-downstream-marker.txt");
+  await rm(orphanLateMarker, { force: true });
+  await rm(orphanDownstreamMarker, { force: true });
+  const orphanUpstream = manager.start({
+    name: "dependency upstream runner crash",
+    steps: [{
+      argv: [process.execPath, "-e",
+        `setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(orphanLateMarker)},'late\\n'),30000)`],
+      timeout_seconds: 60,
+    }],
+  });
+  const orphanDownstream = manager.start({
+    name: "dependency downstream autonomous recovery",
+    depends_on: [orphanUpstream.job_id],
+    steps: [{
+      argv: [process.execPath, "-e",
+        `require('node:fs').writeFileSync(${JSON.stringify(orphanDownstreamMarker)},'must-not-run\\n')`],
+      timeout_seconds: 10,
+    }],
+  });
+  const orphanWaitDeadline = Date.now() + 10_000;
+  while (Date.now() < orphanWaitDeadline) {
+    const value = manager.read({ job_id: orphanDownstream.job_id });
+    if (value.current_phase === "dependency_wait") break;
+    await delay(25);
+  }
+  const orphanStatusPath = join(dependencyRoot, orphanUpstream.job_id, "status.json");
+  const orphanChildPath = join(dependencyRoot, orphanUpstream.job_id, "active-child.json");
+  let orphanStatus = null;
+  let orphanChild = null;
+  const orphanChildDeadline = Date.now() + 10_000;
+  while (Date.now() < orphanChildDeadline) {
+    try {
+      orphanStatus = JSON.parse(await readFile(orphanStatusPath, "utf8"));
+      orphanChild = JSON.parse(await readFile(orphanChildPath, "utf8"));
+      if (Number(orphanStatus.runner_pid) > 0 && Number(orphanChild.pid) > 0) break;
+    } catch {}
+    await delay(25);
+  }
+  assert(Number(orphanStatus?.runner_pid) > 0 && Number(orphanChild?.pid) > 0,
+    "runner-crash recovery fixture did not persist runner and active-child ownership");
+  process.kill(orphanStatus.runner_pid, "SIGKILL");
+  await waitForPidExit(orphanStatus.runner_pid, 10_000);
+  const orphanResult = await waitForJob(manager, orphanDownstream.job_id);
+  assert(orphanResult.status === "failed" && orphanResult.error_class === "dependency_failed"
+    && orphanResult.result?.steps?.length === 0,
+  "daemon-lifetime runner-exit recovery did not propagate the interrupted upstream as a failed dependency");
+  await waitForPidExit(orphanChild.pid, 5_000);
+  assert(!(await exists(orphanLateMarker)) && !(await exists(orphanDownstreamMarker)),
+    "runner-exit recovery allowed the orphaned upstream child or blocked downstream business child to continue");
+  const orphanUpstreamResult = manager.read({ job_id: orphanUpstream.job_id });
+  assert(orphanUpstreamResult.status === "recovered" && orphanUpstreamResult.recovery_attempts === 1,
+    "same-daemon runner exit was not recovered without an external read of the upstream job");
+
+  const stagedDependency = manager.stage({
+    name: "staged dependency",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  let stagedDependencyError = null;
+  try {
+    manager.start({
+      name: "staged dependency rejection",
+      depends_on: [stagedDependency.job_id],
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    });
+  } catch (error) { stagedDependencyError = error; }
+  assert(stagedDependencyError?.code === "invalid_request" && stagedDependencyError?.retryable === false,
+    "staged dependency was accepted even though staged jobs cannot become executable");
+  manager.cancel({ job_id: stagedDependency.job_id });
+}
+
+async function testDependencyResultFirstProjection() {
+  const projectionRoot = join(root, "dependency-result-first");
+  const jobId = `job_${"r".repeat(24)}`;
+  const dir = join(projectionRoot, jobId);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const now = new Date().toISOString();
+  await writeFile(join(dir, "status.json"), `${JSON.stringify({
+    job_id: jobId,
+    status: "running",
+    plan_sha256: "a".repeat(64),
+    created_at: now,
+    updated_at: now,
+    result_persisted: null,
+  })}\n`, { mode: 0o600 });
+  await writeFile(join(dir, "result.json"), `${JSON.stringify({
+    job_id: jobId,
+    status: "succeeded",
+    steps: [],
+    finally_steps: [],
+    error_class: null,
+    cleanup_error_class: null,
+    finished_at: now,
+  })}\n`, { mode: 0o600 });
+  const projected = readManagedJobDependencyStatus(projectionRoot, jobId);
+  assert(projected.status === "succeeded" && projected.result_persisted === true,
+    "dependency polling ignored a durable terminal result during the result-first/status-second crash window");
+  const stored = JSON.parse(await readFile(join(dir, "status.json"), "utf8"));
+  assert(stored.status === "running",
+    "dependency polling mutated upstream status instead of using a read-only terminal projection");
+}
+
+async function testManagedJobActiveChildSafety() {
+  const activeRoot = join(root, "active-child-safety");
+  await mkdir(activeRoot, { recursive: true, mode: 0o700 });
+  const file = join(activeRoot, "active-child.json");
+  const startedAt = Date.now() - 1_000;
+  let current = true;
+  let terminateCalls = 0;
+  const claim = publishManagedJobActiveChild(file, { pid: 424242, exitCode: null, signalCode: null }, {
+    processStartTime: () => startedAt,
+    isAlive: () => true,
+    processState: () => "running",
+    randomBytes: () => Buffer.alloc(16, 7),
+  });
+  const inspectProcess = () => current
+    ? { current: true, alive: true, reason: "current_process" }
+    : { current: false, alive: false, reason: "not_running" };
+  assert(managedJobActiveChildRecoveryReady(file, { inspectProcess, processState: () => "running" }) === false,
+    "live active-child ownership was incorrectly declared safe for destructive recovery");
+  await terminateManagedJobActiveChild(file, {
+    inspectProcess,
+    processState: () => "running",
+    terminate: () => { terminateCalls += 1; current = false; return true; },
+    terminateWithEscalation(child, options) {
+      options.terminate(child, "SIGTERM", options);
+      options.onTerminationSettled();
+    },
+  });
+  assert(terminateCalls === 1 && !(await exists(file)),
+    "verified active-child termination did not clear the exact ownership claim");
+
+  publishManagedJobActiveChild(file, { pid: claim.pid, exitCode: null, signalCode: null }, {
+    processStartTime: () => startedAt,
+    isAlive: () => true,
+    processState: () => "running",
+    randomBytes: () => Buffer.alloc(16, 8),
+  });
+  let unsafeTerminateCalls = 0;
+  let unsafeError = null;
+  try {
+    await terminateManagedJobActiveChild(file, {
+      inspectProcess: () => ({ current: false, alive: true, reason: "unverifiable" }),
+      processState: () => "running",
+      terminate: () => { unsafeTerminateCalls += 1; return true; },
+    });
+  } catch (error) { unsafeError = error; }
+  assert(unsafeError && unsafeTerminateCalls === 0 && await exists(file),
+    "unverifiable active-child ownership was signalled or deleted instead of failing closed");
+}
+
+function testDependencyPlanBackwardCompatibility() {
+  const base = {
+    name: "legacy no-dependency canonical plan",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  };
+  const context = { workspace, resources: {}, fullEnv: false, unrestrictedPaths: false };
+  const omitted = validatePlan(base, context);
+  const explicit = validatePlan({ ...base, depends_on: [] }, context);
+  assert(!Object.hasOwn(omitted, "depends_on"),
+    "omitted depends_on changed the canonical plan shape and would break pre-generation-7 idempotency replay hashes");
+  assert(Object.hasOwn(explicit, "depends_on") && explicit.depends_on.length === 0,
+    "explicit empty depends_on was not preserved as an explicit generation-7 plan field");
+}
+
+function testDependencySuccessClassification() {
+  assert(managedJobDependencySucceeded({ status: "succeeded", result_persisted: true }) === true,
+    "successful terminal dependency was not recognized as successful");
+  for (const status of ["recovered", "succeeded_cleanup_failed", "failed", "recovery_failed", "cancelled"]) {
+    assert(managedJobDependencySucceeded({ status, result_persisted: true }) === false,
+      `non-success terminal dependency ${status} was allowed to release downstream business execution`);
+  }
+  assert(managedJobDependencySucceeded({ status: "succeeded", result_persisted: false }) === false,
+    "dependency with an unpersisted terminal result was allowed to release downstream business execution");
+  assert(managedJobDependencyCount(-9) === 0 && managedJobDependencyCount(99) === 16
+    && managedJobDependencyCount("1.5", 4, 7) === 4,
+  "dependency-count projection stopped bounding malformed persisted state");
+  const label = managedJobDependencyLabel("RESOURCE /Users/private\nTOKEN");
+  assert(label === "resource__users_private_token" && !label.includes("/") && !label.includes("\n"),
+    "dependency error-label projection stopped normalizing persisted diagnostic text");
+}
+
+async function testUnreadableDependencyProtectionFailsClosed() {
+  const protectionRoot = join(root, "dependency-retention-fail-closed");
+  const warnings = [];
+  const manager = createManagedJobTestManager({
+    jobRoot: protectionRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
+    resources: {},
+    recover: false,
+    runnerEnvironmentOverrides: {
+      AGENT_RESOURCE_COORDINATOR_ROOT: join(protectionRoot, "resource-coordinator"),
+      AGENT_BUILD_ROOT: join(protectionRoot, "build-cache"),
+    },
+    logger: { warn(message, details) { warnings.push({ message, details }); } },
+  });
+  const upstream = manager.start({
+    name: "old protected dependency result",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  const upstreamResult = await waitForJob(manager, upstream.job_id);
+  assert(upstreamResult.status === "succeeded",
+    `dependency-retention fixture upstream did not settle successfully: ${upstreamResult.status}/${upstreamResult.error_class || "none"}`);
+  const dependent = manager.stage({
+    name: "dependency plan that becomes unreadable",
+    depends_on: [upstream.job_id],
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  const upstreamDir = join(protectionRoot, upstream.job_id);
+  const oldFinishedAt = new Date(Date.now() - (8 * 24 * 60 * 60 * 1000)).toISOString();
+  const statusPath = join(upstreamDir, "status.json");
+  const resultPath = join(upstreamDir, "result.json");
+  const status = JSON.parse(await readFile(statusPath, "utf8"));
+  const result = JSON.parse(await readFile(resultPath, "utf8"));
+  status.finished_at = oldFinishedAt;
+  status.updated_at = oldFinishedAt;
+  result.finished_at = oldFinishedAt;
+  await writeFile(statusPath, `${JSON.stringify(status)}\n`, { mode: 0o600 });
+  await writeFile(resultPath, `${JSON.stringify(result)}\n`, { mode: 0o600 });
+  const dependentPlanPath = join(protectionRoot, dependent.job_id, "plan.json");
+  const dependentPlan = JSON.parse(await readFile(dependentPlanPath, "utf8"));
+  dependentPlan.depends_on = [];
+  await writeFile(dependentPlanPath, `${JSON.stringify(dependentPlan)}\n`, { mode: 0o600 });
+
+  manager.list({ limit: MAX_LISTED_JOBS });
+  assert(await exists(upstreamDir),
+    "unreadable active dependency protection allowed age-based pruning of a possibly referenced terminal job");
+  assert(warnings.some(({ message }) => /could not determine active dependency protection/i.test(message)),
+    "unreadable active dependency protection failed closed without a bounded diagnostic warning");
 }
 
 const root = await mkdtemp(join(tmpdir(), "mbm-managed-job-test-"));
@@ -623,6 +1140,12 @@ try {
   await testRunnerClaimBoundary();
   await testRecoveryClaimFailurePreservesRetryState();
   await testManagedJobCapacityBoundary();
+  await testManagedJobDependencies();
+  await testDependencyResultFirstProjection();
+  await testManagedJobActiveChildSafety();
+  testDependencyPlanBackwardCompatibility();
+  testDependencySuccessClassification();
+  await testUnreadableDependencyProtectionFailsClosed();
   const minimalRunnerEnv = managedRunnerEnvironment({
     source: { PATH: "/safe/bin", HOME: "/safe/home", LANG: "C", HTTPS_PROXY: "http://secret", API_TOKEN: "secret" },
   });

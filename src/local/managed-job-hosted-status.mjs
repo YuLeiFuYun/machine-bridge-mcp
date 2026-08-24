@@ -16,6 +16,8 @@ export function hostedManagedJobStatus(status, context = {}) {
     status_polling_mode: active ? "bounded_followup" : "terminal",
     tool_schema_generation: Number(serverMetadata.toolSchemaGeneration),
     host_turn_deadline_observable: false,
+    host_terminal_receipt_observable: false,
+    same_response_followup_supported: active,
     managed_job_detached_from_mcp_response: true,
   };
 }
@@ -28,5 +30,6 @@ export function hostedManagedJobListStatus(_jobs, context = {}) {
     status_polling_mode: "inventory",
     tool_schema_generation: Number(serverMetadata.toolSchemaGeneration),
     host_turn_deadline_observable: false,
+    host_terminal_receipt_observable: false,
   };
 }

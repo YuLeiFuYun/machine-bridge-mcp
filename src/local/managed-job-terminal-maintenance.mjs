@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { BridgeError } from "./errors.mjs";
+import { managedJobActiveChildFile, managedJobActiveChildRecoveryReady } from "./managed-job-active-child.mjs";
 import { atomicWriteJson, readJson, resourceErrorClass } from "./managed-job-storage.mjs";
 import { isTerminalManagedJobResult, isTerminalManagedJobStatus, scrubManagedJobArtifacts } from "./managed-job-terminal.mjs";
 
@@ -25,9 +26,15 @@ export function assertTerminalJobEvidence(dir, status) {
 
 export function scrubTerminalJobArtifacts(dir, status) {
   assertTerminalJobEvidence(dir, status);
+  const activeChildReady = managedJobActiveChildRecoveryReady(managedJobActiveChildFile(dir));
   const cleanup = scrubManagedJobArtifacts([
     join(dir, "runtime"), join(dir, "plan.json"), join(dir, "runner.pid"), join(dir, "cancel"),
   ], (file) => rmSync(file, { recursive: true, force: true }), resourceErrorClass);
+  if (!activeChildReady) {
+    cleanup.scrubbed = false;
+    cleanup.errorClass ||= "active_child_unsettled";
+    cleanup.failureCount += 1;
+  }
   const pending = !cleanup.scrubbed;
   if (status.artifact_cleanup_pending !== pending
       || (status.artifact_cleanup_error_class || null) !== cleanup.errorClass) {

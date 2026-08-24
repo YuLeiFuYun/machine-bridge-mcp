@@ -31,6 +31,7 @@
   "defaultManagedJobReadWaitMs": 40000,
   "maximumManagedJobReadWaitMs": 300000,
   "managedJobReadPollIntervalMs": 5000,
+  "managedJobReadNonterminalProgressMinimumMs": 30000,
   "managedJobReadReconcileIntervalMs": 30000,
   "managedJobReadExecutionHeadroomMs": 10000,
   "maximumProcessReadWaitMs": 1000,

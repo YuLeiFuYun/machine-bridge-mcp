@@ -1284,6 +1284,7 @@ for (const required of ["includeContent = false", '"resource file", { verifyPath
 const managedJobsBoundary = readFileSync(join(localRoot, "managed-jobs.mjs"), "utf8");
 const runtimeToolHandlersBoundary = readFileSync(join(localRoot, "runtime-tool-handlers.mjs"), "utf8");
 const managedJobReadWaitBoundary = readFileSync(join(localRoot, "managed-job-read-wait.mjs"), "utf8");
+const managedJobReadPolicyBoundary = readFileSync(join(localRoot, "managed-job-read-policy.mjs"), "utf8");
 if (managedJobsBoundary.includes("managed-job-read-wait") || !runtimeToolHandlersBoundary.includes("waitForManagedJobRead")
     || !runtimeToolHandlersBoundary.includes("managedJobManager.readProgress")) {
   throw new Error("hosted managed-job pacing leaked into the synchronous persistence manager or disappeared from the MCP handler boundary");
@@ -1291,8 +1292,11 @@ if (managedJobsBoundary.includes("managed-job-read-wait") || !runtimeToolHandler
 if (!managedJobsBoundary.includes("readProgress(args = {}, context = {})") || !managedJobsBoundary.includes("return publicStatus(status)")) {
   throw new Error("managed-job long-poll lost its lightweight status-only progress probe");
 }
-for (const required of ["defaultManagedJobReadWaitMs", "managedJobReadPollIntervalMs", "managedJobReadReconcileIntervalMs", "readProgress", "createMonotonicDeadline", "throwIfCancelled", "managed_job_read_wait_timed_out"]) {
-  if (!managedJobReadWaitBoundary.includes(required)) throw new Error(`managed-job read pacing lost bounded server-side long-poll behavior: ${required}`);
+for (const required of ["managedJobReadPollIntervalMs", "managedJobReadReconcileIntervalMs", "readProgress", "createMonotonicDeadline", "throwIfCancelled"]) {
+  if (!managedJobReadWaitBoundary.includes(required)) throw new Error(`managed-job read wait lost bounded server-side long-poll behavior: ${required}`);
+}
+for (const required of ["defaultManagedJobReadWaitMs", "maximumManagedJobReadWaitMs", "managedJobReadNonterminalProgressMinimumMs", "managed_job_read_wait_timed_out", "managed_job_read_nonterminal_progress_minimum_ms", 'origin === "relay" ? null : value?.current_step']) {
+  if (!managedJobReadPolicyBoundary.includes(required)) throw new Error(`managed-job read policy lost hosted pacing semantics: ${required}`);
 }
 const readDeadlineIndex = managedJobReadWaitBoundary.indexOf("const deadline = createMonotonicDeadline(waitMs, now)");
 const initialReadIndex = managedJobReadWaitBoundary.indexOf("let current = await readCurrent()", readDeadlineIndex);

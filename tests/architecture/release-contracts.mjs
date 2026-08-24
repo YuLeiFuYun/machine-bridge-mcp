@@ -161,6 +161,20 @@ if (!managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 6
     || !managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS,")) {
   throw new Error("managed-job plan lost the six-hour single-step timeout needed for 100+ minute durable work");
 }
+if (!managedJobPlanSource.includes('import { MANAGED_JOB_ID } from "./managed-job-directory.mjs"')
+    || managedJobPlanSource.includes("const MANAGED_JOB_ID =")) {
+  throw new Error("managed-job plan duplicated the canonical managed-job ID contract instead of importing it");
+}
+const managedJobPlanIntegritySource = readFileSync(join(root, "src", "local", "managed-job-plan-integrity.mjs"), "utf8");
+for (const required of ["managedJobPlanSha256", "assertManagedJobPlanIntegrity"]) {
+  if (!managedJobPlanIntegritySource.includes(required)) throw new Error(`managed-job plan integrity boundary lost ${required}`);
+}
+for (const relative of ["managed-jobs.mjs", "managed-job-relaunch.mjs", "job-runner.mjs", "managed-job-dependency-retention.mjs"]) {
+  const source = readFileSync(join(root, "src", "local", relative), "utf8");
+  if (!source.includes("assertManagedJobPlanIntegrity")) {
+    throw new Error(`${relative} bypasses the canonical managed-job plan integrity boundary`);
+  }
+}
 const sharedToolCatalogSource = readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8");
 if ((sharedToolCatalogSource.match(/\"maximum\": 21600/g) || []).length !== 4) {
   throw new Error("stage_job/start_job schemas no longer expose the six-hour step/finally timeout ceiling");
@@ -168,6 +182,11 @@ if ((sharedToolCatalogSource.match(/\"maximum\": 21600/g) || []).length !== 4) {
 if (!sharedToolCatalogSource.includes("A package script name is not implicitly registered")
     || sharedToolCatalogSource.includes("registered command or package script")) {
   throw new Error("run_local_command again implies that arbitrary package scripts are implicit registered commands");
+}
+if ((sharedToolCatalogSource.match(/multi-step start_job/g) || []).length < 3
+    || !sharedToolCatalogSource.includes("nonterminal progress is coalesced for at least thirty seconds by default")
+    || !sharedToolCatalogSource.includes("current_step-only churn does not wake a host call by itself")) {
+  throw new Error("hosted tool guidance lost multi-command batching or nonterminal progress anti-amplification semantics");
 }
 if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
     || !workerTypesGeneratorSource.includes("Wrangler types target must remain inside its working directory")
@@ -486,6 +505,9 @@ const remoteActivityIdleSleepGuardSource = readFileSync(join(root, "src", "local
 const processSessionRemoteActivitySource = readFileSync(join(root, "src", "local", "process-session-remote-activity.mjs"), "utf8");
 const processSessionsSource = readFileSync(join(root, "src", "local", "process-sessions.mjs"), "utf8");
 const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const managedJobActiveChildSource = readFileSync(join(root, "src", "local", "managed-job-active-child.mjs"), "utf8");
+const managedJobRunnerExitRecoverySource = readFileSync(join(root, "src", "local", "managed-job-runner-exit-recovery.mjs"), "utf8");
+const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
 const toolExecutorSource = readFileSync(join(root, "src", "local", "tool-executor.mjs"), "utf8");
 const runtimeDiagnosticStateSource = readFileSync(join(root, "src", "local", "runtime-diagnostic-state.mjs"), "utf8");
@@ -983,6 +1005,7 @@ for (const removed of ["approval: new Set", "approve: 2", "APPROVAL_POSITIONAL_L
 }
 const managedJobProjectionSource = readFileSync(join(root, "src", "local", "managed-job-projection.mjs"), "utf8");
 const managedJobRetentionSource = readFileSync(join(root, "src", "local", "managed-job-retention.mjs"), "utf8");
+const managedJobRetentionPolicySource = readFileSync(join(root, "src", "local", "managed-job-retention-policy.mjs"), "utf8");
 const managedJobDurableProcessSource = readFileSync(join(root, "src", "local", "managed-job-durable-process.mjs"), "utf8");
 const relayCallRecoverySource = readFileSync(join(root, "src", "local", "relay-call-recovery.mjs"), "utf8");
 const relayResultRetentionSource = readFileSync(join(root, "src", "local", "relay-result-retention.mjs"), "utf8");
@@ -1052,7 +1075,7 @@ if (!managedJobSource.includes('retentionClass = "managed"')
     || !managedJobSource.includes('retention_class: "transient_process"')
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
     || !managedJobRetentionSource.includes("terminalEvictionPriority")
-    || !managedJobRetentionSource.includes('status?.retention_class === "transient_process"')
+    || !managedJobRetentionPolicySource.includes('status?.retention_class === "transient_process"')
     || !managedJobsIntegrationSource.includes("durable one-step process carrier did not persist the transient retention class through terminal settlement")
     || !managedJobsIntegrationSource.includes("transient helper churn evicted an explicit managed-job recovery result")
     || !managedJobsIntegrationSource.includes("internal transient-process retention class leaked through public managed-job projections")
@@ -1099,8 +1122,27 @@ if (managedJobRunnerSource.includes('child.on("error", (error) => { settlement.c
   throw new Error("managed job runner again settles process ownership directly from child error before close/exit settlement");
 }
 if (!managedJobRunnerSource.includes("RECOVERY_LOCK_HANDOFF_WAIT_MS = 30_000")
-    || !/await confirmRunnerClaim[\s\S]{0,400}if \(recover\) await releaseRecoveryClaim\(\);\s*runnerClaimConfirmed = true;/.test(managedJobRunnerSource)) {
+    || !/await confirmRunnerClaim[\s\S]{0,600}if \(recover\) \{\s*await terminateManagedJobActiveChild\(activeChildFile\);\s*await releaseRecoveryClaim\(\);\s*\}[\s\S]{0,220}runnerClaimConfirmed = true;/.test(managedJobRunnerSource)) {
   throw new Error("recovery runner can again terminalize a job before recovery-lock handoff is complete");
+}
+for (const required of [
+  "processStartTimeMs", "inspectProcessInstance", "terminateProcessTreeWithEscalation", "removeOwnedJsonFileSync",
+  "managedJobActiveChildRecoveryState", "managed job active child ownership cannot be verified",
+]) {
+  if (!managedJobActiveChildSource.includes(required)) throw new Error(`managed-job active-child ownership boundary lost: ${required}`);
+}
+if (!/spawn\([\s\S]{0,1200}publishManagedJobActiveChild\(activeChildFile, child\)[\s\S]{0,600}bindProcessResources\(admitted\.lease, child\)/.test(managedJobRunnerSource)
+    || !managedJobRunnerSource.includes("clearManagedJobActiveChild(activeChildFile, activeChildClaim)")) {
+  throw new Error("managed-job runner no longer publishes and clears child ownership around business process execution");
+}
+if (!managedJobRunnerExitRecoverySource.includes("DEFAULT_RECONCILE_DELAY_MS = 10_100")
+    || !managedJobRunnerExitRecoverySource.includes("reconcileStatus(dir)")
+    || !runtimeSource.includes("this.managedJobManager.stopRunnerExitRecovery();")) {
+  throw new Error("managed-job same-daemon runner-exit recovery lost its bounded observer lifecycle");
+}
+if (!managedJobTerminalMaintenanceSource.includes("managedJobActiveChildRecoveryReady(managedJobActiveChildFile(dir))")
+    || !managedJobTerminalMaintenanceSource.includes('"active_child_unsettled"')) {
+  throw new Error("terminal artifact maintenance can again erase unresolved managed-job child ownership evidence");
 }
 if (managedJobClaimSource.includes("existsSync") || !managedJobClaimSource.includes("inspectPathIfPresentSync")) {
   throw new Error("managed job runner claim again treats inspection failure as absence");
@@ -1470,10 +1512,16 @@ if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutio
   throw new Error("process-session startup timeout drifted out of the shared relay contract");
 }
 const serverInfoToolDeliverySource = readFileSync(join(root, "src", "worker", "server-info-tool-delivery.ts"), "utf8");
+const serverInfoSource = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
 if (!serverInfoToolDeliverySource.includes("remote_process_session_start_execution_max_ms")
     || !serverInfoToolDeliverySource.includes("managed_job_resource_admission_wait_max_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_default_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_max_ms")
+    || !serverInfoToolDeliverySource.includes("remote_managed_job_read_nonterminal_progress_minimum_ms")
+    || !serverInfoToolDeliverySource.includes("compactRemoteToolDeliveryContract")
+    || !serverInfoToolDeliverySource.includes("delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms")
+    || !serverInfoSource.includes("...compactRemoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
+    || !serverInfoSource.includes("...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_concurrency_max_per_account")
     || !serverInfoToolDeliverySource.includes("MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT")
     || !serverInfoToolDeliverySource.includes("tool_schema_generation")
@@ -1496,11 +1544,13 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
 if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || relayContract.maximumManagedJobReadWaitMs !== 300_000
     || relayContract.managedJobReadPollIntervalMs !== 5_000
+    || relayContract.managedJobReadNonterminalProgressMinimumMs !== 30_000
     || relayContract.managedJobReadReconcileIntervalMs !== 30_000
     || relayContract.managedJobReadExecutionHeadroomMs !== 10_000
     || relayContract.maximumOrdinaryRelayToolTimeoutMs !== 50_000
     || relayContract.maximumRelayToolTimeoutMs !== 315_000
     || Math.ceil((100 * 60 * 1000) / relayContract.defaultManagedJobReadWaitMs) > 150
+    || Math.ceil((100 * 60 * 1000) / relayContract.managedJobReadNonterminalProgressMinimumMs) > 200
     || !workerToolTimeoutSource.includes('name === "read_job"')
     || !managedJobReadTimeoutSource.includes("managedJobReadArgumentsWithinExecutionBudget")
     || !managedJobReadTimeoutSource.includes("managedJobReadExecutionBudgetHasHeadroom")
@@ -1511,7 +1561,7 @@ if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)")
     || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 3
     || !workerRuntimeSource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
-  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / five-minute opt-in contract");
+  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / thirty-second progress coalescing / five-minute opt-in contract");
 }
 const mcpResponseProxySource = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
 const mcpResponseCancelSource = readFileSync(join(root, "src", "worker", "mcp-response-cancel.ts"), "utf8");
@@ -1780,7 +1830,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 6"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 8"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
