@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.118 - 2026-08-24
+
+- Make npm package publication the sole conversational authorization boundary in the release workflow. Candidate activation, same-name Worker replacement, login-daemon/service replacement, guarded GitHub push/PR/merge, version tags, GitHub Releases/Prereleases, registry installation/activation, and supported ChatGPT Action control refresh/review may proceed automatically when the current task requires them and the effective policy plus repository integrity gates permit them. This removes unnecessary stop-and-ask handoffs without weakening clean-tree, exact-commit, acceptance, CI, digest, publication-lock, identity, idempotency, or unknown-settlement safeguards.
+- Move the explicit anti-accident confirmation to the operation that still requires owner authorization. `npm run prerelease:publish -- --owner-confirm` and `npm run stable:publish -- --owner-confirm` now fail before publication work when the flag is absent, while GitHub release/backfill no longer require `--owner-confirm` or a TTY ceremony. GitHub publication remains serialized by the common-Git-dir publication lock and continues to stage the exact accepted candidate, reconcile remote state, and verify the uploaded asset digest.
+- Synchronize repository automation, governance, release, upgrade, testing, client, and operations guidance with the new model. Historical audit/changelog entries retain the authorization rules that applied to those older releases; current guidance supersedes them. The hosted tool schema remains generation 8 because this change alters release-operation ownership and packaged guidance rather than MCP tool input/output semantics.
+
 ## 3.0.0-beta.117 - 2026-08-24
 
 - Complete a fresh independent review after beta.116 activation instead of treating the previous green suite or release acceptance as proof. The pass rechecked managed-job architecture, dependency state transitions, crash windows, retention, cleanup/resource lifetimes, logging/privacy boundaries, tests, generated contracts, and current documentation while preserving the six-hour single-step ceiling and same-response hosted continuation contract.

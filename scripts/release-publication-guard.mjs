@@ -4,25 +4,9 @@ import { join, resolve } from "node:path";
 import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 
-const CONFIRMATION_FLAG = "--owner-confirm";
 const LOCK_DIRECTORY = "machine-bridge-release-state";
 const LOCK_FILE = "github-publication.lock";
 const GIT_METADATA_TIMEOUT_MS = 30_000;
-
-export function assertGithubPublicationAuthorized(options = {}) {
-  let argv = process.argv.slice(2);
-  if (Array.isArray(options.argv)) argv = options.argv.map(String);
-  const stdin = options.stdin === undefined ? process.stdin : options.stdin;
-  const stdout = options.stdout === undefined ? process.stdout : options.stdout;
-  const stderr = options.stderr === undefined ? process.stderr : options.stderr;
-  if (!argv.includes(CONFIRMATION_FLAG)) {
-    throw new Error(`GitHub publication requires explicit owner authorization represented by ${CONFIRMATION_FLAG}`);
-  }
-  return Object.freeze({
-    confirmation_flag: CONFIRMATION_FLAG,
-    interactive_terminal: stdin.isTTY === true && stdout.isTTY === true && stderr.isTTY === true,
-  });
-}
 
 export function withGithubPublicationLock(root, callback, options = {}) {
   const stateRoot = options.stateRoot
@@ -63,5 +47,4 @@ export function githubPublicationStateRootFromGitResult(repositoryRoot, result) 
   }
 }
 
-export const githubPublicationConfirmationFlag = CONFIRMATION_FLAG;
 export const githubPublicationGitTimeoutMs = GIT_METADATA_TIMEOUT_MS;

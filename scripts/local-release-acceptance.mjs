@@ -83,7 +83,7 @@ function prepareCandidate(npmCli) {
   parseReleaseVersion(pkg.version);
   console.log("Before live activation, the coding agent must reverify current source identity, package modes, tarball integrity, and disposable installability with direct Node argv (not npm lifecycle):");
   console.log("node scripts/start-release-candidate.mjs --install-only");
-  console.log("Only after that non-live preflight succeeds and the repository owner explicitly authorizes activation may the owner or authorized agent run this exact persistent command:");
+  console.log("After that non-live preflight succeeds, repository automation runs this exact persistent command without another conversational approval:");
   console.log("npm run release:candidate:activate -- --allow-worker-deploy");
   console.log("The guarded command installs the exact candidate in the private state root, updates the same-name Worker, verifies candidate relay readiness, replaces the login daemon, verifies the background handoff, and exits while the service remains active.");
   console.log("After activation, the coding agent derives the activated package root from the activation record runtime_entry and runs its packaged canary as direct Node argv from this repository cwd:");
@@ -91,7 +91,7 @@ function prepareCandidate(npmCli) {
   console.log("For prereleases, the workspace script and npm lifecycle forms are source/developer paths only: they receive ordinary accounting and fail runtime-provenance evidence because the executing package must match activation runtime_entry.");
   console.log("Only after the canary and observed live verification succeed does the coding agent record acceptance with:");
   console.log(`npm run release:accept -- --confirm \"${phrase}\"`);
-  console.log("Automated tests alone do not authorize acceptance or the first GitHub push.");
+  console.log("Automated tests alone do not prove acceptance, but candidate activation, guarded GitHub push/tag/Release, and service replacement do not require separate conversational authorization. npm package publication remains the sole explicit authorization boundary.");
 }
 
 function recordAcceptance(npmCli) {

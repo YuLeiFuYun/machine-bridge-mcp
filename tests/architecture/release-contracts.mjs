@@ -656,8 +656,9 @@ if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-r
 if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
 const githubReleaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
 const githubPublicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
-for (const required of ["assertGithubPublicationAuthorized", "withGithubPublicationLock", "--owner-confirm"]) {
-  if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost explicit-authorization boundary: ${required}`);
+if (!githubReleaseSource.includes("withGithubPublicationLock")) throw new Error("GitHub release helper lost publication serialization");
+for (const forbidden of ["assertGithubPublicationAuthorized", "--owner-confirm"]) {
+  if (githubReleaseSource.includes(forbidden)) throw new Error(`GitHub release helper regained a conversational authorization gate: ${forbidden}`);
 }
 for (const required of [
   "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
@@ -697,18 +698,16 @@ const githubAssetSource = readFileSync(join(root, "scripts", "github-release-ass
 for (const required of ["tag_name", "matches.length !== 1", "sha256:", "expectedSha256", "asset.digest", "waitForGithubReleaseAsset", "defaultAssetWait"]) {
   if (!githubAssetSource.includes(required)) throw new Error(`GitHub release asset verifier lost required boundary: ${required}`);
 }
-for (const required of ["explicit owner authorization", "withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
+for (const required of ["withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
   if (!githubPublicationGuardSource.includes(required)) throw new Error(`GitHub publication guard lost required boundary: ${required}`);
 }
-if (githubPublicationGuardSource.includes("isTTY !== true")) {
-  throw new Error("GitHub publication guard regained a mandatory TTY boundary");
+for (const forbidden of ["explicit owner authorization", "--owner-confirm", "isTTY"]) {
+  if (githubPublicationGuardSource.includes(forbidden)) throw new Error(`GitHub publication lock regained a conversational/TTY authorization boundary: ${forbidden}`);
 }
-const publicationGuardCall = githubReleaseSource.lastIndexOf("assertGithubPublicationAuthorized()");
 const publicationLockCall = githubReleaseSource.lastIndexOf("await withGithubPublicationLock");
 const prereleasePublishCall = githubReleaseSource.lastIndexOf("publishCurrent({ prereleaseMode: true })");
-if (publicationGuardCall < 0 || publicationLockCall < 0 || prereleasePublishCall < 0
-    || publicationGuardCall > publicationLockCall || publicationLockCall > prereleasePublishCall) {
-  throw new Error("GitHub publication no longer verifies explicit owner authorization and acquires its lock before remote mutation");
+if (publicationLockCall < 0 || prereleasePublishCall < 0 || publicationLockCall > prereleasePublishCall) {
+  throw new Error("GitHub publication no longer acquires its lock before remote mutation");
 }
 const githubBacklogPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
 if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('runNetwork(git, ["fetch", "origin", "main", "--prune"]')) {
@@ -794,12 +793,18 @@ if (!browserBridgeSource.includes("browserExtensionPathForRuntime({ stateRoot: t
 }
 const npmPublishSource = readFileSync(join(root, "scripts", "publish-npm.mjs"), "utf8");
 for (const required of [
+  "assertNpmPublicationAuthorized", "--owner-confirm", "explicit owner authorization",
   "verifyCurrentReleaseAcceptance", "stageAcceptedCandidateTarball", "prepublishOnly",
   "candidate.path", "--ignore-scripts=true", "--if-present=false", '"--tag", parsed.npmTag', "validateNpmPublishDryRun",
   '"--dry-run=true"', "disposePublicationResources", "readPublishedNpmPrereleaseIfPresent",
   "waitForPublishedCandidate", "alreadyPublished", "publication outcome is ambiguous",
 ]) {
   if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost exact accepted-tarball boundary: ${required}`);
+}
+const npmAuthorizationCall = npmPublishSource.indexOf("assertNpmPublicationAuthorized();");
+const npmMainPublicationCall = npmPublishSource.indexOf("publishCurrentNpmPackage(root, mode)");
+if (npmAuthorizationCall < 0 || npmMainPublicationCall < 0 || npmAuthorizationCall > npmMainPublicationCall) {
+  throw new Error("npm publication no longer verifies explicit current-task authorization before publication work");
 }
 const prepublicationStage = npmPublishSource.indexOf('"prepublishOnly"');
 const publishDryRunStage = npmPublishSource.indexOf('"npm publish dry-run"');
@@ -1762,7 +1767,7 @@ for (const [file, content, required] of [
   ["docs/TESTING.md", testingDoc, "Ordinary daemon tools default to 20 seconds plus the separate Worker settlement margin"],
   ["docs/TESTING.md", testingDoc, "explicit stop-before-first-readiness settlement"],
   ["docs/TESTING.md", testingDoc, "reject non-finite, non-positive, non-integer, and over-contract operation/reconnect delays"],
-  ["docs/TESTING.md", testingDoc, "owner-authorized remote release verification"],
+  ["docs/TESTING.md", testingDoc, "remote release verification"],
   ["docs/TESTING.md", testingDoc, "larger explicit step timeout"],
   ["docs/TESTING.md", testingDoc, "eight-worker fixed request on an idle eight-core interactive host fails immediately"],
   ["docs/TESTING.md", testingDoc, "privacy-safe `drain_active` fairness signal"],
@@ -1833,7 +1838,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 8"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
-  ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
+  ["src/shared/server-metadata.json", serverMetadata, "effective account policy permits it"],
   ["src/shared/server-metadata.json", serverMetadata, "execution budget above 600 seconds"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted current hosted timing/diagnostic guidance: ${required}`);
@@ -1914,13 +1919,19 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   if (!releaseContract.includes("prerelease") || !releaseContract.includes("soak") || !releaseContract.includes("npm")) {
     throw new Error(`release ownership contract drifted in ${relative(root, file)}`);
   }
-  for (const required of ["--owner-confirm", "explicit owner", "authorization"]) {
-    if (!releaseContract.includes(required)) throw new Error(`GitHub publication ownership drifted in ${relative(root, file)}: ${required}`);
+  for (const required of ["npm", "--owner-confirm", "sole", "authorization"]) {
+    if (!releaseContract.includes(required)) throw new Error(`npm-only authorization ownership drifted in ${relative(root, file)}: ${required}`);
+  }
+  if (releaseContract.includes("prerelease:release -- --owner-confirm") || releaseContract.includes("release -- --owner-confirm")) {
+    throw new Error(`GitHub publication regained an owner-confirm gate in ${relative(root, file)}`);
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "21,600 seconds", "six hours", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "21,600 seconds", "six hours", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release", "npm run prerelease:publish -- --owner-confirm", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish -- --owner-confirm", "npm run github:push", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
+}
+if (projectStandards.includes("prerelease:release -- --owner-confirm") || projectStandards.includes("release -- --owner-confirm")) {
+  throw new Error("project standards regained a GitHub publication authorization flag");
 }
 for (const required of [
   "aggregate host-response lifetime are separate constraints",
@@ -1945,12 +1956,15 @@ for (const [name, guide, required] of [
     if (guide.includes(forbidden)) throw new Error(`release documentation restored obsolete fixed-duration acceptance policy: ${forbidden}`);
   }
 }
-for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional", "Conversational authorization is sufficient", "owner or an authorized agent runs exactly", "600-second durable-process ceiling", "detached `start_job`", "larger explicit step timeout"]) {
-  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted explicit-authorization publication contract: ${required}`);
+for (const required of [directCandidateVerifyCommand, "npm run prerelease:release", "npm run release:backfill", "npm run release", "npm run prerelease:publish -- --owner-confirm", "npm run stable:publish -- --owner-confirm", "sole conversational authorization boundary", "detached `start_job`", "larger explicit step timeout"]) {
+  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted npm-only authorization/publication contract: ${required}`);
+}
+for (const forbidden of ["prerelease:release -- --owner-confirm", "release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "Conversational authorization is sufficient"]) {
+  if (releasingGuide.includes(forbidden)) throw new Error(`release guide retained obsolete non-npm authorization gate: ${forbidden}`);
 }
 for (const [name, guide] of [["release guide", releasingGuide], ["upgrade guide", upgradingGuide]]) {
   for (const required of [
-    "frozen approved tool/input snapshot", "Action control", "Refresh",
+    "frozen approved tool/input snapshot", "Action control", "refresh/review",
     "invocation", "wait_ms=40001", "timeout_seconds=3601", "not_found",
   ]) {
     if (!guide.includes(required)) throw new Error(`${name} omitted hosted action-snapshot freshness/remediation boundary: ${required}`);
@@ -1969,7 +1983,7 @@ for (const required of [
   if (!releasingGuide.includes(required)) throw new Error(`release guide omitted interruption recovery acceptance boundary: ${required}`);
 }
 if (!testingGuide.includes("server-opened subscription evidence cannot prove external client receipt")
-    || !testingGuide.includes("owner-authorized **Action control** snapshot")
+    || !testingGuide.includes("**Action control** snapshot")
     || !testingGuide.includes("opaque host-internal cache inspection is intentionally excluded from release acceptance")
     || !testingGuide.includes("harmless invocation probe")) {
   throw new Error("testing guide omitted the governed ChatGPT action-snapshot freshness/remediation model");
@@ -1986,8 +2000,8 @@ for (const [name, guide] of [["project standards", projectStandards], ["release 
   for (const forbidden of ["Acceptance must sample multiple host discovery paths", "query multiple host discovery paths"]) {
     if (guide.includes(forbidden)) throw new Error(`${name} retained filtered host-search results as schema-freshness authority: ${forbidden}`);
   }
-  for (const required of ["ChatGPT host-control-plane UI", "current task", "open, navigate to, inspect", "Action control"]) {
-    if (!guide.includes(required)) throw new Error(`${name} omitted the explicit ChatGPT product-control-plane mutation boundary: ${required}`);
+  for (const required of ["ChatGPT host-control-plane UI", "Action control", "refresh/review"]) {
+    if (!guide.includes(required)) throw new Error(`${name} omitted the standing-authorized ChatGPT product-control-plane discipline: ${required}`);
   }
 }
 for (const [name, guide] of [
@@ -2034,21 +2048,24 @@ if (sharedToolCatalog.some((tool) => String(tool?.description || "").includes(ob
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
 for (const required of [
-  "ChatGPT host-control-plane UI hard gate",
-  "explicitly authorizes ChatGPT host-control-plane UI work in the current task",
-  "do **not** open, navigate to, inspect, click through, create, edit, refresh, review, publish, test, connect, disconnect, recreate",
+  "ChatGPT host-control-plane UI discipline",
+  "not a separate conversational authorization boundary",
+  "in-place refresh/review",
   "filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence",
   "complete `machine-mcp` tool catalog **without a query filter**",
   "stale host query/search-index cache",
   "unfiltered full catalog is itself stale, partial, or mixed-generation",
   "stale filtered-search result alone must not block acceptance",
   "external acceptance blocker",
-  "not standing agent authority",
+  "never replay an unknown-outcome UI mutation blindly",
 ]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted ChatGPT host-control-plane UI boundary: ${required}`);
 }
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Autonomous long-running work invariant", "User interaction must not be used as a scheduler tick", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "cooldown boundary", "release-blocking continuity defect", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Autonomous long-running work invariant", "User interaction must not be used as a scheduler tick", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "cooldown boundary", "release-blocking continuity defect", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release", "npm run prerelease:publish -- --owner-confirm", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish -- --owner-confirm", "Sole explicit user-authorization boundary", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
+}
+for (const forbidden of ["prerelease:release -- --owner-confirm", "npm run release -- --owner-confirm", "explicitly authorizes ChatGPT host-control-plane UI work"]) {
+  if (agentContract.includes(forbidden)) throw new Error(`repository automation contract retained obsolete non-npm authorization gate: ${forbidden}`);
 }
 for (const [label, contract] of [["project standards", projectStandards], ["repository automation contract", agentContract]]) {
   for (const forbidden of [

@@ -21,11 +21,11 @@ Unless the user explicitly narrows or expands the task, a coding agent may:
 - run repository-local inspection, validation, packaging, dependency, privacy, and dry-run commands;
 - create local branches and commits;
 - generate the exact candidate with `npm run release:candidate`;
-- after explicit owner authorization for live activation, execute or observe the exact activation command, run the repository's bounded synthetic release OAuth canary, verify the live candidate through Machine Bridge, and record acceptance;
+- execute or observe the exact live activation command after its non-live preflight, run the repository's bounded synthetic release OAuth canary, verify the live candidate through Machine Bridge, and record acceptance;
 - push only with `npm run github:push`, manage the pull request through local `git`/`gh`, and prepare verified source-release metadata according to the mandatory prerelease/soak state machine;
-- after explicit owner authorization for source publication, create the Git tag and GitHub Release through the repository command using local `git`/`gh` via Machine Bridge.
+- create the Git tag and GitHub Release through the repository command using local `git`/`gh` via Machine Bridge once the repository integrity gates permit publication.
 
-This is standing authorization for implementation, local validation, observed candidate verification, the repository's bounded synthetic release OAuth canary after an authorized activation, acceptance recording, pull-request completion, and source-release metadata. The canary is the only standing live-data exception: it creates one random `reviewer` account plus one DCR client, never emits their credentials/tokens, exercises authorization-code/MCP/refresh, and must revoke the client and remove the account before recording evidence. Git tag/GitHub Release publication, npm publication, global installation, Worker/service mutation, credential rotation, any other live-user-data mutation, and destructive live-data changes require an explicit owner request in the current task; once that request is present, the agent may execute the requested operation through the repository's guarded command instead of forcing the owner to re-run it manually.
+This is standing authorization for implementation, local validation, candidate activation, Worker/login-daemon replacement through the guarded release path, observed candidate verification, the bounded synthetic release OAuth canary, acceptance recording, Git push/PR completion, tag/GitHub Release publication, registry installation/activation, and other task-relevant repository or runtime operations allowed by the effective Machine Bridge policy. The canary creates one random `reviewer` account plus one DCR client, never emits their credentials/tokens, exercises authorization-code/MCP/refresh, and must revoke the client and remove the account before recording evidence. **The sole conversational authorization boundary in this repository is npm package publication.** `npm run prerelease:publish` and `npm run stable:publish` require an explicit current-task owner request and the repository npm-publication confirmation flag. All other operations continue automatically when they are required by the current task and their technical integrity/safety gates pass; do not stop merely to request an additional approval.
 
 GitHub-only infrastructure changes whose npm package bytes are unchanged do not require a synthetic package version or runtime acceptance. They still require review and applicable checks.
 
@@ -38,24 +38,22 @@ User interaction must not be used as a scheduler tick for work that Machine Brid
 - Interactive process sessions follow the same principle through paced same-response `read_process` calls. The one-second remote output/exit blocking-wait cap, `next_blocking_poll_after_ms`, and the fifteen-second would-block cooldown remain mandatory pacing controls; a repeated would-block call inside that cooldown must be paced inside the same MCP request until output/exit or the cooldown boundary rather than converted into a rapid status response or a mandatory user-turn handoff.
 - The agent may return an active `job_id`/status/current phase for later recovery only after a real host/tool/runtime boundary is actually observed, the task requires external human input or authorization, or the user explicitly requested a checkpoint rather than completion. Elapsed minutes, a guessed host budget, and "one status read already happened in this response" are never by themselves valid reasons.
 - `list_jobs`, `server_info`, `diagnose_runtime`, or another status surface must not be used to evade pacing or manufacture progress. Follow a known job/session through its authoritative read tool.
-- A continuous process that legitimately needs more than the remote durable one-step 600-second limit must use an owner-authorized `start_job` step rather than being artificially split or repeatedly relaunched. Managed-job main/finally steps default to 600 seconds and may explicitly request up to 21,600 seconds (six hours); resource admission is pre-spawn and does not consume that execution timer.
+- A continuous process that legitimately needs more than the remote durable one-step 600-second limit must use a policy-authorized `start_job` step rather than being artificially split or repeatedly relaunched. Managed-job main/finally steps default to 600 seconds and may explicitly request up to 21,600 seconds (six hours); resource admission is pre-spawn and does not consume that execution timer.
 - Tool descriptions, shared metadata, client guidance, tests, and release contracts must never require an active job/session to wait for a later user turn merely because one read occurred or some amount of wall-clock time elapsed. Anti-amplification protection belongs in bounded waits, cooldowns, durable ownership, idempotency, and actual call/transport limits, not in forced user participation or speculative host-budget guesses.
 - A regression that makes autonomous completion depend on repeated user nudges **or turns autonomous waiting into a high-density host tool loop** is a release-blocking continuity defect. Before accepting a candidate that changes hosted status/follow-up semantics, live verification must use an unchanged active fixture long enough to prove the first parameter-omitting `read_job` remains inside one MCP call for the advertised server-side long-poll interval with `host_turn_handoff_recommended=false` / `status_polling_mode=bounded_followup`, then prove a second `read_job` in the same assistant response is accepted and advances or reaches terminal state. Process-session changes must analogously prove `paced_followup` and that a repeated would-block read is paced inside the cooldown rather than returned immediately, while preserving the one-second actual output/exit blocking cap.
 
 This invariant exists because beta.104 exposed a real same-turn polling amplifier but over-corrected the orchestration contract into a mandatory one-checkpoint user-turn boundary, forcing the owner to repeatedly send `继续`. Beta.106 restored same-response autonomy but initially left durable `read_job` as an immediate checkpoint, allowing the opposite failure mode: rapid host-side status calls could consume the hosted turn much faster than the underlying long task. A later beta.109 experiment then over-corrected in the other direction by making the default read five minutes; live probing showed the host terminated that single tool call while a 40-second read survived. Future anti-polling changes must therefore preserve all three constraints: autonomous bounded follow-up, low interaction density, and an empirically host-safe per-call default.
 
-## ChatGPT host-control-plane UI hard gate
+## ChatGPT host-control-plane UI discipline
 
-For this repository, verification of host-visible tool schemas and invocation behavior is **read-only by default at the ChatGPT product layer**. Repository automation must use Machine Bridge runtime evidence plus the host's already-available MCP/tool discovery surfaces; it must not turn a stale or mixed host catalog into permission to drive ChatGPT's Apps, Plugins, workspace administration, or app-testing UI.
+For this repository, ChatGPT Apps/Plugins/workspace administration is an available release-diagnosis and schema-publication control plane when the current task actually needs it. It is not a separate conversational authorization boundary. Repository automation should still prefer Machine Bridge runtime evidence plus the host's already-available MCP/tool discovery surfaces before mutating product configuration.
 
-- Unless the repository owner explicitly authorizes ChatGPT host-control-plane UI work in the current task, do **not** open, navigate to, inspect, click through, create, edit, refresh, review, publish, test, connect, disconnect, recreate, or otherwise operate ChatGPT Apps/Plugins/admin pages for release diagnosis or schema-refresh purposes.
-- Passive use of the host's existing MCP/tool discovery and invocation surfaces is allowed. Calling already-exposed Machine Bridge tools, comparing their descriptions/generation, and performing harmless validator-boundary probes do not require ChatGPT UI automation.
+- When a stale or mixed governed Action control snapshot is a real acceptance blocker, repository automation may inspect and operate the supported ChatGPT Apps/Plugins/admin refresh/review flow without stopping for another approval. Prefer in-place refresh/review before recreation or republication.
+- Passive use of the host's existing MCP/tool discovery and invocation surfaces remains the first-line path. Calling already-exposed Machine Bridge tools, comparing their descriptions/generation, and performing harmless validator-boundary probes do not require ChatGPT UI automation.
 - Host-side filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence. When release acceptance, incident diagnosis, or hosted-contract verification depends on the current Machine Bridge schema, load the complete `machine-mcp` tool catalog **without a query filter** and evaluate generation, descriptions, defaults, required fields, and tool count from that single full-catalog snapshot. Do not infer a mixed catalog merely because a filtered search result conflicts with the full snapshot; record that condition as a stale host query/search-index cache instead.
 - A host schema condition is an **external acceptance blocker** only when the unfiltered full catalog is itself stale, partial, or mixed-generation, or when an actual host invocation validator/behavior probe contradicts the current runtime contract. A stale filtered-search result alone must not block acceptance and must not trigger ChatGPT UI repair attempts.
-- Documentation may describe a plan-specific owner/admin refresh, recreate, review, or republish procedure as a required external step. That description is not standing agent authority to execute it. Execution requires explicit owner authorization for that ChatGPT control-plane operation in the current task.
-- When such authorization is explicitly given, scope the action narrowly, preserve existing apps unless replacement/deletion is separately authorized, verify settlement after each mutation, and never replay an unknown-outcome UI mutation blindly.
-
-A violation of this gate is a process defect. Stop further ChatGPT app/plugin UI automation, report what was changed or merely observed, and continue through Machine Bridge/local evidence unless and until the owner explicitly authorizes returning to that host-control-plane layer.
+- Scope product-layer actions narrowly, preserve existing apps unless replacement/deletion is technically required by the current task, verify settlement after each mutation, and never replay an unknown-outcome UI mutation blindly.
+- Host-internal cache inspection is not release evidence and must not become a substitute for the governed Action control snapshot plus live invocation behavior.
 
 ## Mandatory prerelease and soak invariant
 
@@ -66,7 +64,7 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - The exact candidate must be persistently activated on the owner machine before the first GitHub push.
 - Immediately before live activation, the coding agent runs `node scripts/start-release-candidate.mjs --install-only`; this non-live `--install-only` preflight must prove current source identity, package modes, exact tarball integrity, and disposable installability without Worker/service activation or activation evidence.
 - Persistent activation also preflights Cloudflare Wrangler authentication before service handoff. Detached `start_job` activation must fail before live mutation rather than starting interactive Wrangler login; an ordinary owner terminal may complete login before handoff. The inner `activate --json` path must never start interactive login.
-- After explicit owner authorization for activation, the owner or the authorized agent executes the single guarded command:
+- After the install-only preflight succeeds, repository automation executes the single guarded command without another conversational approval:
 
   ```sh
   npm run release:candidate:activate -- --allow-worker-deploy
@@ -76,14 +74,14 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - The coding agent derives `<activated-runtime-package>` from the activation record `runtime_entry`, then runs `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv with the Git checkout as cwd. The canary code and imports therefore come from the exact activated package while the checkout is only candidate/evidence data. The candidate-bound canary creates only synthetic temporary reviewer/client state, proves authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup, and records no credential/token/client/account value.
 - The coding agent then verifies Worker version/hash, remote health, relay readiness, connected daemon/service identity, representative functionality, relevant failure paths, and log/privacy behavior through Machine Bridge.
 - Only after the candidate-bound OAuth canary evidence and observed live verification may the agent run `npm run release:accept`.
-- The accepted prerelease is reviewed and merged; after explicit owner authorization, the owner or authorized agent creates its Git tag and GitHub Prerelease with `npm run prerelease:release -- --owner-confirm`. A TTY is optional and is not an authorization boundary.
-- npm prerelease publication requires a separate explicit owner request and uses `npm run prerelease:publish`.
-- Published-prerelease installation/activation requires a separate explicit owner request and uses `npm run prerelease:install -- --allow-worker-deploy`; only this registry-verified activation starts formal soak.
+- The accepted prerelease is reviewed and merged; repository automation then creates its Git tag and GitHub Prerelease with `npm run prerelease:release` once exact-commit and publication-integrity gates pass.
+- npm prerelease publication is the explicit authorization boundary and uses `npm run prerelease:publish -- --owner-confirm` only after a current-task owner request.
+- Published-prerelease installation/activation uses `npm run prerelease:install -- --allow-worker-deploy` automatically after npm publication; only this registry-verified activation starts formal soak.
 - Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch release.
 - Every blocking defect requires a new prerelease number and restarts the complete soak interval.
 - The owner must explicitly report that the soak completed without blocking issues before the agent records `release-soak/v<stable>.json`.
 - Stable promotion may change only normalized release metadata. `promotion_content_sha256` must match the soaked prerelease; any functional packaged-byte change requires a new prerelease and new soak.
-- The exact stable candidate is activated and observed again before an explicitly authorized `npm run release -- --owner-confirm` action and the separately authorized `npm run stable:publish` action.
+- The exact stable candidate is activated and observed again before automatic `npm run release` GitHub publication. `npm run stable:publish -- --owner-confirm` remains the separately authorized npm-publication action.
 
 This workflow is a hard repository contract, not a conversational preference. Do not replace it with direct stable publication, an unobserved process, a transient foreground-only candidate, or an external signing prerequisite that is not part of this self-hosted flow.
 
@@ -98,29 +96,20 @@ Before any GitHub read or mutation, load and apply this repository contract thro
 - Never push directly to `main`; merge through a reviewed pull request.
 - Fetch before mutation, preserve unrelated work, and verify every remote result.
 
-## Operations requiring explicit user authorization
+## Sole explicit user-authorization boundary
 
-Do not perform these merely because code or a version changed. They may be executed by the agent when the repository owner explicitly requests the specific operation in the current task:
+Only npm package publication requires a separate conversational approval. The repository commands `npm run prerelease:publish -- --owner-confirm` and `npm run stable:publish -- --owner-confirm` must not run until the owner explicitly requests that npm publication in the current task.
 
-- execute a live candidate or published-package activation command;
-- publish, deprecate, or unpublish npm packages;
-- install or replace the global package;
-- directly deploy or remove a Cloudflare Worker;
-- rotate credentials or device roots;
-- replace the live daemon/service outside the exact guarded activation workflow;
-- create or push a version tag, GitHub Release, or GitHub Prerelease;
-- mutate live user data outside the candidate-bound synthetic release OAuth canary, or perform disruptive repository operations.
-
-Explicit conversational authorization from the repository owner is sufficient user authorization for these operations. It never bypasses the repository's integrity, exact-commit, acceptance, CI, lock, dist-tag, or explicit command-flag gates. If the owner says they will execute an operation themselves, the agent must not execute that operation in parallel.
+All other task-relevant operations within the effective Machine Bridge/account authority are standing-authorized: candidate or published-package activation, Worker deployment/replacement, login-daemon/service replacement, global package installation, ChatGPT Action control refresh/review, credential/device-root maintenance when technically required, Git commits, guarded GitHub push/PR/merge, tags, GitHub Releases/Prereleases, and recovery mutations. This removes conversational stop points; it does **not** remove integrity, exact-commit, acceptance, CI, lock, identity, idempotency, positive-evidence, or unknown-settlement safeguards. Do not perform unrelated destructive work merely because standing authority exists, and do not race an operation the owner explicitly says they are performing themselves.
 
 ## Validation expectations
 
 - Run targeted behavior tests while iterating and one `npm run check` / `check:full` on the frozen tree before candidate preparation. Successful full verification writes a short-lived ignored receipt bound to the exact generation; `release:candidate` must consume it rather than repeating the complete suite.
-- When that frozen `check:full` is launched remotely through Machine Bridge, use owner-authorized detached `start_job` with a step timeout above 600 seconds if the suite may cross the durable-process ceiling; do not let `run_process`'s 600-second step limit become the release gate's effective timeout.
+- When that frozen `check:full` is launched remotely through Machine Bridge, use a detached `start_job` with a step timeout above 600 seconds if the suite may cross the durable-process ceiling; do not let `run_process`'s 600-second step limit become the release gate's effective timeout.
 - Lock, state deletion, service lifecycle, release activation, detached process, credential, browser, or application changes require behavior, concurrency, and fault-injection tests; source-string checks alone are insufficient.
 - Run both dependency audits, Worker dry-run, registry signature verification, SBOM generation, package inspection, privacy history, and complete diff/status review for a versioned candidate.
 - Update tests, `CHANGELOG.md`, `docs/AUDIT.md`, release guidance, architecture, threat model, and operations whenever their contracts change.
-- `npm run release:candidate` creates the exact tarball. Before live activation, the coding agent must run `node scripts/start-release-candidate.mjs --install-only`; any packaged-file change or mode drift invalidates the candidate and requires regeneration. Activation then requires explicit owner authorization and uses `npm run release:candidate:activate -- --allow-worker-deploy`.
+- `npm run release:candidate` creates the exact tarball. Before live activation, the coding agent must run `node scripts/start-release-candidate.mjs --install-only`; any packaged-file change or mode drift invalidates the candidate and requires regeneration. Activation then proceeds automatically with `npm run release:candidate:activate -- --allow-worker-deploy`.
 - Release evidence contains bounded synthetic metadata only; never put user names, machine paths, command output, credentials, or private content in it.
 
 ## Incident diagnosis and evidence hard gate
@@ -145,12 +134,12 @@ When the incident is closed, record the causal evidence and the disproved branch
 1. Finish implementation and review; use a `dev`, `beta`, or `rc` version.
 2. Run complete verification once, then run `npm run release:candidate`; candidate preparation requires the matching full-verification receipt and does not rerun the complete suite.
 3. Run `node scripts/start-release-candidate.mjs --install-only`; if it fails, repair and regenerate the candidate instead of involving the owner.
-4. Obtain explicit owner authorization for `npm run release:candidate:activate -- --allow-worker-deploy`; if authorized to execute it, the agent may run it through Machine Bridge, otherwise present the command and stop.
+4. Run `npm run release:candidate:activate -- --allow-worker-deploy` through a detached Machine Bridge job after install-only succeeds; do not stop for another approval.
 5. After activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the live candidate through Machine Bridge.
 6. Record exact candidate acceptance only after both candidate-bound canary evidence and observed live verification; commit and push only through `npm run github:push`.
 7. Complete the pull request and exact-commit checks.
-8. After explicit owner authorization, run `npm run prerelease:release -- --owner-confirm` through the local control plane; an interactive TTY is optional.
-9. Run `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy` only when each operation is explicitly authorized; if the owner elects to run them manually, provide the commands instead.
+8. Run `npm run prerelease:release` through the local control plane once exact-commit checks pass; tag/GitHub Release publication does not require a separate approval.
+9. Stop only at npm publication unless the owner has explicitly authorized it. When authorized, run `npm run prerelease:publish -- --owner-confirm`, then continue automatically with `npm run prerelease:install -- --allow-worker-deploy` and all non-npm-publication follow-up.
 10. Wait for real use. Do not assume successful soak; the owner reports the outcome.
 11. After explicit successful soak feedback, record the exact `prerelease:soak:accept` phrase.
 
@@ -158,10 +147,10 @@ When the incident is closed, record the causal evidence and the disproved branch
 
 1. Promote the same base version without functional package changes.
 2. Run `npm run release:soak:verify`, complete checks, and prepare a stable candidate.
-3. Obtain explicit owner authorization for the same persistent candidate activation command.
+3. Run the same persistent candidate activation command automatically after its preflight.
 4. Run the candidate-bound synthetic OAuth canary, verify the live stable candidate, and record exact acceptance only after both succeed.
 5. Push/review/merge through the guarded flow.
-6. After soak and exact-commit gates pass and the owner explicitly authorizes source publication, run `npm run release -- --owner-confirm` through the local control plane.
-7. Run `npm run stable:publish` only after a separate explicit owner authorization.
+6. After soak and exact-commit gates pass, run `npm run release` through the local control plane without another approval.
+7. Run `npm run stable:publish -- --owner-confirm` only after explicit current-task authorization for npm publication.
 
 The complete procedure and rollback boundaries are in [docs/RELEASING.md](docs/RELEASING.md).

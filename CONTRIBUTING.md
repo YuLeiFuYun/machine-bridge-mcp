@@ -43,18 +43,18 @@ Repository tests are verification inputs, not npm tarball entries under the curr
 3. run targeted and one complete frozen-tree check, dependency audits, Worker dry-run, privacy review, `npm run sbom:test`, and package inspection; the successful full check writes a short-lived exact-generation receipt under ignored `.project-local/`;
 4. inspect the complete diff and run `npm run release:candidate`; it must consume that matching receipt and does not repeat the complete suite;
 5. run `node scripts/start-release-candidate.mjs --install-only`; this non-live preflight must still match current source/package modes and install the exact tarball disposably, otherwise repair and regenerate the candidate;
-6. obtain explicit owner authorization for `npm run release:candidate:activate -- --allow-worker-deploy`; the owner or authorized agent may run it through the local control plane;
+6. run `npm run release:candidate:activate -- --allow-worker-deploy` through the local control plane after the install-only preflight succeeds; no additional conversational approval is required;
 7. after activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;
 8. only after the candidate-bound canary and observed live verification both succeed, record exact candidate acceptance;
 9. commit and push only with `npm run github:push`, then complete review and required checks;
-10. after explicit owner authorization, create the GitHub Prerelease with `npm run prerelease:release -- --owner-confirm`; a TTY is optional;
-11. run `npm run prerelease:publish` and `npm run prerelease:install -- --allow-worker-deploy` only under their own explicit owner authorization;
+10. create the GitHub Prerelease with `npm run prerelease:release` once exact-commit and release-integrity gates pass;
+11. stop only for npm publication authorization; when explicitly authorized, run `npm run prerelease:publish -- --owner-confirm`, then continue automatically with `npm run prerelease:install -- --allow-worker-deploy`;
 12. use the published prerelease for at least seven days for a major, three days for a minor, or one day for a patch;
 13. every blocking defect increments the prerelease number and restarts the interval;
 14. after explicit owner confirmation, record the soak result; stable promotion must pass `npm run release:soak:verify` and preserve the functional promotion digest;
-15. activate and observe the exact stable candidate, repeat acceptance and review, then run `npm run release -- --owner-confirm` after explicit owner authorization; `npm run stable:publish` remains a separately authorized operation.
+15. activate and observe the exact stable candidate, repeat acceptance and review, then run `npm run release` automatically; `npm run stable:publish -- --owner-confirm` remains the separately authorized npm-publication operation.
 
-Automated checks do not authorize candidate acceptance or soak success. The agent observes the live candidate; the owner reports the real soak outcome. Release evidence contains bounded release metadata only and no private user content.
+Automated checks do not prove candidate acceptance or soak success. The agent observes the live candidate; the owner reports the real soak outcome. Release evidence contains bounded release metadata only and no private user content. npm package publication is the sole operation that requires a separate current-task conversational authorization; other task-relevant release operations proceed under standing repository authority when their technical gates pass.
 
 Repository-only infrastructure changes whose package bytes are unchanged skip candidate activation and soak but still require review and applicable checks. The complete state machine is in [docs/RELEASING.md](docs/RELEASING.md).
 
