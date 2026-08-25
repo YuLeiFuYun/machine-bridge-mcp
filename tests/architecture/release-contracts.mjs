@@ -274,6 +274,18 @@ const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
 for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
   if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
 }
+if (!cliSource.includes("export function assertNoActiveJobsForUninstall(stateRoot)")
+    || !localSelfTestSource.includes("assertNoActiveJobsForUninstall(stateRoot)")
+    || localSelfTestSource.includes('[entry, "uninstall", "--state-dir", stateRoot')) {
+  throw new Error("local self-test regained a machine-level uninstall side effect instead of testing the uninstall managed-state preflight directly");
+}
+const uninstallStateRootIndex = cliSource.indexOf("async function uninstallStateRoot({ stateRoot, deleteRemote })");
+const uninstallPreflightIndex = cliSource.indexOf("assertNoActiveJobsForUninstall(stateRoot);", uninstallStateRootIndex);
+const uninstallAutostartIndex = cliSource.indexOf("const autostartRemoved = await removeAutostartBestEffort(stateRoot);", uninstallStateRootIndex);
+if (uninstallStateRootIndex < 0 || uninstallPreflightIndex < uninstallStateRootIndex
+    || uninstallAutostartIndex < 0 || uninstallPreflightIndex > uninstallAutostartIndex) {
+  throw new Error("uninstall no longer proves managed-job state is safe before mutating machine autostart state");
+}
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
 }
@@ -488,6 +500,10 @@ const runtimeSelfTestSource = readFileSync(join(root, "tests", "runtime-self-tes
 if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
     || !runtimeSelfTestSource.includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
     || runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000")
+    || !localSelfTestSource.includes("const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 5 * 60_000")
+    || !localSelfTestSource.includes("waitForSelfTestJob(manager, jobId, deadline, label)")
+    || !localSelfTestSource.includes('[process.execPath, "--version"]')
+    || localSelfTestSource.includes("CLI_FIXTURE_WAIT_ATTEMPTS")
     || !localSelfTestSource.includes("function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS)")
     || !localSelfTestSource.includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
     || !localSelfTestSource.includes("local self-test phase started:")
@@ -498,6 +514,9 @@ if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAcces
   throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
 }
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
+for (const required of ["SPARSE_PROGRESS_TASKS", "local self-test phase started:", "local self-test phase completed:", "sparseLineForwarder"]) {
+  if (!checkRunnerSource.includes(required)) throw new Error(`check runner lost sparse self-test phase observability: ${required}`);
+}
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
 const macosIdleSleepAssertionSource = readFileSync(join(root, "src", "local", "macos-idle-sleep-assertion.mjs"), "utf8");
@@ -1295,6 +1314,9 @@ if ((ciSource.match(/npm run consumer-security:test/g) || []).length !== 1) thro
 if (!ciSource.includes("npm run check:platform") || !ciSource.includes("npm run check:full")
     || !ciSource.includes("os: [macos-latest, windows-latest]") || !ciSource.includes("runs-on: ubuntu-latest")) {
   throw new Error("CI no longer separates cross-platform fast checks from the Linux full suite");
+}
+if (!/platform-check:[\s\S]*?timeout-minutes:\s*30[\s\S]*?strategy:/.test(ciSource)) {
+  throw new Error("cross-platform verification lost the 30-minute CI envelope required by observed Windows platform+install duration");
 }
 const portableAcceptanceCommand = "npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs";
 if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable local candidate acceptance in both package paths");

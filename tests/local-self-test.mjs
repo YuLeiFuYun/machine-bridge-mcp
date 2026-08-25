@@ -5,10 +5,11 @@ import { delimiter, join, win32 as winPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
-import { acquireRuntimeStartServiceLock, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { acquireRuntimeStartServiceLock, assertNoActiveJobsForUninstall, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { isTerminalManagedJobStatus } from "../src/local/managed-job-terminal.mjs";
 import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
 import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
@@ -17,7 +18,7 @@ import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensure
 const CLI_FIXTURE_TIMEOUT_MS = 60_000;
 const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
 const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({ ...process.env, NODE_V8_COVERAGE: "" });
-const CLI_FIXTURE_WAIT_ATTEMPTS = 12_000;
+const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 5 * 60_000;
 const DAEMON_FIXTURE_TIMEOUT_MS = 30_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 60;
 const MANAGED_JOB_MARKER_SCRIPT = "if (process.env.NODE_V8_COVERAGE) process.exit(9); require('node:fs').writeFileSync(process.argv[1], process.argv[2])";
@@ -47,6 +48,21 @@ async function runSelfTestPhase(name, callback) {
   } catch (error) {
     throw new Error(`local self-test phase failed (${name}): ${String(error?.message || error)}`, { cause: error });
   }
+}
+
+async function waitForSelfTestJob(manager, jobId, deadline, label) {
+  while (Date.now() < deadline) {
+    const value = manager.read({ job_id: jobId });
+    if (isTerminalManagedJobStatus(value.status) && value.artifact_cleanup_pending !== true) return value;
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
+  }
+  throw new Error(`${label} did not settle within the shared resource CLI self-test budget`);
+}
+
+function remainingSelfTestBudget(deadline, label, maximum) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error(`${label} exceeded the shared resource CLI self-test budget`);
+  return Math.max(1, Math.min(maximum, remaining));
 }
 
 async function stateSelfTest() {
@@ -712,6 +728,7 @@ async function resourceCliSelfTest() {
   await writeFile(resourceFile, "local-value-not-returned", { mode: 0o600 });
   if (process.platform !== "win32") await chmod(resourceFile, 0o600);
   const entry = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
+  const phaseDeadline = Date.now() + RESOURCE_CLI_SELF_TEST_TIMEOUT_MS;
   try {
     const added = spawnSync(process.execPath, [entry, "resource", "add", "test-key", resourceFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
@@ -824,23 +841,25 @@ async function resourceCliSelfTest() {
       throw new Error(`removed terminal job approval remained usable: ${removedApproval.stderr || removedApproval.stdout}`);
     }
     if (await existsForSelfTest(approvedMarker)) throw new Error("rejected terminal job approval executed a staged plan");
+    const cancelledReviewedPlan = manager.cancel({ job_id: stagedForCli.job_id });
+    if (cancelledReviewedPlan.status !== "cancelled_before_start") {
+      throw new Error("reviewed staged plan did not cancel without execution");
+    }
 
     const trustedStarted = manager.start({
       name: "Trusted direct start",
-      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "trusted-start"], env: { NODE_V8_COVERAGE: "" }, env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "--version"], env: { NODE_V8_COVERAGE: "" }, env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     if (trustedStarted.status !== "queued") throw new Error("trusted direct managed-job start was not queued");
-    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
-      if (await existsForSelfTest(approvedMarker)) break;
-      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
+    const trustedResult = await waitForSelfTestJob(manager, trustedStarted.job_id, phaseDeadline, "trusted direct managed-job start");
+    if (trustedResult.status !== "succeeded" || trustedResult.result?.steps?.[0]?.code !== 0) {
+      throw new Error("trusted direct managed-job start did not execute the deterministic runtime probe");
     }
-    if (await readFile(approvedMarker, "utf8") !== "trusted-start") throw new Error("trusted direct managed-job start did not execute");
 
-    const submittedMarker = join(workspace, "submitted-by-cli.txt");
     const planFile = join(workspace, "managed-plan.json");
     await writeFile(planFile, JSON.stringify({
       name: "local CLI fallback",
-      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, submittedMarker, "submitted"], env: { NODE_V8_COVERAGE: "" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "--version"], env: { NODE_V8_COVERAGE: "" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     }), "utf8");
     if (process.platform !== "win32") {
       const linkedPlan = join(workspace, "linked-plan.json");
@@ -861,75 +880,67 @@ async function resourceCliSelfTest() {
     });
     if (submitted.status !== 0) throw new Error(`local job submit failed: ${submitted.stderr || submitted.stdout}`);
     const submittedId = JSON.parse(submitted.stdout).job_id;
-    let submittedStatus = "";
-    const submittedTerminal = new Set(["succeeded", "failed", "cancelled", "runner_failed", "runner_launch_failed", "recovery_failed", "recovery_exhausted", "succeeded_cleanup_failed", "failed_cleanup_failed", "cancelled_cleanup_failed"]);
-    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
-      const read = spawnSync(process.execPath, [entry, "job", "read", submittedId, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
-        encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
+    const submittedResult = await waitForSelfTestJob(manager, submittedId, phaseDeadline, "local CLI fallback job");
+    const read = spawnSync(process.execPath, [entry, "job", "read", submittedId, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
+      encoding: "utf8",
+      timeout: remainingSelfTestBudget(phaseDeadline, "local CLI job read", MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS),
       env: resourceCliEnv,
-        killSignal: "SIGKILL",
-      });
-      if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
-      submittedStatus = JSON.parse(read.stdout).status;
-      if (submittedTerminal.has(submittedStatus)) break;
-      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
-    }
-    if (submittedStatus !== "succeeded" || await readFile(submittedMarker, "utf8").catch(() => "") !== "submitted") {
+      killSignal: "SIGKILL",
+    });
+    if (read.error) throw read.error;
+    if (read.status !== 0) throw new Error(`local job read failed: ${read.stderr || read.stdout}`);
+    const submittedRead = JSON.parse(read.stdout);
+    if (submittedResult.status !== "succeeded" || submittedResult.result?.steps?.[0]?.code !== 0
+        || submittedRead.status !== "succeeded" || submittedRead.result?.steps?.[0]?.code !== 0) {
       const currentState = loadState(workspace, { stateDir: stateRoot });
       const jobDir = join(currentState.paths.profileDir, "jobs", submittedId);
       const diagnostics = {};
       for (const name of ["status.json", "result.json", "runner.out.log", "runner.err.log"]) {
         try { diagnostics[name] = await readFile(join(jobDir, name), "utf8"); } catch {}
       }
-      throw new Error(`local CLI fallback job did not complete: ${submittedStatus}; diagnostics=${JSON.stringify(diagnostics)}`);
+      throw new Error(`local CLI fallback job did not complete: ${submittedRead.status}; diagnostics=${JSON.stringify(diagnostics)}`);
     }
 
-    const activeJob = manager.start({
-      name: "block uninstall while active",
-      steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},30000)"], timeout_seconds: 60 }],
+    const uninstallBlocker = manager.stage({
+      name: "block uninstall while managed state requires inspection",
+      steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 60 }],
     });
-    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
-      const value = manager.read({ job_id: activeJob.job_id });
-      if (value.status === "running") break;
-      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
-    }
+    const uninstallBlockerDir = join(manager.jobRoot, uninstallBlocker.job_id);
+    const uninstallBlockerStatusPath = join(uninstallBlockerDir, "status.json");
+    const uninstallBlockerStatus = JSON.parse(await readFile(uninstallBlockerStatusPath, "utf8"));
+    await writeFile(uninstallBlockerStatusPath, `${JSON.stringify({
+      ...uninstallBlockerStatus,
+      status: "queued",
+      approval: "mcp",
+      cleanup_guarantee: "best-effort-finally-and-recovery",
+      updated_at: new Date().toISOString(),
+    }, null, 2)}\n`, { mode: 0o600 });
     const retiredSource = join(manager.jobRoot, `job_${"Y".repeat(24)}`);
     await mkdir(retiredSource, { mode: 0o700 });
     const retiredInfo = await stat(retiredSource, { bigint: true });
     const retiredPath = join(manager.jobRoot, `retired_job_${"Q".repeat(24)}_d${retiredInfo.dev}_i${retiredInfo.ino}`);
     await rename(retiredSource, retiredPath);
-    const uninstallBlocked = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
-      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-    });
-    const uninstallBlockedText = String(uninstallBlocked.stderr || "");
-    if (uninstallBlocked.status === 0
-        || !uninstallBlockedText.includes("refusing to uninstall while managed-job state")
+    let uninstallBlockedText = "";
+    try { assertNoActiveJobsForUninstall(stateRoot); }
+    catch (error) { uninstallBlockedText = String(error?.message || error); }
+    if (!uninstallBlockedText.includes("refusing to uninstall while managed-job state")
         || !uninstallBlockedText.includes("inspect with machine-mcp job list/read")) {
-      throw new Error(`uninstall did not refuse an active managed job: ${uninstallBlocked.stderr || uninstallBlocked.stdout}`);
+      throw new Error(`uninstall preflight did not refuse an active managed job: ${uninstallBlockedText}`);
     }
-    if (await existsForSelfTest(retiredPath)) throw new Error("uninstall did not reclaim an exact retired managed-job generation before inventory");
-    manager.cancel({ job_id: activeJob.job_id });
-    for (let attempt = 0; attempt < CLI_FIXTURE_WAIT_ATTEMPTS; attempt += 1) {
-      const value = manager.read({ job_id: activeJob.job_id });
-      if (!["queued", "running", "cleaning", "interrupted"].includes(value.status)) break;
-      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
-    }
+    if (await existsForSelfTest(retiredPath)) throw new Error("uninstall preflight did not reclaim an exact retired managed-job generation before inventory");
+    await rm(uninstallBlockerDir, { recursive: true, force: true });
 
     const corruptRetiredPath = join(manager.jobRoot, `retired_job_${"Z".repeat(24)}_d0_i0`);
     await mkdir(corruptRetiredPath, { mode: 0o700 });
-    const corruptRetiredUninstall = spawnSync(process.execPath, [entry, "uninstall", "--state-dir", stateRoot, "--keep-worker", "--yes"], {
-      encoding: "utf8", timeout: CLI_FIXTURE_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-    });
-    const corruptRetiredText = String(corruptRetiredUninstall.stderr || "");
-    if (corruptRetiredUninstall.status === 0
-        || !corruptRetiredText.includes("retired-managed-job:unreadable")
+    let corruptRetiredText = "";
+    try { assertNoActiveJobsForUninstall(stateRoot); }
+    catch (error) { corruptRetiredText = String(error?.message || error); }
+    if (!corruptRetiredText.includes("retired-managed-job:unreadable")
         || !corruptRetiredText.includes("owner-only state root")
         || corruptRetiredText.includes("_d0_i0")) {
-      throw new Error(`uninstall did not retain a privacy-bounded inconsistent retired managed-job generation: ${corruptRetiredUninstall.stderr || corruptRetiredUninstall.stdout}`);
+      throw new Error(`uninstall preflight did not retain a privacy-bounded inconsistent retired managed-job generation: ${corruptRetiredText}`);
     }
-    if (!(await existsForSelfTest(corruptRetiredPath))) throw new Error("uninstall removed an inconsistent retired managed-job generation");
+    if (!(await existsForSelfTest(corruptRetiredPath))) throw new Error("uninstall preflight removed an inconsistent retired managed-job generation");
     await rm(corruptRetiredPath, { recursive: true, force: true });
 
     const removed = spawnSync(process.execPath, [entry, "resource", "remove", "test-key", "--workspace", workspace, "--state-dir", stateRoot, "--json"], {

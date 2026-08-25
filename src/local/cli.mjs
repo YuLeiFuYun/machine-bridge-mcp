@@ -701,7 +701,7 @@ async function uninstallStateRoot({ stateRoot, deleteRemote }) {
   }
 }
 
-function assertNoActiveJobsForUninstall(stateRoot) {
+export function assertNoActiveJobsForUninstall(stateRoot) {
   for (const state of knownProfileStates(stateRoot)) {
     pruneRetiredManagedJobDirectories(join(state.paths.profileDir, "jobs"), { warn() {} });
   }

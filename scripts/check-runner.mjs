@@ -6,6 +6,9 @@ import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 const FAILURE_OUTPUT_BYTES_PER_STREAM = 64 * 1024;
 const MAX_VERIFICATION_CONCURRENCY = 16;
 const DIRECT_NODE_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/;
+const SPARSE_PROGRESS_TASKS = new Map([
+  ["self-test", ["local self-test phase started:", "local self-test phase completed:"]],
+]);
 
 export async function runVerificationPlan(options) {
   const {
@@ -85,7 +88,14 @@ async function executeTask({ index, tasks, npmCli, cwd, env, verbose, stdout, sp
   const invocation = taskInvocation(task, packageScripts, npmCli, cwd, env);
   const taskStartedAt = performance.now();
   stdout.write(`[${index + 1}/${tasks.length}] ${invocation.label}\n`);
-  const result = await runTask({ invocation, cwd, verbose, spawnProcess });
+  const result = await runTask({
+    invocation,
+    cwd,
+    verbose,
+    spawnProcess,
+    progressOutput: stdout,
+    progressPrefixes: SPARSE_PROGRESS_TASKS.get(task),
+  });
   const elapsedSeconds = ((performance.now() - taskStartedAt) / 1000).toFixed(1);
   if (result.error || result.code !== 0) return { index, task, elapsedSeconds, result };
   stdout.write(`[${index + 1}/${tasks.length}] completed ${task} in ${elapsedSeconds}s\n`);
@@ -105,10 +115,13 @@ function throwVerificationFailure(failure, stderr) {
   throw error;
 }
 
-function runTask({ invocation, cwd, verbose, spawnProcess }) {
+function runTask({ invocation, cwd, verbose, spawnProcess, progressOutput, progressPrefixes }) {
   return new Promise((resolvePromise) => {
     const stdout = verbose ? null : new BoundedOutput(FAILURE_OUTPUT_BYTES_PER_STREAM);
     const stderr = verbose ? null : new BoundedOutput(FAILURE_OUTPUT_BYTES_PER_STREAM);
+    const progress = !verbose && progressPrefixes?.length
+      ? sparseLineForwarder(progressOutput, progressPrefixes)
+      : null;
     let child;
     try {
       child = spawnProcess(invocation.executable, invocation.args, {
@@ -122,11 +135,34 @@ function runTask({ invocation, cwd, verbose, spawnProcess }) {
       resolvePromise({ code: 1, error, stdout, stderr });
       return;
     }
-    child.stdout?.on?.("data", (chunk) => stdout?.append(chunk));
+    child.stdout?.on?.("data", (chunk) => { stdout?.append(chunk); progress?.push(chunk); });
     child.stderr?.on?.("data", (chunk) => stderr?.append(chunk));
     child.once("error", (error) => resolvePromise({ code: 1, error, stdout, stderr }));
-    child.once("close", (code) => resolvePromise({ code: Number.isInteger(code) ? code : 1, stdout, stderr }));
+    child.once("close", (code) => {
+      progress?.flush();
+      resolvePromise({ code: Number.isInteger(code) ? code : 1, stdout, stderr });
+    });
   });
+}
+
+function sparseLineForwarder(output, prefixes) {
+  let pending = "";
+  const emit = (line) => {
+    if (prefixes.some((prefix) => line.startsWith(prefix))) output.write(`${line}\n`);
+  };
+  return {
+    push(chunk) {
+      pending += String(chunk);
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        emit(pending.slice(0, newline).replace(/\r$/, ""));
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf("\n");
+      }
+      if (pending.length > 4096) pending = pending.slice(-4096);
+    },
+    flush() { if (pending) emit(pending.replace(/\r$/, "")); pending = ""; },
+  };
 }
 
 function taskInvocation(task, packageScripts, npmCli, cwd, env) {
