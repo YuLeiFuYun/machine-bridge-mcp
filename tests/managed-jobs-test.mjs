@@ -1788,16 +1788,28 @@ try {
   const staleCancellation = manager.cancel({ job_id: staleReusedPid.job_id });
   assert(staleCancellation.status === "cancelled_before_start", "stale transition lock with a reused live PID was not reclaimed");
 
-  const trimmedLogJob = manager.stage({
+  const runnerDiagnosticRoot = join(root, "runner-diagnostic-jobs");
+  const runnerDiagnosticManager = new ManagedJobManager({
+    jobRoot: runnerDiagnosticRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true, unrestrictedPaths: true },
+    resources: {},
+    recover: false,
+  });
+  const trimmedLogJob = runnerDiagnosticManager.stage({
     name: "bounded runner diagnostics",
     steps: [{ argv: [process.execPath, "--version"] }],
   });
-  await setRunnerFixtureState(jobRoot, trimmedLogJob.job_id, true);
-  const trimmedLogPath = join(jobRoot, trimmedLogJob.job_id, "runner.out.log");
+  const trimmedLogInspection = runnerDiagnosticManager.inspectLocal({ job_id: trimmedLogJob.job_id });
+  assert(trimmedLogInspection.review_plan?.full_env === false
+    && !Object.hasOwn(trimmedLogInspection.review_plan?.steps?.[0]?.env || {}, "NODE_V8_COVERAGE"),
+  "bounded runner diagnostic fixture inherited a Node instrumentation environment and lost deterministic light admission");
+  await setRunnerFixtureState(runnerDiagnosticRoot, trimmedLogJob.job_id, true);
+  const trimmedLogPath = join(runnerDiagnosticRoot, trimmedLogJob.job_id, "runner.out.log");
   const trimTailMarker = "runner-diagnostic-tail-marker";
   await writeFile(trimmedLogPath, `${"old-line\n".repeat(20_000)}${trimTailMarker}\n`, { mode: 0o600 });
-  launchRunner(join(jobRoot, trimmedLogJob.job_id));
-  await waitForJob(manager, trimmedLogJob.job_id);
+  launchRunner(join(runnerDiagnosticRoot, trimmedLogJob.job_id));
+  await waitForJob(runnerDiagnosticManager, trimmedLogJob.job_id);
   const trimmedLog = await readFile(trimmedLogPath, "utf8");
   assert(Buffer.byteLength(trimmedLog) <= 64 * 1024, "runner diagnostic log remained above its launch bound");
   assert(trimmedLog.includes(trimTailMarker), "runner diagnostic trimming discarded the useful tail");

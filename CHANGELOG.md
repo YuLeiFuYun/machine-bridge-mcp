@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.127 - 2026-08-25
+
+- Fully isolate the managed-runner log-trimming fixture from shared coverage instrumentation as well as host pressure. Beta.126 Windows CI proved that changing its child argv to `node --version` was not sufficient: the suite-wide `isolateStepCoverage()` wrapper deliberately adds an empty `NODE_V8_COVERAGE` key to every managed-job step, while the production release-control classifier correctly treats the presence of Node instrumentation/preload environment keys as untrusted and therefore refuses the zero-resource light-command bypass. On a pressured hosted Windows runner that sent this unrelated log fixture back into normal resource admission for the test settlement window.
+- The fixture now uses a dedicated raw `ManagedJobManager`, independent job root, and `minimalEnv:true`, bypassing the suite's child-coverage wrapper only for this log-bounding probe. It explicitly asserts `full_env=false` and absence of `NODE_V8_COVERAGE` before launch, then still executes the exact current runtime `node --version`. Production environment hardening and fail-closed resource classification are unchanged; no unsafe environment is newly granted light admission.
+- Advance package/runtime identity to **3.0.0-beta.127**. Hosted schema generation remains **9**; the thirty-minute resource-admission ceiling, 600-second durable-process ceiling, six-hour managed-job step ceiling, and hosted read pacing remain unchanged.
+
 ## 3.0.0-beta.126 - 2026-08-25
 
 - Make the same-daemon dependency-wait runner recovery regression prove its intended property without contaminating the observation. Beta.125 Windows CI showed that the final assertion still called `manager.read(upstream)` after the downstream had already failed, even though that read itself performs reconciliation. The test already proves autonomous relaunch from persisted state by observing `recovery_attempts=1` and a new runner PID without a managed-job read. It now completes the proof through the independently running downstream job's structured `dependency_failure` witness, requiring that downstream observed the recovered upstream as `status=failed` with `error_class=dependency_failed`; no external upstream read participates in that proof.

@@ -287,8 +287,12 @@ if (uninstallStateRootIndex < 0 || uninstallPreflightIndex < uninstallStateRootI
     || uninstallAutostartIndex < 0 || uninstallPreflightIndex > uninstallAutostartIndex) {
   throw new Error("uninstall no longer proves managed-job state is safe before mutating machine autostart state");
 }
-if (!/name: "bounded runner diagnostics",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)) {
-  throw new Error("bounded managed-runner diagnostic fixture regained adaptive business work instead of a deterministic light probe");
+if (!managedJobsTestSource.includes('const runnerDiagnosticRoot = join(root, "runner-diagnostic-jobs")')
+    || !managedJobsTestSource.includes("const runnerDiagnosticManager = new ManagedJobManager({")
+    || !managedJobsTestSource.includes('policy: { allowWrite: true, execMode: "direct", minimalEnv: true, unrestrictedPaths: true }')
+    || !/runnerDiagnosticManager\.stage\(\{\s*name: "bounded runner diagnostics",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)
+    || !managedJobsTestSource.includes('!Object.hasOwn(trimmedLogInspection.review_plan?.steps?.[0]?.env || {}, "NODE_V8_COVERAGE")')) {
+  throw new Error("bounded managed-runner diagnostic fixture regained shared coverage or adaptive host scheduling instead of an isolated deterministic light probe");
 }
 if (managedJobsTestSource.includes("manager.read({ job_id: orphanUpstream.job_id })")
     || !managedJobsTestSource.includes("orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id")
