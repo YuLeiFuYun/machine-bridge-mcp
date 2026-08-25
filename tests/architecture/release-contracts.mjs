@@ -303,6 +303,7 @@ if (!managedJobsTestSource.includes("const isolateFullEnvStepCoverage = options?
 }
 if (!managedJobsTestSource.includes("runnerSpawnProcess: options.runnerSpawnProcess ?? spawnManagedJobTestRunner")
     || !managedJobsTestSource.includes('["--import", runnerResourceHook, ...args]')
+    || !managedJobsTestSource.includes('const runnerResourceHook = new URL("./fixtures/managed-job-resource-hook.mjs", import.meta.url).href;')
     || !managedJobResourceHookSource.includes('specifier === "./resource-admission.mjs" && context.parentURL === runnerUrl')
     || !managedJobResourceFixtureSource.includes("extends ProductionResourceCoordinator")
     || !managedJobResourceFixtureSource.includes("sampleHost: healthyResourceHost")) {

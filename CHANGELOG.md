@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.134 - 2026-08-25
+
+- Correct the beta.131 managed-job test runner hook for Windows without changing production execution. PR #95 showed the test-only `node --import` argument was passed as a native absolute path; Node accepts that form on POSIX but the Windows ESM loader interprets a drive-letter path such as `D:\\...` as an unsupported `d:` URL scheme. The fixture now passes the hook as its canonical `file://` URL, preserving the exact-parent/exact-specifier interception boundary on every supported platform.
+- Keep beta.133 production continuity behavior unchanged: planned daemon drain, same-`job_id` read recovery, privacy-bounded Durable Object continuity evidence, managed-job retention/listing policy, resource admission, hosted read pacing, and the six-hour managed-job step ceiling are unchanged. Hosted tool schema generation remains **11**.
+- Advance package/runtime identity to **3.0.0-beta.134** because the candidate/test tree changed after beta.133 acceptance.
+
 ## 3.0.0-beta.133 - 2026-08-25
 
 - Persist a privacy-bounded Worker continuity summary in Durable Object storage so post-incident diagnosis survives Worker isolate replacement. The owner/full `server_info` projection now retains only fixed-category counters/timestamps for planned drains, planned-drain affected-call count, socket disconnects with planned/unplanned classification and bounded close metadata, plus the latest request-abort and stream-cancel-control observations. It stores no account/client identity, call IDs, tool names, arguments, results, network endpoints, or close reasons.
