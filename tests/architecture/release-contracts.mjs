@@ -271,6 +271,7 @@ for (const required of ["self-test", "service-platform:test", "full-access:test"
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
+const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs");
 for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
   if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
 }
@@ -285,6 +286,9 @@ const uninstallAutostartIndex = cliSource.indexOf("const autostartRemoved = awai
 if (uninstallStateRootIndex < 0 || uninstallPreflightIndex < uninstallStateRootIndex
     || uninstallAutostartIndex < 0 || uninstallPreflightIndex > uninstallAutostartIndex) {
   throw new Error("uninstall no longer proves managed-job state is safe before mutating machine autostart state");
+}
+if (!/name: "bounded runner diagnostics",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)) {
+  throw new Error("bounded managed-runner diagnostic fixture regained adaptive business work instead of a deterministic light probe");
 }
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);

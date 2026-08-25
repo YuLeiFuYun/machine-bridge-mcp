@@ -1791,7 +1791,7 @@ try {
 
   const trimmedLogJob = manager.stage({
     name: "bounded runner diagnostics",
-    steps: [{ argv: [process.execPath, "-e", ""] }],
+    steps: [{ argv: [process.execPath, "--version"] }],
   });
   await setRunnerFixtureState(jobRoot, trimmedLogJob.job_id, true);
   const trimmedLogPath = join(jobRoot, trimmedLogJob.job_id, "runner.out.log");
