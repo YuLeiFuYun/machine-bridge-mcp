@@ -6,6 +6,8 @@ import { readBoundedFile } from "./workspace-file-service.mjs";
 import { systemNetworkRouteCheck } from "./system-network-route.mjs";
 import { diagnosticControlPlaneState } from "./runtime-diagnostic-state.mjs";
 import { resourceAdmissionDiagnostic } from "./resource-admission-diagnostics.mjs";
+import { diagnosticActivityProjection, diagnosticInterpretation } from "./runtime-diagnostic-projection.mjs";
+import { correlateEventLoopStallWithSystemSleep, systemSleepDiagnostic } from "./system-sleep-diagnostics.mjs";
 export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
 export async function diagnoseRuntime({
   policy,
@@ -88,9 +90,15 @@ export async function diagnoseRuntime({
     checks.push({ layer: "local-shell", ok: false, skipped: true, error_class: "policy_denied" });
   }
   const admissionDiagnostic = await resourceAdmissionDiagnostic(resourceCoordinatorSnapshot, classifyOperationalError);
-  const resourceAdmission = admissionDiagnostic.snapshot;
   if (admissionDiagnostic.check) checks.push(admissionDiagnostic.check);
-  checks.push({ layer: "managed-job-storage", ...managedJobManager.diagnoseStorage() });
+  const sleepDiagnostic = policy.execMode === "shell"
+    ? await systemSleepDiagnostic({ runFixedInternal, context, workspace })
+    : { snapshot: { supported: process.platform === "darwin", available: false, source: null, recent_sleep_intervals: [] }, check: { layer: "system-sleep-history", ok: false, skipped: true, error_class: "policy_denied" } };
+  checks.push(sleepDiagnostic.check, { layer: "managed-job-storage", ...managedJobManager.diagnoseStorage() });
+  const managedJobs = typeof managedJobManager.status === "function" ? managedJobManager.status(context) : null;
+  const activity = diagnosticActivityProjection(controlPlaneState, admissionDiagnostic.snapshot, managedJobs, context);
+  activity.state.systemSleep = sleepDiagnostic.snapshot;
+  activity.state.eventLoopPauseAnalysis = correlateEventLoopStallWithSystemSleep(relay, sleepDiagnostic.snapshot);
   const resources = managedJobManager.listResources();
   checks.push({
     layer: "local-resource-registry",
@@ -102,17 +110,9 @@ export async function diagnoseRuntime({
   });
   return {
     request_reached_local_runtime: true,
-    interpretation: {
-      current_request_delivery: "confirmed: this diagnose_runtime request reached the local runtime; this evidence does not support a blanket current platform disable of Machine Bridge",
-      tool_call_blocked_before_response: "not observable by Machine Bridge; possible causes include conversation/surface app routing state, a stale host action/tool snapshot, host tool filtering, connector gateway, client routing, or platform policy; do not attribute one without host-side evidence",
-      diagnostic_reached_daemon_but_spawn_failed: "the fixed local spawn/shell probes bypass cooperative resource admission, so a true probe failure points to the local OS, endpoint security, shell configuration, or Machine Bridge policy; a child exit code or bounded stdout/stderr instead proves spawn succeeded and the nested command or remote target decided the failure",
-      system_network_stack_scope: "application proxy selection only; an operating-system VPN or TUN may still intercept the relay connection", tunnel_default_route_detected: "the operating-system route is carried by a VPN/TUN; node selection and repair remain outside Machine Bridge",
-      managed_job_accepted_then_later_tools_blocked: "job continues independently; inspect with local CLI or a later read_job call", relay_result_recovery_occupied: "runtime.relay_result_recovery.retained_results counts completed in-memory results still awaiting Worker acknowledgement; they consume bounded relay recovery ownership capacity but expose no result content or call identity",
-      relay_automatic_redelivery_safety: "runtime.relay_result_recovery.automatic_redelivery_safe=false means at least one resumed call has lost completed-result ownership proof or bounded replay-safety evidence has escalated to global fail-closed mode; inspect unsafe_call_tombstones and global_redelivery_disabled. Per-call tombstones block transparent replay only for affected IDs, while global_redelivery_disabled=true blocks all missing-id automatic redelivery rather than risking duplicate side effects",
-      resource_admission_snapshot_busy: "snapshot_available=false with reason=coordinator_busy means the bounded diagnostic could not acquire a live coordinator transaction/staging lock; retry later and do not infer corruption or a Green pressure state from that unavailable snapshot",
-    },
+    interpretation: diagnosticInterpretation(),
     policy,
-    ...diagnosticControlPlaneState({ ...controlPlaneState, resourceAdmission }, relay),
+    ...diagnosticControlPlaneState(activity.state, relay),
     checks,
     ok: checks.filter((check) => !check.skipped).every((check) => check.ok),
   };

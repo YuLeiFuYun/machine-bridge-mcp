@@ -20,7 +20,8 @@ import { cachedResourceProcessParentSamplerAsync, cachedResourceProcessSnapshotS
 import { sampleResourceProcessParentsAsync } from "./resource-process-ancestry.mjs";
 import { resourceLeaseIsStale, resourceLeaseOwnerStatusFromStart, resourceProcessGroupAlive } from "./resource-lease-liveness.mjs";
 import { resourceProjectHash, resourceRequestForProject } from "./resource-project-key.mjs";
-import { createResourceWaiter, pruneAndReadResourceWaiters, removeResourceWaiter, resourceWaiterDrainActive, resourceWaiterQueueSnapshot, selectedResourceWaiter } from "./resource-waiters.mjs";
+import { createResourceWaiter, pruneAndReadResourceWaiters, removeResourceWaiter, selectedResourceWaiter } from "./resource-waiters.mjs";
+import { resourceWaiterDiagnosticSnapshot } from "./resource-waiter-diagnostics.mjs";
 const SCHEMA = 1; const PROVISIONAL_TTL_MS = 30_000; const PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000; const LEASE_FILE = /^lease_[a-f0-9]{32}\.json$/;
 export class ResourceAdmissionError extends Error {
   constructor(decision) {
@@ -137,7 +138,7 @@ export class ResourceCoordinator {
         pressure: resourcePressureSnapshot(enrichedHost, leases, options.priority || "ordinary", now, accounting.accounting),
         active_leases: leases.length,
         resources: accounting.resources,
-        waiters: { ...resourceWaiterQueueSnapshot(waiters, now), drain_active: resourceWaiterDrainActive(waiters, leases, enrichedHost, evaluate, now) },
+        waiters: resourceWaiterDiagnosticSnapshot(waiters, leases, enrichedHost, evaluate, now),
       };
     });
   }

@@ -7,6 +7,7 @@ export class RelayHeartbeatStall {
     this.maxLagMs = 0;
     this.count = 0;
     this.lastWallAt = 0;
+    this.lastStallLagMs = 0;
     this.lastWarnAt = 0;
   }
 
@@ -18,6 +19,7 @@ export class RelayHeartbeatStall {
   observe(now, lagMs, recoveryGraceMs, relayDisconnectDeferred = true) {
     this.count += 1;
     this.lastWallAt = this.wallNow();
+    this.lastStallLagMs = lagMs;
     if (this.lastWarnAt && now - this.lastWarnAt < this.timeoutMs) return;
     this.lastWarnAt = now;
     this.logger.warn?.(
@@ -39,6 +41,7 @@ export class RelayHeartbeatStall {
       max_event_loop_lag_ms: this.maxLagMs,
       event_loop_stall_count: this.count,
       last_event_loop_stall_at: this.lastWallAt > 0 ? new Date(this.lastWallAt).toISOString() : null,
+      last_event_loop_stall_lag_ms: this.lastStallLagMs,
     };
   }
 }

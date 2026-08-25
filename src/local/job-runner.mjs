@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { executionEnv } from "./shell.mjs";
 import { attachChildProcessSettlement, childExitedBeforeTimeout } from "./child-process-settlement.mjs";
@@ -11,6 +11,16 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, processState } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { managedJobCancellationRequested } from "./managed-job-cancellation.mjs";
+import {
+  clearManagedJobActiveChild, managedJobActiveChildFile, managedJobActiveChildRecoveryReady,
+  publishManagedJobActiveChild, terminateManagedJobActiveChild,
+} from "./managed-job-active-child.mjs";
+import { assertManagedJobPlanIntegrity } from "./managed-job-plan-integrity.mjs";
+import { createManagedJobResourceContext } from "./managed-job-resource-context.mjs";
+import { managedJobResourcePathVariants, redactManagedJobOutput } from "./managed-job-output-redaction.mjs";
+import {
+  dependencyFailureDetails, ManagedJobDependencyError, managedJobRunnerDependencyState, waitForManagedJobDependencyGate,
+} from "./managed-job-dependencies.mjs";
 import { MacosIdleSleepAssertion } from "./macos-idle-sleep-assertion.mjs";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
@@ -52,6 +62,7 @@ const runtimeDir = join(jobDir, "runtime");
 const resourcesDir = join(runtimeDir, "resources");
 const temporaryFilesDir = join(runtimeDir, "files");
 const runnerPidFile = join(jobDir, "runner.pid");
+const activeChildFile = managedJobActiveChildFile(jobDir);
 const RUNNER_PROCESS_STARTED_AT = new Date(currentProcessStartTimeMs()).toISOString();
 const resourceCoordinator = new ResourceCoordinator();
 
@@ -83,10 +94,15 @@ try {
     jobIdleSleepAssertion = new MacosIdleSleepAssertion({ logger: managedJobIdleSleepLogger() });
     jobIdleSleepAssertion.acquire();
   }
-  if (recover) await releaseRecoveryClaim();
+  if (recover) {
+    await terminateManagedJobActiveChild(activeChildFile);
+    await releaseRecoveryClaim();
+  } else if (!managedJobActiveChildRecoveryReady(activeChildFile)) {
+    throw new Error("managed job cannot start while prior active child ownership remains unsettled");
+  }
   runnerClaimConfirmed = true;
   const plan = readJson(planFile, 1024 * 1024);
-  assertPlanIntegrity(plan, initial);
+  assertManagedJobPlanIntegrity(plan, initial);
   await main(plan, initial);
 } catch (error) {
   recordFatalRunnerError(error);
@@ -108,15 +124,18 @@ async function releaseRecoveryClaim() {
 }
 
 async function main(plan, initial) {
+  const dependency = managedJobRunnerDependencyState(plan, initial, recover);
   const status = {
     ...initial,
     runner_pid: process.pid,
     runner_process_started_at: RUNNER_PROCESS_STARTED_AT,
     started_at: initial.started_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
-    status: recover ? "cleaning" : "running",
-    current_phase: recover ? "recovery-cleanup" : "steps",
+    status: dependency.status,
+    current_phase: dependency.currentPhase,
     current_step: null,
+    dependency_total: dependency.total,
+    dependency_pending_count: dependency.pending,
     cleanup_guarantee: "best-effort-finally-and-recovery",
   };
   writeJson(statusFile, status, MAX_STATUS_BYTES);
@@ -126,16 +145,29 @@ async function main(plan, initial) {
   const captureBudget = { remaining: MAX_JOB_CAPTURE_BYTES };
   let mainError = null;
   let cleanupError = null;
-  let resourceContext = { paths: {}, bytes: {}, redactions: {}, temporaryPaths: {} };
+  const resourceContext = createManagedJobResourceContext(() => {
+    const value = materializeResources(plan.resources || {});
+    value.temporaryPaths = materializeTemporaryFiles(plan.temporary_files || []);
+    return value;
+  });
 
   try {
-    resourceContext = materializeResources(plan.resources || {});
-    resourceContext.temporaryPaths = materializeTemporaryFiles(plan.temporary_files || []);
-    if (!recover) {
+    if (recover) {
+      resourceContext.ensure();
+    } else {
+      await waitForManagedJobDependencyGate({
+        jobRoot: dirname(jobDir),
+        dependencyIds: dependency.dependencyIds,
+        witnesses: Array.isArray(initial.dependency_witnesses) ? initial.dependency_witnesses : [],
+        waiting: dependency.waiting,
+        throwIfCancelled: () => { if (isCancellationRequested()) throw new JobCancelledError(); },
+        updateStatus: (changes) => updateStatus(status, changes),
+      });
+      resourceContext.ensure();
       for (let index = 0; index < plan.steps.length; index += 1) {
         if (isCancellationRequested()) throw new JobCancelledError();
         updateStatus(status, { status: "running", current_phase: "steps", current_step: index });
-        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext, true, captureBudget, status);
+        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext.value, true, captureBudget, status);
         mainResults.push(result);
         if (result.timed_out && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} timed out`);
         if (result.code !== 0 && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} exited ${result.code}`);
@@ -146,9 +178,10 @@ async function main(plan, initial) {
   } finally {
     updateStatus(status, { status: "cleaning", current_phase: recover ? "recovery-cleanup" : "finally_steps", current_step: null });
     try {
+      if (plan.finally_steps.length > 0 && !resourceContext.attempted) resourceContext.ensure();
       for (let index = 0; index < plan.finally_steps.length; index += 1) {
         updateStatus(status, { status: "cleaning", current_phase: recover ? "recovery-cleanup" : "finally_steps", current_step: index });
-        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext, false, captureBudget, status);
+        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext.value, false, captureBudget, status);
         cleanupResults.push(result);
         if (result.timed_out && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} timed out`);
         if (result.code !== 0 && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} exited ${result.code}`);
@@ -183,6 +216,7 @@ async function main(plan, initial) {
     finally_steps: cleanupResults,
     error_class: classifyError(mainError),
     cleanup_error_class: classifyError(cleanupError),
+    ...(dependencyFailureDetails(mainError) ? { dependency_failure: dependencyFailureDetails(mainError) } : {}),
     capture_limit_bytes: MAX_JOB_CAPTURE_BYTES,
     capture_remaining_bytes: captureBudget.remaining,
     finished_at: new Date().toISOString(),
@@ -204,13 +238,6 @@ function assertLaunchState(status) {
   const expected = recover ? "interrupted" : "queued";
   if (status.status !== expected) throw new Error(`runner cannot start job in status: ${status.status}`);
   if (status.approval !== "mcp") throw new Error("runner cannot start a managed job without direct execution authority");
-}
-
-function assertPlanIntegrity(plan, status) {
-  if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("job plan is unavailable or invalid");
-  const expected = String(status?.plan_sha256 || "");
-  const actual = createHash("sha256").update(JSON.stringify(plan)).digest("hex");
-  if (!/^[a-f0-9]{64}$/.test(expected) || actual !== expected) throw new Error("managed job plan integrity check failed");
 }
 
 function recordFatalRunnerError(error) {
@@ -346,8 +373,8 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     timed_out: raw.timedOut,
     duration_ms: performance.now() - started,
     resource_admission_ms: raw.resourceAdmissionMs,
-    stdout: step.capture_output === "discard" ? "" : redactOutput(raw.stdout, resourceContext),
-    stderr: step.capture_output === "discard" ? "" : redactOutput(raw.stderr, resourceContext),
+    stdout: step.capture_output === "discard" ? "" : redactManagedJobOutput(raw.stdout, resourceContext, runtimeDir),
+    stderr: step.capture_output === "discard" ? "" : redactManagedJobOutput(raw.stderr, resourceContext, runtimeDir),
     output_discarded: step.capture_output === "discard",
     stdout_truncated_bytes: step.capture_output === "discard" ? 0 : raw.stdoutTruncated,
     stderr_truncated_bytes: step.capture_output === "discard" ? 0 : raw.stderrTruncated,
@@ -422,7 +449,13 @@ async function spawnStep(argv, {
       return terminationSettlement;
     };
     activeChildTermination = terminateAndSettle;
-    let resourceBindError = null; let childError = null;
+    let resourceBindError = null; let childError = null; let activeChildClaim = null;
+    try {
+      activeChildClaim = publishManagedJobActiveChild(activeChildFile, child);
+    } catch (error) {
+      childError = error;
+      void terminateAndSettle();
+    }
     const resourceBinding = bindProcessResources(admitted.lease, child).catch((error) => {
       resourceBindError = error;
       void terminateAndSettle();
@@ -490,6 +523,7 @@ async function spawnStep(argv, {
       void resourceBinding
         .then(() => terminationSettlement || undefined)
         .then(() => releaseProcessResources(admitted.lease))
+        .then(() => { if (activeChildClaim) clearManagedJobActiveChild(activeChildFile, activeChildClaim); })
         .then(callback, rejectPromise);
     }
   });
@@ -511,8 +545,8 @@ function materializeResources(resources) {
     writeFileSync(target, data, { mode: 0o600, flag: "wx" });
     paths[name] = target;
     sourcePaths[name] = [...new Set([
-      ...resourcePathVariants(resource.path),
-      ...(Array.isArray(resource.pathAliases) ? resource.pathAliases.flatMap(resourcePathVariants) : []),
+      ...managedJobResourcePathVariants(resource.path),
+      ...(Array.isArray(resource.pathAliases) ? resource.pathAliases.flatMap(managedJobResourcePathVariants) : []),
     ])].sort((left, right) => right.length - left.length);
     bytes[name] = data;
     const patterns = [];
@@ -577,52 +611,6 @@ function substitute(value, plan, context) {
     });
 }
 
-function resourcePathVariants(value) {
-  const canonical = resolve(value);
-  const variants = new Set(pathTextVariants(canonical));
-  if (process.platform === "darwin" && canonical.startsWith("/private/")) {
-    for (const variant of pathTextVariants(canonical.slice("/private".length))) variants.add(variant);
-  }
-  return [...variants].sort((left, right) => right.length - left.length);
-}
-
-function pathTextVariants(value) {
-  const path = String(value);
-  return [...new Set([path, path.replaceAll("\\", "/"), path.replaceAll("/", "\\")])];
-}
-
-function replacePathText(text, value, replacement) {
-  let output = text;
-  for (const variant of pathTextVariants(value)) {
-    if (!variant) continue;
-    if (process.platform === "win32") output = output.replace(new RegExp(escapeRegExp(variant), "gi"), replacement);
-    else output = output.split(variant).join(replacement);
-  }
-  return output;
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function redactOutput(buffer, context) {
-  let text = new TextDecoder("utf-8").decode(buffer);
-  for (const [name, path] of Object.entries(context.paths)) {
-    text = replacePathText(text, path, `<resource:${name}>`);
-  }
-  for (const [name, paths] of Object.entries(context.sourcePaths || {})) {
-    for (const path of paths) text = replacePathText(text, path, `<resource-source:${name}>`);
-  }
-  for (const [name, path] of Object.entries(context.temporaryPaths)) {
-    text = replacePathText(text, path, `<temp:${name}>`);
-  }
-  text = replacePathText(text, runtimeDir, "<job-runtime>");
-  for (const [name, patterns] of Object.entries(context.redactions)) {
-    for (const value of patterns) text = text.split(value).join(`<redacted-resource:${name}>`);
-  }
-  return text;
-}
-
 function updateStatus(status, changes) {
   Object.assign(status, changes, { runner_pid: process.pid, runner_process_started_at: RUNNER_PROCESS_STARTED_AT, updated_at: new Date().toISOString() });
   writeJson(statusFile, status, MAX_STATUS_BYTES);
@@ -672,6 +660,7 @@ function readBoundedFile(file, maxBytes) {
 function classifyError(error) {
   if (!error) return null;
   if (error instanceof JobCancelledError) return "cancelled";
+  if (error instanceof ManagedJobDependencyError) return error.errorClass;
   const message = String(error?.message || error);
   if (/timed out/i.test(message)) return "timeout";
   if (/permission|EACCES|EPERM/i.test(message)) return "permission_denied";

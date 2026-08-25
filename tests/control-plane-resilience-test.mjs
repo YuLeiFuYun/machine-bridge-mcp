@@ -122,6 +122,26 @@ async function testAuditStorageBoundaries() {
       && event.input_bytes === 0 && event.output_bytes === Number.MAX_SAFE_INTEGER,
     "audit event private reference or numeric projection is invalid");
 
+    const activitySnapshot = await recordAuditBatch(root, [
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 10), input: { outcome: "completed", tool: "exec_command" } },
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 20), input: { outcome: "completed", tool: "read_job" } },
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 30), input: { outcome: "failed", tool: "start_job", errorCode: "synthetic" } },
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 40), input: { outcome: "completed", tool: "run_process" } },
+    ]);
+    const activity = activitySnapshot.recent_activity;
+    assert(activity.coverage === "daemon_reached_relay_tool_calls_only"
+      && activity.host_side_events_observable === false
+      && activity.window_end_at === "2026-07-31T08:00:40.000Z"
+      && activity.calls_last_1m === 5
+      && activity.process_helper_calls_last_15m === 2
+      && activity.read_job_calls_last_15m === 1
+      && activity.start_job_calls_last_15m === 1
+      && activity.peak_calls_per_minute_last_15m === 5
+      && activity.top_tools_last_15m.some((item) => item.tool === "read_job" && item.count === 1),
+    "security audit snapshot did not expose bounded content-free recent tool activity");
+    assert(!JSON.stringify(activity).includes(rawAccount) && !JSON.stringify(activity).includes("fixture.txt"),
+      "security audit activity aggregate leaked private principal or tool argument content");
+
     const file = path.join(root, "security-audit.json");
     writeFileSync(file, "{not-json\n", { mode: 0o600 });
     expectThrow(() => readVerifiedAuditState(root), "not valid JSON");

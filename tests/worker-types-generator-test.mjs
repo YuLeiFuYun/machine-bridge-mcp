@@ -90,7 +90,7 @@ else {
     /wrangler deploy --dry-run timed out after 80ms/,
   );
 } finally {
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }
 
 console.log("Wrangler command lifecycle test ok");

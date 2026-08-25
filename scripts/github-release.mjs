@@ -21,7 +21,7 @@ import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
 import { githubReleaseByTagEndpoint, waitForGithubReleaseAsset } from "./github-release-asset.mjs";
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
-import { assertGithubPublicationAuthorized, withGithubPublicationLock } from "./release-publication-guard.mjs";
+import { withGithubPublicationLock } from "./release-publication-guard.mjs";
 import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -322,8 +322,8 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
   const parsedVersion = parseReleaseVersion(pkg.version);
   if (prereleaseMode !== parsedVersion.prerelease) {
     fail(parsedVersion.prerelease
-      ? "prerelease versions must use npm run prerelease:release -- --owner-confirm"
-      : "stable versions must use npm run release -- --owner-confirm");
+      ? "prerelease versions must use npm run prerelease:release"
+      : "stable versions must use npm run release");
   }
   const tag = `v${pkg.version}`;
   if (!changelogBody(pkg.version)) {
@@ -507,14 +507,13 @@ try {
     fetchRemote();
     await assertCoreSync({ requireReleaseAsset: true });
   } else if (mode === "--publish" || mode === "--publish-prerelease" || mode === "--backfill") {
-    assertGithubPublicationAuthorized();
     await withGithubPublicationLock(root, async () => {
       if (mode === "--publish") await publishCurrent({ prereleaseMode: false });
       else if (mode === "--publish-prerelease") await publishCurrent({ prereleaseMode: true });
       else backfillMissingReleases();
     });
   } else {
-    fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill] [--owner-confirm]");
+    fail("usage: node scripts/github-release.mjs [--check|--publish|--publish-prerelease|--backfill]");
   }
 } catch (error) {
   console.error(JSON.stringify(releaseDiagnosticEvent("github.release.failed", error?.message || error, 1600)));

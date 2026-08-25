@@ -306,6 +306,7 @@ export class LocalRuntime {
     try {
       this.relay?.stop();
       this.relayCallRecovery.stop();
+      this.managedJobManager.stopRunnerExitRecovery();
       await this.callRegistry.cancelAllAndWait("runtime stopped");
       await this.processTracker.drain("SIGKILL");
       await this.processSessionManager.clearAndWait();

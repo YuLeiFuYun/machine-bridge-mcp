@@ -15,6 +15,17 @@ import { isTransientNetworkFailure } from "./network-retry.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const NPM_PUBLICATION_CONFIRMATION_FLAG = "--owner-confirm";
+
+export function assertNpmPublicationAuthorized(options = {}) {
+  const argv = Array.isArray(options.argv) ? options.argv.map(String) : process.argv.slice(2);
+  if (!argv.includes(NPM_PUBLICATION_CONFIRMATION_FLAG)) {
+    throw new Error(`npm publication requires explicit owner authorization represented by ${NPM_PUBLICATION_CONFIRMATION_FLAG}`);
+  }
+  return Object.freeze({ confirmation_flag: NPM_PUBLICATION_CONFIRMATION_FLAG });
+}
+
+export const npmPublicationConfirmationFlag = NPM_PUBLICATION_CONFIRMATION_FLAG;
 
 export function npmPublishArguments(version, mode) {
   const parsed = parseReleaseVersion(version);
@@ -245,6 +256,7 @@ function boundedCleanupWarning(error) {
 
 async function main() {
   const mode = process.argv[2] || "";
+  assertNpmPublicationAuthorized();
   const result = await publishCurrentNpmPackage(root, mode);
   if (result.recoveryWarning) console.warn(result.recoveryWarning);
   if (result.cleanupWarning) console.warn(`npm publication succeeded but temporary hardened npm cleanup was incomplete: ${result.cleanupWarning}`);

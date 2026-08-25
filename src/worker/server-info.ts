@@ -1,4 +1,4 @@
-import { remoteToolDeliveryContract } from "./server-info-tool-delivery.ts";
+import { compactRemoteToolDeliveryContract, remoteToolDeliveryContract } from "./server-info-tool-delivery.ts";
 import type { DaemonRegistry } from "./daemon-registry.ts";
 import { readyDaemonChannels } from "./daemon-channel.ts";
 import type { WorkerObservability } from "./observability.ts";
@@ -85,7 +85,7 @@ function buildServerInfoSummary(
       effective_account_tool_count: input.effectiveTools.length,
       host_exposed_tools_known_to_server: false,
       host_may_expose_subset: true,
-      ...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription),
+      ...compactRemoteToolDeliveryContract(input.serverVersion, input.toolListSubscription),
     },
   };
 }

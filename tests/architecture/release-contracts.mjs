@@ -161,6 +161,20 @@ if (!managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 6
     || !managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS,")) {
   throw new Error("managed-job plan lost the six-hour single-step timeout needed for 100+ minute durable work");
 }
+if (!managedJobPlanSource.includes('import { MANAGED_JOB_ID } from "./managed-job-directory.mjs"')
+    || managedJobPlanSource.includes("const MANAGED_JOB_ID =")) {
+  throw new Error("managed-job plan duplicated the canonical managed-job ID contract instead of importing it");
+}
+const managedJobPlanIntegritySource = readFileSync(join(root, "src", "local", "managed-job-plan-integrity.mjs"), "utf8");
+for (const required of ["managedJobPlanSha256", "assertManagedJobPlanIntegrity"]) {
+  if (!managedJobPlanIntegritySource.includes(required)) throw new Error(`managed-job plan integrity boundary lost ${required}`);
+}
+for (const relative of ["managed-jobs.mjs", "managed-job-relaunch.mjs", "job-runner.mjs", "managed-job-dependency-retention.mjs"]) {
+  const source = readFileSync(join(root, "src", "local", relative), "utf8");
+  if (!source.includes("assertManagedJobPlanIntegrity")) {
+    throw new Error(`${relative} bypasses the canonical managed-job plan integrity boundary`);
+  }
+}
 const sharedToolCatalogSource = readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8");
 if ((sharedToolCatalogSource.match(/\"maximum\": 21600/g) || []).length !== 4) {
   throw new Error("stage_job/start_job schemas no longer expose the six-hour step/finally timeout ceiling");
@@ -168,6 +182,11 @@ if ((sharedToolCatalogSource.match(/\"maximum\": 21600/g) || []).length !== 4) {
 if (!sharedToolCatalogSource.includes("A package script name is not implicitly registered")
     || sharedToolCatalogSource.includes("registered command or package script")) {
   throw new Error("run_local_command again implies that arbitrary package scripts are implicit registered commands");
+}
+if ((sharedToolCatalogSource.match(/multi-step start_job/g) || []).length < 3
+    || !sharedToolCatalogSource.includes("nonterminal progress is coalesced for at least thirty seconds by default")
+    || !sharedToolCatalogSource.includes("current_step-only churn does not wake a host call by itself")) {
+  throw new Error("hosted tool guidance lost multi-command batching or nonterminal progress anti-amplification semantics");
 }
 if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
     || !workerTypesGeneratorSource.includes("Wrangler types target must remain inside its working directory")
@@ -252,8 +271,39 @@ for (const required of ["self-test", "service-platform:test", "full-access:test"
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
+const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs");
+const workerTypesGeneratorTestSource = readLfSource("tests", "worker-types-generator-test.mjs");
 for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
   if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
+}
+if (!cliSource.includes("export function assertNoActiveJobsForUninstall(stateRoot)")
+    || !localSelfTestSource.includes("assertNoActiveJobsForUninstall(stateRoot)")
+    || localSelfTestSource.includes('[entry, "uninstall", "--state-dir", stateRoot')) {
+  throw new Error("local self-test regained a machine-level uninstall side effect instead of testing the uninstall managed-state preflight directly");
+}
+const uninstallStateRootIndex = cliSource.indexOf("async function uninstallStateRoot({ stateRoot, deleteRemote })");
+const uninstallPreflightIndex = cliSource.indexOf("assertNoActiveJobsForUninstall(stateRoot);", uninstallStateRootIndex);
+const uninstallAutostartIndex = cliSource.indexOf("const autostartRemoved = await removeAutostartBestEffort(stateRoot);", uninstallStateRootIndex);
+if (uninstallStateRootIndex < 0 || uninstallPreflightIndex < uninstallStateRootIndex
+    || uninstallAutostartIndex < 0 || uninstallPreflightIndex > uninstallAutostartIndex) {
+  throw new Error("uninstall no longer proves managed-job state is safe before mutating machine autostart state");
+}
+if (!managedJobsTestSource.includes('const runnerDiagnosticRoot = join(root, "runner-diagnostic-jobs")')
+    || !managedJobsTestSource.includes("const runnerDiagnosticManager = new ManagedJobManager({")
+    || !managedJobsTestSource.includes('policy: { allowWrite: true, execMode: "direct", minimalEnv: true, unrestrictedPaths: true }')
+    || !/runnerDiagnosticManager\.stage\(\{\s*name: "bounded runner diagnostics",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)
+    || !managedJobsTestSource.includes('!Object.hasOwn(trimmedLogInspection.review_plan?.steps?.[0]?.env || {}, "NODE_V8_COVERAGE")')) {
+  throw new Error("bounded managed-runner diagnostic fixture regained shared coverage or adaptive host scheduling instead of an isolated deterministic light probe");
+}
+if (managedJobsTestSource.includes("manager.read({ job_id: orphanUpstream.job_id })")
+    || !managedJobsTestSource.includes("orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id")
+    || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_status === "failed"')
+    || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_error_class === "dependency_failed"')) {
+  throw new Error("same-daemon dependency recovery fixture no longer proves autonomous upstream recovery through the downstream dependency witness");
+}
+if (!workerTypesGeneratorTestSource.includes("maxRetries: 5")
+    || !workerTypesGeneratorTestSource.includes("retryDelay: 50")) {
+  throw new Error("Wrangler lifecycle fixture cleanup lost bounded retries for transient Windows filesystem locks");
 }
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
@@ -469,6 +519,10 @@ const runtimeSelfTestSource = readFileSync(join(root, "tests", "runtime-self-tes
 if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
     || !runtimeSelfTestSource.includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
     || runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000")
+    || !localSelfTestSource.includes("const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 5 * 60_000")
+    || !localSelfTestSource.includes("waitForSelfTestJob(manager, jobId, deadline, label)")
+    || !localSelfTestSource.includes('[process.execPath, "--version"]')
+    || localSelfTestSource.includes("CLI_FIXTURE_WAIT_ATTEMPTS")
     || !localSelfTestSource.includes("function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS)")
     || !localSelfTestSource.includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
     || !localSelfTestSource.includes("local self-test phase started:")
@@ -479,6 +533,9 @@ if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAcces
   throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
 }
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
+for (const required of ["SPARSE_PROGRESS_TASKS", "local self-test phase started:", "local self-test phase completed:", "sparseLineForwarder"]) {
+  if (!checkRunnerSource.includes(required)) throw new Error(`check runner lost sparse self-test phase observability: ${required}`);
+}
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
 const macosIdleSleepAssertionSource = readFileSync(join(root, "src", "local", "macos-idle-sleep-assertion.mjs"), "utf8");
@@ -486,6 +543,9 @@ const remoteActivityIdleSleepGuardSource = readFileSync(join(root, "src", "local
 const processSessionRemoteActivitySource = readFileSync(join(root, "src", "local", "process-session-remote-activity.mjs"), "utf8");
 const processSessionsSource = readFileSync(join(root, "src", "local", "process-sessions.mjs"), "utf8");
 const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const managedJobActiveChildSource = readFileSync(join(root, "src", "local", "managed-job-active-child.mjs"), "utf8");
+const managedJobRunnerExitRecoverySource = readFileSync(join(root, "src", "local", "managed-job-runner-exit-recovery.mjs"), "utf8");
+const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
 const toolExecutorSource = readFileSync(join(root, "src", "local", "tool-executor.mjs"), "utf8");
 const runtimeDiagnosticStateSource = readFileSync(join(root, "src", "local", "runtime-diagnostic-state.mjs"), "utf8");
@@ -634,8 +694,9 @@ if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-r
 if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
 const githubReleaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
 const githubPublicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
-for (const required of ["assertGithubPublicationAuthorized", "withGithubPublicationLock", "--owner-confirm"]) {
-  if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost explicit-authorization boundary: ${required}`);
+if (!githubReleaseSource.includes("withGithubPublicationLock")) throw new Error("GitHub release helper lost publication serialization");
+for (const forbidden of ["assertGithubPublicationAuthorized", "--owner-confirm"]) {
+  if (githubReleaseSource.includes(forbidden)) throw new Error(`GitHub release helper regained a conversational authorization gate: ${forbidden}`);
 }
 for (const required of [
   "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
@@ -675,18 +736,16 @@ const githubAssetSource = readFileSync(join(root, "scripts", "github-release-ass
 for (const required of ["tag_name", "matches.length !== 1", "sha256:", "expectedSha256", "asset.digest", "waitForGithubReleaseAsset", "defaultAssetWait"]) {
   if (!githubAssetSource.includes(required)) throw new Error(`GitHub release asset verifier lost required boundary: ${required}`);
 }
-for (const required of ["explicit owner authorization", "withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
+for (const required of ["withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
   if (!githubPublicationGuardSource.includes(required)) throw new Error(`GitHub publication guard lost required boundary: ${required}`);
 }
-if (githubPublicationGuardSource.includes("isTTY !== true")) {
-  throw new Error("GitHub publication guard regained a mandatory TTY boundary");
+for (const forbidden of ["explicit owner authorization", "--owner-confirm", "isTTY"]) {
+  if (githubPublicationGuardSource.includes(forbidden)) throw new Error(`GitHub publication lock regained a conversational/TTY authorization boundary: ${forbidden}`);
 }
-const publicationGuardCall = githubReleaseSource.lastIndexOf("assertGithubPublicationAuthorized()");
 const publicationLockCall = githubReleaseSource.lastIndexOf("await withGithubPublicationLock");
 const prereleasePublishCall = githubReleaseSource.lastIndexOf("publishCurrent({ prereleaseMode: true })");
-if (publicationGuardCall < 0 || publicationLockCall < 0 || prereleasePublishCall < 0
-    || publicationGuardCall > publicationLockCall || publicationLockCall > prereleasePublishCall) {
-  throw new Error("GitHub publication no longer verifies explicit owner authorization and acquires its lock before remote mutation");
+if (publicationLockCall < 0 || prereleasePublishCall < 0 || publicationLockCall > prereleasePublishCall) {
+  throw new Error("GitHub publication no longer acquires its lock before remote mutation");
 }
 const githubBacklogPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
 if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('runNetwork(git, ["fetch", "origin", "main", "--prune"]')) {
@@ -772,12 +831,18 @@ if (!browserBridgeSource.includes("browserExtensionPathForRuntime({ stateRoot: t
 }
 const npmPublishSource = readFileSync(join(root, "scripts", "publish-npm.mjs"), "utf8");
 for (const required of [
+  "assertNpmPublicationAuthorized", "--owner-confirm", "explicit owner authorization",
   "verifyCurrentReleaseAcceptance", "stageAcceptedCandidateTarball", "prepublishOnly",
   "candidate.path", "--ignore-scripts=true", "--if-present=false", '"--tag", parsed.npmTag', "validateNpmPublishDryRun",
   '"--dry-run=true"', "disposePublicationResources", "readPublishedNpmPrereleaseIfPresent",
   "waitForPublishedCandidate", "alreadyPublished", "publication outcome is ambiguous",
 ]) {
   if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost exact accepted-tarball boundary: ${required}`);
+}
+const npmAuthorizationCall = npmPublishSource.indexOf("assertNpmPublicationAuthorized();");
+const npmMainPublicationCall = npmPublishSource.indexOf("publishCurrentNpmPackage(root, mode)");
+if (npmAuthorizationCall < 0 || npmMainPublicationCall < 0 || npmAuthorizationCall > npmMainPublicationCall) {
+  throw new Error("npm publication no longer verifies explicit current-task authorization before publication work");
 }
 const prepublicationStage = npmPublishSource.indexOf('"prepublishOnly"');
 const publishDryRunStage = npmPublishSource.indexOf('"npm publish dry-run"');
@@ -983,6 +1048,7 @@ for (const removed of ["approval: new Set", "approve: 2", "APPROVAL_POSITIONAL_L
 }
 const managedJobProjectionSource = readFileSync(join(root, "src", "local", "managed-job-projection.mjs"), "utf8");
 const managedJobRetentionSource = readFileSync(join(root, "src", "local", "managed-job-retention.mjs"), "utf8");
+const managedJobRetentionPolicySource = readFileSync(join(root, "src", "local", "managed-job-retention-policy.mjs"), "utf8");
 const managedJobDurableProcessSource = readFileSync(join(root, "src", "local", "managed-job-durable-process.mjs"), "utf8");
 const relayCallRecoverySource = readFileSync(join(root, "src", "local", "relay-call-recovery.mjs"), "utf8");
 const relayResultRetentionSource = readFileSync(join(root, "src", "local", "relay-result-retention.mjs"), "utf8");
@@ -1052,7 +1118,7 @@ if (!managedJobSource.includes('retentionClass = "managed"')
     || !managedJobSource.includes('retention_class: "transient_process"')
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
     || !managedJobRetentionSource.includes("terminalEvictionPriority")
-    || !managedJobRetentionSource.includes('status?.retention_class === "transient_process"')
+    || !managedJobRetentionPolicySource.includes('status?.retention_class === "transient_process"')
     || !managedJobsIntegrationSource.includes("durable one-step process carrier did not persist the transient retention class through terminal settlement")
     || !managedJobsIntegrationSource.includes("transient helper churn evicted an explicit managed-job recovery result")
     || !managedJobsIntegrationSource.includes("internal transient-process retention class leaked through public managed-job projections")
@@ -1099,8 +1165,27 @@ if (managedJobRunnerSource.includes('child.on("error", (error) => { settlement.c
   throw new Error("managed job runner again settles process ownership directly from child error before close/exit settlement");
 }
 if (!managedJobRunnerSource.includes("RECOVERY_LOCK_HANDOFF_WAIT_MS = 30_000")
-    || !/await confirmRunnerClaim[\s\S]{0,400}if \(recover\) await releaseRecoveryClaim\(\);\s*runnerClaimConfirmed = true;/.test(managedJobRunnerSource)) {
+    || !/await confirmRunnerClaim[\s\S]{0,600}if \(recover\) \{\s*await terminateManagedJobActiveChild\(activeChildFile\);\s*await releaseRecoveryClaim\(\);\s*\}[\s\S]{0,220}runnerClaimConfirmed = true;/.test(managedJobRunnerSource)) {
   throw new Error("recovery runner can again terminalize a job before recovery-lock handoff is complete");
+}
+for (const required of [
+  "processStartTimeMs", "inspectProcessInstance", "terminateProcessTreeWithEscalation", "removeOwnedJsonFileSync",
+  "managedJobActiveChildRecoveryState", "managed job active child ownership cannot be verified",
+]) {
+  if (!managedJobActiveChildSource.includes(required)) throw new Error(`managed-job active-child ownership boundary lost: ${required}`);
+}
+if (!/spawn\([\s\S]{0,1200}publishManagedJobActiveChild\(activeChildFile, child\)[\s\S]{0,600}bindProcessResources\(admitted\.lease, child\)/.test(managedJobRunnerSource)
+    || !managedJobRunnerSource.includes("clearManagedJobActiveChild(activeChildFile, activeChildClaim)")) {
+  throw new Error("managed-job runner no longer publishes and clears child ownership around business process execution");
+}
+if (!managedJobRunnerExitRecoverySource.includes("DEFAULT_RECONCILE_DELAY_MS = 10_100")
+    || !managedJobRunnerExitRecoverySource.includes("reconcileStatus(dir)")
+    || !runtimeSource.includes("this.managedJobManager.stopRunnerExitRecovery();")) {
+  throw new Error("managed-job same-daemon runner-exit recovery lost its bounded observer lifecycle");
+}
+if (!managedJobTerminalMaintenanceSource.includes("managedJobActiveChildRecoveryReady(managedJobActiveChildFile(dir))")
+    || !managedJobTerminalMaintenanceSource.includes('"active_child_unsettled"')) {
+  throw new Error("terminal artifact maintenance can again erase unresolved managed-job child ownership evidence");
 }
 if (managedJobClaimSource.includes("existsSync") || !managedJobClaimSource.includes("inspectPathIfPresentSync")) {
   throw new Error("managed job runner claim again treats inspection failure as absence");
@@ -1248,6 +1333,9 @@ if ((ciSource.match(/npm run consumer-security:test/g) || []).length !== 1) thro
 if (!ciSource.includes("npm run check:platform") || !ciSource.includes("npm run check:full")
     || !ciSource.includes("os: [macos-latest, windows-latest]") || !ciSource.includes("runs-on: ubuntu-latest")) {
   throw new Error("CI no longer separates cross-platform fast checks from the Linux full suite");
+}
+if (!/platform-check:[\s\S]*?timeout-minutes:\s*30[\s\S]*?strategy:/.test(ciSource)) {
+  throw new Error("cross-platform verification lost the 30-minute CI envelope required by observed Windows platform+install duration");
 }
 const portableAcceptanceCommand = "npm pack --ignore-scripts --silent --dry-run --json | node .github/scripts/verify-release-acceptance.mjs";
 if ((ciSource.split(portableAcceptanceCommand).length - 1) !== 2) throw new Error("CI no longer verifies portable local candidate acceptance in both package paths");
@@ -1470,10 +1558,16 @@ if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutio
   throw new Error("process-session startup timeout drifted out of the shared relay contract");
 }
 const serverInfoToolDeliverySource = readFileSync(join(root, "src", "worker", "server-info-tool-delivery.ts"), "utf8");
+const serverInfoSource = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
 if (!serverInfoToolDeliverySource.includes("remote_process_session_start_execution_max_ms")
     || !serverInfoToolDeliverySource.includes("managed_job_resource_admission_wait_max_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_default_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_max_ms")
+    || !serverInfoToolDeliverySource.includes("remote_managed_job_read_nonterminal_progress_minimum_ms")
+    || !serverInfoToolDeliverySource.includes("compactRemoteToolDeliveryContract")
+    || !serverInfoToolDeliverySource.includes("delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms")
+    || !serverInfoSource.includes("...compactRemoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
+    || !serverInfoSource.includes("...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_concurrency_max_per_account")
     || !serverInfoToolDeliverySource.includes("MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT")
     || !serverInfoToolDeliverySource.includes("tool_schema_generation")
@@ -1496,11 +1590,13 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
 if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || relayContract.maximumManagedJobReadWaitMs !== 300_000
     || relayContract.managedJobReadPollIntervalMs !== 5_000
+    || relayContract.managedJobReadNonterminalProgressMinimumMs !== 30_000
     || relayContract.managedJobReadReconcileIntervalMs !== 30_000
     || relayContract.managedJobReadExecutionHeadroomMs !== 10_000
     || relayContract.maximumOrdinaryRelayToolTimeoutMs !== 50_000
     || relayContract.maximumRelayToolTimeoutMs !== 315_000
     || Math.ceil((100 * 60 * 1000) / relayContract.defaultManagedJobReadWaitMs) > 150
+    || Math.ceil((100 * 60 * 1000) / relayContract.managedJobReadNonterminalProgressMinimumMs) > 200
     || !workerToolTimeoutSource.includes('name === "read_job"')
     || !managedJobReadTimeoutSource.includes("managedJobReadArgumentsWithinExecutionBudget")
     || !managedJobReadTimeoutSource.includes("managedJobReadExecutionBudgetHasHeadroom")
@@ -1511,7 +1607,7 @@ if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)")
     || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 3
     || !workerRuntimeSource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
-  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / five-minute opt-in contract");
+  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / thirty-second progress coalescing / five-minute opt-in contract");
 }
 const mcpResponseProxySource = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
 const mcpResponseCancelSource = readFileSync(join(root, "src", "worker", "mcp-response-cancel.ts"), "utf8");
@@ -1712,7 +1808,7 @@ for (const [file, content, required] of [
   ["docs/TESTING.md", testingDoc, "Ordinary daemon tools default to 20 seconds plus the separate Worker settlement margin"],
   ["docs/TESTING.md", testingDoc, "explicit stop-before-first-readiness settlement"],
   ["docs/TESTING.md", testingDoc, "reject non-finite, non-positive, non-integer, and over-contract operation/reconnect delays"],
-  ["docs/TESTING.md", testingDoc, "owner-authorized remote release verification"],
+  ["docs/TESTING.md", testingDoc, "remote release verification"],
   ["docs/TESTING.md", testingDoc, "larger explicit step timeout"],
   ["docs/TESTING.md", testingDoc, "eight-worker fixed request on an idle eight-core interactive host fails immediately"],
   ["docs/TESTING.md", testingDoc, "privacy-safe `drain_active` fairness signal"],
@@ -1780,10 +1876,10 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 6"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 9"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
-  ["src/shared/server-metadata.json", serverMetadata, "owner-authorized multi-step"],
+  ["src/shared/server-metadata.json", serverMetadata, "effective account policy permits it"],
   ["src/shared/server-metadata.json", serverMetadata, "execution budget above 600 seconds"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted current hosted timing/diagnostic guidance: ${required}`);
@@ -1864,13 +1960,19 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   if (!releaseContract.includes("prerelease") || !releaseContract.includes("soak") || !releaseContract.includes("npm")) {
     throw new Error(`release ownership contract drifted in ${relative(root, file)}`);
   }
-  for (const required of ["--owner-confirm", "explicit owner", "authorization"]) {
-    if (!releaseContract.includes(required)) throw new Error(`GitHub publication ownership drifted in ${relative(root, file)}: ${required}`);
+  for (const required of ["npm", "--owner-confirm", "sole", "authorization"]) {
+    if (!releaseContract.includes(required)) throw new Error(`npm-only authorization ownership drifted in ${relative(root, file)}: ${required}`);
+  }
+  if (releaseContract.includes("prerelease:release -- --owner-confirm") || releaseContract.includes("release -- --owner-confirm")) {
+    throw new Error(`GitHub publication regained an owner-confirm gate in ${relative(root, file)}`);
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
-for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "21,600 seconds", "six hours", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish", "npm run github:push", "TTY is optional", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
+for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "21,600 seconds", "six hours", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release", "npm run prerelease:publish -- --owner-confirm", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish -- --owner-confirm", "npm run github:push", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
+}
+if (projectStandards.includes("prerelease:release -- --owner-confirm") || projectStandards.includes("release -- --owner-confirm")) {
+  throw new Error("project standards regained a GitHub publication authorization flag");
 }
 for (const required of [
   "aggregate host-response lifetime are separate constraints",
@@ -1895,12 +1997,15 @@ for (const [name, guide, required] of [
     if (guide.includes(forbidden)) throw new Error(`release documentation restored obsolete fixed-duration acceptance policy: ${forbidden}`);
   }
 }
-for (const required of [directCandidateVerifyCommand, "npm run prerelease:release -- --owner-confirm", "npm run release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "A TTY is optional", "Conversational authorization is sufficient", "owner or an authorized agent runs exactly", "600-second durable-process ceiling", "detached `start_job`", "larger explicit step timeout"]) {
-  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted explicit-authorization publication contract: ${required}`);
+for (const required of [directCandidateVerifyCommand, "npm run prerelease:release", "npm run release:backfill", "npm run release", "npm run prerelease:publish -- --owner-confirm", "npm run stable:publish -- --owner-confirm", "sole conversational authorization boundary", "detached `start_job`", "larger explicit step timeout"]) {
+  if (!releasingGuide.includes(required)) throw new Error(`release guide omitted npm-only authorization/publication contract: ${required}`);
+}
+for (const forbidden of ["prerelease:release -- --owner-confirm", "release:backfill -- --owner-confirm", "npm run release -- --owner-confirm", "Conversational authorization is sufficient"]) {
+  if (releasingGuide.includes(forbidden)) throw new Error(`release guide retained obsolete non-npm authorization gate: ${forbidden}`);
 }
 for (const [name, guide] of [["release guide", releasingGuide], ["upgrade guide", upgradingGuide]]) {
   for (const required of [
-    "frozen approved tool/input snapshot", "Action control", "Refresh",
+    "frozen approved tool/input snapshot", "Action control", "refresh/review",
     "invocation", "wait_ms=40001", "timeout_seconds=3601", "not_found",
   ]) {
     if (!guide.includes(required)) throw new Error(`${name} omitted hosted action-snapshot freshness/remediation boundary: ${required}`);
@@ -1919,7 +2024,7 @@ for (const required of [
   if (!releasingGuide.includes(required)) throw new Error(`release guide omitted interruption recovery acceptance boundary: ${required}`);
 }
 if (!testingGuide.includes("server-opened subscription evidence cannot prove external client receipt")
-    || !testingGuide.includes("owner-authorized **Action control** snapshot")
+    || !testingGuide.includes("**Action control** snapshot")
     || !testingGuide.includes("opaque host-internal cache inspection is intentionally excluded from release acceptance")
     || !testingGuide.includes("harmless invocation probe")) {
   throw new Error("testing guide omitted the governed ChatGPT action-snapshot freshness/remediation model");
@@ -1936,8 +2041,8 @@ for (const [name, guide] of [["project standards", projectStandards], ["release 
   for (const forbidden of ["Acceptance must sample multiple host discovery paths", "query multiple host discovery paths"]) {
     if (guide.includes(forbidden)) throw new Error(`${name} retained filtered host-search results as schema-freshness authority: ${forbidden}`);
   }
-  for (const required of ["ChatGPT host-control-plane UI", "current task", "open, navigate to, inspect", "Action control"]) {
-    if (!guide.includes(required)) throw new Error(`${name} omitted the explicit ChatGPT product-control-plane mutation boundary: ${required}`);
+  for (const required of ["ChatGPT host-control-plane UI", "Action control", "refresh/review"]) {
+    if (!guide.includes(required)) throw new Error(`${name} omitted the standing-authorized ChatGPT product-control-plane discipline: ${required}`);
   }
 }
 for (const [name, guide] of [
@@ -1984,21 +2089,24 @@ if (sharedToolCatalog.some((tool) => String(tool?.description || "").includes(ob
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
 for (const required of [
-  "ChatGPT host-control-plane UI hard gate",
-  "explicitly authorizes ChatGPT host-control-plane UI work in the current task",
-  "do **not** open, navigate to, inspect, click through, create, edit, refresh, review, publish, test, connect, disconnect, recreate",
+  "ChatGPT host-control-plane UI discipline",
+  "not a separate conversational authorization boundary",
+  "in-place refresh/review",
   "filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence",
   "complete `machine-mcp` tool catalog **without a query filter**",
   "stale host query/search-index cache",
   "unfiltered full catalog is itself stale, partial, or mixed-generation",
   "stale filtered-search result alone must not block acceptance",
   "external acceptance blocker",
-  "not standing agent authority",
+  "never replay an unknown-outcome UI mutation blindly",
 ]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted ChatGPT host-control-plane UI boundary: ${required}`);
 }
-for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Autonomous long-running work invariant", "User interaction must not be used as a scheduler tick", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "cooldown boundary", "release-blocking continuity defect", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release -- --owner-confirm", "npm run prerelease:publish", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish", "Explicit conversational authorization", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
+for (const required of ["Tool-selection hard gate", "Do not call, discover, list, load, or invoke a hosted GitHub connector", "This gate applies before connector/tool discovery", "Availability of a hosted connector is not a fallback", "A violation must be treated as a process defect", "GitHub control plane", "hosted GitHub connector", "ChatGPT GitHub plugin", "`gh api`", "Do not mix local `gh`/`git` writes with connector writes", "Autonomous long-running work invariant", "User interaction must not be used as a scheduler tick", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "cooldown boundary", "release-blocking continuity defect", "Mandatory prerelease and soak invariant", "Incident diagnosis and evidence hard gate", "observed facts", "falsified hypotheses", "frozen source snapshot", "deployed-edge canary", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run release:accept", "npm run github:push", "npm run prerelease:release", "npm run prerelease:publish -- --owner-confirm", "npm run prerelease:install -- --allow-worker-deploy", "npm run release:soak:verify", "npm run stable:publish -- --owner-confirm", "Sole explicit user-authorization boundary", "Before any GitHub read or mutation", "If the local Machine Bridge control plane is unavailable", "step timeout above 600 seconds", "run_process`'s 600-second step limit"]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted GitHub control-plane rule: ${required}`);
+}
+for (const forbidden of ["prerelease:release -- --owner-confirm", "npm run release -- --owner-confirm", "explicitly authorizes ChatGPT host-control-plane UI work"]) {
+  if (agentContract.includes(forbidden)) throw new Error(`repository automation contract retained obsolete non-npm authorization gate: ${forbidden}`);
 }
 for (const [label, contract] of [["project standards", projectStandards], ["repository automation contract", agentContract]]) {
   for (const forbidden of [

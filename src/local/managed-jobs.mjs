@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { assertStateMaintenanceAvailable } from "./state.mjs";
@@ -8,7 +8,11 @@ import { BridgeError } from "./errors.mjs";
 import { assertOwnedByContext, principalBinding } from "./authority-context.mjs";
 import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { startDurableProcessJob } from "./managed-job-durable-process.mjs";
+import { acceptedManagedJobProjection } from "./managed-job-acceptance.mjs";
+import { managedJobActiveChildFile, managedJobActiveChildRecoveryState } from "./managed-job-active-child.mjs";
+import { resolveManagedJobDependencies } from "./managed-job-dependency-admission.mjs";
 import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
+import { assertManagedJobPlanIntegrity, managedJobPlanSha256 } from "./managed-job-plan-integrity.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "./managed-job-lock.mjs";
 import { hostedManagedJobStatus } from "./managed-job-hosted-status.mjs";
@@ -17,6 +21,8 @@ import { listManagedJobs } from "./managed-job-listing.mjs";
 import { projectManagedJobResult, publicStatus, reviewablePlan } from "./managed-job-projection.mjs";
 import { atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
+import { createManagedJobRunnerExitRecovery } from "./managed-job-runner-exit-recovery.mjs";
+import { relaunchDependencyWaitManagedJob, relaunchInterruptedManagedJob } from "./managed-job-relaunch.mjs";
 import { managedJobIdempotencyDigest, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./managed-job-idempotency.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
 import { retiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
@@ -46,6 +52,9 @@ export class ManagedJobManager {
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
     this.logger = logger;
     this.runnerEnvironmentOverrides = { ...runnerEnvironmentOverrides };
+    this.runnerExitRecovery = createManagedJobRunnerExitRecovery({
+      reconcileStatus: (dir) => this.reconcileStatus(dir), logger: this.logger,
+    });
     this.assertMaintenanceAvailable();
     this.prune();
     if (recover) this.recoverInterruptedJobs();
@@ -53,7 +62,7 @@ export class ManagedJobManager {
 
   status(context = {}) {
     this.assertMaintenanceAvailable();
-    const listing = this.list({ limit: MAX_JOBS }, context);
+    const listing = this.list({ limit: MAX_JOBS }, context, { maximumLimit: MAX_JOBS });
     const jobs = listing.jobs;
     return {
       active: jobs.filter((job) => ACTIVE_JOB_STATES.has(job.status)).length,
@@ -61,6 +70,7 @@ export class ManagedJobManager {
       retained: jobs.length,
       maximum: MAX_JOBS,
       ...(listing.capacity ? { capacity: listing.capacity } : {}),
+      ...(listing.recent_activity ? { recent_activity: listing.recent_activity } : {}),
     };
   }
 
@@ -140,7 +150,7 @@ export class ManagedJobManager {
       ...(executionPriority === "interactive" ? { execution_priority: "interactive" } : {}),
       ...(delegatedProcess === true ? { delegated_process: true } : {}),
     };
-    const planSha256 = createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+    const planSha256 = managedJobPlanSha256(plan);
     const idempotencyDigest = idempotencyKey === null ? null : managedJobIdempotencyDigest(idempotencyKey, context);
     const id = idempotencyDigest === null ? `job_${randomBytes(24).toString("base64url")}` : `job_${idempotencyDigest}`;
     const dir = join(this.jobRoot, id);
@@ -158,7 +168,21 @@ export class ManagedJobManager {
       }
       const alreadyExists = Boolean(existingInfo);
       if (alreadyExists) ensureOwnerOnlyDir(dir);
-      pruneManagedJobs({ jobRoot: this.jobRoot, logger: this.logger, reserveSlots: alreadyExists ? 0 : 1 });
+      const dependencyResolution = alreadyExists
+        ? { witnesses: [], pending: 0 }
+        : resolveManagedJobDependencies({
+          jobRoot: this.jobRoot,
+          dependencyIds: plan.depends_on,
+          currentJobId: id,
+          context,
+          reconcileStatus: (dependencyDir) => this.reconcileStatus(dependencyDir),
+        });
+      pruneManagedJobs({
+        jobRoot: this.jobRoot,
+        logger: this.logger,
+        reserveSlots: alreadyExists ? 0 : 1,
+        protectedJobIds: new Set(plan.depends_on || []),
+      });
       const capacitySnapshot = managedJobCapacitySnapshot(this.jobRoot);
       if (!alreadyExists && capacitySnapshot.retained_state >= MAX_JOBS) {
         throw new BridgeError("limit_exceeded", `managed job capacity is fully occupied (${MAX_JOBS})`, {
@@ -191,13 +215,14 @@ export class ManagedJobManager {
           }
           if (existing.status === "queued" && !runnerProcessIsCurrent(existing, dir)) {
             try {
-              launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides));
+              launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
+                () => this.runnerExitRecovery.observe(dir)));
             } catch (error) {
               failRunnerLaunch(dir, existing, error);
               throw error;
             }
           }
-          return acceptedJobProjection(existing, plan, { idempotencyReplay: true });
+          return acceptedManagedJobProjection(existing, plan, { idempotencyReplay: true });
         }
         atomicWriteJson(join(dir, "plan.json"), plan, MAX_PLAN_BYTES);
         const now = new Date().toISOString();
@@ -213,20 +238,24 @@ export class ManagedJobManager {
           approval: launch ? "mcp" : "review-only",
           plan_sha256: planSha256,
           cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
+          dependency_total: (plan.depends_on || []).length,
+          dependency_pending_count: dependencyResolution.pending,
+          ...((plan.depends_on || []).length ? { dependency_witnesses: dependencyResolution.witnesses } : {}),
           ...(retentionClass === "transient_process" ? { retention_class: "transient_process" } : {}),
           ...principalBinding(context),
         };
         atomicWriteJson(statusFile, status, 256 * 1024);
         if (launch) {
           try {
-            launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides));
+            launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
+              () => this.runnerExitRecovery.observe(dir)));
           } catch (error) {
             failRunnerLaunch(dir, status, error);
             throw error;
           }
         }
         return launch
-          ? acceptedJobProjection(status, plan, { idempotencyReplay: false, idempotencyAccepted: idempotencyDigest !== null })
+          ? acceptedManagedJobProjection(status, plan, { idempotencyReplay: false, idempotencyAccepted: idempotencyDigest !== null })
           : {
             staged: true,
             job_id: id,
@@ -234,6 +263,7 @@ export class ManagedJobManager {
             status: "staged",
             execution_started: false,
             plan_sha256: planSha256,
+            dependency_total: (plan.depends_on || []).length,
             continuation: "review this draft; execution requires a separate start_job submission and never promotes this staged record",
             plan_expires_after_hours: 24,
           };
@@ -246,7 +276,7 @@ export class ManagedJobManager {
   }
 
 
-  list(args = {}, context = {}) {
+  list(args = {}, context = {}, options = {}) {
     this.authorizeTool("list_jobs");
     this.assertMaintenanceAvailable();
     this.prune();
@@ -254,6 +284,7 @@ export class ManagedJobManager {
       jobRoot: this.jobRoot, args, context, logger: this.logger,
       reconcileStatus: (dir) => this.reconcileStatus(dir),
       assertKnownStatus: (dir, status) => { assertManagedJobDirectoryIdentity(dir, status); assertKnownManagedJobStatus(status); },
+      maximumLimit: options.maximumLimit,
     });
   }
 
@@ -316,7 +347,8 @@ export class ManagedJobManager {
       assertManagedJobDirectoryIdentity(dir, status);
       assertKnownManagedJobStatus(status);
       const plan = readJson(join(dir, "plan.json"), MAX_PLAN_BYTES);
-      if (plan) assertPlanIntegrity(plan, status);
+      if (plan) assertManagedJobPlanIntegrity(plan, status,
+        "managed job plan integrity check failed; inspect the plan and do not submit or execute it");
       return {
         ...publicStatus(status),
         plan_integrity_verified: Boolean(plan),
@@ -424,10 +456,27 @@ export class ManagedJobManager {
       if (runnerProcessIsCurrent(status, dir)) return;
       const recoveryAttempts = Number(status.recovery_attempts || 0);
       if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+        const childState = managedJobActiveChildRecoveryState(managedJobActiveChildFile(dir));
+        if (childState !== "ready") {
+          if (childState === "current") this.runnerExitRecovery.observe(dir);
+          return;
+        }
         markRecoveryExhausted(dir, file, status, recoveryAttempts);
         return;
       }
-      const runnerPid = relaunchInterruptedJob(dir, file, status, recoveryAttempts, recoveryLock.token, this.logger, this.runnerEnvironmentOverrides);
+      if (status.status === "queued" && status.current_phase === "dependency_wait") {
+        relaunchDependencyWaitManagedJob({
+          dir, statusFile: file, status, recoveryAttempts,
+          logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
+          onRunnerExit: () => this.runnerExitRecovery.observe(dir),
+        });
+        return;
+      }
+      const runnerPid = relaunchInterruptedManagedJob({
+        dir, statusFile: file, status, recoveryAttempts, recoveryToken: recoveryLock.token,
+        logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
+        onRunnerExit: () => this.runnerExitRecovery.observe(dir),
+      });
       recoveryLock.handoff(runnerPid);
       handedOff = true;
     } finally {
@@ -446,6 +495,8 @@ export class ManagedJobManager {
       }
     }
   }
+
+  stopRunnerExitRecovery() { this.runnerExitRecovery.stop(); }
 
   prune({ reserveSlots = 0 } = {}) {
     this.assertMaintenanceAvailable();
@@ -619,52 +670,6 @@ function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
   if (!terminal.statusPersisted) throw new Error(`managed job recovery-exhausted status persistence failed: ${terminal.statusErrorClass}`);
 }
 
-function relaunchInterruptedJob(dir, statusFile, status, recoveryAttempts, recoveryToken, logger, runnerEnvironmentOverrides) {
-  const plan = readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
-  assertPlanIntegrity(plan, status);
-  status.status = "interrupted";
-  status.updated_at = new Date().toISOString();
-  status.finished_at = status.updated_at;
-  status.error_class = "runner_interrupted";
-  status.recovery_attempts = recoveryAttempts + 1;
-  atomicWriteJson(statusFile, status, 256 * 1024);
-  rmSync(join(dir, "runtime"), { recursive: true, force: true });
-  rmSync(join(dir, "runner.pid"), { force: true });
-  return launchRunner(dir, true, recoveryToken, runnerLaunchOptions(plan.full_env === true, logger, runnerEnvironmentOverrides));
-}
-
-function runnerLaunchOptions(fullEnv, logger, overrides = {}) {
-  return { logger, fullEnv, env: { ...process.env, ...overrides } };
-}
-
-function acceptedJobProjection(status, plan, { idempotencyReplay = false, idempotencyAccepted = true } = {}) {
-  return {
-    accepted: true,
-    job_id: status.job_id,
-    name: status.name,
-    status: status.status,
-    detached: true,
-    continues_without_mcp_connection: true,
-    approval: status.approval,
-    plan_sha256: status.plan_sha256,
-    ...(idempotencyAccepted ? { idempotency_key_accepted: true, idempotency_replay: idempotencyReplay } : {}),
-    cleanup: {
-      resource_copies: "best-effort",
-      finally_steps: plan.finally_steps.length ? "best-effort" : "none-declared",
-      restart_recovery: "best-effort-on-next-runtime-or-cli-start",
-    },
-  };
-}
-
-function planSha256(plan) {
-  return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
-}
-
-function assertPlanIntegrity(plan, status) {
-  const expected = String(status?.plan_sha256 || "");
-  const actual = planSha256(plan);
-  if (!/^[a-f0-9]{64}$/.test(expected) || actual !== expected) {
-    throw new Error("managed job plan integrity check failed; inspect the plan and do not submit or execute it");
-  }
-  return actual;
+function runnerLaunchOptions(fullEnv, logger, overrides = {}, onExit = undefined) {
+  return { logger, fullEnv, env: { ...process.env, ...overrides }, onExit };
 }

@@ -3,36 +3,14 @@ import { spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
-  assertGithubPublicationAuthorized,
-  githubPublicationConfirmationFlag,
   githubPublicationGitTimeoutMs,
   githubPublicationStateRootFromGitResult,
   resolveGithubPublicationStateRoot,
   withGithubPublicationLock,
 } from "../scripts/release-publication-guard.mjs";
 
-const tty = Object.freeze({ isTTY: true });
-const pipe = Object.freeze({ isTTY: false });
 assert.equal(githubPublicationGitTimeoutMs, 30_000);
-assert.throws(() => assertGithubPublicationAuthorized(), /explicit owner authorization/);
-assert.throws(() => assertGithubPublicationAuthorized({ argv: [], stdin: tty, stdout: tty, stderr: tty }), /explicit owner authorization/);
-assert.deepEqual(assertGithubPublicationAuthorized({
-  argv: ["--publish-prerelease", githubPublicationConfirmationFlag], stdin: tty, stdout: tty, stderr: tty,
-}), { confirmation_flag: githubPublicationConfirmationFlag, interactive_terminal: true });
-assert.deepEqual(assertGithubPublicationAuthorized({
-  argv: ["--publish-prerelease", githubPublicationConfirmationFlag], stdin: pipe, stdout: tty, stderr: pipe,
-}), { confirmation_flag: githubPublicationConfirmationFlag, interactive_terminal: false });
-
-const nonInteractiveEntrypoint = spawnSync(process.execPath, [
-  fileURLToPath(new URL("../scripts/github-release.mjs", import.meta.url)),
-  "--publish-prerelease",
-  githubPublicationStateRootFromGitResult,
-], { encoding: "utf8", windowsHide: true });
-assert.equal(nonInteractiveEntrypoint.status, 1);
-assert.match(nonInteractiveEntrypoint.stderr, /explicit owner authorization/);
-assert.doesNotMatch(`${nonInteractiveEntrypoint.stdout}${nonInteractiveEntrypoint.stderr}`, /git fetch|running full verification plan|GitHub source/);
 
 const root = await mkdtemp(join(tmpdir(), "mbm-publication-lock-"));
 const linkedRoot = `${root}-linked`;

@@ -20,6 +20,12 @@ if (task === "noisy-success") {
   process.stdout.write("S".repeat(200000));
   process.stderr.write("W".repeat(200000));
   process.exitCode = 0;
+} else if (task === "self-test") {
+  process.stdout.write("hidden self-test chatter" + nl);
+  process.stdout.write("local self-test phase started: resource CLI" + nl);
+  process.stdout.write("more hidden self-test chatter" + nl);
+  process.stdout.write("local self-test phase completed: resource CLI" + nl);
+  process.exitCode = 0;
 } else {
   process.stdout.write("BEGIN-STDOUT" + nl + "O".repeat(200000) + nl + "END-STDOUT" + nl);
   process.stderr.write("BEGIN-STDERR" + nl + "E".repeat(200000) + nl + "END-STDERR" + nl);
@@ -40,6 +46,21 @@ if (task === "noisy-success") {
   assert(!successOut.value.includes("SSSS") && !successErr.value.includes("WWWW"), "successful task output was not suppressed");
   assert(successOut.value.includes("completed noisy-success"), "successful task progress was omitted");
   assert(successOut.value.length < 1024, "successful plan output remained too verbose");
+
+  const progressOut = sink();
+  await runVerificationPlan({
+    mode: "test",
+    tasks: ["self-test"],
+    npmCli: fakeNpm,
+    cwd: root,
+    stdout: progressOut,
+    stderr: sink(),
+  });
+  assert(progressOut.value.includes("local self-test phase started: resource CLI")
+    && progressOut.value.includes("local self-test phase completed: resource CLI"),
+  "self-test sparse phase progress was not forwarded while the child was active");
+  assert(!progressOut.value.includes("hidden self-test chatter") && !progressOut.value.includes("more hidden"),
+    "sparse self-test progress forwarding leaked ordinary child output");
 
   const failureOut = sink();
   const failureErr = sink();

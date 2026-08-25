@@ -1,6 +1,18 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { npmPublishArguments, publishCurrentNpmPackage } from "../scripts/publish-npm.mjs";
+import {
+  assertNpmPublicationAuthorized,
+  npmPublicationConfirmationFlag,
+  npmPublishArguments,
+  publishCurrentNpmPackage,
+} from "../scripts/publish-npm.mjs";
+
+expectThrow(() => assertNpmPublicationAuthorized({ argv: ["prerelease"] }), "explicit owner authorization");
+assert(
+  assertNpmPublicationAuthorized({ argv: ["prerelease", npmPublicationConfirmationFlag] }).confirmation_flag
+    === npmPublicationConfirmationFlag,
+  "npm publication confirmation flag was not accepted",
+);
 
 const publishBase = [
   "publish", "--dry-run=false", "--workspaces=false", "--global=false",

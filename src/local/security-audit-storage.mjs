@@ -11,6 +11,7 @@ import {
   decodeAndVerifyAuditState,
   emptyAuditState,
 } from "./security-audit-state.mjs";
+import { securityAuditRecentActivity } from "./security-audit-activity.mjs";
 
 export const SECURITY_AUDIT_SCHEMA_VERSION = 1;
 export const SECURITY_AUDIT_MAX_EVENTS = 4096;
@@ -67,6 +68,7 @@ export function auditSnapshotFromState(state) {
     maximum: SECURITY_AUDIT_MAX_EVENTS, maximum_bytes: SECURITY_AUDIT_MAX_BYTES,
     last_event_at: state.events.at(-1)?.timestamp || null,
     last_error_class: null, content_logged: false, chain_verified: true,
+    recent_activity: securityAuditRecentActivity(state),
   };
 }
 

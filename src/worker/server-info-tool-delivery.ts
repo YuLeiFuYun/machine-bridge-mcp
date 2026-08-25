@@ -26,14 +26,26 @@ export function remoteToolDeliveryContract(
     remote_process_session_start_execution_max_ms: relayContract.processSessionStartExecutionTimeoutMs,
     remote_process_delivery_mode: "durable_job",
     remote_process_acceptance_max_ms: relayContract.durableProcessAcceptanceTimeoutMs,
+    remote_process_initial_settlement_wait_ms: relayContract.durableProcessInitialSettlementWaitMs,
     remote_process_execution_timeout_max_ms: relayContract.maximumDurableProcessExecutionTimeoutMs,
     managed_job_resource_admission_wait_max_ms: relayContract.maximumManagedJobResourceAdmissionWaitMs,
     remote_managed_job_read_wait_default_ms: relayContract.defaultManagedJobReadWaitMs,
     remote_managed_job_read_wait_max_ms: relayContract.maximumManagedJobReadWaitMs,
+    remote_managed_job_read_nonterminal_progress_minimum_ms: relayContract.managedJobReadNonterminalProgressMinimumMs,
     remote_managed_job_read_concurrency_max_per_account: MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT,
     remote_default_tool_execution_max_ms: relayContract.defaultRemoteToolExecutionTimeoutMs,
     remote_process_blocking_poll_wait_max_ms: relayContract.maximumProcessReadWaitMs,
     remote_process_blocking_poll_cooldown_ms: relayContract.remoteProcessBlockingPollCooldownMs,
     worker_settlement_overhead_ms: relayContract.workerSettlementOverheadMs,
   };
+}
+
+export function compactRemoteToolDeliveryContract(
+  serverVersion: string,
+  subscription: Readonly<{ activeForAccount?: number; openedForAccount?: boolean }> = {},
+): Record<string, unknown> {
+  const compact = { ...remoteToolDeliveryContract(serverVersion, subscription) };
+  delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms;
+  delete compact.remote_process_initial_settlement_wait_ms;
+  return compact;
 }

@@ -90,6 +90,7 @@ try {
     list: routeSync("list_jobs"),
     read: routeSync("read_job"),
     cancel: routeSync("cancel_job"),
+    stopRunnerExitRecovery() {},
   };
   runtime.processSessionManager = {
     start: route("start_process"),

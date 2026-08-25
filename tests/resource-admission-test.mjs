@@ -35,6 +35,7 @@ import { RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recove
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
+import { resourceWaiterDiagnostics } from "../src/local/resource-waiter-diagnostics.mjs";
 
 const GIB = 1024 ** 3;
 let hostSampleReads = 0;
@@ -129,6 +130,18 @@ assert.equal(resourceCommandProfile("cargo", ["test"], { environment: { CARGO_BU
   "oversized CARGO_BUILD_JOBS was silently treated as an elastic default");
 assert.equal(resourceCommandProfile("git", ["status"]).resource_class, "adaptive",
   "caller-controlled Git metadata was trusted as helper-free fixed control-plane work");
+assert.equal(resourceCommandProfile(process.execPath, ["--version"]).resource_class, "light",
+  "the exact runtime Node version probe did not bypass heavy-resource admission");
+assert.equal(resourceCommandProfile(process.execPath, ["-e", "process.exit(0)"]).resource_class, "adaptive",
+  "arbitrary Node eval was incorrectly trusted as a light runtime probe");
+assert.equal(resourceCommandProfile(join(tmpdir(), process.platform === "win32" ? "node.exe" : "node"), ["--version"]).resource_class, "adaptive",
+  "a lookalike Node executable path could spoof the exact runtime version probe");
+assert.equal(resourceCommandProfile(process.execPath, ["--version"], {
+  environment: { NODE_OPTIONS: "--require=./unexpected-preload.cjs" },
+}).resource_class, "adaptive", "NODE_OPTIONS injection bypassed light-probe resource admission");
+assert.equal(resourceCommandProfile("/bin/true", [], {
+  environment: { LD_PRELOAD: "/tmp/untrusted-preload.so" },
+}).resource_class, "adaptive", "dynamic-loader injection bypassed trusted-executable resource admission");
 const diskReclaim = resourceCommandProfile("/bin/rm", ["-rf", "/tmp/known-regenerable-cache"]);
 assert.equal(diskReclaim.family, "disk-reclaim", "trusted direct delete executable was not recognized as disk reclaim");
 assert.equal(diskReclaim.resource_class, "io");
@@ -1147,6 +1160,22 @@ const protectedLarge = waiter("interactive", fairnessNow - 121_000, cargo, "prot
 assert.equal(resourceWaiterProtected(protectedLarge, fairnessNow), true);
 const protectedQueue = resourceWaiterQueueSnapshot([protectedLarge, fittingSmall], fairnessNow);
 assert.equal(protectedQueue.protected, 1, "queue diagnostics lost protected-waiter count");
+const protectedDiagnostics = resourceWaiterDiagnostics([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow);
+assert.equal(protectedDiagnostics.length, 2, "resource waiter diagnostics lost bounded waiter state");
+assert.equal(protectedDiagnostics[0].family, protectedLarge.request.family);
+assert.equal(protectedDiagnostics[0].priority, "interactive");
+assert.equal(protectedDiagnostics[0].protected, true);
+assert.equal(protectedDiagnostics[0].admitted_now, false);
+assert.equal(protectedDiagnostics[0].would_admit_without_leases, true);
+assert(!JSON.stringify(protectedDiagnostics).includes(protectedLarge.waiter_id)
+  && protectedDiagnostics.every((item) => !["waiter_id", "token", "owner", "contention_key"].some((key) => Object.hasOwn(item, key))),
+"resource waiter diagnostics leaked waiter identity, token, owner, or contention key");
+const pressuredDiagnostic = resourceWaiterDiagnostics(
+  [waiter("interactive", fairnessNow - 90_000, { ...explicitPytestSeven, unbounded: true }, "pressure")],
+  [], { ...quietHost, cpu_busy_cores: 4.5 }, evaluateResourceAdmission, fairnessNow,
+)[0];
+assert.equal(pressuredDiagnostic.admission_reason, "cpu_pressure_window",
+  "resource waiter diagnostics did not expose the current pre-spawn CPU admission cause");
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), null, "starved feasible waiter did not reserve a drain window");
 assert.equal(resourceWaiterDrainActive([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), true,
   "active protected fairness drain was not exposed to diagnostics");

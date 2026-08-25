@@ -2,17 +2,13 @@
 
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
-import { clampInteger } from "./numbers.mjs";
 import { ACTIVE_JOB_STATES } from "./managed-job-terminal.mjs";
+import {
+  managedJobReadNonterminalProgressMinimumMs, managedJobReadProgressSignature, managedJobReadWaitMs,
+  withHostedManagedJobReadMetadata,
+} from "./managed-job-read-policy.mjs";
 
-const LOCAL_MAXIMUM_WAIT_MS = 40_000;
-
-export function managedJobReadWaitMs(args = {}, context = {}) {
-  const remote = context?.authority?.origin === "relay";
-  const fallback = remote ? relayContract.defaultManagedJobReadWaitMs : 0;
-  const maximum = remote ? relayContract.maximumManagedJobReadWaitMs : LOCAL_MAXIMUM_WAIT_MS;
-  return args.wait_ms === undefined ? fallback : clampInteger(args.wait_ms, fallback, 0, maximum);
-}
+export { managedJobReadNonterminalProgressMinimumMs, managedJobReadWaitMs } from "./managed-job-read-policy.mjs";
 
 export async function waitForManagedJobRead({
   args = {}, context = {}, readCurrent, readProgress = readCurrent, throwIfCancelled = () => {},
@@ -20,54 +16,48 @@ export async function waitForManagedJobRead({
 }) {
   throwIfCancelled();
   const waitMs = managedJobReadWaitMs(args, context);
+  const nonterminalProgressMinimumMs = managedJobReadNonterminalProgressMinimumMs(args, context);
+  const progressSignature = (value) => managedJobReadProgressSignature(value, context);
   if (waitMs <= 0) {
     const current = await readCurrent();
-    return withHostedWaitMetadata(current, context, 0, false);
+    return withHostedManagedJobReadMetadata(current, context, 0, false, nonterminalProgressMinimumMs);
   }
   const deadline = createMonotonicDeadline(waitMs, now);
   let current = await readCurrent();
-  const initialSignature = managedJobProgressSignature(current);
+  const initialSignature = progressSignature(current);
   if (!ACTIVE_JOB_STATES.has(String(current?.status || ""))) {
-    return withHostedWaitMetadata(current, context, 0, false);
+    return withHostedManagedJobReadMetadata(current, context, 0, false, nonterminalProgressMinimumMs);
   }
   let lastReconcileElapsedMs = deadline.elapsedMs();
+  let progressChanged = false;
   while (ACTIVE_JOB_STATES.has(String(current?.status || "")) && !deadline.expired()) {
     throwIfCancelled();
     await sleep(Math.min(relayContract.managedJobReadPollIntervalMs, Math.max(1, deadline.remainingMs())));
     throwIfCancelled();
     const progress = await readProgress();
-    if (managedJobProgressSignature(progress) !== initialSignature) {
+    if (!ACTIVE_JOB_STATES.has(String(progress?.status || ""))) {
       current = await readCurrent();
       break;
     }
+    progressChanged = progressSignature(progress) !== initialSignature;
     current = { ...current, ...progress };
     const elapsed = deadline.elapsedMs();
+    if (progressChanged && elapsed >= nonterminalProgressMinimumMs) {
+      current = await readCurrent();
+      break;
+    }
     if (elapsed - lastReconcileElapsedMs >= relayContract.managedJobReadReconcileIntervalMs) {
       current = await readCurrent();
       lastReconcileElapsedMs = deadline.elapsedMs();
-      if (managedJobProgressSignature(current) !== initialSignature) break;
+      if (!ACTIVE_JOB_STATES.has(String(current?.status || ""))) break;
+      progressChanged = progressSignature(current) !== initialSignature;
+      if (progressChanged && lastReconcileElapsedMs >= nonterminalProgressMinimumMs) break;
     }
   }
   const timedOut = ACTIVE_JOB_STATES.has(String(current?.status || ""))
-    && managedJobProgressSignature(current) === initialSignature && deadline.expired();
-  return withHostedWaitMetadata(current, context, Math.min(waitMs, Math.round(deadline.elapsedMs())), timedOut);
-}
-
-function managedJobProgressSignature(value) {
-  return JSON.stringify([
-    value?.status, value?.current_phase, value?.current_step, value?.finished_at,
-    value?.error_class, value?.recovery_attempts, value?.result_persisted,
-    value?.terminal_record_error_class, value?.artifact_cleanup_pending, value?.artifact_cleanup_error_class,
-  ]);
-}
-
-function withHostedWaitMetadata(value, context, waitedMs, timedOut) {
-  if (context?.authority?.origin !== "relay") return value;
-  return {
-    ...value,
-    managed_job_read_wait_ms: waitedMs,
-    managed_job_read_wait_timed_out: timedOut,
-  };
+    && !progressChanged && progressSignature(current) === initialSignature && deadline.expired();
+  return withHostedManagedJobReadMetadata(current, context, Math.min(waitMs, Math.round(deadline.elapsedMs())), timedOut,
+    nonterminalProgressMinimumMs);
 }
 
 function defaultSleep(ms) {
