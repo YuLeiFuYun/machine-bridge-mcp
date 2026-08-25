@@ -1099,7 +1099,7 @@ async function testUnreadableDependencyProtectionFailsClosed() {
   });
   const upstream = manager.start({
     name: "old protected dependency result",
-    steps: [{ argv: [process.execPath, "-e", ""] }],
+    steps: [{ argv: [process.execPath, "--version"] }],
   });
   const upstreamResult = await waitForJob(manager, upstream.job_id);
   assert(upstreamResult.status === "succeeded",

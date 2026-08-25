@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.130 - 2026-08-25
+
+- Remove the last unrelated adaptive launch from the Windows dependency-retention fail-closed regression. Beta.129 correctly stopped injecting `NODE_V8_COVERAGE` into minimal-environment jobs, and PR CI then advanced to the next pressure-sensitive setup: `old protected dependency result` still used `node -e ""` even though the test only needs one successfully persisted upstream result before it mutates retention metadata. Under hosted Windows pressure that no-op was correctly classified as adaptive and remained in `resource_admission` until the fixture settlement window expired.
+- That setup now uses the exact current-runtime `node --version` light probe, matching the already-hardened dependency execution fixtures. An architecture contract prevents this specific retention setup from regaining adaptive work. Staged validation-only plans and fixtures whose scripts, failures, timing, process trees, resources, or cleanup behavior are themselves under test remain unchanged.
+- Advance package/runtime identity to **3.0.0-beta.130**. Hosted schema generation remains **9**; production resource admission, the thirty-minute admission ceiling, 600-second durable-process ceiling, six-hour managed-job step ceiling, and hosted read pacing remain unchanged.
+
 ## 3.0.0-beta.129 - 2026-08-25
 
 - Fix the remaining Windows managed-job fixture pressure leak exposed only after beta.128 reached merged-main push CI. The dependency-failure regression uses a `minimalEnv:true` manager and an exact current-runtime `node --version` cleanup probe, but the suite-wide `createManagedJobTestManager()` wrapper still injected an empty `NODE_V8_COVERAGE` key into every step. Production correctly treats the presence of Node instrumentation keys as untrusted even when the value is empty, so that test-only injection forced the cleanup probe back into adaptive resource admission; on a pressured Windows runner it stayed in `cleaning/resource_admission` until the test settlement window expired.
