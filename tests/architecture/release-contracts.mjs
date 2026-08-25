@@ -295,6 +295,13 @@ if (!managedJobsTestSource.includes('const runnerDiagnosticRoot = join(root, "ru
     || !managedJobsTestSource.includes('!Object.hasOwn(trimmedLogInspection.review_plan?.steps?.[0]?.env || {}, "NODE_V8_COVERAGE")')) {
   throw new Error("bounded managed-runner diagnostic fixture regained shared coverage or adaptive host scheduling instead of an isolated deterministic light probe");
 }
+if (!managedJobsTestSource.includes("const isolateFullEnvStepCoverage = options?.policy?.minimalEnv === false;")
+    || !managedJobsTestSource.includes("original(isolateFullEnvStepCoverage ? isolateStepCoverage(plan) : plan, ...rest)")) {
+  throw new Error("managed-job test harness again injects Node coverage environment into minimal-env jobs and can distort production resource classification");
+}
+if (!/name: "old protected dependency result",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)) {
+  throw new Error("dependency-retention fail-closed setup regained adaptive business work instead of a deterministic light probe");
+}
 if (managedJobsTestSource.includes("manager.read({ job_id: orphanUpstream.job_id })")
     || !managedJobsTestSource.includes("orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id")
     || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_status === "failed"')

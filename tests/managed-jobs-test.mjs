@@ -559,9 +559,10 @@ function isolateStepCoverage(plan) {
 
 function createManagedJobTestManager(options) {
   const manager = new ManagedJobManager(options);
+  const isolateFullEnvStepCoverage = options?.policy?.minimalEnv === false;
   for (const method of ["start", "stage"]) {
     const original = manager[method].bind(manager);
-    manager[method] = (plan, ...rest) => original(isolateStepCoverage(plan), ...rest);
+    manager[method] = (plan, ...rest) => original(isolateFullEnvStepCoverage ? isolateStepCoverage(plan) : plan, ...rest);
   }
   return manager;
 }
@@ -1098,7 +1099,7 @@ async function testUnreadableDependencyProtectionFailsClosed() {
   });
   const upstream = manager.start({
     name: "old protected dependency result",
-    steps: [{ argv: [process.execPath, "-e", ""] }],
+    steps: [{ argv: [process.execPath, "--version"] }],
   });
   const upstreamResult = await waitForJob(manager, upstream.job_id);
   assert(upstreamResult.status === "succeeded",
