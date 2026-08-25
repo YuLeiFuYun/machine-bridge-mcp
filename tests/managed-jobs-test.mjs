@@ -947,12 +947,11 @@ async function testManagedJobDependencies() {
   await settleDependencyFixture(manager, orphanGate.job_id, "failed", "execution_failed");
   const orphanResult = await waitForJob(manager, orphanDownstream.job_id);
   assert(orphanResult.status === "failed" && orphanResult.error_class === "dependency_failed"
-    && orphanResult.result?.steps?.length === 0,
+    && orphanResult.result?.steps?.length === 0
+    && orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id
+    && orphanResult.result?.dependency_failure?.dependency_status === "failed"
+    && orphanResult.result?.dependency_failure?.dependency_error_class === "dependency_failed",
   "daemon-lifetime runner-exit recovery did not propagate the interrupted upstream as a failed dependency");
-  const orphanUpstreamResult = manager.read({ job_id: orphanUpstream.job_id });
-  assert(orphanUpstreamResult.status === "failed" && orphanUpstreamResult.error_class === "dependency_failed"
-    && orphanUpstreamResult.recovery_attempts === 1,
-    "same-daemon runner exit was not recovered without an external read of the upstream job");
 
   const stagedDependency = manager.stage({
     name: "staged dependency",

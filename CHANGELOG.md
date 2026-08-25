@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.126 - 2026-08-25
+
+- Make the same-daemon dependency-wait runner recovery regression prove its intended property without contaminating the observation. Beta.125 Windows CI showed that the final assertion still called `manager.read(upstream)` after the downstream had already failed, even though that read itself performs reconciliation. The test already proves autonomous relaunch from persisted state by observing `recovery_attempts=1` and a new runner PID without a managed-job read. It now completes the proof through the independently running downstream job's structured `dependency_failure` witness, requiring that downstream observed the recovered upstream as `status=failed` with `error_class=dependency_failed`; no external upstream read participates in that proof.
+- Beta.125 removed the previous eight-minute host-resource wait and reduced the Windows platform failure from 22m47s to 15m14s. macOS platform+install passed in 6m15s, Ubuntu full in 9m39s, and all CodeQL/governance/dependency/workflow/package gates were green. The remaining Windows failure was the test-only upstream read assertion above, not a production timeout or CI outer-envelope limit.
+- Advance package/runtime identity to **3.0.0-beta.126**. Hosted schema generation remains **9**; the thirty-minute resource-admission ceiling, 600-second durable-process ceiling, six-hour managed-job step ceiling, and hosted read pacing remain unchanged.
+
 ## 3.0.0-beta.125 - 2026-08-25
 
 - Fix the remaining Windows `managed-jobs:test` host-pressure dependency exposed by beta.124 PR CI. The suite's bounded runner-log diagnostic fixture staged a no-op `node -e` child, manually promoted the draft to queued state, and launched a real runner only to verify log trimming. Since beta.123 correctly classifies arbitrary Node eval as adaptive, that otherwise unrelated diagnostic could spend the entire eight-minute test settlement window in production resource admission on a loaded Windows hosted runner. The fixture now uses the exact current-runtime `node --version` light probe, matching the deterministic dependency fixtures and testing log bounding rather than host scheduling. An architecture contract prevents this specific runner-diagnostic fixture from regaining adaptive business work.

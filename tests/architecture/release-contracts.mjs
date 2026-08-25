@@ -290,6 +290,12 @@ if (uninstallStateRootIndex < 0 || uninstallPreflightIndex < uninstallStateRootI
 if (!/name: "bounded runner diagnostics",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)) {
   throw new Error("bounded managed-runner diagnostic fixture regained adaptive business work instead of a deterministic light probe");
 }
+if (managedJobsTestSource.includes("manager.read({ job_id: orphanUpstream.job_id })")
+    || !managedJobsTestSource.includes("orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id")
+    || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_status === "failed"')
+    || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_error_class === "dependency_failed"')) {
+  throw new Error("same-daemon dependency recovery fixture no longer proves autonomous upstream recovery through the downstream dependency witness");
+}
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
 }
