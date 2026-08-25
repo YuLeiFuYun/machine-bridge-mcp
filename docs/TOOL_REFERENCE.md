@@ -2790,7 +2790,7 @@ Terminate a live server-managed process tree with graceful or forced termination
 
 **Diagnose runtime layers**
 
-Run fixed, non-user-controlled local probes and return privacy-safe control-plane state (call capacity, draining processes, execution guardrails, relay liveness, and audit health) to distinguish MCP policy, local filesystem, process-spawn, shell, managed-job storage, and registered-resource failures. A successful response proves the request reached the local daemon; it cannot diagnose a host refusal that blocks the tool call itself.
+Run fixed, non-user-controlled local probes and return privacy-safe control-plane state to distinguish MCP policy, local filesystem, process-spawn, shell, managed-job storage, resource-admission, relay, event-density, and operating-system-suspension evidence. Owner/local diagnostics include bounded managed-job churn, content-free recent security-audit tool-call aggregates, bounded resource-waiter summaries with current pre-spawn admission reasons, and on macOS a bounded sleep-history/runtime-stall correlation; they never expose tool arguments/results, waiter IDs/tokens/PIDs, private paths, or raw power logs. A successful response proves the request reached the local daemon; it cannot diagnose a host refusal that blocks the tool call itself or observe ChatGPT final-message receipt.
 
 | Contract field | Value |
 |---|---|
@@ -3306,7 +3306,7 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
 
 **List managed jobs**
 
-List up to 50 recent detached managed jobs and their lifecycle status without returning step output. The durable retained-state store is larger than this response window so long workflows do not have to trade recovery depth for a small inventory payload. Owner/local callers also receive coarse retained-state capacity counts, including unreadable retired cleanup blockers, without internal retired filenames or filesystem identities. Hosted listing is an inventory operation, not a polling primitive; follow known jobs with read_job.
+List up to 50 detached managed jobs without returning step output. The bounded response prioritizes unreadable, active, and staged recovery state before recent terminal history so short helper churn cannot hide an older recoverable long-running job. The durable retained-state store is larger than this response window. Owner/local callers also receive coarse retained-state capacity and recent job-creation/churn aggregates without internal retired filenames, filesystem identities, argv, paths, or output. Hosted listing is an inventory operation, not a polling primitive; follow known jobs with read_job.
 
 | Contract field | Value |
 |---|---|

@@ -98,6 +98,7 @@ function testRemoteActivityIdleSleepGuard() {
   };
   const defaultTimers = [];
   const defaultChild = fakeChild();
+  let defaultNow = Date.UTC(2026, 7, 25, 0, 0, 0);
   const defaultGuard = new RemoteActivityIdleSleepGuard({
     platform: "darwin",
     daemonPid: 4242,
@@ -108,14 +109,21 @@ function testRemoteActivityIdleSleepGuard() {
       return timer;
     },
     clearTimer() {},
+    wallNow: () => defaultNow,
     logger: { event() {} },
   });
   assert(defaultGuard.beginActivity() === true && defaultGuard.endActivity() === true
     && defaultTimers.length === 1 && defaultTimers[0].delay === 30 * 60_000
-    && defaultTimers[0].unrefCalled === true && defaultGuard.snapshot().grace_ms === 30 * 60_000,
+    && defaultTimers[0].unrefCalled === true && defaultGuard.snapshot().grace_ms === 30 * 60_000
+    && defaultGuard.snapshot().grace_release_due_at === "2026-08-25T00:30:00.000Z"
+    && defaultGuard.snapshot().last_activity_started_at === "2026-08-25T00:00:00.000Z"
+    && defaultGuard.snapshot().last_activity_ended_at === "2026-08-25T00:00:00.000Z",
   "default remote inactivity lease did not retain the macOS assertion for thirty minutes after settlement");
+  defaultNow += 30 * 60_000;
   defaultTimers[0].callback();
-  assert(defaultChild.killed === true && defaultGuard.snapshot().active === false,
+  assert(defaultChild.killed === true && defaultGuard.snapshot().active === false
+    && defaultGuard.snapshot().last_release_at === "2026-08-25T00:30:00.000Z"
+    && defaultGuard.snapshot().last_release_reason === "inactivity_grace_expired",
     "default remote inactivity lease did not release after its full thirty-minute window");
 
   const guard = new RemoteActivityIdleSleepGuard({

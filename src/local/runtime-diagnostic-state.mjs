@@ -22,9 +22,12 @@ export function diagnosticControlPlaneState(state = {}, relay = null) {
       relay_result_recovery: state.relayResultRecovery ?? null,
       processes: state.processes ?? null,
       execution_guardrails: state.executionGuardrails ?? null,
+      managed_jobs: state.managedJobs ?? null,
       resource_admission: state.resourceAdmission ?? null,
       security_audit: state.securityAudit ?? null,
       idle_sleep_guard: state.idleSleepGuard ?? null,
+      system_sleep: state.systemSleep ?? null,
+      event_loop_pause_analysis: state.eventLoopPauseAnalysis ?? null,
     },
   };
 }

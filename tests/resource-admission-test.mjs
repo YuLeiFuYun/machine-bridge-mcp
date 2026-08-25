@@ -35,6 +35,7 @@ import { RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recove
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
+import { resourceWaiterDiagnostics } from "../src/local/resource-waiter-diagnostics.mjs";
 
 const GIB = 1024 ** 3;
 let hostSampleReads = 0;
@@ -1147,6 +1148,22 @@ const protectedLarge = waiter("interactive", fairnessNow - 121_000, cargo, "prot
 assert.equal(resourceWaiterProtected(protectedLarge, fairnessNow), true);
 const protectedQueue = resourceWaiterQueueSnapshot([protectedLarge, fittingSmall], fairnessNow);
 assert.equal(protectedQueue.protected, 1, "queue diagnostics lost protected-waiter count");
+const protectedDiagnostics = resourceWaiterDiagnostics([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow);
+assert.equal(protectedDiagnostics.length, 2, "resource waiter diagnostics lost bounded waiter state");
+assert.equal(protectedDiagnostics[0].family, protectedLarge.request.family);
+assert.equal(protectedDiagnostics[0].priority, "interactive");
+assert.equal(protectedDiagnostics[0].protected, true);
+assert.equal(protectedDiagnostics[0].admitted_now, false);
+assert.equal(protectedDiagnostics[0].would_admit_without_leases, true);
+assert(!JSON.stringify(protectedDiagnostics).includes(protectedLarge.waiter_id)
+  && protectedDiagnostics.every((item) => !["waiter_id", "token", "owner", "contention_key"].some((key) => Object.hasOwn(item, key))),
+"resource waiter diagnostics leaked waiter identity, token, owner, or contention key");
+const pressuredDiagnostic = resourceWaiterDiagnostics(
+  [waiter("interactive", fairnessNow - 90_000, { ...explicitPytestSeven, unbounded: true }, "pressure")],
+  [], { ...quietHost, cpu_busy_cores: 4.5 }, evaluateResourceAdmission, fairnessNow,
+)[0];
+assert.equal(pressuredDiagnostic.admission_reason, "cpu_pressure_window",
+  "resource waiter diagnostics did not expose the current pre-spawn CPU admission cause");
 assert.equal(selectedResourceWaiter([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), null, "starved feasible waiter did not reserve a drain window");
 assert.equal(resourceWaiterDrainActive([protectedLarge, fittingSmall], blockingLease, quietHost, evaluateResourceAdmission, fairnessNow), true,
   "active protected fairness drain was not exposed to diagnostics");

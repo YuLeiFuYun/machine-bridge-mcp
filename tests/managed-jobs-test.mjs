@@ -20,7 +20,7 @@ import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local
 import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
 import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
-import { managedJobFinalStatus, persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
+import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
@@ -612,6 +612,35 @@ async function testManagedJobCapacityBoundary() {
   assert(!Object.hasOwn(durableHelperManager.read({ job_id: durableHelper.job_id }), "retention_class")
     && !durableHelperManager.list({ limit: 10 }).jobs.some((job) => Object.hasOwn(job, "retention_class")),
   "durable one-step process retention class leaked through public managed-job projections");
+
+  const recoveryVisibilityRoot = join(root, "recovery-visibility-jobs");
+  const recoveryVisibilityManager = createManagedJobTestManager({
+    jobRoot: recoveryVisibilityRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
+    resources: {}, recover: false,
+  });
+  const olderActive = recoveryVisibilityManager.start({
+    name: "older active recovery job",
+    steps: [{ argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"] }],
+  });
+  for (let index = 0; index < MAX_LISTED_JOBS + 10; index += 1) {
+    const helper = recoveryVisibilityManager.createJob({
+      name: `newer transient helper ${index}`,
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: false, retentionClass: "transient_process" });
+    recoveryVisibilityManager.cancel({ job_id: helper.job_id });
+  }
+  const recoveryVisibilityList = recoveryVisibilityManager.list({ limit: MAX_LISTED_JOBS });
+  assert(recoveryVisibilityList.jobs.some((job) => job.job_id === olderActive.job_id && ACTIVE_JOB_STATES.has(job.status)),
+    "newer terminal helper churn hid an older active managed job from the bounded recovery inventory");
+  assert(recoveryVisibilityList.recent_activity?.created_last_15m >= MAX_LISTED_JOBS + 11
+    && recoveryVisibilityList.recent_activity?.transient_process_last_15m >= MAX_LISTED_JOBS + 10,
+  "managed-job listing did not expose bounded recent helper-churn diagnostics");
+  assert(!Object.hasOwn(recoveryVisibilityManager.list({ limit: 10 }, { authority: { owner: false } }), "recent_activity"),
+    "non-owner managed-job listing exposed global recent job activity");
+  recoveryVisibilityManager.cancel({ job_id: olderActive.job_id });
+  await waitForJob(recoveryVisibilityManager, olderActive.job_id);
 
   const mixedRoot = join(root, "capacity-mixed-retention-jobs");
   const mixedManager = createManagedJobTestManager({
@@ -1818,10 +1847,16 @@ try {
   assert(manager.diagnoseStorage().ok, "managed-job storage probe failed");
 
   const idempotencyKey = "managed-job-idempotency-retry-001";
+  // Idempotency is the behavior under test here, not resource admission. On POSIX use the
+  // identity-based trusted-light sleep executable so transient host CPU pressure cannot turn
+  // this semantic fixture into an unrelated resource-governance failure during full coverage.
+  const idempotentFixtureArgv = process.platform === "win32"
+    ? [process.execPath, "-e", "setTimeout(()=>{},250)"]
+    : ["/bin/sleep", "1"];
   const idempotentPlan = {
     idempotency_key: idempotencyKey,
     name: "idempotent managed job",
-    steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},250)"], timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+    steps: [{ argv: idempotentFixtureArgv, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
   };
   const idempotentFirst = manager.start(idempotentPlan);
   const idempotentReplay = manager.start(idempotentPlan);
@@ -1834,7 +1869,8 @@ try {
   const idempotentStatusText = await readFile(join(jobRoot, idempotentFirst.job_id, "status.json"), "utf8");
   assert(!idempotentStatusText.includes(idempotencyKey), "managed-job status persisted the raw client idempotency key");
   const idempotentResult = await waitForJob(manager, idempotentFirst.job_id);
-  assert(idempotentResult.status === "succeeded", "idempotent managed-job fixture did not finish successfully");
+  assert(idempotentResult.status === "succeeded",
+    `idempotent managed-job fixture did not finish successfully: ${await managedJobFixtureDiagnostics(idempotentFirst.job_id, idempotentResult)}`);
 
   const resultFirstReplayKey = "managed-job-result-first-replay-001";
   const duplicateMarker = join(workspace, "idempotent-result-first-duplicate.txt");
@@ -1883,6 +1919,20 @@ try {
     "});",
   ].join("");
   const cleanupScript = "const fs=require('node:fs'); fs.rmSync(process.argv[1],{force:true}); fs.writeFileSync(process.argv[2],'cleaned');";
+  const finallyFixtureStep = process.platform === "win32"
+    ? {
+        name: "remove temporary helper",
+        argv: [process.execPath, "-e", cleanupScript, helperFile, cleanupMarker],
+        timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+      }
+    : {
+        // The fixture is proving finally-step execution/redaction, not resource admission. Use an
+        // identity-based trusted-light executable so transient host pressure cannot manufacture
+        // an unrelated cleanup_error while the job-runtime cleanup assertion below remains live.
+        name: "prove finally execution",
+        argv: ["/bin/echo", "finally-step-ran"],
+        timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+      };
 
   const accepted = manager.start({
     name: "resource redaction and finally cleanup",
@@ -1899,16 +1949,17 @@ try {
       stdin_resource: "test-secret",
       timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
     }],
-    finally_steps: [{
-      name: "remove temporary helper",
-      argv: [process.execPath, "-e", cleanupScript, helperFile, cleanupMarker],
-      timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
-    }],
+    finally_steps: [finallyFixtureStep],
   });
   assert(accepted.detached && accepted.continues_without_mcp_connection, "managed job was not accepted as detached");
   const failed = await waitForJob(manager, accepted.job_id);
-  assert(failed.status === "failed", `expected failed job, got ${failed.status}`);
-  assert(!(await exists(helperFile)) && await exists(cleanupMarker), "finally step did not clean the temporary helper");
+  assert(failed.status === "failed",
+    `expected failed job: ${await managedJobFixtureDiagnostics(accepted.job_id, failed)}`);
+  if (process.platform === "win32") {
+    assert(!(await exists(helperFile)) && await exists(cleanupMarker), "finally step did not clean the temporary helper");
+  } else {
+    assert(failed.result?.finally_steps?.[0]?.stdout?.includes("finally-step-ran"), "trusted-light finally fixture did not execute");
+  }
   const serialized = JSON.stringify(failed);
   assert(!serialized.includes(secret), "job result exposed raw resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64")), "job result exposed base64 resource content");

@@ -70,6 +70,7 @@ export class ManagedJobManager {
       retained: jobs.length,
       maximum: MAX_JOBS,
       ...(listing.capacity ? { capacity: listing.capacity } : {}),
+      ...(listing.recent_activity ? { recent_activity: listing.recent_activity } : {}),
     };
   }
 

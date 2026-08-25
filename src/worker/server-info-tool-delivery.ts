@@ -26,6 +26,7 @@ export function remoteToolDeliveryContract(
     remote_process_session_start_execution_max_ms: relayContract.processSessionStartExecutionTimeoutMs,
     remote_process_delivery_mode: "durable_job",
     remote_process_acceptance_max_ms: relayContract.durableProcessAcceptanceTimeoutMs,
+    remote_process_initial_settlement_wait_ms: relayContract.durableProcessInitialSettlementWaitMs,
     remote_process_execution_timeout_max_ms: relayContract.maximumDurableProcessExecutionTimeoutMs,
     managed_job_resource_admission_wait_max_ms: relayContract.maximumManagedJobResourceAdmissionWaitMs,
     remote_managed_job_read_wait_default_ms: relayContract.defaultManagedJobReadWaitMs,
@@ -45,5 +46,6 @@ export function compactRemoteToolDeliveryContract(
 ): Record<string, unknown> {
   const compact = { ...remoteToolDeliveryContract(serverVersion, subscription) };
   delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms;
+  delete compact.remote_process_initial_settlement_wait_ms;
   return compact;
 }

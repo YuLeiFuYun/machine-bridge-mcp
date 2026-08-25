@@ -13,6 +13,10 @@ can therefore stop after step 2 or 3 and leave local or remote temporary state b
 
 Machine Bridge managed jobs reduce this failure mode by accepting the complete execution and cleanup plan in one call. After acceptance, an independent local runner owns the lifecycle. It does not depend on the MCP socket remaining connected.
 
+Recovery inventory is deliberately ordered by recoverability rather than recency alone. `list_jobs` returns at most 50 records, but unreadable state, active jobs, and staged plans are placed ahead of terminal history so a burst of short one-step helpers cannot push an older long-running or pre-spawn-waiting job out of the bounded recovery window. Owner/local listings also include only aggregate recent creation/churn counts; the internal `transient_process` retention class remains hidden per job.
+
+Remote one-step `exec_command`, `run_process`, and `run_local_command` requests still become durable managed jobs before execution. The hosted tool call then spends only a short two-second initial-settlement window checking whether that helper already reached terminal state. A short helper can therefore return its managed-job result in the original tool response with `follow_up_read_required=false`, eliminating the usual second `read_job` event. A helper that remains active keeps the same durable `job_id` and recovery envelope with `follow_up_read_required=true`; its execution timeout, pre-spawn resource-admission allowance, and later recovery semantics are unchanged.
+
 This mechanism does **not** bypass host, operating-system, or endpoint-security policy. A job snapshots its execution policy/environment at acceptance; later profile changes affect new jobs, while accepted jobs continue until completion or explicit cancellation. The initial `start_job` request must still be permitted, and every local child process remains subject to local security controls.
 
 ## Diagnose the blocking layer
@@ -22,6 +26,8 @@ Use the MCP tool:
 ```text
 diagnose_runtime
 ```
+
+For an owner/local caller, interruption diagnosis includes three bounded evidence classes that are intentionally safe to correlate: managed-job creation/churn aggregates, content-free security-audit call-density/tool-frequency aggregates, and up to four resource waiters with their current pre-spawn admission reasons. Those waiter summaries never expose command text, paths, waiter IDs/tokens, PIDs, or contention keys. A long `resource_admission` waiter is scheduling evidence, not proof that the child timed out or that the overall user task should be shortened.
 
 or the local terminal:
 

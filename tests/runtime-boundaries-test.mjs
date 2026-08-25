@@ -14,9 +14,13 @@ import { policyProfile } from "../src/local/policy.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
+import { settleDurableProcessAcceptance } from "../src/local/durable-process-initial-settlement.mjs";
+import { correlateEventLoopStallWithSystemSleep, parseSystemSleepIntervals } from "../src/local/system-sleep-diagnostics.mjs";
 
 await testRuntimeReporting();
 testProcessSessionStatusAuthority();
+await testDurableProcessInitialSettlement();
+testSystemSleepDiagnostics();
 await testRuntimeDiagnostics();
 testDoctorReportingScope();
 await testGitServiceDiscoveryBoundary();
@@ -24,6 +28,57 @@ await testRuntimeCapabilities();
 await testRuntimeResourceService();
 await testPathInspectionFailures();
 console.log("runtime boundary services test ok");
+
+function testSystemSleepDiagnostics() {
+  const intervals = parseSystemSleepIntervals([
+    "2026-08-25 00:32:48 +0800 Sleep               \tEntering Sleep state due to 'Idle Sleep':TCPKeepAlive=active Using Batt (Charge:77%) 927 secs",
+    "2026-08-25 00:48:15 +0800 DarkWake            \tDarkWake from Deep Idle [CDNP] : due to rtc/SleepService Using BATT (Charge:77%) 2 secs",
+    "2026-08-25 00:48:17 +0800 Sleep               \tEntering Sleep state due to 'Sleep Service Back to Sleep':TCPKeepAlive=active Using Batt (Charge:77%) 954 secs",
+  ].join("\n"));
+  assert(intervals.length === 2 && intervals[0].reason === "idle_sleep"
+    && intervals[1].reason === "sleep_service_back_to_sleep"
+    && intervals[1].ended_at === "2026-08-24T17:04:11.000Z"
+    && intervals[1].duration_ms === 954_000,
+  "macOS sleep diagnostic did not reduce pmset history to bounded sleep intervals");
+  const matched = correlateEventLoopStallWithSystemSleep({ heartbeat: {
+    last_event_loop_stall_at: "2026-08-24T17:04:10.810Z",
+    last_event_loop_stall_lag_ms: 947_954,
+  } }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(matched.classification === "matched_system_sleep"
+    && matched.matched_sleep?.reason === "sleep_service_back_to_sleep",
+  "runtime pause was not correlated with a same-duration macOS sleep interval");
+  const unmatched = correlateEventLoopStallWithSystemSleep({ heartbeat: {
+    last_event_loop_stall_at: "2026-08-24T18:04:10.810Z",
+    last_event_loop_stall_lag_ms: 120_000,
+  } }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(unmatched.classification === "no_matching_recent_system_sleep" && unmatched.matched_sleep === null,
+    "non-sleep runtime pause was overclassified as system suspension");
+}
+
+async function testDurableProcessInitialSettlement() {
+  const jobId = `job_${"A".repeat(24)}`;
+  const accepted = {
+    job_id: jobId, status: "queued", recovery: { tool: "read_job", job_id: jobId }, cleanup: { finally_steps: "none-declared" },
+    execution_mode: "durable_job", source_tool: "exec_command", execution_timeout_seconds: 60, retry_safety: "same key",
+  };
+  const manager = {
+    async readHosted() { return { job_id: jobId, status: "succeeded", current_phase: null, current_step: null, result: { status: "succeeded" } }; },
+    readProgress() { throw new Error("terminal initial read should not poll progress"); },
+  };
+  const settled = await settleDurableProcessAcceptance(manager, accepted, { origin: "relay", authority: { origin: "relay" } });
+  assert(settled.status === "succeeded" && settled.initial_settlement_terminal === true
+    && settled.follow_up_read_required === false && settled.result?.status === "succeeded"
+    && settled.recovery === accepted.recovery,
+  "short durable process did not settle inside its original hosted tool response");
+  const local = await settleDurableProcessAcceptance(manager, accepted, { origin: "stdio" });
+  assert(local === accepted, "local durable process delivery gained an unnecessary initial settlement wait");
+  const unavailable = await settleDurableProcessAcceptance({
+    async readHosted() { throw new Error("synthetic read failure"); }, readProgress() { return {}; },
+  }, accepted, { origin: "relay", authority: { origin: "relay" } });
+  assert(unavailable.status === "queued" && unavailable.initial_settlement_unavailable === true
+    && unavailable.follow_up_read_required === true && unavailable.recovery === accepted.recovery,
+  "optional initial settlement failure replaced the durable acceptance recovery envelope");
+}
 
 async function testRuntimeReporting() {
   const full = policyProfile("full");
