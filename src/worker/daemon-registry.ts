@@ -14,12 +14,19 @@ export class DaemonRegistry implements ReadyDaemonRegistry {
   readonly http = new DaemonHttpRegistry();
   private readonly sockets: DaemonSocketRegistry;
   private readonly lastObservation = new DaemonLastObservation();
+  private readonly draining = new WeakSet<DaemonChannel>();
   constructor(context: WebSocketContext) { this.sockets = new DaemonSocketRegistry(context); }
 
   readyChannels(now = Date.now()): DaemonChannel[] {
     const webSockets = this.sockets.readySockets(now);
-    return webSockets.length > 0 ? webSockets : this.http.readyChannels(now);
+    const selected = webSockets.length > 0 ? webSockets : this.http.readyChannels(now);
+    return selected.filter((channel) => !this.draining.has(channel));
   }
+  beginDrain(channel: DaemonChannel): boolean {
+    if (!this.readyAttachment(channel) || this.draining.has(channel)) return false;
+    this.draining.add(channel); return true;
+  }
+  isDraining(channel: DaemonChannel): boolean { return this.draining.has(channel); }
   readyAttachment(channel: DaemonChannel): DaemonAttachment | undefined {
     return channel.daemonTransport === "https"
       ? this.http.attachment(channel as DaemonHttpChannel)

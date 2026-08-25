@@ -69,7 +69,7 @@ Tool count: **54**.
 
 **Server information**
 
-Return live authorization and daemon status. Use detail=summary for routine version, authority, readiness, relay, capacity, and timeout checks; use the default/full projection for exact tool membership, OAuth metadata, account identity, and detailed observability.
+Return live authorization and daemon status. Use detail=summary for routine version, authority, readiness, relay, capacity, and timeout checks; use the default/full projection for exact tool membership, OAuth metadata, account identity, detailed isolate-local observability, and the owner-visible durable continuity summary retained across Worker isolate replacement.
 
 | Contract field | Value |
 |---|---|
@@ -92,7 +92,7 @@ Return live authorization and daemon status. Use detail=summary for routine vers
         "full"
       ],
       "default": "full",
-      "description": "Use summary for compact health/authority status; use full for complete tool, OAuth, and observability diagnostics."
+      "description": "Use summary for compact health/authority status; use full for complete tool, OAuth, isolate-local observability, and durable continuity diagnostics."
     }
   },
   "additionalProperties": false
@@ -3306,7 +3306,7 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
 
 **List managed jobs**
 
-List up to 50 detached managed jobs without returning step output. The bounded response prioritizes unreadable, active, and staged recovery state before recent terminal history so short helper churn cannot hide an older recoverable long-running job. The durable retained-state store is larger than this response window. Owner/local callers also receive coarse retained-state capacity and recent job-creation/churn aggregates without internal retired filenames, filesystem identities, argv, paths, or output. Hosted listing is an inventory operation, not a polling primitive; follow known jobs with read_job.
+List up to 50 detached managed jobs without returning step output. The bounded response prioritizes unreadable, active, staged, and durable terminal recovery state before transient one-step helper history so helper churn cannot hide an older recoverable long-running job or its terminal result. The durable retained-state store is larger than this response window. Owner/local callers also receive coarse retained-state capacity including durable-versus-transient terminal counts plus recent job-creation/churn aggregates without internal retired filenames, filesystem identities, argv, paths, or output. Hosted listing is an inventory operation, not a polling primitive; follow known jobs with read_job.
 
 | Contract field | Value |
 |---|---|
@@ -3337,7 +3337,7 @@ List up to 50 detached managed jobs without returning step output. The bounded r
 
 **Read managed job**
 
-Return one managed job status plus bounded, resource-redacted step results. current_phase=dependency_wait means an accepted dependent job is waiting locally for declared depends_on jobs and has not spawned its main child; dependency_pending_count decreases as upstream jobs settle, all-success releases execution, and a later upstream failure terminates the dependent with result.error_class=dependency_failed. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Hosted active reads are server-paced: terminal settlement returns on the next bounded poll, nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. This reduces host-visible event density without shortening the managed job. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.
+Return one managed job status plus bounded, resource-redacted step results. current_phase=dependency_wait means an accepted dependent job is waiting locally for declared depends_on jobs and has not spawned its main child; dependency_pending_count decreases as upstream jobs settle, all-success releases execution, and a later upstream failure terminates the dependent with result.error_class=dependency_failed. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Hosted active reads are server-paced: terminal settlement returns on the next bounded poll, nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. This reduces host-visible event density without shortening the managed job. A planned local-daemon restart settles an in-flight hosted read_job as retryable unavailable with recovery.mode=read_same_job and the original job_id; recover by reading that same job_id after reconnect, never by resubmitting its business side effect. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.
 
 | Contract field | Value |
 |---|---|

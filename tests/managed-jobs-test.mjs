@@ -558,7 +558,10 @@ function isolateStepCoverage(plan) {
 }
 
 function createManagedJobTestManager(options) {
-  const manager = new ManagedJobManager(options);
+  const manager = new ManagedJobManager({
+    ...options,
+    runnerSpawnProcess: options.runnerSpawnProcess ?? spawnManagedJobTestRunner,
+  });
   const isolateFullEnvStepCoverage = options?.policy?.minimalEnv === false;
   for (const method of ["start", "stage"]) {
     const original = manager[method].bind(manager);
@@ -664,6 +667,11 @@ async function testManagedJobCapacityBoundary() {
     name: "older active recovery job",
     steps: [{ argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"] }],
   });
+  const durableTerminal = recoveryVisibilityManager.start({
+    name: "older durable terminal recovery result",
+    steps: [{ argv: [process.execPath, "--version"] }],
+  });
+  await waitForJob(recoveryVisibilityManager, durableTerminal.job_id);
   for (let index = 0; index < MAX_LISTED_JOBS + 10; index += 1) {
     const helper = recoveryVisibilityManager.createJob({
       name: `newer transient helper ${index}`,
@@ -674,11 +682,16 @@ async function testManagedJobCapacityBoundary() {
   const recoveryVisibilityList = recoveryVisibilityManager.list({ limit: MAX_LISTED_JOBS });
   assert(recoveryVisibilityList.jobs.some((job) => job.job_id === olderActive.job_id && ACTIVE_JOB_STATES.has(job.status)),
     "newer terminal helper churn hid an older active managed job from the bounded recovery inventory");
+  assert(recoveryVisibilityList.jobs.some((job) => job.job_id === durableTerminal.job_id && job.status === "succeeded"),
+    "newer transient helper churn hid an older durable terminal recovery result from the bounded inventory");
   assert(recoveryVisibilityList.recent_activity?.created_last_15m >= MAX_LISTED_JOBS + 11
-    && recoveryVisibilityList.recent_activity?.transient_process_last_15m >= MAX_LISTED_JOBS + 10,
+    && recoveryVisibilityList.recent_activity?.transient_process_last_15m >= MAX_LISTED_JOBS + 10
+    && recoveryVisibilityList.capacity?.durable_terminal >= 1
+    && recoveryVisibilityList.capacity?.transient_terminal >= MAX_LISTED_JOBS + 10,
   "managed-job listing did not expose bounded recent helper-churn diagnostics");
-  assert(!Object.hasOwn(recoveryVisibilityManager.list({ limit: 10 }, { authority: { owner: false } }), "recent_activity"),
-    "non-owner managed-job listing exposed global recent job activity");
+  const delegatedRecoveryList = recoveryVisibilityManager.list({ limit: 10 }, { authority: { owner: false } });
+  assert(!Object.hasOwn(delegatedRecoveryList, "recent_activity") && !Object.hasOwn(delegatedRecoveryList, "capacity"),
+    "non-owner managed-job listing exposed global recent job activity or retained-state composition");
   recoveryVisibilityManager.cancel({ job_id: olderActive.job_id });
   await waitForJob(recoveryVisibilityManager, olderActive.job_id);
 
@@ -952,7 +965,14 @@ async function testManagedJobDependencies() {
     && orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id
     && orphanResult.result?.dependency_failure?.dependency_status === "failed"
     && orphanResult.result?.dependency_failure?.dependency_error_class === "dependency_failed",
-  "daemon-lifetime runner-exit recovery did not propagate the interrupted upstream as a failed dependency");
+  `daemon-lifetime runner-exit recovery did not propagate the interrupted upstream as a failed dependency: ${JSON.stringify({
+    status: orphanResult.status,
+    error_class: orphanResult.error_class,
+    dependency_status: orphanResult.result?.dependency_failure?.dependency_status ?? null,
+    dependency_error_class: orphanResult.result?.dependency_failure?.dependency_error_class ?? null,
+    dependency_matches_upstream: orphanResult.result?.dependency_failure?.dependency_job_id === orphanUpstream.job_id,
+    steps: orphanResult.result?.steps?.length ?? null,
+  })}`);
 
   const stagedDependency = manager.stage({
     name: "staged dependency",
@@ -1142,10 +1162,15 @@ const cancelMarker = join(workspace, "cancel-cleanup-marker.txt");
 const recoveryMarker = join(workspace, "recovery-cleanup-marker.txt");
 const secret = "managed-job-secret-value-42";
 const runnerEntry = fileURLToPath(new URL("../src/local/job-runner.mjs", import.meta.url));
+const runnerResourceHook = fileURLToPath(new URL("./fixtures/managed-job-resource-hook.mjs", import.meta.url));
 const previousCoordinatorRoot = process.env.AGENT_RESOURCE_COORDINATOR_ROOT;
 const previousBuildRoot = process.env.AGENT_BUILD_ROOT;
 process.env.AGENT_RESOURCE_COORDINATOR_ROOT = join(root, "resource-coordinator");
 process.env.AGENT_BUILD_ROOT = join(root, "build-cache");
+
+function spawnManagedJobTestRunner(command, args, options) {
+  return spawn(command, ["--import", runnerResourceHook, ...args], options);
+}
 
 await mkdir(workspace, { recursive: true });
 await writeFile(secretFile, `${secret}\n`, { mode: 0o600 });
@@ -2132,10 +2157,10 @@ try {
   let releaseCoordinatorLock = null;
   let coordinatorLockReadyResolve = null;
   const coordinatorLockReady = new Promise((resolvePromise) => { coordinatorLockReadyResolve = resolvePromise; });
-  const coordinatorLockTask = withResourceTransactionLock(coordinatorRoot, async () => {
+  const coordinatorLockTask = withFixtureResourceTransactionLock(coordinatorRoot, async () => {
     coordinatorLockReadyResolve();
     await new Promise((resolvePromise) => { releaseCoordinatorLock = resolvePromise; });
-  }, { timeoutMs: 30_000 });
+  }, 30_000);
   let coordinatorLockFailure = null;
   void coordinatorLockTask.catch((error) => {
     coordinatorLockFailure = error;
@@ -2509,6 +2534,22 @@ async function exists(path) {
 
 function delay(ms) {
   return new Promise((resolvePromise) => { setTimeout(resolvePromise, ms); });
+}
+
+async function withFixtureResourceTransactionLock(root, callback, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastPublicationError = null;
+  while (Date.now() < deadline) {
+    try {
+      return await withResourceTransactionLock(root, callback, { timeoutMs: Math.max(1, deadline - Date.now()) });
+    } catch (error) {
+      const code = error?.code || error?.cause?.code;
+      if (code !== "MBM_MULTIPLE_HARD_LINKS") throw error;
+      lastPublicationError = error;
+      await delay(Math.min(25, Math.max(1, deadline - Date.now())));
+    }
+  }
+  throw lastPublicationError || new Error("managed-job recovery fixture timed out acquiring its private resource transaction lock");
 }
 
 async function expectReject(promise, pattern) {

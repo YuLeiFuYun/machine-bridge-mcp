@@ -1,7 +1,7 @@
 import { compactRemoteToolDeliveryContract, remoteToolDeliveryContract } from "./server-info-tool-delivery.ts";
 import type { DaemonRegistry } from "./daemon-registry.ts";
 import { readyDaemonChannels } from "./daemon-channel.ts";
-import type { WorkerObservability } from "./observability.ts";
+import type { WorkerObservability } from "./observability.ts"; import type { WorkerContinuityEvidence } from "./worker-continuity-evidence.ts";
 import { hiddenWorkerActivity, hiddenWorkerPending, projectDaemonStatus, workerGlobalActivityVisible } from "./server-info-activity.ts";
 export type ServerInfoDetail = "summary" | "full";
 
@@ -17,7 +17,7 @@ type ServerInfoInput = {
   pendingSnapshot: Record<string, unknown>;
   toolListSubscription: Readonly<{ activeForAccount?: number; openedForAccount?: boolean }>;
   daemonRegistry: DaemonRegistry;
-  observability: WorkerObservability;
+  observability: WorkerObservability; continuityEvidence?: WorkerContinuityEvidence;
 };
 
 export function serverInfoDetail(args: Record<string, unknown> = {}): ServerInfoDetail {
@@ -43,7 +43,7 @@ export function buildServerInfoResult(input: ServerInfoInput, detail: ServerInfo
       daemon_candidates: socketsLive.candidates,
       daemon_probes: socketsLive.probing,
       sockets_live: socketsLive,
-      observability: input.observability.snapshot(),
+      observability: input.observability.snapshot(), continuity_evidence: input.continuityEvidence ?? null,
     } : {
       pending_calls: hiddenWorkerPending(input.pendingSnapshot),
       sockets_live: hiddenWorkerActivity(),

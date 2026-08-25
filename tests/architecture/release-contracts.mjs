@@ -273,6 +273,8 @@ for (const required of ["self-test", "service-platform:test", "full-access:test"
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
 const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs");
 const workerTypesGeneratorTestSource = readLfSource("tests", "worker-types-generator-test.mjs");
+const managedJobResourceHookSource = readLfSource("tests", "fixtures", "managed-job-resource-hook.mjs");
+const managedJobResourceFixtureSource = readLfSource("tests", "fixtures", "managed-job-resource-admission-fixture.mjs");
 for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
   if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
 }
@@ -298,6 +300,13 @@ if (!managedJobsTestSource.includes('const runnerDiagnosticRoot = join(root, "ru
 if (!managedJobsTestSource.includes("const isolateFullEnvStepCoverage = options?.policy?.minimalEnv === false;")
     || !managedJobsTestSource.includes("original(isolateFullEnvStepCoverage ? isolateStepCoverage(plan) : plan, ...rest)")) {
   throw new Error("managed-job test harness again injects Node coverage environment into minimal-env jobs and can distort production resource classification");
+}
+if (!managedJobsTestSource.includes("runnerSpawnProcess: options.runnerSpawnProcess ?? spawnManagedJobTestRunner")
+    || !managedJobsTestSource.includes('["--import", runnerResourceHook, ...args]')
+    || !managedJobResourceHookSource.includes('specifier === "./resource-admission.mjs" && context.parentURL === runnerUrl')
+    || !managedJobResourceFixtureSource.includes("extends ProductionResourceCoordinator")
+    || !managedJobResourceFixtureSource.includes("sampleHost: healthyResourceHost")) {
+  throw new Error("managed-job integration fixtures lost test-process-only healthy-host injection or broadened its import interception boundary");
 }
 if (!/name: "old protected dependency result",\s*steps: \[\{ argv: \[process\.execPath, "--version"\]/.test(managedJobsTestSource)) {
   throw new Error("dependency-retention fail-closed setup regained adaptive business work instead of a deterministic light probe");
@@ -550,14 +559,73 @@ const remoteActivityIdleSleepGuardSource = readFileSync(join(root, "src", "local
 const processSessionRemoteActivitySource = readFileSync(join(root, "src", "local", "process-session-remote-activity.mjs"), "utf8");
 const processSessionsSource = readFileSync(join(root, "src", "local", "process-sessions.mjs"), "utf8");
 const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
+const managedJobsManagerSource = readFileSync(join(root, "src", "local", "managed-jobs.mjs"), "utf8");
+const managedJobRelaunchSource = readFileSync(join(root, "src", "local", "managed-job-relaunch.mjs"), "utf8");
 const managedJobActiveChildSource = readFileSync(join(root, "src", "local", "managed-job-active-child.mjs"), "utf8");
 const managedJobRunnerExitRecoverySource = readFileSync(join(root, "src", "local", "managed-job-runner-exit-recovery.mjs"), "utf8");
 const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
+const managedJobListingSource = readFileSync(join(root, "src", "local", "managed-job-listing.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
+const runtimeRelayControlSource = readFileSync(join(root, "src", "local", "runtime-relay-control.mjs"), "utf8");
+const runtimeRelayAcknowledgementsSource = readFileSync(join(root, "src", "local", "runtime-relay-acknowledgements.mjs"), "utf8");
+const runtimeRelayShutdownDrainSource = readFileSync(join(root, "src", "local", "runtime-relay-shutdown-drain.mjs"), "utf8");
+const workerDaemonRegistrySource = readFileSync(join(root, "src", "worker", "daemon-registry.ts"), "utf8");
+const workerDaemonReadyMessagesSource = readFileSync(join(root, "src", "worker", "daemon-ready-messages.ts"), "utf8");
+const workerDaemonPlannedDrainSource = readFileSync(join(root, "src", "worker", "daemon-planned-drain.ts"), "utf8");
+const workerToolRecoverySource = readFileSync(join(root, "src", "worker", "tool-call-recovery.ts"), "utf8");
+const workerContinuityEvidenceSource = readFileSync(join(root, "src", "worker", "worker-continuity-evidence.ts"), "utf8");
+const workerServerInfoContinuitySource = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
+const workerIndexContinuitySource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const toolExecutorSource = readFileSync(join(root, "src", "local", "tool-executor.mjs"), "utf8");
 const runtimeDiagnosticStateSource = readFileSync(join(root, "src", "local", "runtime-diagnostic-state.mjs"), "utf8");
 const checkRunnerTestSource = readFileSync(join(root, "tests", "check-runner-test.mjs"), "utf8");
 const verificationGenerationGuardSource = readFileSync(join(root, "scripts", "verification-generation-guard.mjs"), "utf8");
+if (!managedJobRunnerSource.includes("const resourceCoordinator = new ResourceCoordinator();")
+    || managedJobRunnerSource.includes("healthyResourceHost")
+    || managedJobRunnerSource.includes("runnerSpawnProcess")
+    || !managedJobsManagerSource.includes("runnerSpawnProcess = null")
+    || !managedJobsManagerSource.includes("this.runnerSpawnProcess = runnerSpawnProcess")
+    || !managedJobRelaunchSource.includes("runnerSpawnProcess")
+    || runtimeSource.includes("runnerSpawnProcess:")) {
+  throw new Error("managed-job test runner injection escaped its in-process constructor seam or altered the production runner resource coordinator");
+}
+const plannedDrainIndex = runtimeSource.indexOf("await this.relayShutdownDrain?.begin(this.activeRelayCalls.size);");
+const relayStopIndex = runtimeSource.indexOf("this.relay?.stop();");
+if (plannedDrainIndex < 0 || relayStopIndex <= plannedDrainIndex
+    || !runtimeRelayShutdownDrainSource.includes('type: "daemon_draining"')
+    || !runtimeRelayControlSource.includes("handleRuntimeRelayAcknowledgement")
+    || !runtimeRelayAcknowledgementsSource.includes('message.type !== "daemon_draining_ack"')
+    || !runtimeRelayAcknowledgementsSource.includes("handleRuntimeRelayShutdownAck")
+    || !workerDaemonReadyMessagesSource.includes('body.type === "daemon_draining"')
+    || !workerDaemonReadyMessagesSource.includes("settleDaemonPlannedDrain")
+    || !workerDaemonRegistrySource.includes("private readonly draining = new WeakSet<DaemonChannel>()")
+    || !workerDaemonRegistrySource.includes("selected.filter((channel) => !this.draining.has(channel))")
+    || !workerDaemonPlannedDrainSource.includes("input.beginDrain(input.channel)")
+    || !workerDaemonPlannedDrainSource.includes("dispatchedDaemonPlannedDrainError(record.recovery)")
+    || !workerDaemonPlannedDrainSource.includes('type: "daemon_draining_ack"')
+    || !workerToolRecoverySource.includes('name === "read_job"')
+    || !workerToolRecoverySource.includes('mode: "read_same_job"')
+    || !workerToolRecoverySource.includes('action: "retry_read_job_with_same_job_id"')) {
+  throw new Error("planned daemon shutdown lost structured Worker drain settlement or same-job read recovery");
+}
+if (!workerContinuityEvidenceSource.includes('const KEY = "worker-continuity-evidence"')
+    || !workerContinuityEvidenceSource.includes("storage.transaction")
+    || !workerContinuityEvidenceSource.includes("last_planned_drain_at")
+    || !workerContinuityEvidenceSource.includes("last_socket_disconnect")
+    || !workerContinuityEvidenceSource.includes("last_request_abort_at")
+    || !workerContinuityEvidenceSource.includes("last_stream_cancel_control_at")
+    || !workerDaemonPlannedDrainSource.includes("recordWorkerPlannedDrain")
+    || !workerIndexContinuitySource.includes("recordWorkerSocketDisconnect")
+    || !workerIndexContinuitySource.includes("recordWorkerClientCancellation")
+    || !workerServerInfoContinuitySource.includes("continuity_evidence: input.continuityEvidence")
+    || ["account_id", "client_id", "call_id", "tool_name", "arguments", "endpoint", "close_reason", "error_text"].some((field) => workerContinuityEvidenceSource.includes(field))) {
+  throw new Error("Worker durable continuity evidence lost its transactional privacy-bounded causal summary contract");
+}
+if (!managedJobListingSource.includes('retentionClass === "transient_process" ? 4 : 3')
+    || !managedJobListingSource.includes("durable_terminal: durableTerminal")
+    || !managedJobListingSource.includes("transient_terminal: transientTerminal")) {
+  throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
+}
 if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
     || !macosIdleSleepAssertionSource.includes('["-i", "-w", String(this.processId)]')
     || !macosIdleSleepAssertionSource.includes('shell: false')
@@ -1068,7 +1136,10 @@ const managedJobDirectoryGenerationSource = readFileSync(join(root, "src", "loca
 const managedJobCapacitySource = readFileSync(join(root, "src", "local", "managed-job-capacity.mjs"), "utf8");
 const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
 if (!managedJobsIntegrationSource.includes("RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500")
-    || !/withResourceTransactionLock\(coordinatorRoot,[\s\S]{0,400}\{ timeoutMs: 30_000 \}\)/.test(managedJobsIntegrationSource)) {
+    || !managedJobsIntegrationSource.includes("withFixtureResourceTransactionLock(coordinatorRoot")
+    || !managedJobsIntegrationSource.includes("}, 30_000);")
+    || !managedJobsIntegrationSource.includes('code !== "MBM_MULTIPLE_HARD_LINKS"')
+    || !managedJobsIntegrationSource.includes("withResourceTransactionLock(root, callback, { timeoutMs: Math.max(1, deadline - Date.now()) })")) {
   throw new Error("managed-job resource-contention regression lost its setup/acquisition timing separation");
 }
 if (!managedJobRunnerLivenessSource.includes("inspectProcessInstanceAsync")
@@ -1573,6 +1644,7 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_nonterminal_progress_minimum_ms")
     || !serverInfoToolDeliverySource.includes("compactRemoteToolDeliveryContract")
     || !serverInfoToolDeliverySource.includes("delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms")
+    || !serverInfoToolDeliverySource.includes("delete compact.remote_process_blocking_poll_wait_max_ms")
     || !serverInfoSource.includes("...compactRemoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
     || !serverInfoSource.includes("...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_concurrency_max_per_account")
@@ -1883,7 +1955,10 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 9"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 11"],
+  ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence survives Worker isolate replacement"],
+  ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
+  ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "effective account policy permits it"],

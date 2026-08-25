@@ -7,7 +7,7 @@ import { atomicWriteJson, readRequiredJson } from "./managed-job-storage.mjs";
 const MAX_PLAN_BYTES = 1024 * 1024;
 
 export function relaunchInterruptedManagedJob({
-  dir, statusFile, status, recoveryAttempts, recoveryToken, logger, runnerEnvironmentOverrides, onRunnerExit,
+  dir, statusFile, status, recoveryAttempts, recoveryToken, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
 }) {
   const plan = readVerifiedPlan(dir, status);
   status.status = "interrupted";
@@ -17,11 +17,11 @@ export function relaunchInterruptedManagedJob({
   status.recovery_attempts = recoveryAttempts + 1;
   atomicWriteJson(statusFile, status, 256 * 1024);
   clearRunnerRuntime(dir);
-  return launchRunner(dir, true, recoveryToken, runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit));
+  return launchRunner(dir, true, recoveryToken, runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit, runnerSpawnProcess));
 }
 
 export function relaunchDependencyWaitManagedJob({
-  dir, statusFile, status, recoveryAttempts, logger, runnerEnvironmentOverrides, onRunnerExit,
+  dir, statusFile, status, recoveryAttempts, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
 }) {
   const plan = readVerifiedPlan(dir, status);
   status.status = "queued";
@@ -33,7 +33,7 @@ export function relaunchDependencyWaitManagedJob({
   status.runner_process_started_at = null;
   atomicWriteJson(statusFile, status, 256 * 1024);
   clearRunnerRuntime(dir);
-  return launchRunner(dir, false, "", runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit));
+  return launchRunner(dir, false, "", runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit, runnerSpawnProcess));
 }
 
 function readVerifiedPlan(dir, status) {
@@ -47,6 +47,6 @@ function clearRunnerRuntime(dir) {
   rmSync(join(dir, "runner.pid"), { force: true });
 }
 
-function runnerLaunchOptions(plan, logger, overrides, onExit) {
-  return { logger, fullEnv: plan.full_env === true, env: { ...process.env, ...overrides }, onExit };
+function runnerLaunchOptions(plan, logger, overrides, onExit, spawnProcess) {
+  return { logger, fullEnv: plan.full_env === true, env: { ...process.env, ...overrides }, onExit, ...(spawnProcess ? { spawnProcess } : {}) };
 }

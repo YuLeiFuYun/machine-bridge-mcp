@@ -45,6 +45,7 @@ import { runtimeControlPlaneSnapshot } from "./runtime-diagnostic-state.mjs";
 import { shortCallId } from "./short-identifiers.mjs";
 import { handleRuntimeRelayControlMessage } from "./runtime-relay-control.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
+import { RuntimeRelayShutdownDrain } from "./runtime-relay-shutdown-drain.mjs";
 import { RuntimeResourceService } from "./runtime-resource-service.mjs";
 import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from "./runtime-paths.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
@@ -284,6 +285,7 @@ export class LocalRuntime {
   async start() {
     if (!this.relay) throw new Error("remote daemon start requires a Worker URL and device identity");
     if (!this.lifecycle.beginStart()) return;
+    this.relayShutdownDrain = new RuntimeRelayShutdownDrain({ send: (value) => this.send(value), ready: () => this.relay?.status?.().ready === true, logger: this.logger });
     if (this.policy.profile === "full") {
       void this.browserBridgeManager.ensureStarted().catch((error) => {
         this.logger.warn?.("browser bridge did not start; browser tools remain unavailable", { error_class: classifyOperationalError(error) });
@@ -304,7 +306,9 @@ export class LocalRuntime {
   async stop() {
     if (!this.lifecycle.beginStop()) return;
     try {
+      await this.relayShutdownDrain?.begin(this.activeRelayCalls.size);
       this.relay?.stop();
+      this.relayShutdownDrain?.stop();
       this.relayCallRecovery.stop();
       this.managedJobManager.stopRunnerExitRecovery();
       await this.callRegistry.cancelAllAndWait("runtime stopped");

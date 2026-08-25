@@ -16,6 +16,7 @@ export class WorkerObservability {
     committed: 0, owner_missing_acknowledged: 0, stale_connection_rejected: 0,
   };
   private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
+  private readonly continuity = { planned_drains: 0, planned_drain_calls: 0, last_planned_drain_at: null as string | null, last_socket_disconnect_at: null as string | null };
   private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
   private readonly runtimeAlarm = { sets: 0, deletes: 0, noops: 0 };
   private readonly errors = new Map<string, number>();
@@ -58,7 +59,12 @@ export class WorkerObservability {
   socketCandidate(): void { this.sockets.candidates += 1; }
   socketAuthenticated(): void { this.sockets.authenticated += 1; }
   socketReady(): void { this.sockets.ready += 1; }
-  socketDisconnected(): void { this.sockets.disconnected += 1; }
+  socketDisconnected(): void { this.sockets.disconnected += 1; this.continuity.last_socket_disconnect_at = new Date().toISOString(); }
+  daemonPlannedDrain(calls: number): void {
+    this.continuity.planned_drains += 1;
+    this.continuity.planned_drain_calls += Math.max(0, Math.floor(Number(calls) || 0));
+    this.continuity.last_planned_drain_at = new Date().toISOString();
+  }
   socketProtocolError(code: string): void {
     this.sockets.protocol_errors += 1;
     this.incrementError(code || "protocol_error");
@@ -86,6 +92,7 @@ export class WorkerObservability {
       calls: { ...this.calls },
       terminal_results: { ...this.terminalResults },
       sockets: { ...this.sockets },
+      continuity: { ...this.continuity },
       oauth_refresh: { ...this.oauthRefresh },
       runtime_alarm: { ...this.runtimeAlarm },
       errors: Object.fromEntries([...this.errors.entries()].sort(([left], [right]) => left.localeCompare(right))),
