@@ -559,9 +559,10 @@ function isolateStepCoverage(plan) {
 
 function createManagedJobTestManager(options) {
   const manager = new ManagedJobManager(options);
+  const isolateFullEnvStepCoverage = options?.policy?.minimalEnv === false;
   for (const method of ["start", "stage"]) {
     const original = manager[method].bind(manager);
-    manager[method] = (plan, ...rest) => original(isolateStepCoverage(plan), ...rest);
+    manager[method] = (plan, ...rest) => original(isolateFullEnvStepCoverage ? isolateStepCoverage(plan) : plan, ...rest);
   }
   return manager;
 }

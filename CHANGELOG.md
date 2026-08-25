@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.129 - 2026-08-25
+
+- Fix the remaining Windows managed-job fixture pressure leak exposed only after beta.128 reached merged-main push CI. The dependency-failure regression uses a `minimalEnv:true` manager and an exact current-runtime `node --version` cleanup probe, but the suite-wide `createManagedJobTestManager()` wrapper still injected an empty `NODE_V8_COVERAGE` key into every step. Production correctly treats the presence of Node instrumentation keys as untrusted even when the value is empty, so that test-only injection forced the cleanup probe back into adaptive resource admission; on a pressured Windows runner it stayed in `cleaning/resource_admission` until the test settlement window expired.
+- Preserve coverage isolation only where it is actually needed. Full-environment test managers (`minimalEnv:false`) continue to receive the empty `NODE_V8_COVERAGE` override so their business children cannot write into the parent coverage stream. Minimal-environment managers no longer receive a synthetic instrumentation key because production `executionEnv` already excludes it. An architecture contract binds this distinction. Production light-command security, resource-admission policy, cleanup behavior, and all long-task execution ceilings remain unchanged.
+- Advance package/runtime identity to **3.0.0-beta.129**. Hosted schema generation remains **9**; the thirty-minute resource-admission ceiling, 600-second durable-process ceiling, six-hour managed-job step ceiling, and hosted read pacing remain unchanged.
+
 ## 3.0.0-beta.128 - 2026-08-25
 
 - Harden the Wrangler lifecycle regression fixture against transient Windows filesystem locks after a fully settled child process. Beta.127 proved the earlier managed-job resource-admission issue was gone, then Windows CI failed much earlier in `worker-types-generator:test` with `EBUSY` while recursively removing its unique `machine-bridge-wrangler-lifecycle-*` temp root. The Wrangler helper resolves only from the child `close` event, after process exit and stdio closure; the remaining failure is the bounded Windows filesystem lock window seen immediately after releasing a process working directory.
