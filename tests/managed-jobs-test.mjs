@@ -2342,7 +2342,7 @@ try {
   else process.env.AGENT_RESOURCE_COORDINATOR_ROOT = previousCoordinatorRoot;
   if (previousBuildRoot === undefined) delete process.env.AGENT_BUILD_ROOT;
   else process.env.AGENT_BUILD_ROOT = previousBuildRoot;
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
 
 function testTerminalPersistenceBoundary() {

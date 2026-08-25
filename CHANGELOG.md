@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.0.0-beta.121 - 2026-08-25
+
+- Harden the managed-jobs integration-test teardown on Windows after PR CI exposed a terminal-runner filesystem race: the test had already observed terminal job state, but a runner could still be completing its final filesystem close while the suite recursively removed the temporary root, causing Windows `fs.rm` to fail with `ENOTEMPTY`. Keep product terminal semantics unchanged and use Node's documented bounded recursive-remove retry behavior only for the test root cleanup, so the suite waits for the OS deletion race to settle instead of weakening the CI gate or delaying managed-job terminal publication.
+- Advance package/runtime identity to **3.0.0-beta.121**. Hosted tool schema generation remains **9** because this patch changes only test teardown behavior and no MCP input/output contract or hosted description.
+
 ## 3.0.0-beta.120 - 2026-08-24
 
 - Reopen the long-task interruption investigation after beta.119 still ended with a severe user-visible host interruption despite a healthy local daemon and successful Worker calls. The persisted content-free security audit makes the amplification measurable: in the 15 minutes ending at 2026-08-24T13:58:58Z, Machine Bridge recorded 152 daemon-reached relay tool calls with a 17-calls/minute peak, including 62 `read_job` calls and 54 one-step process-helper calls. Only three tool calls failed in that window and the Worker did not report execution timeouts. This is a lower-bound observation rather than a total ChatGPT event count because host-only schema discovery, control-plane activity, and final-message delivery never reach the daemon audit. It does not reveal ChatGPT's private turn-termination cause, but it materially strengthens the long-turn plus high host-visible event-density hypothesis over a local execution-timeout explanation.
