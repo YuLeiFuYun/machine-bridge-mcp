@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.128 - 2026-08-25
+
+- Harden the Wrangler lifecycle regression fixture against transient Windows filesystem locks after a fully settled child process. Beta.127 proved the earlier managed-job resource-admission issue was gone, then Windows CI failed much earlier in `worker-types-generator:test` with `EBUSY` while recursively removing its unique `machine-bridge-wrangler-lifecycle-*` temp root. The Wrangler helper resolves only from the child `close` event, after process exit and stdio closure; the remaining failure is the bounded Windows filesystem lock window seen immediately after releasing a process working directory.
+- Reuse the repository's established Node `fs.rm` cleanup policy for temporary roots: recursive forced removal now permits five native retries with a 50 ms retry delay. This applies only to test-fixture cleanup and only when Node reports a retryable filesystem removal error; it does not add a business-process sleep, change Wrangler completion/termination semantics, weaken resource admission, or change any production task execution ceiling.
+- Advance package/runtime identity to **3.0.0-beta.128**. Hosted schema generation remains **9**; the thirty-minute resource-admission ceiling, 600-second durable-process ceiling, six-hour managed-job step ceiling, and hosted read pacing remain unchanged.
+
 ## 3.0.0-beta.127 - 2026-08-25
 
 - Fully isolate the managed-runner log-trimming fixture from shared coverage instrumentation as well as host pressure. Beta.126 Windows CI proved that changing its child argv to `node --version` was not sufficient: the suite-wide `isolateStepCoverage()` wrapper deliberately adds an empty `NODE_V8_COVERAGE` key to every managed-job step, while the production release-control classifier correctly treats the presence of Node instrumentation/preload environment keys as untrusted and therefore refuses the zero-resource light-command bypass. On a pressured hosted Windows runner that sent this unrelated log fixture back into normal resource admission for the test settlement window.

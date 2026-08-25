@@ -272,6 +272,7 @@ for (const required of ["self-test", "service-platform:test", "full-access:test"
 }
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
 const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs");
+const workerTypesGeneratorTestSource = readLfSource("tests", "worker-types-generator-test.mjs");
 for (const required of ["mbm-resource-cli-coordinator-", "mbm-resource-cli-build-", "resourceCliEnv", "previousResourceRoot", "previousBuildRoot", "delete process.env.AGENT_RESOURCE_COORDINATOR_ROOT", "delete process.env.AGENT_BUILD_ROOT"]) {
   if (!localSelfTestSource.includes(required)) throw new Error(`local resource CLI self-test lost isolated resource roots or environment restoration: ${required}`);
 }
@@ -299,6 +300,10 @@ if (managedJobsTestSource.includes("manager.read({ job_id: orphanUpstream.job_id
     || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_status === "failed"')
     || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_error_class === "dependency_failed"')) {
   throw new Error("same-daemon dependency recovery fixture no longer proves autonomous upstream recovery through the downstream dependency witness");
+}
+if (!workerTypesGeneratorTestSource.includes("maxRetries: 5")
+    || !workerTypesGeneratorTestSource.includes("retryDelay: 50")) {
+  throw new Error("Wrangler lifecycle fixture cleanup lost bounded retries for transient Windows filesystem locks");
 }
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
