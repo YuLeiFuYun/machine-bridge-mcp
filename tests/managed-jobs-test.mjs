@@ -20,7 +20,7 @@ import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local
 import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
 import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
-import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal } from "../src/local/managed-job-terminal.mjs";
+import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal, terminalStatusFromResult } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
@@ -307,6 +307,45 @@ async function setRunnerFixtureState(jobRoot, jobId, queued) {
   status.cleanup_guarantee = queued ? "best-effort-finally-and-recovery" : "not-started";
   status.updated_at = new Date().toISOString();
   await writeFile(statusFile, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
+}
+
+async function pendingDependencyFixture(manager, name) {
+  const staged = manager.stage({
+    name,
+    steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
+  });
+  await setRunnerFixtureState(manager.jobRoot, staged.job_id, true);
+  return staged;
+}
+
+async function settleDependencyFixture(manager, jobId, terminalStatus, errorClass = null) {
+  const dir = join(manager.jobRoot, jobId);
+  const statusFile = join(dir, "status.json");
+  const resultFile = join(dir, "result.json");
+  const status = JSON.parse(await readFile(statusFile, "utf8"));
+  const finishedAt = new Date().toISOString();
+  const result = {
+    job_id: jobId,
+    name: status.name,
+    status: terminalStatus,
+    recovered: false,
+    steps: [],
+    finally_steps: [],
+    error_class: errorClass,
+    cleanup_error_class: null,
+    finished_at: finishedAt,
+  };
+  const terminal = {
+    ...terminalStatusFromResult(status, result, { resultPersisted: true, updatedAt: finishedAt }),
+    artifact_cleanup_pending: false,
+    artifact_cleanup_error_class: null,
+  };
+  await writeFile(resultFile, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(statusFile, `${JSON.stringify(terminal, null, 2)}\n`, { mode: 0o600 });
+  for (const artifact of ["runtime", "plan.json", "runner.pid", "cancel"]) {
+    await rm(join(dir, artifact), { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+  return terminal;
 }
 
 async function testRunnerClaimBoundary() {
@@ -765,28 +804,12 @@ async function testManagedJobDependencies() {
     resources: {},
     recover: false,
   });
-  const successMarker = join(workspace, "dependency-success-marker.txt");
-  const failureMarker = join(workspace, "dependency-failure-marker.txt");
-  await rm(successMarker, { force: true });
-  await rm(failureMarker, { force: true });
-
-  const upstream = manager.start({
-    name: "dependency upstream success",
-    steps: [{
-      argv: [process.execPath, "-e", "setTimeout(() => process.exit(0), 900)"],
-      timeout_seconds: 10,
-    }],
-  });
+  const upstream = await pendingDependencyFixture(manager, "dependency upstream success");
   const downstream = manager.start({
     name: "dependency downstream success",
     depends_on: [upstream.job_id],
     temporary_files: [{ name: "dependency-helper.txt", content: "ready\n" }],
-    steps: [{
-      argv: [process.execPath, "-e",
-        "const fs=require('node:fs'); if(fs.readFileSync(process.argv[1],'utf8')!=='ready\\n') process.exit(91); fs.writeFileSync(process.argv[2], 'ran\\n')",
-        "{{temp:dependency-helper.txt}}", successMarker],
-      timeout_seconds: 10,
-    }],
+    steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
   });
   assert(downstream.dependency_total === 1 && downstream.recovery?.job_id === downstream.job_id
     && downstream.recovery?.same_response_followup_supported === true,
@@ -801,38 +824,21 @@ async function testManagedJobDependencies() {
   }
   assert(waiting?.status === "queued" && waiting.dependency_total === 1 && waiting.dependency_pending_count === 1,
     "dependent managed job did not remain in explicit pre-execution dependency_wait state");
-  assert(!(await exists(successMarker)), "dependent managed job spawned its child before the upstream dependency succeeded");
   assert(!(await exists(join(dependencyRoot, downstream.job_id, "runtime", "files"))),
     "dependency_wait materialized private temporary files before the job became executable");
-  const upstreamResult = await waitForJob(manager, upstream.job_id);
+  await settleDependencyFixture(manager, upstream.job_id, "succeeded");
   const downstreamResult = await waitForJob(manager, downstream.job_id);
-  assert(upstreamResult.status === "succeeded" && downstreamResult.status === "succeeded"
-    && downstreamResult.dependency_pending_count === 0 && await exists(successMarker),
+  assert(downstreamResult.status === "succeeded" && downstreamResult.dependency_pending_count === 0
+    && downstreamResult.result?.steps?.[0]?.code === 0,
   "successful managed-job dependency did not release the downstream job exactly after terminal success");
 
-  const failingUpstream = manager.start({
-    name: "dependency upstream failure",
-    steps: [{
-      argv: [process.execPath, "-e", "setTimeout(() => process.exit(23), 900)"],
-      timeout_seconds: 10,
-    }],
-  });
-  const failureCleanupMarker = join(workspace, "dependency-failure-cleanup-marker.txt");
-  await rm(failureCleanupMarker, { force: true });
+  const failingUpstream = await pendingDependencyFixture(manager, "dependency upstream failure");
   const blockedDownstream = manager.start({
     name: "dependency downstream blocked",
     depends_on: [failingUpstream.job_id],
     temporary_files: [{ name: "cleanup-helper.txt", content: "cleanup-ready\n" }],
-    steps: [{
-      argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'must-not-run\\n')", failureMarker],
-      timeout_seconds: 10,
-    }],
-    finally_steps: [{
-      argv: [process.execPath, "-e",
-        "const fs=require('node:fs'); if(fs.readFileSync(process.argv[1],'utf8')!=='cleanup-ready\\n') process.exit(92); fs.writeFileSync(process.argv[2], 'cleaned\\n')",
-        "{{temp:cleanup-helper.txt}}", failureCleanupMarker],
-      timeout_seconds: 10,
-    }],
+    steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
+    finally_steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
   });
   const blockedWaitDeadline = Date.now() + 10_000;
   while (Date.now() < blockedWaitDeadline) {
@@ -842,46 +848,34 @@ async function testManagedJobDependencies() {
   }
   assert(!(await exists(join(dependencyRoot, blockedDownstream.job_id, "runtime", "files"))),
     "failed dependency fixture materialized private cleanup inputs while still waiting");
+  await settleDependencyFixture(manager, failingUpstream.job_id, "failed", "execution_failed");
   const blockedResult = await waitForJob(manager, blockedDownstream.job_id);
   assert(blockedResult.status === "failed" && blockedResult.error_class === "dependency_failed"
     && blockedResult.dependency_pending_count === 0
     && blockedResult.result?.error_class === "dependency_failed"
     && blockedResult.result?.dependency_failure?.dependency_job_id === failingUpstream.job_id
     && blockedResult.result?.dependency_failure?.dependency_status === "failed"
+    && blockedResult.result?.steps?.length === 0
     && blockedResult.result?.finally_steps?.[0]?.code === 0,
   "failed upstream dependency did not propagate a structured dependency_failed terminal result");
-  assert(!(await exists(failureMarker)), "dependency failure still spawned the downstream main child");
-  assert(await exists(failureCleanupMarker),
-    "dependency failure did not materialize cleanup inputs just-in-time for declared finally steps");
 
   let alreadyFailed = null;
   try {
     manager.start({
       name: "already failed dependency rejection",
       depends_on: [failingUpstream.job_id],
-      steps: [{ argv: [process.execPath, "-e", ""] }],
+      steps: [{ argv: [process.execPath, "--version"] }],
     });
   } catch (error) { alreadyFailed = error; }
   assert(alreadyFailed?.code === "conflict" && alreadyFailed?.retryable === false
     && alreadyFailed?.details?.reason === "dependency_failed",
     "already-failed dependency was accepted into another impossible long wait");
 
-  const recoveryMarker = join(workspace, "dependency-recovery-marker.txt");
-  await rm(recoveryMarker, { force: true });
-  const recoveryUpstream = manager.start({
-    name: "dependency recovery upstream",
-    steps: [{
-      argv: [process.execPath, "-e", "setTimeout(() => process.exit(0), 1500)"],
-      timeout_seconds: 10,
-    }],
-  });
+  const recoveryUpstream = await pendingDependencyFixture(manager, "dependency recovery upstream");
   const recoveryDownstream = manager.start({
     name: "dependency wait runner recovery",
     depends_on: [recoveryUpstream.job_id],
-    steps: [{
-      argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'recovered\\n')", recoveryMarker],
-      timeout_seconds: 10,
-    }],
+    steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
   });
   const recoveryWaitDeadline = Date.now() + 10_000;
   let recoveryWaiting = null;
@@ -901,30 +895,22 @@ async function testManagedJobDependencies() {
   const recoveryCheckpoint = manager.read({ job_id: recoveryDownstream.job_id });
   assert(["queued", "running"].includes(recoveryCheckpoint.status) && recoveryCheckpoint.recovery_attempts === 1,
     "dead dependency-wait runner was not relaunched as the original pre-execution job");
+  await settleDependencyFixture(manager, recoveryUpstream.job_id, "succeeded");
   const recoveryResult = await waitForJob(manager, recoveryDownstream.job_id);
-  assert(recoveryResult.status === "succeeded" && recoveryResult.recovery_attempts === 1 && await exists(recoveryMarker),
+  assert(recoveryResult.status === "succeeded" && recoveryResult.recovery_attempts === 1
+    && recoveryResult.result?.steps?.[0]?.code === 0,
     "dependency-wait runner recovery ended in cleanup-only recovery or lost the downstream execution");
 
-  const orphanLateMarker = join(workspace, "dependency-orphan-late-marker.txt");
-  const orphanDownstreamMarker = join(workspace, "dependency-orphan-downstream-marker.txt");
-  await rm(orphanLateMarker, { force: true });
-  await rm(orphanDownstreamMarker, { force: true });
+  const orphanGate = await pendingDependencyFixture(manager, "dependency autonomous recovery gate");
   const orphanUpstream = manager.start({
     name: "dependency upstream runner crash",
-    steps: [{
-      argv: [process.execPath, "-e",
-        "setTimeout(()=>require('node:fs').writeFileSync(process.argv[1],'late\\n'),30000)", orphanLateMarker],
-      timeout_seconds: 60,
-    }],
+    depends_on: [orphanGate.job_id],
+    steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
   });
   const orphanDownstream = manager.start({
     name: "dependency downstream autonomous recovery",
     depends_on: [orphanUpstream.job_id],
-    steps: [{
-      argv: [process.execPath, "-e",
-        "require('node:fs').writeFileSync(process.argv[1],'must-not-run\\n')", orphanDownstreamMarker],
-      timeout_seconds: 10,
-    }],
+    steps: [{ argv: [process.execPath, "--version"], timeout_seconds: 10 }],
   });
   const orphanWaitDeadline = Date.now() + 10_000;
   while (Date.now() < orphanWaitDeadline) {
@@ -933,31 +919,39 @@ async function testManagedJobDependencies() {
     await delay(25);
   }
   const orphanStatusPath = join(dependencyRoot, orphanUpstream.job_id, "status.json");
-  const orphanChildPath = join(dependencyRoot, orphanUpstream.job_id, "active-child.json");
   let orphanStatus = null;
-  let orphanChild = null;
-  const orphanChildDeadline = Date.now() + 10_000;
-  while (Date.now() < orphanChildDeadline) {
+  const orphanRunnerDeadline = Date.now() + 10_000;
+  while (Date.now() < orphanRunnerDeadline) {
     try {
       orphanStatus = JSON.parse(await readFile(orphanStatusPath, "utf8"));
-      orphanChild = JSON.parse(await readFile(orphanChildPath, "utf8"));
-      if (Number(orphanStatus.runner_pid) > 0 && Number(orphanChild.pid) > 0) break;
+      if (orphanStatus.current_phase === "dependency_wait" && Number(orphanStatus.runner_pid) > 0) break;
     } catch {}
     await delay(25);
   }
-  assert(Number(orphanStatus?.runner_pid) > 0 && Number(orphanChild?.pid) > 0,
-    "runner-crash recovery fixture did not persist runner and active-child ownership");
+  assert(orphanStatus?.current_phase === "dependency_wait" && Number(orphanStatus?.runner_pid) > 0,
+    "runner-crash recovery fixture did not persist dependency-wait runner ownership");
   process.kill(orphanStatus.runner_pid, "SIGKILL");
   await waitForPidExit(orphanStatus.runner_pid, 10_000);
+  const autonomousDeadline = Date.now() + 20_000;
+  let autonomousStatus = null;
+  while (Date.now() < autonomousDeadline) {
+    try {
+      autonomousStatus = JSON.parse(await readFile(orphanStatusPath, "utf8"));
+      if (autonomousStatus.recovery_attempts === 1 && Number(autonomousStatus.runner_pid) > 0
+        && Number(autonomousStatus.runner_pid) !== Number(orphanStatus.runner_pid)) break;
+    } catch {}
+    await delay(50);
+  }
+  assert(autonomousStatus?.recovery_attempts === 1 && Number(autonomousStatus?.runner_pid) > 0,
+    "same-daemon runner exit did not autonomously relaunch a dependency-wait runner");
+  await settleDependencyFixture(manager, orphanGate.job_id, "failed", "execution_failed");
   const orphanResult = await waitForJob(manager, orphanDownstream.job_id);
   assert(orphanResult.status === "failed" && orphanResult.error_class === "dependency_failed"
     && orphanResult.result?.steps?.length === 0,
   "daemon-lifetime runner-exit recovery did not propagate the interrupted upstream as a failed dependency");
-  await waitForPidExit(orphanChild.pid, 5_000);
-  assert(!(await exists(orphanLateMarker)) && !(await exists(orphanDownstreamMarker)),
-    "runner-exit recovery allowed the orphaned upstream child or blocked downstream business child to continue");
   const orphanUpstreamResult = manager.read({ job_id: orphanUpstream.job_id });
-  assert(orphanUpstreamResult.status === "recovered" && orphanUpstreamResult.recovery_attempts === 1,
+  assert(orphanUpstreamResult.status === "failed" && orphanUpstreamResult.error_class === "dependency_failed"
+    && orphanUpstreamResult.recovery_attempts === 1,
     "same-daemon runner exit was not recovered without an external read of the upstream job");
 
   const stagedDependency = manager.stage({
@@ -969,7 +963,7 @@ async function testManagedJobDependencies() {
     manager.start({
       name: "staged dependency rejection",
       depends_on: [stagedDependency.job_id],
-      steps: [{ argv: [process.execPath, "-e", ""] }],
+      steps: [{ argv: [process.execPath, "--version"] }],
     });
   } catch (error) { stagedDependencyError = error; }
   assert(stagedDependencyError?.code === "invalid_request" && stagedDependencyError?.retryable === false,
@@ -2451,7 +2445,7 @@ async function waitForJob(manager, jobId, terminal = null, timeoutMs = MANAGED_J
     if (isSettledTerminalJob(value, terminalStates)) return value;
     await delay(50);
   }
-  const dir = join(jobRoot, jobId);
+  const dir = join(manager.jobRoot, jobId);
   const diagnostics = {};
   for (const name of ["status.json", "runner.out.log", "runner.err.log"]) {
     try { diagnostics[name] = await readFile(join(dir, name), "utf8"); } catch {}

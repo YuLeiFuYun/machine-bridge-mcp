@@ -7,7 +7,7 @@ import { swiftJobPlan } from "./resource-swift-concurrency.mjs";
 import { xcodeResourcePlan } from "./resource-xcode-concurrency.mjs";
 import { xcodeIsLightCommand } from "./resource-xcode-command.mjs";
 import { xcodeNonBuildResourcePlan } from "./resource-xcode-non-build.mjs";
-import { isTrustedLightExecutable } from "./resource-light-command.mjs";
+import { isTrustedLightInvocation } from "./resource-light-command.mjs";
 import { releaseControlCommandIsLight } from "./resource-release-control-classification.mjs";
 import { commandHeadIn, commandHeadIs, commandTokens, heavyShellScript, pythonModuleHeadIs, pythonModuleTokens, shellPayload, shellSegments } from "./resource-shell-analysis.mjs";
 import { directInterpreterHeavyScript, packageManagerTokensHeavy, verificationPlanCommand } from "./resource-script-classification.mjs";
@@ -22,7 +22,7 @@ export function resourceCommandProfile(command, args = [], options = {}) {
   const priority = normalizePriority(options.priority);
 
   if (isTrustedDiskReclaimExecutable(rawCommand)) return profile("disk-reclaim", "io", 0.25, 0.75, 256, 0, priority);
-  if (isTrustedLightExecutable(rawCommand)) return lightProfile(priority);
+  if (isTrustedLightInvocation(rawCommand, argv.slice(1), options.environment)) return lightProfile(priority);
   if (base === "xcodebuild" && xcodeIsLightCommand(argv.slice(1))) return lightProfile(priority);
   if (base === "xcodebuild") { const plan = xcodeNonBuildResourcePlan(argv.slice(1));
     if (plan) return profile(plan.family, plan.resourceClass, plan.cpu, plan.io, plan.memoryMb, plan.diskBytes, priority, { unbounded: plan.unbounded, serializeProject: plan.serializeProject }); }

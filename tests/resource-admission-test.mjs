@@ -130,6 +130,18 @@ assert.equal(resourceCommandProfile("cargo", ["test"], { environment: { CARGO_BU
   "oversized CARGO_BUILD_JOBS was silently treated as an elastic default");
 assert.equal(resourceCommandProfile("git", ["status"]).resource_class, "adaptive",
   "caller-controlled Git metadata was trusted as helper-free fixed control-plane work");
+assert.equal(resourceCommandProfile(process.execPath, ["--version"]).resource_class, "light",
+  "the exact runtime Node version probe did not bypass heavy-resource admission");
+assert.equal(resourceCommandProfile(process.execPath, ["-e", "process.exit(0)"]).resource_class, "adaptive",
+  "arbitrary Node eval was incorrectly trusted as a light runtime probe");
+assert.equal(resourceCommandProfile(join(tmpdir(), process.platform === "win32" ? "node.exe" : "node"), ["--version"]).resource_class, "adaptive",
+  "a lookalike Node executable path could spoof the exact runtime version probe");
+assert.equal(resourceCommandProfile(process.execPath, ["--version"], {
+  environment: { NODE_OPTIONS: "--require=./unexpected-preload.cjs" },
+}).resource_class, "adaptive", "NODE_OPTIONS injection bypassed light-probe resource admission");
+assert.equal(resourceCommandProfile("/bin/true", [], {
+  environment: { LD_PRELOAD: "/tmp/untrusted-preload.so" },
+}).resource_class, "adaptive", "dynamic-loader injection bypassed trusted-executable resource admission");
 const diskReclaim = resourceCommandProfile("/bin/rm", ["-rf", "/tmp/known-regenerable-cache"]);
 assert.equal(diskReclaim.family, "disk-reclaim", "trusted direct delete executable was not recognized as disk reclaim");
 assert.equal(diskReclaim.resource_class, "io");
