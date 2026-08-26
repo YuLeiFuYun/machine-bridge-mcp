@@ -1346,7 +1346,10 @@ try {
     "unsupported resource transaction directory evidence changed during fail-closed inspection");
   rmSync(transactionLock, { recursive: true, force: true });
 
-  writeFileSync(transactionLock, `${JSON.stringify({
+  const priorFileRoot = join(root, "prior-file-lock-fixture");
+  mkdirSync(priorFileRoot, { mode: 0o700 });
+  const priorFileLock = join(priorFileRoot, "transaction.lock");
+  writeFileSync(priorFileLock, `${JSON.stringify({
     pid: process.pid,
     token: "b".repeat(32),
     purpose: "resource-coordinator",
@@ -1354,16 +1357,20 @@ try {
     processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
   })}\n`, { mode: 0o600 });
   let priorFileWaits = 0;
-  await withResourceTransactionLock(root, () => {
-    assert.equal(lstatSync(transactionLock).isFile(), true,
+  await withResourceTransactionLock(priorFileRoot, () => {
+    assert.equal(lstatSync(priorFileLock).isFile(), true,
       "resource transaction writer changed away from the owner-state file shape after a prior owner released it");
   }, {
     timeoutMs: 500,
     random: () => 0,
-    sleep: async () => { priorFileWaits += 1; rmSync(transactionLock, { force: true }); },
+    sleep: async () => { priorFileWaits += 1; rmSync(priorFileLock, { force: true }); },
   });
   assert.equal(priorFileWaits, 1, "resource transaction lock did not wait for a live prior owner-state file lock");
+  rmSync(priorFileRoot, { recursive: true, force: true });
 
+  const publicationRoot = join(root, "publication-hardlink-fixture");
+  mkdirSync(publicationRoot, { mode: 0o700 });
+  const publicationLock = join(publicationRoot, "transaction.lock");
   const publicationOwner = {
     pid: process.pid,
     token: "9".repeat(32),
@@ -1371,13 +1378,13 @@ try {
     startedAt: new Date().toISOString(),
     processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
   };
-  const persistentPublicationLink = join(root, "transaction.lock.persistent-hardlink");
-  writeFileSync(transactionLock, `${JSON.stringify(publicationOwner)}\n`, { mode: 0o600 });
-  linkSync(transactionLock, persistentPublicationLink);
+  const persistentPublicationLink = join(publicationRoot, "transaction.lock.persistent-hardlink");
+  writeFileSync(publicationLock, `${JSON.stringify(publicationOwner)}\n`, { mode: 0o600 });
+  linkSync(publicationLock, persistentPublicationLink);
   let transactionDeadlineWaits = 0;
   let persistentPublicationError = null;
   try {
-    await withResourceTransactionLock(root, () => {}, {
+    await withResourceTransactionLock(publicationRoot, () => {}, {
       timeoutMs: 500,
       random: () => 0,
       sleep: async () => { transactionDeadlineWaits += 1; },
@@ -1388,7 +1395,8 @@ try {
   assert.equal(transactionDeadlineWaits, 0,
     "resource transaction lock expanded a multiple-hard-link integrity failure into transaction-deadline waiting");
   rmSync(persistentPublicationLink, { force: true });
-  rmSync(transactionLock, { force: true });
+  rmSync(publicationLock, { force: true });
+  rmSync(publicationRoot, { recursive: true, force: true });
 
   const light = await coordinator.acquire(resourceCommandProfile("/bin/ps", ["-axo", "pid=,ppid="]));
   assert.equal(light.active, false);
