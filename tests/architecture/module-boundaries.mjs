@@ -800,6 +800,11 @@ if (!resourceTransactionLockSource.includes("retryTransientMultipleLinksSync")
     || resourceTransactionLockSource.includes('error?.code !== "MBM_MULTIPLE_HARD_LINKS"')) {
   throw new Error("resource transaction lock stopped using the shared fixed four-attempt multiple-link publication retry");
 }
+const managedJobsTestSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
+if (!managedJobsTestSource.includes("RUNNER_EXIT_RECOVERY_TEST_WAIT_MS = 40_000")
+    || !managedJobsTestSource.includes("Date.now() + RUNNER_EXIT_RECOVERY_TEST_WAIT_MS")) {
+  throw new Error("managed-job autonomous runner-exit recovery fixture no longer covers the complete bounded retry schedule");
+}
 const resourceHostCacheSource = readFileSync(join(localRoot, "resource-host-cache.mjs"), "utf8");
 for (const required of ["HOST_SAMPLE_FRESH_MS = 500", "HOST_CPU_PREVIOUS_MAX_AGE_MS = 2_000", "HOST_IO_SAMPLE_FRESH_MS = 5_000", "HOST_IO_HINT_MAX_AGE_MS = HOST_IO_SAMPLE_FRESH_MS", "cached?.sample_scope === scope", "previous: cpuPrevious", "withCachedIo(quick, scopedCached)", "io_sampled_at_ms"]) {
   if (!resourceHostCacheSource.includes(required)) throw new Error(`resource host cache lost global-CPU/scoped-I/O freshness split: ${required}`);

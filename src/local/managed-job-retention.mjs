@@ -6,12 +6,12 @@ import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories
 import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
 import { runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { acquireJobTransitionLock } from "./managed-job-lock.mjs";
-import { JOB_RETENTION_MS, stagedPlanExpired, terminalEvictionPriority, terminalRetentionTime } from "./managed-job-retention-policy.mjs";
+import { JOB_RETENTION_MS, orderManagedJobTerminalEviction, stagedPlanExpired, terminalRetentionTime } from "./managed-job-retention-policy.mjs";
 import { atomicWriteJson, readJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus, persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { scrubTerminalJobArtifacts } from "./managed-job-terminal-maintenance.mjs";
 export const PLAN_RETAINING_STATES = new Set(["staged", ...ACTIVE_JOB_STATES]);
-export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0, protectedJobIds = new Set() }) {
+export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0, protectedJobIds = new Set(), incomingRetentionClass }) {
   const reserved = Math.max(0, Math.min(MAX_JOBS, Math.floor(Number(reserveSlots) || 0)));
   const targetMaximum = MAX_JOBS - reserved;
   pruneRetiredManagedJobDirectories(jobRoot, logger);
@@ -98,8 +98,8 @@ export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0, 
   const retainedCount = () => managedJobCapacitySnapshot(jobRoot).retained_state;
   if (retainedCount() <= targetMaximum) return;
   const removable = entries
-    .filter(({ status }) => status && isTerminalManagedJobStatus(status.status) && !dependencyProtection.ids.has(status.job_id))
-    .sort((a, b) => terminalEvictionPriority(a.status) - terminalEvictionPriority(b.status) || terminalRetentionTime(a.status, a.mtime) - terminalRetentionTime(b.status, b.mtime));
+    .filter(({ status }) => status && isTerminalManagedJobStatus(status.status) && !dependencyProtection.ids.has(status.job_id));
+  orderManagedJobTerminalEviction(removable, { now, incomingRetentionClass, reservedSlots: reserved });
   for (const item of removable) {
     if (retainedCount() <= targetMaximum) break;
     removeManagedJobDirectoryIfCurrent(item.dir, item.generation);

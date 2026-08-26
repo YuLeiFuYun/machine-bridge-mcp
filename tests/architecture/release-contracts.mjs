@@ -1217,14 +1217,22 @@ if (!coverageRunnerSource.includes('"src/local/managed-job-retention.mjs"')) {
 }
 if (!managedJobSource.includes('retentionClass = "managed"')
     || !managedJobSource.includes('retention_class: "transient_process"')
+    || !managedJobSource.includes("incomingRetentionClass: retentionClass")
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
-    || !managedJobRetentionSource.includes("terminalEvictionPriority")
-    || !managedJobRetentionPolicySource.includes('status?.retention_class === "transient_process"')
-    || !managedJobsIntegrationSource.includes("durable one-step process carrier did not persist the transient retention class through terminal settlement")
+    || !managedJobRetentionSource.includes("orderManagedJobTerminalEviction(removable")
+    || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_GRACE_MS = 30 * 60 * 1000")
+    || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS = 16")
+    || !managedJobRetentionPolicySource.includes("transientProcessWithinRecoveryGrace")
+    || !managedJobRetentionPolicySource.includes("export function transientProcessRecoveryIds")
+    || !managedJobRetentionPolicySource.includes("export function orderManagedJobTerminalEviction")
+    || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS - incomingSlots")
+    || !managedJobsIntegrationSource.includes("transient recovery grace excluded its exact documented boundary")
+    || !managedJobsIntegrationSource.includes("saturated managed-job retention did not preserve the bounded recent transient recovery reserve")
+    || !managedJobsIntegrationSource.includes("transient recovery reserve grew without bound")
     || !managedJobsIntegrationSource.includes("transient helper churn evicted an explicit managed-job recovery result")
     || !managedJobsIntegrationSource.includes("internal transient-process retention class leaked through public managed-job projections")
     || !managedJobsIntegrationSource.includes('missingJobError?.code === "not_found"')) {
-  throw new Error("managed-job retention again lets transient process-helper churn preferentially evict explicit durable recovery results or obscures missing retained state");
+  throw new Error("managed-job retention lost its bounded recent transient recovery reserve, durable-history preference, dependency protection, or typed missing-state contract");
 }
 if (!relayRedeliverySafetySource.includes("#unsafeCallIds = new Set()")
     || !relayRedeliverySafetySource.includes("#globalRedeliveryDisabled = false")
