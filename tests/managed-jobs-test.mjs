@@ -29,7 +29,7 @@ import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
-const RUNNER_EXIT_RECOVERY_TEST_WAIT_MS = 40_000; // Covers three 10.1s production recovery attempts plus scheduler margin.
+const RUNNER_EXIT_RECOVERY_TEST_WAIT_MS = 90_000; // Covers three 10.1s recovery delays, bounded Windows filesystem cleanup retries, and scheduler margin.
 const MANAGED_JOB_MULTI_STEP_WAIT_MS = 600_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 120;
 const MANAGED_JOB_TREE_TIMEOUT_SECONDS = 15;
