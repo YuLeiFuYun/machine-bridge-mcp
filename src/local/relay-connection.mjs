@@ -284,10 +284,10 @@ export class RelayConnection {
       const outageMs = Math.max(0, this.now() - this.outageStartedAt);
       if (this.outageNoticeEmitted) {
         const recoveryFields = relayRecoveryFields(this, outageMs);
-        this.logger.warn?.(`remote relay connection restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`, recoveryFields);
-        this.logger.debug?.("remote relay outage recovery details", recoveryFields);
+        this.logger.warn?.(`remote relay WebSocket restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`, recoveryFields);
+        this.logger.debug?.("remote relay WebSocket outage recovery details", recoveryFields);
       } else {
-        this.logger.debug?.("remote relay connection recovered after a brief interruption", {
+        this.logger.debug?.("remote relay WebSocket recovered after a brief interruption", {
           outage_ms: outageMs,
           attempts: this.outageAttempts,
         });
@@ -642,8 +642,8 @@ export class RelayConnection {
     const cause = relayCloseUserCause(this.lastCloseCategory);
     const action = relayOutageUserAction(this.lastCloseCategory, outageMs);
     const outageFields = relayOutageFields(this, this.now(), cause);
-    this.logger.warn?.(`remote relay unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`, outageFields);
-    this.logger.debug?.("remote relay outage details", outageFields);
+    this.logger.warn?.(`remote relay WebSocket unavailable for ${formatDuration(outageMs)}; reconnecting automatically (${formatAttempts(this.outageAttempts)}; ${cause}).${action}`, outageFields);
+    this.logger.debug?.("remote relay WebSocket outage details", outageFields);
   }
 
   resetOutage() {

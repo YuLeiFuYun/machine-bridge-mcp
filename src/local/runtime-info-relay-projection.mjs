@@ -17,5 +17,6 @@ export function compactRuntimeRelay(value) {
     last_transport_error_class: value.last_transport_error_class ?? null,
     https_fallback_active: value.https_fallback_active === true,
     websocket_ready: value.websocket_ready === true,
+    https_fallback_last_takeover_ms: value.https_fallback_last_takeover_ms ?? 0,
   };
 }

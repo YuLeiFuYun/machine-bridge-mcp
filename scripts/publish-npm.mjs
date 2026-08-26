@@ -2,7 +2,6 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
@@ -13,9 +12,12 @@ import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs"
 import { readPublishedNpmPrereleaseIfPresent } from "./published-release.mjs";
 import { isTransientNetworkFailure } from "./network-retry.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
+import { runExecutable } from "../src/local/shell.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const NPM_PUBLICATION_CONFIRMATION_FLAG = "--owner-confirm";
+export const npmPrepublicationTimeoutMs = 30 * 60 * 1000;
+export const npmPublicationStageTimeoutMs = 10 * 60 * 1000;
 
 export function assertNpmPublicationAuthorized(options = {}) {
   const argv = Array.isArray(options.argv) ? options.argv.map(String) : process.argv.slice(2);
@@ -56,14 +58,15 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
   if (!candidate?.path) throw new Error("npm publication candidate tarball path is missing");
 
   const createSession = options.createSession || createHardenedNpmSession;
-  const run = options.run || spawnSync;
+  const run = options.run || runNpmPublicationProcess;
+  const prepublicationTimeout = positiveTimeout(options.prepublicationTimeoutMs, npmPrepublicationTimeoutMs);
+  const publicationStageTimeout = positiveTimeout(options.publicationStageTimeoutMs, npmPublicationStageTimeoutMs);
   const processOptions = {
     cwd: repository,
     encoding: "utf8",
     env: nestedNpmEnvironment(options.env || process.env),
     stdio: options.capture ? "pipe" : "inherit",
-    timeout: 10 * 60 * 1000,
-    killSignal: "SIGKILL",
+    timeout: publicationStageTimeout,
     maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
   };
@@ -73,16 +76,16 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
   try {
     session = explicitNpmCli ? null : await createSession(options);
     const npmCli = explicitNpmCli || session.cli;
-    runNpmStage(run, npmCli, [
+    await runNpmStage(run, npmCli, [
       "run", "--dry-run=false", "--workspaces=false", "--global=false", "--ignore-scripts=false",
       "--if-present=false", "--tag", parsed.npmTag, "--prefix", repository, "prepublishOnly",
-    ], processOptions, "npm prepublication verification");
+    ], { ...processOptions, timeout: prepublicationTimeout }, "npm prepublication verification");
     const preflightArgs = [
       publishArgs[0], candidate.path,
       ...publishArgs.slice(1).map((value) => value === "--dry-run=false" ? "--dry-run=true" : value),
       "--json", "--prefix", repository,
     ];
-    const preflight = runNpmStage(run, npmCli, preflightArgs, { ...processOptions, stdio: "pipe" }, "npm publish dry-run");
+    const preflight = await runNpmStage(run, npmCli, preflightArgs, { ...processOptions, stdio: "pipe" }, "npm publish dry-run");
     validateNpmPublishDryRun(preflight.stdout, acceptance.metadata);
     const readPublished = options.readPublished || ((name, version, tag) => readPublishedNpmPrereleaseIfPresent(
       name, version, tag, { npmCli, env: options.env || process.env },
@@ -94,7 +97,7 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
     } else {
       let uploadError = null;
       try {
-        runNpmStage(run, npmCli, [
+        await runNpmStage(run, npmCli, [
           publishArgs[0], candidate.path, ...publishArgs.slice(1), "--prefix", repository,
         ], processOptions, "npm publish");
       } catch (error) {
@@ -187,8 +190,8 @@ export function validateNpmPublishDryRun(stdout, metadata) {
   return Object.freeze(expected);
 }
 
-function runNpmStage(run, npmCli, args, options, label) {
-  const result = run(process.execPath, [npmCli, ...args], options);
+async function runNpmStage(run, npmCli, args, options, label) {
+  const result = await run(process.execPath, [npmCli, ...args], options);
   if (result.error || result.status !== 0) {
     const error = new Error(`${label} failed: ${releaseCommandFailure("npm", args, result, { maxChars: 1200 })}`, result.error ? { cause: result.error } : undefined);
     error.transient = isTransientNetworkFailure(result);
@@ -196,6 +199,37 @@ function runNpmStage(run, npmCli, args, options, label) {
     throw error;
   }
   return result;
+}
+
+export async function runNpmPublicationProcess(command, args, options = {}) {
+  try {
+    const result = await runExecutable(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      capture: options.stdio === "pipe",
+      maxOutputBytes: options.maxBuffer,
+      timeoutMs: positiveTimeout(options.timeout, npmPublicationStageTimeoutMs),
+      allowFailure: true,
+      hardTimeout: true,
+    });
+    if (result.timed_out === true) {
+      const settled = result.termination_settled !== false;
+      const error = Object.assign(new Error(settled
+        ? "npm publication process exceeded its stage deadline"
+        : "npm publication process exceeded its stage deadline and process-tree termination could not be confirmed"), {
+        code: settled ? "ETIMEDOUT" : "EUNSETTLED",
+      });
+      return { status: null, signal: "SIGKILL", stdout: result.stdout, stderr: result.stderr, error };
+    }
+    return { status: result.code, signal: null, stdout: result.stdout, stderr: result.stderr, error: null };
+  } catch (error) {
+    return { status: null, signal: null, stdout: "", stderr: "", error };
+  }
+}
+
+function positiveTimeout(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
 function publicationResult(parsed, metadata, options = {}) {

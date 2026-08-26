@@ -281,6 +281,7 @@ const lineLimits = Object.freeze({
   "src/local/process-contract.mjs": 40,
   "src/local/process-tree.mjs": 70,
   "src/local/process-tree-signal.mjs": 50,
+  "src/local/process-tree-force-settlement.mjs": 60,
   "src/local/process-tree-supervisor.mjs": 70,
   "src/local/process-tree-snapshot.mjs": 100,
   "src/local/process-tree-ownership.mjs": 80,

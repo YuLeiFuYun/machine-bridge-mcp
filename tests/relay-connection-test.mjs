@@ -304,7 +304,7 @@ sockets[1].remoteClose(1006, "");
 scheduler.advance(5);
 assert(sockets.length === 3, "second reconnect socket was not created");
 scheduler.advance(10);
-const outageWarning = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay unavailable for "));
+const outageWarning = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay WebSocket unavailable for "));
 assert(outageWarning, "sustained outage did not escalate to a warning");
 assert(outageWarning.message.includes("reconnecting automatically") && outageWarning.message.includes("connection interrupted"), "sustained outage warning omitted recovery behavior or the meaningful cause");
 assert(outageWarning.fields?.event === "relay.outage.active"
@@ -313,20 +313,20 @@ assert(outageWarning.fields?.event === "relay.outage.active"
   && outageWarning.fields.network_route_scope === "application-proxy-selection-only",
 "outage warning omitted structured recovery diagnostics");
 assert(!Object.hasOwn(outageWarning.fields, "close_reason"), "outage warning exposed the raw WebSocket close reason");
-const outageDebug = events.find((event) => event.level === "debug" && event.message === "remote relay outage details");
+const outageDebug = events.find((event) => event.level === "debug" && event.message === "remote relay WebSocket outage details");
 assert(outageDebug?.fields?.cause === "connection interrupted", "debug outage details omitted the classified cause");
 assert(!Object.hasOwn(outageDebug?.fields || {}, "close_reason"), "outage diagnostics exposed the raw WebSocket close reason");
 sockets[2].open();
 connection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "0.8.1" });
 completeRelayReadiness(connection, "0.8.1");
-const restored = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay connection restored after "));
+const restored = events.find((event) => event.level === "warn" && event.message.startsWith("remote relay WebSocket restored after "));
 assert(restored?.message.includes("reconnect attempt"), "restored connection summary was incomplete or not user-readable");
 assert(restored.fields?.event === "relay.outage.recovered"
   && restored.fields.close_category === "connection_interrupted"
   && restored.fields.network_route_scope === "application-proxy-selection-only",
 "recovery summary omitted structured outage diagnostics");
 assert(!Object.hasOwn(restored.fields, "close_reason"), "recovery summary exposed the raw WebSocket close reason");
-const restoredDebug = events.find((event) => event.level === "debug" && event.message === "remote relay outage recovery details");
+const restoredDebug = events.find((event) => event.level === "debug" && event.message === "remote relay WebSocket outage recovery details");
 assert(restoredDebug?.fields?.attempts >= 1 && restoredDebug.fields.outage_seconds >= 1, "debug recovery details were incomplete");
 
 sockets[2].remoteClose(1006, "");

@@ -79,6 +79,22 @@ else {
   assert(!racedNormalDryRun.stderr.includes("did not exit"),
     "successful Wrangler dry-run exit lost to a raced cleanup request");
 
+  const racedForceDryRun = capture();
+  const forceRaceSignals = [];
+  await runWorkerDryRun(commandOptions("normal-cleanup-race", racedForceDryRun, {
+    completionExitGraceMs: 20,
+    terminationGraceMs: 40,
+    forceSettlementGraceMs: 500,
+    killChild(_child, signal) {
+      forceRaceSignals.push(signal);
+      return signal === "SIGTERM";
+    },
+  }));
+  assert.deepEqual(forceRaceSignals, ["SIGTERM", "SIGKILL"],
+    "Wrangler force-cleanup race did not cross both cleanup request boundaries");
+  assert(!racedForceDryRun.stderr.includes("did not exit"),
+    "a false force-kill request result overrode the later observed zero exit");
+
   const hangingDryRun = capture();
   await runWorkerDryRun(commandOptions("hang-after", hangingDryRun));
   assert(hangingDryRun.stderr.includes("wrangler deploy --dry-run completed but did not exit"),

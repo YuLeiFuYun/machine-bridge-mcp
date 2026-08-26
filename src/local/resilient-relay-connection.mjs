@@ -15,6 +15,7 @@ export class ResilientRelayConnection {
     this.startPromise = null;
     this.fallbackTimer = null;
     this.fallbackRecoveredOutageMs = 0;
+    this.lastFallbackTakeoverMs = 0;
     const WebSocketRelayClass = options.WebSocketRelayClass || RelayConnection;
     const HttpRelayClass = options.HttpRelayClass || DaemonHttpRelayConnection;
     this.websocket = new WebSocketRelayClass({
@@ -50,6 +51,7 @@ export class ResilientRelayConnection {
     this.http.stop();
     this.activeTransport = "";
     this.fallbackRecoveredOutageMs = 0;
+    this.lastFallbackTakeoverMs = 0;
     this.startResolve?.(false);
     this.startResolve = null;
     this.startPromise = null;
@@ -79,6 +81,7 @@ export class ResilientRelayConnection {
         websocket_outage_duration_ms: Number(websocket.outage_duration_ms) || 0,
         websocket_reconnect_attempt: Number(websocket.reconnect_attempt) || 0,
         https_fallback_warming: false,
+        https_fallback_last_takeover_ms: this.lastFallbackTakeoverMs,
       };
     }
     return {
@@ -87,6 +90,7 @@ export class ResilientRelayConnection {
       https_fallback_active: false,
       https_fallback_warming: http.closed === false && http.ready !== true,
       https_fallback: http,
+      https_fallback_last_takeover_ms: this.lastFallbackTakeoverMs,
     };
   }
 
@@ -140,6 +144,7 @@ export class ResilientRelayConnection {
     } else {
       if (this.websocket.status().ready === true) { this.http.stop(); return; }
       this.fallbackRecoveredOutageMs = Math.max(0, Number(this.websocket.status().outage_duration_ms) || 0);
+      this.lastFallbackTakeoverMs = this.fallbackRecoveredOutageMs;
       this.activeTransport = "https";
     }
     this.startResolve?.(true);

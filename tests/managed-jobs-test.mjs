@@ -704,10 +704,26 @@ async function testManagedJobCapacityBoundary() {
     policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
     resources: {}, recover: false,
   });
-  const olderActive = recoveryVisibilityManager.start({
+  const olderActive = recoveryVisibilityManager.createJob({
     name: "older active recovery job",
-    steps: [{ argv: [process.execPath, "-e", "setTimeout(() => {}, 300000)"] }],
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false });
+  const olderActiveDir = join(recoveryVisibilityRoot, olderActive.job_id);
+  const olderActiveStatusFile = join(olderActiveDir, "status.json");
+  const olderActiveStatus = JSON.parse(await readFile(olderActiveStatusFile, "utf8"));
+  const olderActiveStartedAt = new Date().toISOString();
+  Object.assign(olderActiveStatus, {
+    status: "running",
+    approval: "mcp",
+    runner_pid: process.pid,
+    current_phase: "steps",
+    current_step: 0,
+    started_at: olderActiveStartedAt,
+    updated_at: olderActiveStartedAt,
+    cleanup_guarantee: "best-effort-finally-and-recovery",
   });
+  await writeFile(olderActiveStatusFile, `${JSON.stringify(olderActiveStatus, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(join(olderActiveDir, "runner.pid"), `${JSON.stringify({ pid: process.pid, startedAt: olderActiveStartedAt })}\n`, { mode: 0o600 });
   const durableTerminal = recoveryVisibilityManager.start({
     name: "older durable terminal recovery result",
     steps: [{ argv: [process.execPath, "--version"] }],
@@ -733,8 +749,6 @@ async function testManagedJobCapacityBoundary() {
   const delegatedRecoveryList = recoveryVisibilityManager.list({ limit: 10 }, { authority: { owner: false } });
   assert(!Object.hasOwn(delegatedRecoveryList, "recent_activity") && !Object.hasOwn(delegatedRecoveryList, "capacity"),
     "non-owner managed-job listing exposed global recent job activity or retained-state composition");
-  recoveryVisibilityManager.cancel({ job_id: olderActive.job_id });
-  await waitForJob(recoveryVisibilityManager, olderActive.job_id);
 
   const mixedRoot = join(root, "capacity-mixed-retention-jobs");
   const mixedManager = createManagedJobTestManager({

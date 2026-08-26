@@ -4,7 +4,7 @@ import path from "node:path";
 import { packageRoot } from "./package-identity.mjs";
 import { ensureWranglerToolchain } from "./wrangler-toolchain.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
-import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
+import { terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 
 export function runExecutable(command, args = [], options = {}) {
   const executable = validateExecutable(command);
@@ -27,11 +27,17 @@ export function runExecutable(command, args = [], options = {}) {
     let timedOut = false; let childError = null;
     let timer = null;
     let killTimer = null;
+    let hardTermination = null;
     const timeoutMs = Number(options.timeoutMs);
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        killTimer = terminateProcessTreeWithEscalation(child);
+        if (options.hardTimeout === true) {
+          const terminateAndWait = typeof options.terminateTreeAndWait === "function"
+            ? options.terminateTreeAndWait : terminateProcessTreeAndWait;
+          hardTermination = Promise.resolve(terminateAndWait(child, "SIGKILL", options.terminationOptions || {}))
+            .then((value) => value === true).catch(() => false);
+        } else killTimer = terminateProcessTreeWithEscalation(child);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -47,17 +53,25 @@ export function runExecutable(command, args = [], options = {}) {
       child.stderr?.on("data", chunk => stderr.append(chunk));
     }
     child.on("error", error => { childError ||= error; });
-    child.on("close", code => finish(() => {
-      const failureMessage = timedOut ? `command timed out after ${timeoutMs}ms` : childError?.message || "";
-      const result = { ...capturedResult(timedOut ? 124 : childError ? 127 : code, stdout, stderr, failureMessage) };
-      if ((!timedOut && !childError && code === 0) || options.allowFailure) resolve(result);
-      else if (childError && !timedOut) reject(childError);
-      else {
-        const error = new Error((result.stderr || result.stdout || `${executable} exited ${result.code}`).trim());
-        error.result = result;
-        reject(error);
-      }
-    }));
+    child.on("close", code => { void settleAfterClose(code); });
+    const settleAfterClose = async code => {
+      const terminationSettled = !timedOut || !hardTermination ? true : await hardTermination;
+      finish(() => {
+        const failureMessage = timedOut ? `command timed out after ${timeoutMs}ms` : childError?.message || "";
+        const result = {
+          ...capturedResult(timedOut ? 124 : childError ? 127 : code, stdout, stderr, failureMessage),
+          timed_out: timedOut,
+          termination_settled: terminationSettled,
+        };
+        if ((!timedOut && !childError && code === 0) || options.allowFailure) resolve(result);
+        else if (childError && !timedOut) reject(childError);
+        else {
+          const error = new Error((result.stderr || result.stdout || `${executable} exited ${result.code}`).trim());
+          error.result = result;
+          reject(error);
+        }
+      });
+    };
   });
 }
 

@@ -194,8 +194,14 @@ if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
   throw new Error("Worker type generation can leak or escape through an absolute generated-file path");
 }
 const wranglerLifecycleSource = readFileSync(join(root, "scripts", "wrangler-command-lifecycle.mjs"), "utf8");
-for (const required of ["completionMarker", 'child.kill("SIGTERM")', 'child.kill("SIGKILL")', "completed but did not exit", "timed out after"]) {
+for (const required of [
+  "completionMarker", 'child.kill("SIGTERM")', 'child.kill("SIGKILL")', "forceSettlementGraceMs",
+  "forceSettlementTimer", "completed but did not exit", "timed out after",
+]) {
   if (!wranglerLifecycleSource.includes(required)) throw new Error(`bounded Wrangler lifecycle contract regressed: ${required}`);
+}
+if (wranglerLifecycleSource.includes("killed !== true")) {
+  throw new Error("Wrangler lifecycle again treats a kill-request return value as process-settlement proof");
 }
 if (packageJson.scripts?.["typecheck:local"] !== "tsc -p tsconfig.local.json --noEmit") throw new Error("local JavaScript contract typecheck is missing");
 if (!String(packageJson.scripts?.typecheck || "").includes("npm run typecheck:local")) throw new Error("complete typecheck omits local JavaScript contracts");
@@ -922,6 +928,15 @@ for (const required of [
 ]) {
   if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost exact accepted-tarball boundary: ${required}`);
 }
+for (const required of [
+  "runExecutable", "hardTimeout: true", "npmPrepublicationTimeoutMs = 30 * 60 * 1000",
+  "npmPublicationStageTimeoutMs = 10 * 60 * 1000", "prepublicationTimeoutMs", "publicationStageTimeoutMs",
+]) {
+  if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost process-tree/deadline boundary: ${required}`);
+}
+if (npmPublishSource.includes("spawnSync")) {
+  throw new Error("npm publication returned to direct-child-only synchronous timeout handling");
+}
 const npmAuthorizationCall = npmPublishSource.indexOf("assertNpmPublicationAuthorized();");
 const npmMainPublicationCall = npmPublishSource.indexOf("publishCurrentNpmPackage(root, mode)");
 if (npmAuthorizationCall < 0 || npmMainPublicationCall < 0 || npmAuthorizationCall > npmMainPublicationCall) {
@@ -1533,6 +1548,13 @@ if (processExecutionSource.includes('child.on("error", (error) => {\n        voi
 if (shellSource.includes('child.on("error", error => finish(')
     || !shellSource.includes('child.on("error", error => { childError ||= error; })')) {
   throw new Error("internal executable execution again settles directly from child error before close");
+}
+for (const required of ["terminateProcessTreeAndWait", "hardTermination", "termination_settled"]) {
+  if (!shellSource.includes(required)) throw new Error(`internal hard timeout lost process-tree settlement barrier: ${required}`);
+}
+const processTreeForceSettlementSource = readFileSync(join(root, "src", "local", "process-tree-force-settlement.mjs"), "utf8");
+for (const required of ['"taskkill.exe"', '"/T"', '"/F"', 'killer.once?.("close"', "DEFAULT_FORCE_TREE_SETTLEMENT_MS"]) {
+  if (!processTreeForceSettlementSource.includes(required)) throw new Error(`Windows force-tree settlement lost bounded taskkill proof: ${required}`);
 }
 const processTreeSupervisorSource = readFileSync(join(root, "src", "local", "process-tree-supervisor.mjs"), "utf8");
 for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "processSnapshotTimeoutMs", "processTreeOwnershipStillCurrent"]) {

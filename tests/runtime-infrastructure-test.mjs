@@ -11,7 +11,7 @@ import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
 import { childExitedBeforeTimeout, createChildProcessSettlement } from "../src/local/child-process-settlement.mjs";
 import { processState } from "../src/local/process-identity.mjs";
-import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
+import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import { executionGuardrailsSnapshot, MAX_CONCURRENT_TOOL_CALLS } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
 import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
@@ -72,6 +72,7 @@ testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
 await testProcessErrorRetainsOwnershipUntilClose();
 await testRunExecutableErrorWaitsForClose();
+await testRunExecutableHardTimeoutWaitsForTreeSettlement();
 await testProcessTimeoutIsNotSafeToRetry();
 await testProcessTracker();
 await testProcessTreeSupervisor();
@@ -1118,6 +1119,7 @@ function testRelayHandshakeDiagnostics() {
     last_failed_connect_http_status: 503,
     last_ready_duration_ms: 123456,
     last_ready_inbound_silence_ms: 15000,
+    https_fallback_last_takeover_ms: 1350,
   });
   assert(diagnostics.schema_version === 1
     && diagnostics.network_route === "system-network-stack"
@@ -1150,7 +1152,8 @@ function testRelayHandshakeDiagnostics() {
     && diagnostics.max_transport_confirmation_ms === 4100
     && diagnostics.last_transport_confirmation_timeout_age_ms === 15000
     && diagnostics.previous_ready_duration_ms === 123456
-    && diagnostics.previous_ready_inbound_silence_ms === 15000,
+    && diagnostics.previous_ready_inbound_silence_ms === 15000
+    && diagnostics.https_fallback_last_takeover_ms === 1350,
   "relay handshake diagnostics lost bounded outage evidence");
   const bounded = relayHandshakeDiagnostics({
     outage_count: -1,
@@ -1163,6 +1166,7 @@ function testRelayHandshakeDiagnostics() {
     last_transport_error_reason: "private-network-detail",
     heartbeat: { last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1 },
     last_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
+    https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
   });
   assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0
     && Object.keys(bounded.last_connect_milestones_ms).length === 0
@@ -1173,7 +1177,8 @@ function testRelayHandshakeDiagnostics() {
     && bounded.last_transport_error_reason === "unknown"
     && bounded.last_probe_buffered_bytes === 0
     && bounded.last_probe_dispatch_ms === 0
-    && bounded.previous_ready_inbound_silence_ms === 0,
+    && bounded.previous_ready_inbound_silence_ms === 0
+    && bounded.https_fallback_last_takeover_ms === 0,
     "relay handshake diagnostics accepted invalid numeric fields");
 }
 
@@ -1805,6 +1810,34 @@ async function testRunExecutableErrorWaitsForClose() {
     "runExecutable did not preserve the child error until close settlement");
 }
 
+async function testRunExecutableHardTimeoutWaitsForTreeSettlement() {
+  class TimeoutChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_427;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+    }
+  }
+  const child = new TimeoutChild();
+  let releaseTree;
+  const treeBarrier = new Promise((resolvePromise) => { releaseTree = resolvePromise; });
+  let settled = false;
+  const running = runExecutable("synthetic-hard-timeout", [], {
+    capture: true, allowFailure: true, hardTimeout: true, timeoutMs: 1,
+    spawnProcess: () => child,
+    terminateTreeAndWait: () => treeBarrier,
+  }).finally(() => { settled = true; });
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 5); });
+  child.emit("close", null);
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(settled === false, "hard-timeout runExecutable settled from direct child close before tree termination proof");
+  releaseTree(true);
+  const result = await running;
+  assert(result.code === 124 && result.timed_out === true && result.termination_settled === true,
+    "hard-timeout runExecutable lost explicit whole-tree settlement evidence");
+}
+
 async function testProcessTimeoutIsNotSafeToRetry() {
   class NeverClosingChild extends EventEmitter {
     constructor() {
@@ -2146,6 +2179,21 @@ async function testProcessTreeSupervisor() {
     killProcess(pid, signal) { groupSignals.push({ pid, signal }); },
   }), "POSIX process-group termination was not requested");
   assert(groupSignals[0].pid === -child.pid && groupSignals[0].signal === "SIGTERM", "POSIX termination did not target the child process group");
+
+  const forceKiller = new EventEmitter();
+  let forceKillSettled = false;
+  const windowsForceBarrier = terminateProcessTreeAndWait(child, "SIGKILL", {
+    platform: "win32",
+    spawnProcess(command, args, options) {
+      assert(command === "taskkill.exe" && args.includes("/T") && args.includes("/F") && options.shell === false,
+        "Windows hard tree barrier did not use forced taskkill tree semantics");
+      return forceKiller;
+    },
+  }).then((value) => { forceKillSettled = value; return value; });
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(forceKillSettled === false, "Windows hard tree barrier settled before taskkill helper completion");
+  forceKiller.emit("close", 0);
+  assert(await windowsForceBarrier, "Windows hard tree barrier did not accept successful taskkill completion");
 }
 
 async function testChildProcessSettlement() {
@@ -2440,7 +2488,7 @@ function testRuntimeInfoProjection() {
         authenticated: true, ready: true, closed: false, transport: "https", network_route: "system-network-stack",
         reconnect_attempt: 2, outage_active: false, outage_count: 4, outage_duration_ms: 321,
         last_close_category: "relay_connect_timeout", last_close_code: 1006, last_transport_error_class: "network_error",
-        https_fallback_active: true, websocket_ready: false,
+        https_fallback_active: true, websocket_ready: false, https_fallback_last_takeover_ms: 1350,
         https_fallback: { session_id: "must_not_escape_summary", outbound_queue: ["content"] },
         heartbeat: { application_inbound_silence_ms: 999 }, websocket_outage_duration_ms: 888,
       },
@@ -2454,6 +2502,7 @@ function testRuntimeInfoProjection() {
     && summary.runtime.lifecycle === null && summary.runtime.relay?.ready === true
     && summary.runtime.relay?.transport === "https" && summary.runtime.relay?.outage_count === 4
     && summary.runtime.relay?.https_fallback_active === true && summary.runtime.relay?.websocket_ready === false
+    && summary.runtime.relay?.https_fallback_last_takeover_ms === 1350
     && !("https_fallback" in summary.runtime.relay) && !("heartbeat" in summary.runtime.relay)
     && !("websocket_outage_duration_ms" in summary.runtime.relay)
     && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0

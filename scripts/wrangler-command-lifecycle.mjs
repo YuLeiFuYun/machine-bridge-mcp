@@ -4,6 +4,7 @@ import process from "node:process";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_COMPLETION_EXIT_GRACE_MS = 500;
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
+const DEFAULT_FORCE_SETTLEMENT_GRACE_MS = 2_000;
 
 export async function runCompletedWranglerCommand(options = {}) {
   const cwd = requiredString(options.cwd, "cwd");
@@ -15,6 +16,7 @@ export async function runCompletedWranglerCommand(options = {}) {
   const timeoutMs = positiveInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, "timeoutMs");
   const completionExitGraceMs = positiveInteger(options.completionExitGraceMs, DEFAULT_COMPLETION_EXIT_GRACE_MS, "completionExitGraceMs");
   const terminationGraceMs = positiveInteger(options.terminationGraceMs, DEFAULT_TERMINATION_GRACE_MS, "terminationGraceMs");
+  const forceSettlementGraceMs = positiveInteger(options.forceSettlementGraceMs, DEFAULT_FORCE_SETTLEMENT_GRACE_MS, "forceSettlementGraceMs");
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
   const env = options.env || process.env;
@@ -29,21 +31,24 @@ export async function runCompletedWranglerCommand(options = {}) {
   await new Promise((resolvePromise, rejectPromise) => {
     let completionObserved = false;
     let cleanupRequested = false;
-    let forceKillUsed = false;
+    let forceKillRequested = false;
     let hardTimedOut = false;
     let outputTail = "";
     let completionTimer;
     let forceTimer;
+    let forceSettlementTimer;
     let settled = false;
 
     const hardTimer = setTimeout(() => {
       hardTimedOut = true;
-      requestTermination();
+      if (cleanupRequested) requestForceTermination();
+      else requestTermination();
     }, timeoutMs);
     const clearTimers = () => {
       clearTimeout(hardTimer);
       clearTimeout(completionTimer);
       clearTimeout(forceTimer);
+      clearTimeout(forceSettlementTimer);
     };
     const finish = (error) => {
       if (settled) return;
@@ -60,14 +65,18 @@ export async function runCompletedWranglerCommand(options = {}) {
         else child.kill("SIGTERM");
       }
       catch (error) { finish(new Error(`${label} could not request graceful cleanup`, { cause: error })); return; }
-      forceTimer = setTimeout(() => {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        forceKillUsed = true;
-        try {
-          const killed = killChild ? killChild(child, "SIGKILL") : child.kill("SIGKILL");
-          if (killed !== true) finish(new Error(`${label} could not force cleanup`));
-        } catch (error) { finish(new Error(`${label} could not force cleanup`, { cause: error })); }
-      }, terminationGraceMs);
+      forceTimer = setTimeout(requestForceTermination, terminationGraceMs);
+    };
+    const requestForceTermination = () => {
+      if (settled || forceKillRequested) return;
+      forceKillRequested = true;
+      try {
+        if (killChild) killChild(child, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch (error) { finish(new Error(`${label} could not force cleanup`, { cause: error })); return; }
+      forceSettlementTimer = setTimeout(() => {
+        if (!settled) finish(new Error(`${label} could not force cleanup`));
+      }, forceSettlementGraceMs);
     };
     const observeOutput = (destination, chunk) => {
       destination.write(chunk);
@@ -88,13 +97,13 @@ export async function runCompletedWranglerCommand(options = {}) {
     child.once("error", finish);
     child.once("close", (code, signal) => {
       if (hardTimedOut) { finish(new Error(`${label} timed out after ${timeoutMs}ms`)); return; }
-      if (forceKillUsed) { finish(new Error(`${label} completed but did not terminate after graceful cleanup`)); return; }
       if (code === 0 && completionIsValid()) { finish(); return; }
       if (cleanupRequested && completionObserved && signal === "SIGTERM" && completionIsValid()) {
         stderr.write(`${label} completed but did not exit; terminated the completed CLI after a bounded grace period\n`);
         finish();
         return;
       }
+      if (forceKillRequested) { finish(new Error(`${label} completed but did not terminate after graceful cleanup`)); return; }
       if (settled) return;
       const status = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
       finish(new Error(`${label} failed with ${status}`));
