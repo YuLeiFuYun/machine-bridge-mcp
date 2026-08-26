@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.135 - 2026-08-26
+
+- Harden same-daemon managed-job runner recovery on Windows after PR #95 advanced beyond beta.134's fixed `file://` test-hook loading bug. The exact-head Windows run reached the later dependency-wait crash regression, observed the runner `exit` callback, then logged `permission_denied` from `reconcileStatus` and failed to autonomously relaunch the runner. This proves the remaining defect was transient Windows filesystem contention in the recovery path rather than a missed child-exit event or another ESM-loader failure.
+- Retry only bounded transient filesystem mutation errors (`EACCES`, `EBUSY`, `EPERM`, `ENOTEMPTY`) while clearing stale runner runtime/ownership artifacts, and clear those artifacts before persisting the next recovery-attempt state so a failed cleanup cannot leave a fresh half-committed status that suppresses immediate recovery. Runner-exit reconciliation also receives a bounded retry schedule for transient permission/conflict/timeout/resource-unavailable failures; integrity and other non-transient failures remain fail closed rather than being looped.
+- Add deterministic regression coverage for transient removal backoff and runner-exit reconciliation retry policy while preserving the existing real dependency-wait runner kill/relaunch integration test. Production authorization, resource admission, cleanup guarantees, managed-job execution ceilings, hosted read pacing, and tool schema generation **11** are unchanged. Advance package/runtime identity to **3.0.0-beta.135** because production recovery code changed after beta.134 acceptance.
+
 ## 3.0.0-beta.134 - 2026-08-25
 
 - Correct the beta.131 managed-job test runner hook for Windows without changing production execution. PR #95 showed the test-only `node --import` argument was passed as a native absolute path; Node accepts that form on POSIX but the Windows ESM loader interprets a drive-letter path such as `D:\\...` as an unsupported `d:` URL scheme. The fixture now passes the hook as its canonical `file://` URL, preserving the exact-parent/exact-specifier interception boundary on every supported platform.

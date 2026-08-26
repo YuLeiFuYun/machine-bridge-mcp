@@ -1,6 +1,6 @@
-import { renameSync } from "node:fs";
+import { renameSync, rmSync } from "node:fs";
 
-const TRANSIENT_REPLACE_ERRORS = new Set(["EACCES", "EBUSY", "EPERM", "ENOTEMPTY"]);
+const TRANSIENT_FILESYSTEM_MUTATION_ERRORS = new Set(["EACCES", "EBUSY", "EPERM", "ENOTEMPTY"]);
 const WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 
 export function replaceFileSync(source, target, options = {}) {
@@ -25,7 +25,35 @@ export function replaceFileSync(source, target, options = {}) {
 }
 
 export function isTransientReplaceError(error) {
-  return TRANSIENT_REPLACE_ERRORS.has(String(error?.code || ""));
+  return isTransientFilesystemMutationError(error);
+}
+
+export function removePathSync(target, options = {}) {
+  const remove = typeof options.remove === "function" ? options.remove : rmSync;
+  const sleep = typeof options.sleep === "function" ? options.sleep : sleepSync;
+  const random = typeof options.random === "function" ? options.random : Math.random;
+  const attempts = clampInteger(options.attempts, 32, 1, 64);
+  const baseDelayMs = clampInteger(options.baseDelayMs, 15, 0, 1000);
+  const maxDelayMs = Math.max(baseDelayMs, clampInteger(options.maxDelayMs, 250, 0, 2000));
+  const force = options.force === true;
+  const recursive = options.recursive === true;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      remove(target, { force, recursive });
+      return { attempts: attempt, removed: true };
+    } catch (error) {
+      if (force && error?.code === "ENOENT") return { attempts: attempt, removed: false };
+      lastError = error;
+      if (!isTransientFilesystemMutationError(error) || attempt === attempts) throw error;
+      sleep(retryDelayMs(attempt, baseDelayMs, maxDelayMs, random));
+    }
+  }
+  throw lastError || new Error("filesystem removal failed");
+}
+
+export function isTransientFilesystemMutationError(error) {
+  return TRANSIENT_FILESYSTEM_MUTATION_ERRORS.has(String(error?.code || ""));
 }
 
 function retryDelayMs(attempt, baseDelayMs, maxDelayMs, random) {

@@ -1,5 +1,5 @@
-import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { removePathSync } from "./atomic-fs.mjs";
 import { assertManagedJobPlanIntegrity } from "./managed-job-plan-integrity.mjs";
 import { launchRunner } from "./managed-job-runner.mjs";
 import { atomicWriteJson, readRequiredJson } from "./managed-job-storage.mjs";
@@ -10,13 +10,13 @@ export function relaunchInterruptedManagedJob({
   dir, statusFile, status, recoveryAttempts, recoveryToken, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
 }) {
   const plan = readVerifiedPlan(dir, status);
+  clearRunnerRuntime(dir);
   status.status = "interrupted";
   status.updated_at = new Date().toISOString();
   status.finished_at = status.updated_at;
   status.error_class = "runner_interrupted";
   status.recovery_attempts = recoveryAttempts + 1;
   atomicWriteJson(statusFile, status, 256 * 1024);
-  clearRunnerRuntime(dir);
   return launchRunner(dir, true, recoveryToken, runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit, runnerSpawnProcess));
 }
 
@@ -24,6 +24,7 @@ export function relaunchDependencyWaitManagedJob({
   dir, statusFile, status, recoveryAttempts, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
 }) {
   const plan = readVerifiedPlan(dir, status);
+  clearRunnerRuntime(dir);
   status.status = "queued";
   status.current_phase = "dependency_wait";
   status.updated_at = new Date().toISOString();
@@ -32,7 +33,6 @@ export function relaunchDependencyWaitManagedJob({
   status.runner_pid = null;
   status.runner_process_started_at = null;
   atomicWriteJson(statusFile, status, 256 * 1024);
-  clearRunnerRuntime(dir);
   return launchRunner(dir, false, "", runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit, runnerSpawnProcess));
 }
 
@@ -43,8 +43,8 @@ function readVerifiedPlan(dir, status) {
 }
 
 function clearRunnerRuntime(dir) {
-  rmSync(join(dir, "runtime"), { recursive: true, force: true });
-  rmSync(join(dir, "runner.pid"), { force: true });
+  removePathSync(join(dir, "runtime"), { recursive: true, force: true });
+  removePathSync(join(dir, "runner.pid"), { force: true });
 }
 
 function runnerLaunchOptions(plan, logger, overrides, onExit, spawnProcess) {

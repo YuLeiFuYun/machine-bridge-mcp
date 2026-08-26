@@ -20,6 +20,7 @@ import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local
 import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
 import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
+import { createManagedJobRunnerExitRecovery } from "../src/local/managed-job-runner-exit-recovery.mjs";
 import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal, terminalStatusFromResult } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
@@ -60,6 +61,46 @@ function testManagedStateIdentityRetry() {
   "managed job state identity retry became unbounded or lost its stable error classification");
   assert(resourceErrorClass(Object.assign(new Error("corrupt terminal state"), { code: "integrity_error" })) === "integrity_error",
     "managed-job diagnostics collapsed an integrity failure into generic resource unavailability");
+}
+
+async function testRunnerExitRecoveryRetryPolicy() {
+  let transientCalls = 0;
+  const transientWarnings = [];
+  const transientRecovery = createManagedJobRunnerExitRecovery({
+    delayMs: 1,
+    retryDelayMs: 1,
+    maxAttempts: 3,
+    reconcileStatus() {
+      transientCalls += 1;
+      if (transientCalls === 1) throw Object.assign(new Error("synthetic Windows sharing violation"), { code: "EPERM" });
+    },
+    logger: { warn(message, fields) { transientWarnings.push({ message, fields }); } },
+  });
+  transientRecovery.observe("synthetic-transient-job");
+  await delay(50);
+  transientRecovery.stop();
+  assert(transientCalls === 2 && transientWarnings.length === 1
+    && transientWarnings[0].fields?.error_class === "permission_denied"
+    && transientWarnings[0].fields?.retry_scheduled === true,
+  "runner-exit recovery did not retry a bounded transient Windows reconciliation failure");
+
+  let fatalCalls = 0;
+  const fatalWarnings = [];
+  const fatalRecovery = createManagedJobRunnerExitRecovery({
+    delayMs: 1,
+    retryDelayMs: 1,
+    maxAttempts: 3,
+    reconcileStatus() {
+      fatalCalls += 1;
+      throw Object.assign(new Error("synthetic invalid recovery state"), { code: "EINVAL" });
+    },
+    logger: { warn(message, fields) { fatalWarnings.push({ message, fields }); } },
+  });
+  fatalRecovery.observe("synthetic-fatal-job");
+  await delay(50);
+  fatalRecovery.stop();
+  assert(fatalCalls === 1 && fatalWarnings.length === 1 && fatalWarnings[0].fields?.retry_scheduled === false,
+    "runner-exit recovery retried a non-transient reconciliation failure");
 }
 
 function testHostedManagedJobStatusProjection() {
@@ -1180,6 +1221,7 @@ await writeFile(helperFile, "temporary", "utf8");
 try {
   testTerminalPersistenceBoundary();
   testManagedStateIdentityRetry();
+  await testRunnerExitRecoveryRetryPolicy();
   testHostedManagedJobStatusProjection();
   await testManagedJobReadWaitPacing();
   await testRunnerClaimBoundary();

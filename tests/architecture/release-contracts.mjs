@@ -564,6 +564,7 @@ const managedJobsManagerSource = readFileSync(join(root, "src", "local", "manage
 const managedJobRelaunchSource = readFileSync(join(root, "src", "local", "managed-job-relaunch.mjs"), "utf8");
 const managedJobActiveChildSource = readFileSync(join(root, "src", "local", "managed-job-active-child.mjs"), "utf8");
 const managedJobRunnerExitRecoverySource = readFileSync(join(root, "src", "local", "managed-job-runner-exit-recovery.mjs"), "utf8");
+const atomicFsSource = readFileSync(join(root, "src", "local", "atomic-fs.mjs"), "utf8");
 const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
 const managedJobListingSource = readFileSync(join(root, "src", "local", "managed-job-listing.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
@@ -589,6 +590,12 @@ if (!managedJobRunnerSource.includes("const resourceCoordinator = new ResourceCo
     || !managedJobRelaunchSource.includes("runnerSpawnProcess")
     || runtimeSource.includes("runnerSpawnProcess:")) {
   throw new Error("managed-job test runner injection escaped its in-process constructor seam or altered the production runner resource coordinator");
+}
+if (!managedJobRelaunchSource.includes("removePathSync")
+    || !atomicFsSource.includes('"EACCES", "EBUSY", "EPERM", "ENOTEMPTY"')
+    || !managedJobRunnerExitRecoverySource.includes("RETRYABLE_ERROR_CLASSES")
+    || !managedJobRunnerExitRecoverySource.includes("retry_scheduled: retryScheduled")) {
+  throw new Error("managed-job runner recovery lost bounded Windows filesystem-contention retries");
 }
 const plannedDrainIndex = runtimeSource.indexOf("await this.relayShutdownDrain?.begin(this.activeRelayCalls.size);");
 const relayStopIndex = runtimeSource.indexOf("this.relay?.stop();");

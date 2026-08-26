@@ -2,7 +2,9 @@ import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isTransientReplaceError, replaceFileSync } from "../src/local/atomic-fs.mjs";
+import {
+  isTransientFilesystemMutationError, isTransientReplaceError, removePathSync, replaceFileSync,
+} from "../src/local/atomic-fs.mjs";
 import { publicError } from "../src/local/errors.mjs";
 import { assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
 
@@ -59,6 +61,45 @@ try {
   }), "missing");
   assert(nonTransientCalls === 1, "non-transient replacement error was retried");
   assert(isTransientReplaceError({ code: "EACCES" }) && !isTransientReplaceError({ code: "ENOENT" }), "transient error classification is incorrect");
+
+  let removeCalls = 0;
+  const removeDelays = [];
+  const removed = removePathSync(join(root, "transient-remove"), {
+    force: true,
+    baseDelayMs: 10,
+    maxDelayMs: 250,
+    random: () => 0,
+    sleep: (milliseconds) => removeDelays.push(milliseconds),
+    remove() {
+      removeCalls += 1;
+      if (removeCalls <= 3) {
+        const error = new Error("simulated transient Windows deletion contention");
+        error.code = removeCalls % 2 ? "EPERM" : "EBUSY";
+        throw error;
+      }
+    },
+  });
+  assert(removed.attempts === 4 && removed.removed === true && removeCalls === 4,
+    "transient filesystem removal was not retried deterministically");
+  assert(JSON.stringify(removeDelays) === JSON.stringify([10, 20, 40]),
+    "filesystem removal did not use bounded exponential backoff");
+  const alreadyMissing = removePathSync(join(root, "already-missing"), {
+    force: true,
+    remove() { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+  });
+  assert(alreadyMissing.removed === false && alreadyMissing.attempts === 1,
+    "forced filesystem removal did not preserve idempotent ENOENT settlement");
+  let removeNonTransientCalls = 0;
+  expectThrow(() => removePathSync(join(root, "invalid-remove"), {
+    force: true,
+    remove() {
+      removeNonTransientCalls += 1;
+      throw Object.assign(new Error("invalid"), { code: "EINVAL" });
+    },
+  }), "invalid");
+  assert(removeNonTransientCalls === 1 && isTransientFilesystemMutationError({ code: "EPERM" })
+    && !isTransientFilesystemMutationError({ code: "EINVAL" }),
+  "filesystem removal retry broadened beyond transient mutation failures");
 
   const caseAliasOne = { operation: { kind: "add" }, source: null, target: join(root, "Case-Alias.txt") };
   const caseAliasTwo = { operation: { kind: "add" }, source: null, target: join(root, "case-alias.txt") };
