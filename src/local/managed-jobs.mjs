@@ -186,6 +186,7 @@ export class ManagedJobManager {
         logger: this.logger,
         reserveSlots: alreadyExists ? 0 : 1,
         protectedJobIds: new Set(plan.depends_on || []),
+        incomingRetentionClass: retentionClass,
       });
       const capacitySnapshot = managedJobCapacitySnapshot(this.jobRoot);
       if (!alreadyExists && capacitySnapshot.retained_state >= MAX_JOBS) {

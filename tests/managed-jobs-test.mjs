@@ -16,6 +16,7 @@ import {
   managedJobActiveChildRecoveryReady, publishManagedJobActiveChild, terminateManagedJobActiveChild,
 } from "../src/local/managed-job-active-child.mjs";
 import { MAX_JOBS, MAX_LISTED_JOBS } from "../src/local/managed-job-capacity.mjs";
+import { TRANSIENT_PROCESS_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_SLOTS, transientProcessWithinRecoveryGrace } from "../src/local/managed-job-retention-policy.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
 import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
@@ -28,12 +29,28 @@ import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
+const RUNNER_EXIT_RECOVERY_TEST_WAIT_MS = 40_000; // Covers three 10.1s production recovery attempts plus scheduler margin.
 const MANAGED_JOB_MULTI_STEP_WAIT_MS = 600_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 120;
 const MANAGED_JOB_TREE_TIMEOUT_SECONDS = 15;
 const MANAGED_JOB_TREE_READY_MS = 10_000;
 const RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500;
 const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
+
+function testManagedJobRetentionGraceBoundaries() {
+  const now = Date.parse("2026-08-26T00:30:00.000Z");
+  const transient = { retention_class: "transient_process", finished_at: new Date(now - TRANSIENT_PROCESS_RECOVERY_GRACE_MS).toISOString() };
+  assert(transientProcessWithinRecoveryGrace(transient, 0, now),
+    "transient recovery grace excluded its exact documented boundary");
+  transient.finished_at = new Date(now - TRANSIENT_PROCESS_RECOVERY_GRACE_MS - 1).toISOString();
+  assert(!transientProcessWithinRecoveryGrace(transient, 0, now),
+    "transient recovery grace retained an expired helper result");
+  transient.finished_at = new Date(now + 1).toISOString();
+  assert(!transientProcessWithinRecoveryGrace(transient, 0, now),
+    "transient recovery grace trusted a future terminal timestamp");
+  assert(!transientProcessWithinRecoveryGrace({ finished_at: new Date(now).toISOString() }, now, now),
+    "ordinary managed-job history entered the transient recovery grace");
+}
 
 function testManagedStateIdentityRetry() {
   let attempts = 0;
@@ -674,6 +691,33 @@ async function testManagedJobCapacityBoundary() {
     && !String(missingJobError?.message || "").includes(terminalRoot),
   "missing managed-job recovery state did not return a privacy-safe typed not_found error");
 
+  const recentTransientIds = [];
+  for (let index = 0; index < TRANSIENT_PROCESS_RECOVERY_SLOTS; index += 1) {
+    const transient = terminalManager.createJob({
+      name: `recent transient recovery result ${index}`,
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: false, retentionClass: "transient_process" });
+    terminalManager.cancel({ job_id: transient.job_id });
+    recentTransientIds.push(transient.job_id);
+  }
+  const recentRecoveryCapacity = terminalManager.list({ limit: MAX_LISTED_JOBS }).capacity;
+  assert(recentRecoveryCapacity?.transient_terminal === TRANSIENT_PROCESS_RECOVERY_SLOTS
+    && recentRecoveryCapacity?.durable_terminal === MAX_JOBS - TRANSIENT_PROCESS_RECOVERY_SLOTS
+    && (await Promise.all(recentTransientIds.map((id) => exists(join(terminalRoot, id))))).every(Boolean),
+  "saturated managed-job retention did not preserve the bounded recent transient recovery reserve");
+  const overflowTransient = terminalManager.createJob({
+    name: "recent transient recovery overflow",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" });
+  terminalManager.cancel({ job_id: overflowTransient.job_id });
+  const overflowRecoveryCapacity = terminalManager.list({ limit: MAX_LISTED_JOBS }).capacity;
+  assert(!(await exists(join(terminalRoot, recentTransientIds[0])))
+    && (await Promise.all(recentTransientIds.slice(1).map((id) => exists(join(terminalRoot, id))))).every(Boolean)
+    && await exists(join(terminalRoot, overflowTransient.job_id))
+    && overflowRecoveryCapacity?.transient_terminal === TRANSIENT_PROCESS_RECOVERY_SLOTS
+    && overflowRecoveryCapacity?.durable_terminal === MAX_JOBS - TRANSIENT_PROCESS_RECOVERY_SLOTS,
+  "transient recovery reserve grew without bound instead of reclaiming its oldest helper result");
+
   const durableHelperRoot = join(root, "durable-helper-retention-jobs");
   const durableHelperManager = createManagedJobTestManager({
     jobRoot: durableHelperRoot,
@@ -1001,7 +1045,7 @@ async function testManagedJobDependencies() {
     "runner-crash recovery fixture did not persist dependency-wait runner ownership");
   process.kill(orphanStatus.runner_pid, "SIGKILL");
   await waitForPidExit(orphanStatus.runner_pid, 10_000);
-  const autonomousDeadline = Date.now() + 20_000;
+  const autonomousDeadline = Date.now() + RUNNER_EXIT_RECOVERY_TEST_WAIT_MS;
   let autonomousStatus = null;
   while (Date.now() < autonomousDeadline) {
     try {
@@ -1234,7 +1278,8 @@ await writeFile(helperFile, "temporary", "utf8");
 
 try {
   testTerminalPersistenceBoundary();
-  testManagedStateIdentityRetry();
+  testManagedJobRetentionGraceBoundaries();
+testManagedStateIdentityRetry();
   await testRunnerExitRecoveryRetryPolicy();
   testHostedManagedJobStatusProjection();
   await testManagedJobReadWaitPacing();
