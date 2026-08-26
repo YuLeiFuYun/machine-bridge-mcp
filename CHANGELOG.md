@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-beta.137 - 2026-08-26
+
+- Supersede the locally accepted beta.136 candidate after exact-head Windows CI independently validated the new npm publication regression and then failed later in `worker-types-generator:test`. The provider reached and passed `publish-npm:test`, proving the beta.136 process-tree/deadline repair itself was portable; it then failed in the older Wrangler lifecycle cleanup path with `wrangler types could not force cleanup`.
+- Fix the Windows cleanup-settlement race in `wrangler-command-lifecycle.mjs`. A `ChildProcess.kill()` return value now means only that a cleanup request was attempted; it is never treated as proof that the process has or has not reached terminal state. Graceful cleanup may escalate to a force request, but the wrapper waits for the child `close` event or a separate bounded post-force settlement deadline. A real zero exit retains precedence over raced cleanup requests, while a child that actually closes only after forced termination still fails closed.
+- Add a deterministic cross-platform regression for the exact provider semantics: the fixture crosses the completion grace, accepts the synthetic `SIGTERM`, returns `false` for the later synthetic `SIGKILL`, and then exits zero. The old implementation necessarily failed immediately on the `false` request result; beta.137 waits for observed settlement and succeeds. Architecture now forbids reintroducing `killed !== true` as process-settlement evidence.
+- Remove the beta.136 acceptance record and advance package/runtime identity to **3.0.0-beta.137**. Because `scripts/` ships in the npm package, the Windows provider repair changes package bytes and requires a fresh full gate, candidate, activation, OAuth canary, live verification, acceptance, and exact-head provider run.
+
 ## 3.0.0-beta.136 - 2026-08-26
 
 - Fix the npm prerelease publication control plane exposed after beta.135 GitHub release. `prepublishOnly` legitimately ran the full verification plan for 681.4 seconds, but `publish-npm.mjs` applied one fixed ten-minute `spawnSync` deadline to every npm stage. The direct npm parent therefore returned `ETIMEDOUT` while lifecycle descendants continued the remaining verification, `version:check`, and `release:check` on the inherited terminal. The registry was independently checked after the incident and `machine-bridge-mcp@3.0.0-beta.135` remained absent, proving the upload stage never ran.

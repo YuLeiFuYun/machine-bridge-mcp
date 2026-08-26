@@ -194,8 +194,14 @@ if (!workerTypesGeneratorSource.includes("relative(cwd, targetPath)")
   throw new Error("Worker type generation can leak or escape through an absolute generated-file path");
 }
 const wranglerLifecycleSource = readFileSync(join(root, "scripts", "wrangler-command-lifecycle.mjs"), "utf8");
-for (const required of ["completionMarker", 'child.kill("SIGTERM")', 'child.kill("SIGKILL")', "completed but did not exit", "timed out after"]) {
+for (const required of [
+  "completionMarker", 'child.kill("SIGTERM")', 'child.kill("SIGKILL")', "forceSettlementGraceMs",
+  "forceSettlementTimer", "completed but did not exit", "timed out after",
+]) {
   if (!wranglerLifecycleSource.includes(required)) throw new Error(`bounded Wrangler lifecycle contract regressed: ${required}`);
+}
+if (wranglerLifecycleSource.includes("killed !== true")) {
+  throw new Error("Wrangler lifecycle again treats a kill-request return value as process-settlement proof");
 }
 if (packageJson.scripts?.["typecheck:local"] !== "tsc -p tsconfig.local.json --noEmit") throw new Error("local JavaScript contract typecheck is missing");
 if (!String(packageJson.scripts?.typecheck || "").includes("npm run typecheck:local")) throw new Error("complete typecheck omits local JavaScript contracts");

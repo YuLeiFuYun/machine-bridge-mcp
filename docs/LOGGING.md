@@ -78,7 +78,7 @@ Examples:
 ```text
 [info] daemon: remote relay connected and end-to-end result delivery verified
 [warn] daemon: remote relay WebSocket unavailable for 12 seconds; reconnecting automatically (3 reconnect attempts; connection interrupted).
-[info] daemon: remote relay connection restored after 18 seconds (4 reconnect attempts)
+[warn] daemon: remote relay WebSocket restored after 18 seconds (4 reconnect attempts)
 ```
 
 With `--verbose`, the same incident additionally includes bounded structured fields such as exact seconds, coarse error class, retry delay, and transport close diagnostics.
