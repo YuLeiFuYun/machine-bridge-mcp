@@ -1073,6 +1073,7 @@ function testDaemonRelayDiagnostics() {
     last_failed_connect_http_status: 503,
     previous_ready_duration_ms: 123456,
     previous_ready_inbound_silence_ms: 15000,
+    https_fallback_last_takeover_ms: 1350,
   });
   assert(diagnostics?.outage_count === 8
     && diagnostics.connect_timeout_ms === 30000
@@ -1105,7 +1106,8 @@ function testDaemonRelayDiagnostics() {
     && diagnostics.last_transport_error_ready === false
     && diagnostics.last_transport_error_authenticated === false
     && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z"
-    && diagnostics.previous_ready_inbound_silence_ms === 15000,
+    && diagnostics.previous_ready_inbound_silence_ms === 15000
+    && diagnostics.https_fallback_last_takeover_ms === 1350,
   "Worker relay diagnostics sanitizer lost valid bounded evidence");
   const readyDiagnostics = relayDiagnosticsAfterReady(diagnostics);
   assert(readyDiagnostics?.outage_active === false && readyDiagnostics.outage_duration_ms === 9000,
@@ -1123,6 +1125,7 @@ function testDaemonRelayDiagnostics() {
     last_failed_connect_stage: "private_stage", last_failed_connect_duration_ms: Number.POSITIVE_INFINITY,
     last_failed_connect_milestones_ms: { tls_established: -1 }, last_failed_connect_http_status: 999,
     previous_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
+    https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
     last_close_category: "private-category", last_close_code: 99999, last_transport_error_class: "x".repeat(200),
     last_transport_error_reason: "private-network-detail",
     last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1,
@@ -1142,6 +1145,7 @@ function testDaemonRelayDiagnostics() {
     && bounded.last_transport_error_ready === false
     && bounded.last_transport_error_authenticated === false
     && bounded.previous_ready_inbound_silence_ms === 0
+    && bounded.https_fallback_last_takeover_ms === 0
     && bounded.last_close_category === null
     && bounded.last_close_code === null
     && bounded.last_transport_error_class === null,

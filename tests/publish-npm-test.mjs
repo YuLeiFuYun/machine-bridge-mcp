@@ -1,10 +1,16 @@
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertNpmPublicationAuthorized,
+  npmPrepublicationTimeoutMs,
   npmPublicationConfirmationFlag,
+  npmPublicationStageTimeoutMs,
   npmPublishArguments,
   publishCurrentNpmPackage,
+  runNpmPublicationProcess,
 } from "../scripts/publish-npm.mjs";
 
 expectThrow(() => assertNpmPublicationAuthorized({ argv: ["prerelease"] }), "explicit owner authorization");
@@ -77,11 +83,17 @@ assert(verification.args[0] === "/synthetic/hardened/npm-cli.js"
   && verification.args.includes("--tag")
   && verification.args.includes("beta"),
 "npm prepublication verification did not run through the supplied hardened CLI");
+assert(verification.options.timeout === npmPrepublicationTimeoutMs
+  && npmPrepublicationTimeoutMs === 30 * 60 * 1000,
+"npm prepublication verification lost the full-plan release deadline budget");
 assert(preflight.args[1] === "publish"
   && preflight.args[2] === candidatePath
   && preflight.args.includes("--dry-run=true")
   && preflight.args.includes("--json"),
 "npm publication did not validate npm's exact tarball interpretation before upload");
+assert(preflight.options.timeout === npmPublicationStageTimeoutMs
+  && publication.options.timeout === npmPublicationStageTimeoutMs,
+"npm dry-run or upload inherited the longer full-verification deadline");
 assert(publication.args[1] === "publish"
   && publication.args[2] === candidatePath
   && publication.args.includes("--ignore-scripts=true")
@@ -228,6 +240,8 @@ await assertRejects(
   "npm publication failed and temporary cleanup was incomplete",
 );
 
+await testPublicationTimeoutTerminatesDescendants();
+
 function successfulStage(args) {
   return args.includes("--dry-run=true")
     ? { status: 0, stdout: publishDryRunJson(), stderr: "" }
@@ -255,6 +269,39 @@ function publishDryRunJson(overrides = {}) {
     ...overrides,
   };
   return JSON.stringify({ [accepted.metadata.package_name]: record });
+}
+
+async function testPublicationTimeoutTerminatesDescendants() {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "mbm-publish-timeout-tree-"));
+  const marker = join(fixtureRoot, "descendant-ran");
+  const fixture = join(fixtureRoot, "fixture.mjs");
+  const descendant = [
+    "const { writeFileSync } = require('node:fs');",
+    "process.on('SIGTERM', () => {});",
+    "setTimeout(() => writeFileSync(process.argv[1], 'leaked'), 500);",
+    "setInterval(() => {}, 1000);",
+  ].join(" ");
+  await writeFile(fixture, [
+    "import { spawn } from 'node:child_process';",
+    `spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.env.MBM_PUBLISH_TIMEOUT_MARKER], { stdio: 'ignore' });`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"));
+  try {
+    const result = await runNpmPublicationProcess(process.execPath, [fixture], {
+      cwd: root,
+      env: { ...process.env, MBM_PUBLISH_TIMEOUT_MARKER: marker },
+      stdio: "pipe",
+      timeout: 100,
+      maxBuffer: 1024 * 1024,
+    });
+    assert(result.error?.code === "ETIMEDOUT" && result.signal === "SIGKILL",
+      "publication process-tree timeout did not settle as an explicit hard deadline");
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 800); });
+    assert(!existsSync(marker),
+      "publication timeout returned while a resistant npm lifecycle descendant could still continue work");
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 }
 
 console.log("npm publication command test ok");

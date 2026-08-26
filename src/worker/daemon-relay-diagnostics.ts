@@ -88,6 +88,7 @@ export interface DaemonRelayDiagnostics {
   last_disconnected_at: string | null;
   previous_ready_duration_ms: number;
   previous_ready_inbound_silence_ms: number;
+  https_fallback_last_takeover_ms: number;
 }
 
 export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagnostics | undefined {
@@ -135,6 +136,7 @@ export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagn
     last_disconnected_at: timestamp(candidate.last_disconnected_at),
     previous_ready_duration_ms: boundedInteger(candidate.previous_ready_duration_ms, 0, 365 * 24 * 60 * 60_000, 0),
     previous_ready_inbound_silence_ms: boundedInteger(candidate.previous_ready_inbound_silence_ms, 0, 31 * 24 * 60 * 60_000, 0),
+    https_fallback_last_takeover_ms: boundedInteger(candidate.https_fallback_last_takeover_ms, 0, 10 * 60_000, 0),
   };
 }
 

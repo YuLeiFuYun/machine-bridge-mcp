@@ -1118,6 +1118,7 @@ function testRelayHandshakeDiagnostics() {
     last_failed_connect_http_status: 503,
     last_ready_duration_ms: 123456,
     last_ready_inbound_silence_ms: 15000,
+    https_fallback_last_takeover_ms: 1350,
   });
   assert(diagnostics.schema_version === 1
     && diagnostics.network_route === "system-network-stack"
@@ -1150,7 +1151,8 @@ function testRelayHandshakeDiagnostics() {
     && diagnostics.max_transport_confirmation_ms === 4100
     && diagnostics.last_transport_confirmation_timeout_age_ms === 15000
     && diagnostics.previous_ready_duration_ms === 123456
-    && diagnostics.previous_ready_inbound_silence_ms === 15000,
+    && diagnostics.previous_ready_inbound_silence_ms === 15000
+    && diagnostics.https_fallback_last_takeover_ms === 1350,
   "relay handshake diagnostics lost bounded outage evidence");
   const bounded = relayHandshakeDiagnostics({
     outage_count: -1,
@@ -1163,6 +1165,7 @@ function testRelayHandshakeDiagnostics() {
     last_transport_error_reason: "private-network-detail",
     heartbeat: { last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1 },
     last_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
+    https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
   });
   assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0
     && Object.keys(bounded.last_connect_milestones_ms).length === 0
@@ -1173,7 +1176,8 @@ function testRelayHandshakeDiagnostics() {
     && bounded.last_transport_error_reason === "unknown"
     && bounded.last_probe_buffered_bytes === 0
     && bounded.last_probe_dispatch_ms === 0
-    && bounded.previous_ready_inbound_silence_ms === 0,
+    && bounded.previous_ready_inbound_silence_ms === 0
+    && bounded.https_fallback_last_takeover_ms === 0,
     "relay handshake diagnostics accepted invalid numeric fields");
 }
 
@@ -2440,7 +2444,7 @@ function testRuntimeInfoProjection() {
         authenticated: true, ready: true, closed: false, transport: "https", network_route: "system-network-stack",
         reconnect_attempt: 2, outage_active: false, outage_count: 4, outage_duration_ms: 321,
         last_close_category: "relay_connect_timeout", last_close_code: 1006, last_transport_error_class: "network_error",
-        https_fallback_active: true, websocket_ready: false,
+        https_fallback_active: true, websocket_ready: false, https_fallback_last_takeover_ms: 1350,
         https_fallback: { session_id: "must_not_escape_summary", outbound_queue: ["content"] },
         heartbeat: { application_inbound_silence_ms: 999 }, websocket_outage_duration_ms: 888,
       },
@@ -2454,6 +2458,7 @@ function testRuntimeInfoProjection() {
     && summary.runtime.lifecycle === null && summary.runtime.relay?.ready === true
     && summary.runtime.relay?.transport === "https" && summary.runtime.relay?.outage_count === 4
     && summary.runtime.relay?.https_fallback_active === true && summary.runtime.relay?.websocket_ready === false
+    && summary.runtime.relay?.https_fallback_last_takeover_ms === 1350
     && !("https_fallback" in summary.runtime.relay) && !("heartbeat" in summary.runtime.relay)
     && !("websocket_outage_duration_ms" in summary.runtime.relay)
     && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0

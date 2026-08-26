@@ -379,6 +379,7 @@ async function testPrimaryFallbackHandover() {
   ws.lastErrorReady = true; ws.lastErrorAuthenticated = true;
   http.lastErrorClass = "timeout"; http.lastErrorReason = "connection_timeout";
   http.lastErrorReady = false; http.lastErrorAuthenticated = true;
+  ws.outageDurationMs = 1350;
   http.emitReady();
   assert.equal(relay.status().transport, "https");
   assert.equal(relay.status().last_transport_error_class, "timeout");
@@ -388,10 +389,14 @@ async function testPrimaryFallbackHandover() {
     "active HTTPS projection mixed WSS error context with fallback error classification");
   assert.equal(relay.status().outage_active, false,
     "ready HTTPS fallback still reported the bridge as globally unavailable");
+  assert.equal(relay.status().https_fallback_last_takeover_ms, 1350,
+    "verified HTTPS takeover did not retain the bounded bridge-continuity gap");
   assert.equal(relay.send({ type: "two" }), true);
   assert.equal(http.sent.length, 1, "ready HTTPS fallback did not carry relay traffic");
   ws.emitReady();
   assert.equal(relay.status().transport, "websocket", "verified WSS did not reclaim primary transport ownership");
+  assert.equal(relay.status().https_fallback_last_takeover_ms, 1350,
+    "WSS recovery erased the preceding HTTPS continuity evidence");
   assert.equal(http.stopped, true, "HTTPS fallback remained active after WSS handover");
   assert.deepEqual(disconnected, ["websocket"], "transport handover generated a false second runtime disconnect");
   assert.deepEqual(ready, ["websocket", "https", "websocket"]);
@@ -462,6 +467,7 @@ class FakeRelayBase {
   stop() { this.stopped = true; this.ready = false; }
   status() { return {
     ready: this.ready, closed: !this.started || this.stopped, transport: this.kind,
+    outage_duration_ms: this.outageDurationMs || 0,
     last_transport_error_class: this.lastErrorClass,
     last_transport_error_reason: this.lastErrorReason,
     last_transport_error_ready: this.lastErrorReady,

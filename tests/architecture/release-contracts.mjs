@@ -922,6 +922,15 @@ for (const required of [
 ]) {
   if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost exact accepted-tarball boundary: ${required}`);
 }
+for (const required of [
+  "runExecutable", "hardTimeout: true", "npmPrepublicationTimeoutMs = 30 * 60 * 1000",
+  "npmPublicationStageTimeoutMs = 10 * 60 * 1000", "prepublicationTimeoutMs", "publicationStageTimeoutMs",
+]) {
+  if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost process-tree/deadline boundary: ${required}`);
+}
+if (npmPublishSource.includes("spawnSync")) {
+  throw new Error("npm publication returned to direct-child-only synchronous timeout handling");
+}
 const npmAuthorizationCall = npmPublishSource.indexOf("assertNpmPublicationAuthorized();");
 const npmMainPublicationCall = npmPublishSource.indexOf("publishCurrentNpmPackage(root, mode)");
 if (npmAuthorizationCall < 0 || npmMainPublicationCall < 0 || npmAuthorizationCall > npmMainPublicationCall) {

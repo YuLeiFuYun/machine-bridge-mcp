@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-beta.136 - 2026-08-26
+
+- Fix the npm prerelease publication control plane exposed after beta.135 GitHub release. `prepublishOnly` legitimately ran the full verification plan for 681.4 seconds, but `publish-npm.mjs` applied one fixed ten-minute `spawnSync` deadline to every npm stage. The direct npm parent therefore returned `ETIMEDOUT` while lifecycle descendants continued the remaining verification, `version:check`, and `release:check` on the inherited terminal. The registry was independently checked after the incident and `machine-bridge-mcp@3.0.0-beta.135` remained absent, proving the upload stage never ran.
+- Run publication npm stages through the existing isolated process-tree execution boundary instead of `spawnSync`. Full prepublication verification now has a separate thirty-minute deadline while dry-run/upload retain ten-minute bounds; deadline expiry hard-terminates the complete npm lifecycle tree before returning failure. A real regression fixture launches a resistant descendant that would write after the parent timeout and proves it cannot continue after publication settlement.
+- Correct relay interruption evidence without inventing a network repair. The observed beta.135 episode was WSS close `1006` on a system VPN/TUN route with no daemon event-loop stall; the signed HTTPS fallback became verified-ready after roughly 1.35 seconds while WSS itself recovered after roughly 13 seconds. WebSocket warnings now name the affected WSS layer instead of claiming the whole relay is unavailable, and `https_fallback_last_takeover_ms` retains the bounded WSS-close-to-HTTPS-ready interval after WSS reclaims primary ownership. Same-instance call recovery, fallback takeover semantics, replay safety, and hosted tool schema generation **11** are unchanged.
+- Advance package/runtime identity to **3.0.0-beta.136** because the shipped publication script, relay diagnostics, and documentation changed after beta.135 acceptance and GitHub prerelease publication.
+
 ## 3.0.0-beta.135 - 2026-08-26
 
 - Harden same-daemon managed-job runner recovery on Windows after PR #95 advanced beyond beta.134's fixed `file://` test-hook loading bug. The exact-head Windows run reached the later dependency-wait crash regression, observed the runner `exit` callback, then logged `permission_denied` from `reconcileStatus` and failed to autonomously relaunch the runner. This proves the remaining defect was transient Windows filesystem contention in the recovery path rather than a missed child-exit event or another ESM-loader failure.

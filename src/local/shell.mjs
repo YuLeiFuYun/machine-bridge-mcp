@@ -4,7 +4,7 @@ import path from "node:path";
 import { packageRoot } from "./package-identity.mjs";
 import { ensureWranglerToolchain } from "./wrangler-toolchain.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
-import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
+import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 
 export function runExecutable(command, args = [], options = {}) {
   const executable = validateExecutable(command);
@@ -31,7 +31,8 @@ export function runExecutable(command, args = [], options = {}) {
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
-        killTimer = terminateProcessTreeWithEscalation(child);
+        if (options.hardTimeout === true) terminateProcessTree(child, "SIGKILL");
+        else killTimer = terminateProcessTreeWithEscalation(child);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -49,7 +50,10 @@ export function runExecutable(command, args = [], options = {}) {
     child.on("error", error => { childError ||= error; });
     child.on("close", code => finish(() => {
       const failureMessage = timedOut ? `command timed out after ${timeoutMs}ms` : childError?.message || "";
-      const result = { ...capturedResult(timedOut ? 124 : childError ? 127 : code, stdout, stderr, failureMessage) };
+      const result = {
+        ...capturedResult(timedOut ? 124 : childError ? 127 : code, stdout, stderr, failureMessage),
+        timed_out: timedOut,
+      };
       if ((!timedOut && !childError && code === 0) || options.allowFailure) resolve(result);
       else if (childError && !timedOut) reject(childError);
       else {

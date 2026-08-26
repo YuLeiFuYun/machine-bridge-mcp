@@ -61,6 +61,7 @@ export function relayHandshakeDiagnostics(value = {}) {
     last_disconnected_at: typeof status.last_disconnected_at === "string" ? status.last_disconnected_at : null,
     previous_ready_duration_ms: clampInteger(status.last_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
     previous_ready_inbound_silence_ms: clampInteger(status.last_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
+    https_fallback_last_takeover_ms: clampInteger(status.https_fallback_last_takeover_ms, 0, 0, 10 * 60_000),
   };
 }
 
