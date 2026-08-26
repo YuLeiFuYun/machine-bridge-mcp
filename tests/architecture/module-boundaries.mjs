@@ -801,7 +801,9 @@ if (!resourceTransactionLockSource.includes("retryTransientMultipleLinksSync")
   throw new Error("resource transaction lock stopped using the shared fixed four-attempt multiple-link publication retry");
 }
 const managedJobsTestSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
-if (!managedJobsTestSource.includes("RUNNER_EXIT_RECOVERY_TEST_WAIT_MS = 40_000")
+const runnerExitRecoveryWaitMatch = managedJobsTestSource.match(/RUNNER_EXIT_RECOVERY_TEST_WAIT_MS\s*=\s*([0-9_]+)/);
+const runnerExitRecoveryWaitMs = Number(String(runnerExitRecoveryWaitMatch?.[1] || "0").replaceAll("_", ""));
+if (runnerExitRecoveryWaitMs < 90_000
     || !managedJobsTestSource.includes("Date.now() + RUNNER_EXIT_RECOVERY_TEST_WAIT_MS")) {
   throw new Error("managed-job autonomous runner-exit recovery fixture no longer covers the complete bounded retry schedule");
 }
