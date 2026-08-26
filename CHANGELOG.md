@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-beta.138 - 2026-08-26
+
+- Supersede the accepted beta.137 candidate after its exact-head Windows provider run reached the new npm publication regression and proved the hard-timeout tree barrier was still incomplete. The resistant lifecycle descendant wrote its delayed marker after `runExecutable(..., hardTimeout:true)` had already returned, so the provider correctly rejected the claim that publication timeout settlement implied complete process-tree termination.
+- Separate **tree-termination request** from **tree-termination settlement** in the shared internal executable runner. On POSIX, isolated-process-group `SIGKILL` remains a synchronous kernel signal-dispatch boundary. On Windows, hard termination now uses a dedicated bounded barrier that launches `taskkill.exe /PID <leader> /T /F` and waits for the helper's terminal `close(0)` before tree settlement is accepted. A failed, nonzero, or non-settling helper cannot be silently reclassified as an ordinary successful timeout; publication reports unconfirmed termination distinctly.
+- Make `runExecutable` wait for both direct-child close and the hard tree barrier before returning a timeout result. Deterministic runtime coverage proves that an early direct-child `close` cannot release the caller while the tree barrier is still pending, and a Windows simulation proves the barrier remains pending until the forced `taskkill` helper completes. The existing real resistant-descendant publication regression remains unchanged, so hosted Windows must prove the original post-timeout side effect is impossible rather than passing through a longer sleep.
+- Remove the beta.137 acceptance record and advance package/runtime identity to **3.0.0-beta.138**. The new shared `src/local` process-tree module changes package bytes, so beta.138 requires a fresh full gate, candidate, activation, OAuth canary, live verification, acceptance, and exact-head provider run.
+
 ## 3.0.0-beta.137 - 2026-08-26
 
 - Supersede the locally accepted beta.136 candidate after exact-head Windows CI independently validated the new npm publication regression and then failed later in `worker-types-generator:test`. The provider reached and passed `publish-npm:test`, proving the beta.136 process-tree/deadline repair itself was portable; it then failed in the older Wrangler lifecycle cleanup path with `wrangler types could not force cleanup`.

@@ -1549,6 +1549,13 @@ if (shellSource.includes('child.on("error", error => finish(')
     || !shellSource.includes('child.on("error", error => { childError ||= error; })')) {
   throw new Error("internal executable execution again settles directly from child error before close");
 }
+for (const required of ["terminateProcessTreeAndWait", "hardTermination", "termination_settled"]) {
+  if (!shellSource.includes(required)) throw new Error(`internal hard timeout lost process-tree settlement barrier: ${required}`);
+}
+const processTreeForceSettlementSource = readFileSync(join(root, "src", "local", "process-tree-force-settlement.mjs"), "utf8");
+for (const required of ['"taskkill.exe"', '"/T"', '"/F"', 'killer.once?.("close"', "DEFAULT_FORCE_TREE_SETTLEMENT_MS"]) {
+  if (!processTreeForceSettlementSource.includes(required)) throw new Error(`Windows force-tree settlement lost bounded taskkill proof: ${required}`);
+}
 const processTreeSupervisorSource = readFileSync(join(root, "src", "local", "process-tree-supervisor.mjs"), "utf8");
 for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "processSnapshotTimeoutMs", "processTreeOwnershipStillCurrent"]) {
   if (!processTreeSupervisorSource.includes(required)) throw new Error(`process-tree supervisor lost bounded ownership escalation: ${required}`);

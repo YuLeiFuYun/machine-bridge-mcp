@@ -11,7 +11,7 @@ import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
 import { childExitedBeforeTimeout, createChildProcessSettlement } from "../src/local/child-process-settlement.mjs";
 import { processState } from "../src/local/process-identity.mjs";
-import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
+import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import { executionGuardrailsSnapshot, MAX_CONCURRENT_TOOL_CALLS } from "../src/local/execution-limits.mjs";
 import { ToolExecutor, composeMiddleware } from "../src/local/tool-executor.mjs";
 import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
@@ -72,6 +72,7 @@ testTrustedGitExecutable();
 await testProcessCancellationSettlesBeforeClose();
 await testProcessErrorRetainsOwnershipUntilClose();
 await testRunExecutableErrorWaitsForClose();
+await testRunExecutableHardTimeoutWaitsForTreeSettlement();
 await testProcessTimeoutIsNotSafeToRetry();
 await testProcessTracker();
 await testProcessTreeSupervisor();
@@ -1809,6 +1810,34 @@ async function testRunExecutableErrorWaitsForClose() {
     "runExecutable did not preserve the child error until close settlement");
 }
 
+async function testRunExecutableHardTimeoutWaitsForTreeSettlement() {
+  class TimeoutChild extends EventEmitter {
+    constructor() {
+      super();
+      this.pid = 4_242_427;
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+    }
+  }
+  const child = new TimeoutChild();
+  let releaseTree;
+  const treeBarrier = new Promise((resolvePromise) => { releaseTree = resolvePromise; });
+  let settled = false;
+  const running = runExecutable("synthetic-hard-timeout", [], {
+    capture: true, allowFailure: true, hardTimeout: true, timeoutMs: 1,
+    spawnProcess: () => child,
+    terminateTreeAndWait: () => treeBarrier,
+  }).finally(() => { settled = true; });
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 5); });
+  child.emit("close", null);
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(settled === false, "hard-timeout runExecutable settled from direct child close before tree termination proof");
+  releaseTree(true);
+  const result = await running;
+  assert(result.code === 124 && result.timed_out === true && result.termination_settled === true,
+    "hard-timeout runExecutable lost explicit whole-tree settlement evidence");
+}
+
 async function testProcessTimeoutIsNotSafeToRetry() {
   class NeverClosingChild extends EventEmitter {
     constructor() {
@@ -2150,6 +2179,21 @@ async function testProcessTreeSupervisor() {
     killProcess(pid, signal) { groupSignals.push({ pid, signal }); },
   }), "POSIX process-group termination was not requested");
   assert(groupSignals[0].pid === -child.pid && groupSignals[0].signal === "SIGTERM", "POSIX termination did not target the child process group");
+
+  const forceKiller = new EventEmitter();
+  let forceKillSettled = false;
+  const windowsForceBarrier = terminateProcessTreeAndWait(child, "SIGKILL", {
+    platform: "win32",
+    spawnProcess(command, args, options) {
+      assert(command === "taskkill.exe" && args.includes("/T") && args.includes("/F") && options.shell === false,
+        "Windows hard tree barrier did not use forced taskkill tree semantics");
+      return forceKiller;
+    },
+  }).then((value) => { forceKillSettled = value; return value; });
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(forceKillSettled === false, "Windows hard tree barrier settled before taskkill helper completion");
+  forceKiller.emit("close", 0);
+  assert(await windowsForceBarrier, "Windows hard tree barrier did not accept successful taskkill completion");
 }
 
 async function testChildProcessSettlement() {

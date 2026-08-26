@@ -213,7 +213,12 @@ export async function runNpmPublicationProcess(command, args, options = {}) {
       hardTimeout: true,
     });
     if (result.timed_out === true) {
-      const error = Object.assign(new Error("npm publication process exceeded its stage deadline"), { code: "ETIMEDOUT" });
+      const settled = result.termination_settled !== false;
+      const error = Object.assign(new Error(settled
+        ? "npm publication process exceeded its stage deadline"
+        : "npm publication process exceeded its stage deadline and process-tree termination could not be confirmed"), {
+        code: settled ? "ETIMEDOUT" : "EUNSETTLED",
+      });
       return { status: null, signal: "SIGKILL", stdout: result.stdout, stderr: result.stderr, error };
     }
     return { status: result.code, signal: null, stdout: result.stdout, stderr: result.stderr, error: null };
