@@ -54,17 +54,26 @@ function dispatchedDaemonCancellationStateError(code: "cancelled" | "timeout", m
 }
 
 export function dispatchedDaemonDisconnectError(message: string, recovery?: Record<string, unknown>, reason?: string): WorkerToolError {
+  const readOnlyRecovery = recovery?.mode === "read_same_job";
+  const retryable = readOnlyRecovery || recovery?.mode === "idempotent_replay";
   return new WorkerToolError(
     "unavailable",
     message,
-    false,
+    retryable,
     {
-      side_effects_started: true,
-      termination_requested: false,
-      effect_settlement: "unknown",
+      side_effects_started: !readOnlyRecovery,
+      ...(!readOnlyRecovery ? { termination_requested: false, effect_settlement: "unknown" } : {}),
       ...(reason ? { reason } : {}),
       ...(recovery ? { recovery } : {}),
     },
+  );
+}
+
+export function dispatchedDaemonPlannedDrainError(recovery?: Record<string, unknown>): WorkerToolError {
+  return dispatchedDaemonDisconnectError(
+    "local daemon is performing a planned restart; recover the same operation after reconnect",
+    recovery,
+    "daemon_planned_drain",
   );
 }
 

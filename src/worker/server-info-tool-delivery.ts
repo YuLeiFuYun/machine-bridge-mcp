@@ -47,5 +47,6 @@ export function compactRemoteToolDeliveryContract(
   const compact = { ...remoteToolDeliveryContract(serverVersion, subscription) };
   delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms;
   delete compact.remote_process_initial_settlement_wait_ms;
+  delete compact.remote_process_blocking_poll_wait_max_ms;
   return compact;
 }

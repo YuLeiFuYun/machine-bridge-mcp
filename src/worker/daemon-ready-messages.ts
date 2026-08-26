@@ -1,5 +1,6 @@
 import { acknowledgeAuthorityRevocation, authorityRevocationAckId } from "./authority-revocations.ts";
 import type { DaemonChannel } from "./daemon-channel.ts";
+import { settleDaemonPlannedDrain } from "./daemon-planned-drain.ts";
 import { daemonResumeMissingCallIds } from "./websocket-protocol.ts";
 import { daemonCallNotReceivedAfterReconnectError, daemonToolError } from "./errors.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
@@ -19,8 +20,9 @@ export async function handleReadyDaemonMessage(input: {
   pending: PendingCallRegistry;
   storage: DurableObjectStorage;
   observability: WorkerObservability;
+  beginDrain: (channel: DaemonChannel) => boolean;
 }): Promise<ReadyMessageDisposition> {
-  const { channel, body, pending, storage, observability } = input;
+  const { channel, body, pending, storage, observability, beginDrain } = input;
   if (body.type === "resume_calls_ack") {
     const missingIds = daemonResumeMissingCallIds(body.missing_ids);
     if (!missingIds) return invalid("invalid_resume_calls_ack", "invalid resume calls acknowledgement");
@@ -33,6 +35,7 @@ export async function handleReadyDaemonMessage(input: {
     await acknowledgeAuthorityRevocation(storage, revocationId);
     return { ok: true };
   }
+  if (body.type === "daemon_draining") return settleDaemonPlannedDrain({ channel, body, pending, storage, observability, beginDrain });
   if (body.type !== "tool_result" || typeof body.id !== "string") {
     return invalid("unknown_message_type", "unknown daemon message type");
   }

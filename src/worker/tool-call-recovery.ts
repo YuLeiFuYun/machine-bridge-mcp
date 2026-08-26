@@ -1,6 +1,19 @@
 import { isRemoteDurableProcessTool } from "./tool-timeout.ts";
 
 export function daemonToolRecovery(name: string, args: Record<string, unknown>): Record<string, unknown> | null {
+  if (name === "read_job") {
+    const jobId = args.job_id;
+    if (typeof jobId !== "string" || !jobId) return null;
+    return {
+      mode: "read_same_job",
+      source_tool: name,
+      credential: "job_id",
+      credential_source: "original_request_arguments",
+      job_id: jobId,
+      action: "retry_read_job_with_same_job_id",
+      duplicate_execution_prevented_by_read_only_operation: true,
+    };
+  }
   if (name !== "start_job" && !isRemoteDurableProcessTool(name)) return null;
   const idempotencyKey = args.idempotency_key;
   if (typeof idempotencyKey !== "string" || !idempotencyKey) return null;

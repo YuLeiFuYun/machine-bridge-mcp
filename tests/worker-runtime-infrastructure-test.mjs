@@ -22,10 +22,13 @@ import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
   daemonCallNotReceivedAfterReconnectError, daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError,
-  dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError,
+  dispatchedDaemonPlannedDrainError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError,
 } from "../src/worker/errors.ts";
 import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../src/worker/policy.ts";
 import { WorkerObservability } from "../src/worker/observability.ts";
+import {
+  readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerPlannedDrain, recordWorkerSocketDisconnect,
+} from "../src/worker/worker-continuity-evidence.ts";
 import { daemonStatusSnapshot } from "../src/worker/daemon-status.ts";
 import { DaemonLastObservation } from "../src/worker/daemon-last-observation.ts";
 import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
@@ -103,6 +106,7 @@ testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
 testDaemonAndServerInfoProjection();
+await testWorkerContinuityEvidence();
 
 testWorkerObservability();
 testPrototypeSafeFormFields();
@@ -1363,6 +1367,24 @@ function testRelayTimeoutContract() {
     && startJobRecovery?.result_tool_after_acceptance === "read_job"
     && daemonToolRecovery("start_job", {}) === null,
   "hosted start_job timeout/disconnect recovery did not bind the same idempotency credential used by admission");
+  const readJobRecovery = daemonToolRecovery("read_job", { job_id: `job_${"r".repeat(64)}` });
+  const readJobDisconnect = publicWorkerToolError(dispatchedDaemonDisconnectError("daemon restart", readJobRecovery, "daemon_planned_drain"));
+  assert(readJobRecovery?.credential === "job_id"
+    && readJobRecovery?.action === "retry_read_job_with_same_job_id"
+    && readJobDisconnect.code === "unavailable"
+    && readJobDisconnect.retryable === true
+    && readJobDisconnect.details?.side_effects_started === false
+    && readJobDisconnect.details?.reason === "daemon_planned_drain"
+    && readJobDisconnect.details?.recovery?.job_id === readJobRecovery.job_id
+    && daemonToolRecovery("read_job", {}) === null,
+  "hosted read_job disconnect recovery did not preserve the same read-only job identity");
+  const genericPlannedDrain = publicWorkerToolError(dispatchedDaemonPlannedDrainError());
+  assert(genericPlannedDrain.code === "unavailable"
+    && genericPlannedDrain.retryable === false
+    && genericPlannedDrain.details?.side_effects_started === true
+    && genericPlannedDrain.details?.effect_settlement === "unknown"
+    && genericPlannedDrain.details?.reason === "daemon_planned_drain",
+  "planned daemon drain weakened ambiguous generic-call settlement into a blind retry");
   for (const tool of [remoteStageJob, remoteStartJob]) {
     assert(tool?.inputSchema?.properties?.steps?.items?.properties?.timeout_seconds?.maximum === 21_600
       && tool?.inputSchema?.properties?.finally_steps?.items?.properties?.timeout_seconds?.maximum === 21_600,
@@ -1700,6 +1722,13 @@ function testDaemonAndServerInfoProjection() {
     daemon: { ...fullDaemon, policy_scope: "ceiling", tools_scope: "daemon", extra: "detail" },
     effectiveTools: ["read_file", "git_status"], advertisedTools: ["read_file", "git_status", "write_file"],
     pendingSnapshot, daemonRegistry, observability,
+    continuityEvidence: {
+      schema_version: 1, planned_drains: 2, planned_drain_calls: 3,
+      last_planned_drain_at: "2026-08-10T00:00:05.000Z", socket_disconnects: 4,
+      unplanned_socket_disconnects: 1,
+      last_socket_disconnect: { at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true },
+      last_request_abort_at: null, last_stream_cancel_control_at: null,
+    },
   };
   assert(serverInfoDetail({ detail: "summary" }) === "summary" && serverInfoDetail({ detail: "future" }) === "full"
     && serverInfoDetail() === "full",
@@ -1709,7 +1738,10 @@ function testDaemonAndServerInfoProjection() {
     && ownerFull.worker.pending_calls.pre_dispatch_waiters === 1
     && ownerFull.worker.pending_calls.capacity_active === 3
     && ownerFull.worker.daemon_candidates === 2
-    && ownerFull.worker.observability.requests.total === 3 && ownerFull.tools.length === 2,
+    && ownerFull.worker.observability.requests.total === 3
+    && ownerFull.worker.continuity_evidence.planned_drains === 2
+    && ownerFull.worker.continuity_evidence.last_socket_disconnect.planned === true
+    && ownerFull.tools.length === 2,
   "owner server_info full projection lost current Worker activity or pre-dispatch capacity");
   const ownerSummary = buildServerInfoResult(input, "summary");
   assert(ownerSummary.detail === "summary" && ownerSummary.authorization.account.role === "owner"
@@ -1730,7 +1762,8 @@ function testDaemonAndServerInfoProjection() {
   };
   const delegatedFull = buildServerInfoResult(delegatedInput, "full");
   assert(delegatedFull.worker.pending_calls.activity_hidden_by_authority === true
-    && delegatedFull.daemon.tools_hidden_by_authority === true && delegatedFull.daemon.tools.length === 0,
+    && delegatedFull.daemon.tools_hidden_by_authority === true && delegatedFull.daemon.tools.length === 0
+    && delegatedFull.worker.continuity_evidence === undefined,
   "delegated server_info full projection leaked global Worker or daemon tool activity");
   const delegatedSummary = buildServerInfoResult(delegatedInput, "summary");
   assert(delegatedSummary.authorization.account === null
@@ -1765,6 +1798,43 @@ function testDaemonAndServerInfoProjection() {
     && emptyOwnerSummary.worker.pending_calls.maximum === 0
     && emptyOwnerSummary.worker.pending_calls.detached === 0,
   "server_info summary default projection invented current daemon, authority, or pending activity");
+}
+
+async function testWorkerContinuityEvidence() {
+  const values = new Map();
+  const transaction = {
+    async get(key) { return structuredClone(values.get(key)); },
+    async put(key, value) { values.set(key, structuredClone(value)); },
+  };
+  const storage = {
+    async get(key) { return structuredClone(values.get(key)); },
+    async transaction(callback) { return callback(transaction); },
+  };
+  assert(await recordWorkerPlannedDrain(storage, 3, Date.parse("2026-08-25T13:00:00.000Z")),
+    "planned-drain continuity evidence was not persisted");
+  assert(await recordWorkerSocketDisconnect(storage, {
+    planned: true, kind: "close", closeCode: 1001, wasClean: true,
+  }, Date.parse("2026-08-25T13:00:01.000Z")), "planned socket-close evidence was not persisted");
+  assert(await recordWorkerSocketDisconnect(storage, {
+    planned: false, kind: "error",
+  }, Date.parse("2026-08-25T13:00:02.000Z")), "unplanned socket-error evidence was not persisted");
+  assert(await recordWorkerClientCancellation(storage, "request_abort", Date.parse("2026-08-25T13:00:03.000Z"))
+    && await recordWorkerClientCancellation(storage, "stream_cancel_control", Date.parse("2026-08-25T13:00:04.000Z")),
+  "client-cancellation continuity evidence was not persisted");
+  const snapshot = await readWorkerContinuityEvidence(storage);
+  assert(snapshot.schema_version === 1
+    && snapshot.planned_drains === 1 && snapshot.planned_drain_calls === 3
+    && snapshot.socket_disconnects === 2 && snapshot.unplanned_socket_disconnects === 1
+    && snapshot.last_socket_disconnect?.kind === "error" && snapshot.last_socket_disconnect?.planned === false
+    && snapshot.last_request_abort_at === "2026-08-25T13:00:03.000Z"
+    && snapshot.last_stream_cancel_control_at === "2026-08-25T13:00:04.000Z",
+  "durable continuity evidence lost fixed-category incident history across reads");
+  values.set("worker-continuity-evidence", {
+    schema_version: 99, planned_drains: 7, last_socket_disconnect: { at: "private", kind: "other" },
+  });
+  const sanitized = await readWorkerContinuityEvidence(storage);
+  assert(sanitized.schema_version === 1 && sanitized.planned_drains === 0 && sanitized.last_socket_disconnect === null,
+    "durable continuity evidence trusted malformed stored state instead of failing closed to bounded defaults");
 }
 
 function testWorkerObservability() {

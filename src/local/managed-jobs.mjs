@@ -38,7 +38,7 @@ const MAX_PLAN_BYTES = 1024 * 1024;
 const MAX_RECOVERY_ATTEMPTS = 3;
 
 export class ManagedJobManager {
-  constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true, runnerEnvironmentOverrides = {} }) {
+  constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true, runnerEnvironmentOverrides = {}, runnerSpawnProcess = null }) {
     const jobRootInput = resolve(jobRoot);
     ensureOwnerOnlyDir(jobRootInput);
     this.jobRoot = realpathSync.native ? realpathSync.native(jobRootInput) : realpathSync(jobRootInput);
@@ -52,6 +52,10 @@ export class ManagedJobManager {
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
     this.logger = logger;
     this.runnerEnvironmentOverrides = { ...runnerEnvironmentOverrides };
+    if (runnerSpawnProcess !== null && typeof runnerSpawnProcess !== "function") {
+      throw new TypeError("runnerSpawnProcess must be a function when configured");
+    }
+    this.runnerSpawnProcess = runnerSpawnProcess;
     this.runnerExitRecovery = createManagedJobRunnerExitRecovery({
       reconcileStatus: (dir) => this.reconcileStatus(dir), logger: this.logger,
     });
@@ -216,7 +220,7 @@ export class ManagedJobManager {
           if (existing.status === "queued" && !runnerProcessIsCurrent(existing, dir)) {
             try {
               launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
-                () => this.runnerExitRecovery.observe(dir)));
+                () => this.runnerExitRecovery.observe(dir), this.runnerSpawnProcess));
             } catch (error) {
               failRunnerLaunch(dir, existing, error);
               throw error;
@@ -248,7 +252,7 @@ export class ManagedJobManager {
         if (launch) {
           try {
             launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
-              () => this.runnerExitRecovery.observe(dir)));
+              () => this.runnerExitRecovery.observe(dir), this.runnerSpawnProcess));
           } catch (error) {
             failRunnerLaunch(dir, status, error);
             throw error;
@@ -468,6 +472,7 @@ export class ManagedJobManager {
         relaunchDependencyWaitManagedJob({
           dir, statusFile: file, status, recoveryAttempts,
           logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
+          runnerSpawnProcess: this.runnerSpawnProcess,
           onRunnerExit: () => this.runnerExitRecovery.observe(dir),
         });
         return;
@@ -475,6 +480,7 @@ export class ManagedJobManager {
       const runnerPid = relaunchInterruptedManagedJob({
         dir, statusFile: file, status, recoveryAttempts, recoveryToken: recoveryLock.token,
         logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
+        runnerSpawnProcess: this.runnerSpawnProcess,
         onRunnerExit: () => this.runnerExitRecovery.observe(dir),
       });
       recoveryLock.handoff(runnerPid);
@@ -670,6 +676,6 @@ function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
   if (!terminal.statusPersisted) throw new Error(`managed job recovery-exhausted status persistence failed: ${terminal.statusErrorClass}`);
 }
 
-function runnerLaunchOptions(fullEnv, logger, overrides = {}, onExit = undefined) {
-  return { logger, fullEnv, env: { ...process.env, ...overrides }, onExit };
+function runnerLaunchOptions(fullEnv, logger, overrides = {}, onExit = undefined, spawnProcess = null) {
+  return { logger, fullEnv, env: { ...process.env, ...overrides }, onExit, ...(spawnProcess ? { spawnProcess } : {}) };
 }

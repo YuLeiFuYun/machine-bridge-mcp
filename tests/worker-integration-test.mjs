@@ -914,7 +914,7 @@ try {
   assert(statusBeforeHello.daemon?.tools?.includes("read_file"), "candidate connection changed active tools before hello");
 
   const candidateInstanceId = nextDaemonInstanceId();
-  const candidateTools = ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command"];
+  const candidateTools = ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command", "read_job"];
   const candidatePolicy = { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false };
   const firstClosed = waitForWsClose(firstDaemon);
   const replacementProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
@@ -1285,6 +1285,50 @@ try {
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: reconnectRelay.id, ok: true, result: { resumed: true } }));
   const reconnectResult = await reconnectCall;
   assert(reconnectResult.body.result?.structuredContent?.resumed === true, "MCP request did not complete after same-instance daemon reconnect");
+
+  const plannedDrainJobId = `job_${"d".repeat(64)}`;
+  const plannedDrainRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const plannedDrainCall = toolCallRequest(base, ownerAccessToken, 88031, "read_job", { job_id: plannedDrainJobId, wait_ms: 0 });
+  await plannedDrainRelayPromise;
+  const plannedDrainBaseline = await callServerInfo(base, ownerAccessToken, 88032);
+  const plannedDrainAckPromise = waitForWsMessage(candidateDaemon, "daemon_draining_ack");
+  const plannedDrainId = `drain_${"p".repeat(24)}`;
+  candidateDaemon.send(JSON.stringify({ type: "daemon_draining", drain_id: plannedDrainId, active_calls: 1 }));
+  assert((await plannedDrainAckPromise).drain_id === plannedDrainId,
+    "planned daemon drain was not acknowledged before the daemon transport closed");
+  const plannedDrainResult = await plannedDrainCall;
+  const plannedDrainError = plannedDrainResult.body.result?.structuredContent?.error;
+  assert(plannedDrainResult.body.result?.isError === true
+    && plannedDrainError?.code === "unavailable"
+    && plannedDrainError?.retryable === true
+    && plannedDrainError?.details?.reason === "daemon_planned_drain"
+    && plannedDrainError?.details?.side_effects_started === false
+    && plannedDrainError?.details?.recovery?.mode === "read_same_job"
+    && plannedDrainError?.details?.recovery?.job_id === plannedDrainJobId,
+  "planned daemon drain did not convert an active read_job into a structured same-job recovery settlement");
+  const plannedDrainStatus = await callServerInfo(base, ownerAccessToken, 88033);
+  assert((plannedDrainStatus.worker?.observability?.continuity?.planned_drains ?? 0)
+      === (plannedDrainBaseline.worker?.observability?.continuity?.planned_drains ?? 0) + 1
+    && (plannedDrainStatus.worker?.observability?.continuity?.planned_drain_calls ?? 0)
+      === (plannedDrainBaseline.worker?.observability?.continuity?.planned_drain_calls ?? 0) + 1
+    && plannedDrainStatus.daemon?.connected === false,
+  "Worker isolate-local continuity diagnostics did not record the planned drain settlement");
+
+  const drainedCandidate = candidateDaemon;
+  const drainedCandidateClosed = waitForWsClose(drainedCandidate);
+  drainedCandidate.terminate();
+  await drainedCandidateClosed;
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const postDrainResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(postDrainResume.ids.length === 0, "planned drain left an old pending call eligible for same-instance resume");
+  const postDrainStatus = await callServerInfo(base, ownerAccessToken, 88034);
+  assert((postDrainStatus.worker?.continuity_evidence?.planned_drains ?? 0)
+      === (plannedDrainBaseline.worker?.continuity_evidence?.planned_drains ?? 0) + 1
+    && (postDrainStatus.worker?.continuity_evidence?.planned_drain_calls ?? 0)
+      === (plannedDrainBaseline.worker?.continuity_evidence?.planned_drain_calls ?? 0) + 1
+    && postDrainStatus.worker?.continuity_evidence?.last_planned_drain_at,
+  "Worker durable continuity evidence did not survive the planned-drain reconnect boundary");
 
   const fallbackRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const fallbackCall = toolCallRequest(base, ownerAccessToken, 8880, "list_dir", { path: "." });

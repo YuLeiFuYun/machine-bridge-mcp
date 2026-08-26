@@ -115,6 +115,7 @@ export async function handleDaemonHttpRelay(input: {
       }
       const handled = await handleReadyDaemonMessage({
         channel, body: message.payload, pending: input.pending, storage: input.storage, observability: input.observability,
+        beginDrain: (candidate) => input.registry.beginDrain(candidate),
       });
       if (!handled.ok) return invalidate(channel, input, handled.errorCode ?? "invalid_daemon_http_message");
       channel.commitDaemonSequence(message.seq);
@@ -134,6 +135,7 @@ export async function handleDaemonHttpRelay(input: {
     if (sequence === "gap") return invalidate(channel, input, "daemon_http_sequence_gap");
     const handled = await handleReadyDaemonMessage({
       channel, body: message.payload, pending: input.pending, storage: input.storage, observability: input.observability,
+      beginDrain: (candidate) => input.registry.beginDrain(candidate),
     });
     if (!handled.ok) return invalidate(channel, input, handled.errorCode ?? "invalid_daemon_http_message");
     channel.commitDaemonSequence(message.seq);

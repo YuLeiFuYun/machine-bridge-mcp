@@ -6,7 +6,7 @@ import { readJson, resourceErrorClass, safeReadDir } from "./managed-job-storage
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { managedJobCapacitySnapshot, MAX_JOBS, MAX_LISTED_JOBS } from "./managed-job-capacity.mjs";
 import { managedJobRecentActivity } from "./managed-job-activity.mjs";
-import { ACTIVE_JOB_STATES } from "./managed-job-terminal.mjs";
+import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
 import { clampInteger } from "./numbers.mjs";
 
 export function listManagedJobs({ jobRoot, args, context, logger, reconcileStatus, assertKnownStatus, maximumLimit = MAX_LISTED_JOBS }) {
@@ -32,24 +32,27 @@ export function listManagedJobs({ jobRoot, args, context, logger, reconcileStatu
       if (context?.authority?.owner !== false) records.push({ job: { job_id: entry.name, name: "unavailable", status: "unreadable", error_class: errorClass }, retentionClass: "" });
     }
   }
-  records.sort((left, right) => recoveryPriority(left.job) - recoveryPriority(right.job)
+  records.sort((left, right) => recoveryPriority(left.job, left.retentionClass) - recoveryPriority(right.job, right.retentionClass)
     || String(right.job?.created_at || "").localeCompare(String(left.job?.created_at || ""))
     || String(left.job?.job_id || "").localeCompare(String(right.job?.job_id || "")));
   const visibleJobs = records.slice(0, limit).map((record) => record.job);
+  const capacity = managedJobCapacitySnapshot(jobRoot);
+  const durableTerminal = records.filter((record) => record.retentionClass !== "transient_process" && isTerminalManagedJobStatus(String(record.job?.status || ""))).length;
+  const transientTerminal = records.filter((record) => record.retentionClass === "transient_process" && isTerminalManagedJobStatus(String(record.job?.status || ""))).length;
   return {
     jobs: visibleJobs,
     retained: records.length,
     maximum: MAX_JOBS,
     ...hostedManagedJobListStatus(visibleJobs, context),
     ...(context?.authority?.owner !== false ? {
-      capacity: managedJobCapacitySnapshot(jobRoot), recent_activity: managedJobRecentActivity(records),
+      capacity: { ...capacity, durable_terminal: durableTerminal, transient_terminal: transientTerminal }, recent_activity: managedJobRecentActivity(records),
     } : {}),
   };
 }
 
-function recoveryPriority(job) {
+function recoveryPriority(job, retentionClass) {
   if (job?.status === "unreadable") return 0;
   if (ACTIVE_JOB_STATES.has(String(job?.status || ""))) return 1;
   if (job?.status === "staged") return 2;
-  return 3;
+  return retentionClass === "transient_process" ? 4 : 3;
 }

@@ -29,6 +29,7 @@ import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../src/local/
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { RelayCallRecovery } from "../src/local/relay-call-recovery.mjs";
+import { RuntimeRelayShutdownDrain } from "../src/local/runtime-relay-shutdown-drain.mjs";
 import { relayRecoveryCapacityRejection } from "../src/local/relay-recovery-admission.mjs";
 import { relayRecoveryCapacitySnapshot } from "../src/local/relay-recovery-diagnostics.mjs";
 import { startAutostartLogMaintenance } from "../src/local/autostart-log-maintenance.mjs";
@@ -61,6 +62,7 @@ await testRuntimeStartStopRace();
 testRemoteActivityIdleSleepGuard();
 testRelayRecoveryCapacity();
 testRelayReconnectDelivery();
+await testRelayShutdownDrain();
 testAutostartLogMaintenance();
 await testProcessExecutionNoShell();
 await testForegroundTimeoutAlignment();
@@ -1374,6 +1376,27 @@ function testRelayReconnectDelivery() {
     && reconnectExpired.fields?.discarded_results === 1
     && reconnectExpired.fields?.grace_ms === 30_000,
   "reconnect expiry did not emit structured loss diagnostics");
+}
+
+async function testRelayShutdownDrain() {
+  const sent = [];
+  const drain = new RuntimeRelayShutdownDrain({
+    send: (value) => { sent.push(value); return true; }, ready: () => true, waitMs: 100,
+  });
+  const settlement = drain.begin(3);
+  assert(sent.length === 1
+    && sent[0].type === "daemon_draining"
+    && sent[0].active_calls === 3
+    && /^drain_[A-Za-z0-9_-]{24}$/.test(sent[0].drain_id),
+  "planned relay shutdown did not publish one bounded drain control message");
+  assert(drain.acknowledge({ type: "daemon_draining_ack", drain_id: sent[0].drain_id }) === true,
+    "planned relay shutdown did not accept the matching Worker acknowledgement");
+  const result = await settlement;
+  assert(result.attempted === true && result.acknowledged === true && result.reason === "acknowledged",
+    "planned relay shutdown did not settle on the matching acknowledgement");
+  const unavailable = new RuntimeRelayShutdownDrain({ send: () => true, ready: () => false });
+  assert((await unavailable.begin(1)).attempted === false,
+    "planned relay shutdown emitted a control message while the relay was not ready");
 }
 
 function testRelayRecoveryCapacity() {

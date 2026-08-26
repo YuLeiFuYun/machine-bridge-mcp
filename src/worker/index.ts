@@ -27,6 +27,7 @@ import { handleOuterWorkerFetch } from "./worker-entry.ts";
 import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
 import { daemonToolRecovery } from "./tool-call-recovery.ts";
 import { WorkerObservability } from "./observability.ts";
+import { readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerSocketDisconnect } from "./worker-continuity-evidence.ts";
 import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
@@ -58,7 +59,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.130";
+const SERVER_VERSION = "3.0.0-beta.135";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -375,6 +376,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (!this.touchDaemonSocket(ws)) return;
     const handled = await handleReadyDaemonMessage({
       channel: ws, body, pending: this.pending, storage: this.ctx.storage, observability: this.observability,
+      beginDrain: (channel) => this.daemonRegistry.beginDrain(channel),
     });
     if (!handled.ok) {
       rejectDaemonMessage(ws, handled.errorCode ?? "unknown_message_type", 1002, handled.errorMessage ?? "invalid daemon message");
@@ -384,18 +386,26 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketClose(ws: WebSocket, code: number, _reason: string, wasClean: boolean): Promise<void> {
+    const planned = this.daemonRegistry.isDraining(ws);
     const cleanup = this.cleanupDaemonSocket(ws, "daemon disconnected");
     if (cleanup?.first) this.observability.event("info", "daemon.websocket.closed", {
       close_code: Number.isInteger(code) && code >= 1000 && code <= 4999 ? code : 0,
       was_clean: wasClean === true,
     });
-    if (cleanup) { await cleanup.task; await this.scheduleRuntimeAlarm(); }
+    if (cleanup) {
+      await cleanup.task;
+      await recordWorkerSocketDisconnect(this.ctx.storage, { planned, kind: "close", closeCode: code, wasClean });
+      await this.scheduleRuntimeAlarm();
+    }
   }
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+    const planned = this.daemonRegistry.isDraining(ws);
     const cleanup = this.cleanupDaemonSocket(ws, "daemon transport error");
     if (!cleanup) return;
     if (cleanup.first) this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
-    await cleanup.task; await this.scheduleRuntimeAlarm();
+    await cleanup.task;
+    await recordWorkerSocketDisconnect(this.ctx.storage, { planned, kind: "error" });
+    await this.scheduleRuntimeAlarm();
   }
   private cleanupDaemonSocket(ws: WebSocket, message: string) {
     const cleanup = this.daemonRegistry.beginCleanup(ws, (attachment) => this.detachDaemonSocketCalls(ws, message, attachment));
@@ -461,6 +471,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       effectiveTools, advertisedTools, pendingSnapshot,
       toolListSubscription: this.mcp.toolListSubscriptionSnapshot(authorized.accountId),
       daemonRegistry: this.daemonRegistry, observability: this.observability,
+      continuityEvidence: authorization.account_role_is_owner === true ? await readWorkerContinuityEvidence(this.ctx.storage) : undefined,
     }, serverInfoDetail(args));
   }
   private assertWorkerToolArguments(name: string, args: unknown): void {
@@ -609,6 +620,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
   private daemonCallCancellation(record: import("./pending-call-contract.ts").PendingCallRecord): Error {
     const terminationRequested = Boolean(record.socket && trySendDaemonChannel(record.socket, { type: "cancel_call", id: record.id }));
+    this.ctx.waitUntil(recordWorkerClientCancellation(this.ctx.storage, "request_abort"));
     return dispatchedDaemonCancellationError("tool call cancelled when its HTTP response stream closed", terminationRequested, record.recovery);
   }
 
@@ -619,6 +631,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       return dispatchedDaemonCancellationError("tool call cancelled by client", terminationRequested, record.recovery);
     });
     if (cancelledTransient) {
+      this.ctx.waitUntil(recordWorkerClientCancellation(this.ctx.storage, "stream_cancel_control"));
       await this.scheduleRuntimeAlarm();
       return;
     }
