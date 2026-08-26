@@ -202,6 +202,7 @@ for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "resou
 
 const lineLimits = Object.freeze({
   "src/local/runtime.mjs": 700,
+  "src/local/runtime-application-automation.mjs": 60,
   "src/local/runtime-tool-handlers.mjs": 100,
   "src/local/runtime-relay.mjs": 100,
   "src/local/runtime-relay-shutdown-drain.mjs": 60,
@@ -1177,8 +1178,16 @@ if (runtimeBoundarySource.includes("mutationQueue") || runtimeBoundarySource.inc
 for (const forbidden of [
   "spawn(", "parsePatchEnvelope", "applyUpdateHunks", "workspaceShellCommand(",
   "function applicationMatchScore", "request_reached_local_runtime", "policy_contract:",
+  'from "./app-automation.mjs"', 'from "./application-capability-projection.mjs"', 'from "./macos-background-input.mjs"',
 ]) {
   if (runtimeBoundarySource.includes(forbidden)) throw new Error(`LocalRuntime regained low-level responsibility: ${forbidden}`);
+}
+const runtimeApplicationAutomationBoundary = readFileSync(join(localRoot, "runtime-application-automation.mjs"), "utf8");
+for (const required of ["AppAutomationManager", "applicationBackgroundInputConfiguration", "projectApplicationCapabilities", "createRuntimeAppAutomationManager"]) {
+  if (!runtimeApplicationAutomationBoundary.includes(required)) throw new Error(`runtime application-automation composition lost its dedicated boundary: ${required}`);
+}
+if (!runtimeBoundarySource.includes("createRuntimeAppAutomationManager")) {
+  throw new Error("LocalRuntime stopped delegating application-automation composition to its dedicated boundary");
 }
 const relayRecoveryAdmissionBoundary = readFileSync(join(localRoot, "relay-recovery-admission.mjs"), "utf8");
 for (const required of [
@@ -1269,6 +1278,10 @@ if (!toolExecutorBoundary.includes("Handler return is the local settlement point
   throw new Error("tool executor lost the explicit late-cancellation settlement contract");
 }
 const managedJobStorageBoundary = readFileSync(join(localRoot, "managed-job-storage.mjs"), "utf8");
+const managedJobActivityBoundary = readFileSync(join(localRoot, "managed-job-activity.mjs"), "utf8");
+if (!managedJobActivityBoundary.includes("isTerminalManagedJobStatus") || managedJobActivityBoundary.includes("function terminalLike")) {
+  throw new Error("managed-job recent activity regained a duplicate terminal-state classifier");
+}
 const managedJobJsonReadBoundary = /export function readJson[\s\S]*?export function readRequiredJson/.exec(managedJobStorageBoundary)?.[0] || "";
 for (const required of ["managed job state", "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
   if (!managedJobJsonReadBoundary.includes(required)) throw new Error(`managed-job state read lost secure identity/hard-link boundary: ${required}`);

@@ -25,9 +25,7 @@ export { MAX_WRITE_BYTES, sha256 } from "./workspace-file-service.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { ManagedJobManager } from "./managed-jobs.mjs";
 import { AgentContextManager } from "./agent-context.mjs";
-import { AppAutomationManager } from "./app-automation.mjs";
-import { projectApplicationCapabilities } from "./application-capability-projection.mjs";
-import { applicationBackgroundInputConfiguration } from "./macos-background-input.mjs";
+import { createRuntimeAppAutomationManager } from "./runtime-application-automation.mjs";
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { ComputerUseManager } from "./computer-use.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
@@ -189,7 +187,7 @@ export class LocalRuntime {
     const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options);
     const readResourceText = (name) => this.runtimeResourceService.readText(name);
     const readResourceBinary = (name) => this.runtimeResourceService.readBinary(name);
-    this.appAutomationManager = createAppAutomationManager(this, applicationAutomation, runProcess, readResourceText);
+    this.appAutomationManager = createRuntimeAppAutomationManager(this, applicationAutomation, runProcess, readResourceText);
     this.securityAudit = new SecurityAuditLog({ root: securityStateRoot });
     this.operationAuthorizer = new OperationAuthorizer({
       workspace: this.workspace,
@@ -674,23 +672,3 @@ export class LocalRuntime {
     this.callRegistry.throwIfCancelled(context);
   }
 }
-
-function createAppAutomationManager(runtime, applicationAutomation, runProcess, readResourceText) {
-  const { backgroundVisualBackend, backgroundInputService } = applicationBackgroundInputConfiguration(
-    applicationAutomation, runProcess, runtime.runtimeDir,
-  );
-  return new AppAutomationManager({
-    ...applicationAutomation,
-    backgroundVisualBackend,
-    backgroundInputService,
-    policy: runtime.policy,
-    authorizeTool: (tool) => runtime.policyGate.assert(tool),
-    displayPath: (value, context) => runtime.displayPath(value, context),
-    projectCapabilities: (capabilities, context) => projectRuntimeApplicationCapabilities(runtime, capabilities, context),
-    runProcess,
-    readResourceText,
-    throwIfCancelled: (context) => runtime.throwIfCancelled(context),
-  });
-}
-
-function projectRuntimeApplicationCapabilities(runtime, capabilities, context) { const available = new Set(runtime.effectiveToolNames(context)); return projectApplicationCapabilities(capabilities, (tool) => available.has(tool)); }

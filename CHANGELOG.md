@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.0-beta.139 - 2026-08-26
+
+- Correct an independent documentation-contract drift that survived existing release tests: current `ARCHITECTURE.md`, `THREAT_MODEL.md`, and `TESTING.md` still described the retired GitHub TTY/confirmation ceremony even though governance, engineering, releasing, and the implemented publisher make GitHub source publication standing-authorized after exact evidence gates. npm registry publication remains the sole explicit current-task owner authorization boundary through `--owner-confirm`. Architecture regression coverage now treats those three normative guides as part of the same publication contract so the obsolete user-presence model cannot silently return.
+- Remove a duplicate managed-job terminal-state classifier from recent-activity diagnostics. Activity aggregation now consumes the canonical `isTerminalManagedJobStatus()` contract instead of maintaining a second negative list of active/staged/unreadable states, preventing future lifecycle additions from being miscounted as terminal merely because one diagnostic helper was not updated.
+- Move application-automation composition out of `runtime.mjs` into a dedicated runtime composition module. This is a behavior-preserving responsibility extraction that restores meaningful headroom to a core composition file that had reached 696/700 lines without changing application authorization, capability projection, background-input selection, cancellation, or process execution semantics.
+
 ## 3.0.0-beta.138 - 2026-08-26
 
 - Supersede the accepted beta.137 candidate after its exact-head Windows provider run reached the new npm publication regression and proved the hard-timeout tree barrier was still incomplete. The resistant lifecycle descendant wrote its delayed marker after `runExecutable(..., hardTimeout:true)` had already returned, so the provider correctly rejected the claim that publication timeout settlement implied complete process-tree termination.

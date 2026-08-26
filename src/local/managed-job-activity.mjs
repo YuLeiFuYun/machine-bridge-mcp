@@ -1,3 +1,5 @@
+import { isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
+
 const WINDOWS_MS = Object.freeze({ one: 60_000, five: 5 * 60_000, fifteen: 15 * 60_000, sixty: 60 * 60_000 });
 
 export function managedJobRecentActivity(records = [], nowMs = Date.now()) {
@@ -15,12 +17,11 @@ export function managedJobRecentActivity(records = [], nowMs = Date.now()) {
     created_last_15m: last15.length,
     created_last_60m: recent(WINDOWS_MS.sixty).length,
     transient_process_last_15m: last15.filter((record) => record.retentionClass === "transient_process").length,
-    terminal_last_15m: last15.filter((record) => terminalLike(record.job?.status)).length,
+    terminal_last_15m: last15.filter((record) => isTerminalManagedJobStatus(record.job?.status)).length,
     failed_last_15m: last15.filter((record) => failedLike(record.job?.status)).length,
     peak_created_per_minute_last_15m: Math.max(0, ...minuteCounts.values()),
   };
 }
 
 function createdAtMs(record) { return Date.parse(String(record?.job?.created_at || "")); }
-function terminalLike(status) { return !["queued", "running", "cleaning", "interrupted", "staged", "unreadable"].includes(String(status || "")); }
 function failedLike(status) { return /failed|error|exhausted/.test(String(status || "")); }
