@@ -1,32 +1,11 @@
-import { lstatSync, readdirSync, unlinkSync } from "node:fs";
+import { lstatSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
-import { inspectProcessInstance, inspectProcessInstanceAsync, processStartTimeFromSnapshot } from "./process-identity.mjs";
+import { inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
 
 const STAGING = /^\.(?<target>(?<kind>lease|wait)_[a-f0-9]{32}\.json)\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
-const OWNER_STAGING = /^\.owner\.json\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
 const FINAL = Object.freeze({ lease: /^lease_[a-f0-9]{32}\.json$/, wait: /^wait_[a-f0-9]{32}\.json$/ });
 export const RESOURCE_STAGING_BUSY_CODE = "MBM_RESOURCE_STAGING_BUSY";
-
-export async function recoverResourceTransactionOwnerStaging(dir) {
-  const entries = readdirSync(dir, { withFileTypes: true });
-  if (!entries.length) return true;
-  if (entries.some((entry) => entry.name === "owner.json")) return false;
-  if (entries.length !== 1) throw new Error("resource transaction lock contains unexpected owner-publication state");
-  const entry = entries[0];
-  const match = entry.isFile() ? OWNER_STAGING.exec(entry.name) : null;
-  if (!match) throw new Error("resource transaction lock contains unexpected owner-publication state");
-  const stagingPath = join(dir, entry.name);
-  const staging = inspect(stagingPath, "resource transaction owner staging file");
-  if (await stagingPublisherMayBeCurrentAsync(Number(match.groups.pid), staging)) return false;
-  if (staging.nlink !== 1n) throw new Error("resource transaction owner staging file has unexpected links");
-  const current = inspect(stagingPath, "resource transaction owner staging file");
-  if (current.nlink !== 1n || !sameFilesystemIdentity(staging.identity, current.identity)) {
-    throw new Error("resource transaction owner staging file changed during recovery");
-  }
-  unlinkSync(stagingPath);
-  return true;
-}
 
 export function recoverResourceDirectoryStaging(dir, entries, kind, processStarts = null) {
   const expected = FINAL[kind];
@@ -96,4 +75,3 @@ function stagingPublisherMayBeCurrent(pid, staging, processStarts = undefined) {
   const status = inspectProcessInstance({ pid, startedAt: staging.modified_at }, options);
   return status.alive === true && status.reclaimable !== true;
 }
-async function stagingPublisherMayBeCurrentAsync(pid, staging) { const status = await inspectProcessInstanceAsync({ pid, startedAt: staging.modified_at }); return status.alive === true && status.reclaimable !== true; }

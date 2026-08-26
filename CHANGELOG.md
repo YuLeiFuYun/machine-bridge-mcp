@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.0-beta.140 - 2026-08-26
+
+- Retire the expired beta.104 resource-transaction directory compatibility state machine after an independent maintenance review confirmed its documented removal condition is satisfied. Current `transaction.lock` ownership remains the complete-before-visible regular-file contract; the old directory reader, owner-publication staging recovery, quarantine/restore branch, and migration-only process-identity paths are removed. An obsolete `transaction.lock/owner.json` directory now fails closed without mutation so unsupported historical state remains inspectable instead of being destructively migrated by stale code.
+- Extract Worker role-visible tool selection and effective authority projection from the near-limit `BridgeRoom` composition root into `worker-tool-authority.ts`. Direct regressions bind owner/reviewer catalog filtering, cloned tool definitions, and daemon-tool intersection; the Worker root drops from 828 to 818 lines without changing OAuth, Durable Object, relay, or local authorization semantics.
+- Refresh current architecture/testing/upgrading documentation around those boundaries. The independent privacy pass continues to find no tracked credential-bearing files or real secret values in publication surfaces; current-tree and reachable-history privacy gates plus development/production dependency audits remain clean. Historical audit/changelog records are retained as history rather than rewritten.
+- Supersede the accepted beta.139 candidate because shipped local/Worker source and documentation changed after acceptance. Beta.140 therefore requires a fresh frozen full verification, candidate, activation, deployed OAuth canary, live verification, acceptance, and exact-head provider run before publication.
+
 ## 3.0.0-beta.139 - 2026-08-26
 
 - Correct an independent documentation-contract drift that survived existing release tests: current `ARCHITECTURE.md`, `THREAT_MODEL.md`, and `TESTING.md` still described the retired GitHub TTY/confirmation ceremony even though governance, engineering, releasing, and the implemented publisher make GitHub source publication standing-authorized after exact evidence gates. npm registry publication remains the sole explicit current-task owner authorization boundary through `--owner-confirm`. Architecture regression coverage now treats those three normative guides as part of the same publication contract so the obsolete user-presence model cannot silently return.

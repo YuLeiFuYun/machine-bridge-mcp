@@ -2081,6 +2081,21 @@ for (const [name, guide] of [
   }
 }
 const upgradingGuide = readFileSync(join(root, "docs", "UPGRADING.md"), "utf8");
+for (const obsolete of [
+  "retains a bounded beta.104 transition reader",
+  "Rolling beta.104 compatibility fixtures",
+  "legacy transaction-owner migration check async",
+  "retained by current readers",
+]) {
+  if ([architectureGuide, testingGuide, upgradingGuide].some((source) => source.includes(obsolete))) {
+    throw new Error(`current documentation restored expired resource-transaction compatibility: ${obsolete}`);
+  }
+}
+if (!upgradingGuide.includes("no current reader consumes or migrates the directory format")
+    || !architectureGuide.includes("unsupported legacy transaction-lock directories are retained unchanged and fail closed")
+    || !testingGuide.includes("obsolete directory shape")) {
+  throw new Error("current documentation lost the fail-closed obsolete transaction-lock contract");
+}
 if (!upgradingGuide.includes("historical migration records, not a declaration of the current candidate")
     || upgradingGuide.includes("`3.0.0-beta.7` retains the portable P-256 root by default and is the next supported candidate path")) {
   throw new Error("upgrade history regained stale present-tense candidate guidance");

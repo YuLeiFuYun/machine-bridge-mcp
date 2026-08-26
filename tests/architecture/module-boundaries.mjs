@@ -240,6 +240,7 @@ const lineLimits = Object.freeze({
   "src/local/cli-ready-output.mjs": 80,
   "src/local/cli-service.mjs": 220,
   "src/worker/index.ts": 830,
+  "src/worker/worker-tool-authority.ts": 80,
   "src/worker/oauth-controller.ts": 360,
   "src/worker/oauth-record-contract.ts": 20,
   "src/worker/oauth-field-contract.ts": 40,
@@ -573,6 +574,16 @@ if (!appAutomationDurationSource.includes("expires_at: this.now() + VALUE_VERIFI
   throw new Error("application exact-value retention or discovery duration state regained wall-clock timing");
 }
 
+const workerRootSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const workerToolAuthoritySource = readFileSync(join(root, "src", "worker", "worker-tool-authority.ts"), "utf8");
+for (const required of ["workerToolsForRole", "workerAuthorityContext", "accountRoleToolNames", "accountAuthoritySnapshot", "describeDaemonCeiling"]) {
+  if (!workerToolAuthoritySource.includes(required)) throw new Error(`Worker tool/authority projection lost its dedicated boundary: ${required}`);
+}
+if (!workerRootSource.includes('from "./worker-tool-authority.ts"')
+    || workerRootSource.includes("private allTools(") || workerRootSource.includes("private effectiveToolNames(")) {
+  throw new Error("Worker composition root regained role/tool authority projection logic");
+}
+
 const resourceAdmissionSource = readFileSync(join(localRoot, "resource-admission.mjs"), "utf8");
 for (const required of ["createResourceWaiter", "selectedResourceWaiter", "process_group_isolated", "contention_key", "ResourceAdmissionError"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost durable/fair ownership contract: ${required}`);
@@ -590,22 +601,18 @@ for (const required of ["PROCESS_OWNERSHIP_LOCK_WAIT_MS = 30_000", "Math.min(PRO
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource coordinator lost operation-bounded transaction-lock waiting: ${required}`);
 }
 const resourceTransactionLockSource = readFileSync(join(localRoot, "resource-transaction-lock.mjs"), "utf8");
-for (const required of ["createExclusiveFileSync(lockPath", "removeOwnedJsonFileSync(lockPath", "retryTransientMultipleLinksSync", 'OWNER_NAME = "owner.json"', "validDirectoryOwner", "validFileOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "rmdirSync(lockPath)", "resource transaction lock was replaced before quarantine restore"]) {
-  if (!resourceTransactionLockSource.includes(required)) throw new Error(`resource transaction lock lost rolling-version ownership semantics: ${required}`);
+for (const required of ["createExclusiveFileSync(lockPath", "removeOwnedJsonFileSync(lockPath", "retryTransientMultipleLinksSync", "validFileOwner", "inspectProcessInstanceAsync", "unsupported legacy directory format"]) {
+  if (!resourceTransactionLockSource.includes(required)) throw new Error(`resource transaction lock lost current owner-state semantics: ${required}`);
 }
-if (resourceTransactionLockSource.includes("mkdirSync(lockPath") || resourceTransactionLockSource.includes("replaceFileAtomicallySync(join(lockPath, OWNER_NAME)")) {
-  throw new Error("resource transaction lock current writer regressed to the legacy visible-directory publication path");
+for (const forbidden of ["OWNER_NAME", "validDirectoryOwner", "removeDirectoryGeneration", "recoverResourceTransactionOwnerStaging", "restoreQuarantine", "renameSync", "rmdirSync"]) {
+  if (resourceTransactionLockSource.includes(forbidden)) throw new Error(`resource transaction lock retained expired beta.104 directory compatibility: ${forbidden}`);
 }
 const resourceStagingRecoverySource = readFileSync(join(localRoot, "resource-staging-recovery.mjs"), "utf8");
-for (const required of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrent", "unexpected owner-publication state"]) {
-  if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource transaction owner-staging recovery regressed: ${required}`);
+for (const required of ["STAGING", "recoverResourceDirectoryStaging", "stagingPublisherMayBeCurrent", "processStartTimeFromSnapshot"]) {
+  if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource lease/waiter staging recovery regressed: ${required}`);
 }
-if (!resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")
-    || !resourceStagingRecoverySource.includes("recoverResourceDirectoryStaging(dir, entries, kind, processStarts = null)")) {
-  throw new Error("current lease/waiter staging recovery lost lock-external process-generation evidence");
-}
-if (!resourceTransactionLockSource.includes("owner?.schema_version === 1") || !resourceTransactionLockSource.includes('kind: "file"')) {
-  throw new Error("resource transaction lock no longer interoperates with beta.104 schema-1 directories and owner-state files");
+for (const forbidden of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrentAsync", "inspectProcessInstanceAsync", "owner-publication state"]) {
+  if (resourceStagingRecoverySource.includes(forbidden)) throw new Error(`resource staging recovery retained expired transaction-owner compatibility: ${forbidden}`);
 }
 const resourceWaitSource = readFileSync(join(localRoot, "resource-wait.mjs"), "utf8");
 for (const required of ["setTimeout", "removeEventListener", "signal?.aborted", "resourceRetryDelayMs", "resourceChangeSignal", "signalResourceChange", "waitForResourceChange", "WeakMap", "2 ** step"]) {
@@ -785,10 +792,9 @@ if (resourceProbeSource.includes("runResourceProbeSync") || resourceProbeSource.
   throw new Error("resource probe transport regained a blocking child-process path");
 }
 if (!resourceTransactionLockSource.includes("await inspectProcessInstanceAsync")
-    || !resourceTransactionLockSource.includes("await recoverResourceTransactionOwnerStaging")
-    || !resourceStagingRecoverySource.includes("inspectProcessInstanceAsync")
-    || !resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")) {
-  throw new Error("resource ownership recovery regained synchronous process-start identity sampling");
+    || !resourceStagingRecoverySource.includes("processStartTimeFromSnapshot")
+    || resourceStagingRecoverySource.includes("inspectProcessInstanceAsync")) {
+  throw new Error("current resource ownership recovery lost its async/file-snapshot process identity boundaries");
 }
 if (!resourceTransactionLockSource.includes("retryTransientMultipleLinksSync")
     || resourceTransactionLockSource.includes('error?.code !== "MBM_MULTIPLE_HARD_LINKS"')) {
