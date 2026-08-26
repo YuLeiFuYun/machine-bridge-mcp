@@ -18,6 +18,7 @@ import {
 import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../src/worker/managed-job-read-timeout.ts";
 import { serverInfoTool, validateWorkerToolArguments, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { workerAuthorityContext, workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import {
@@ -84,6 +85,7 @@ class TestWebSocket {
 }
 
 
+testWorkerToolAuthorityProjection();
 await testRequestKeyReuse();
 await testAuthorityRevocationPending();
 await testRegistrationFailures();
@@ -140,6 +142,42 @@ async function testRequestKeyReuse() {
   assert((await reused).ok === 2, "request id could not be reused immediately after completion");
   assert(registry.snapshot().active === 0 && registry.snapshot().request_keys === 0, "terminal resolution leaked pending indexes");
   assert(registry.snapshot().oldest_ms === 0 && Object.keys(registry.snapshot().by_tool).length === 0, "empty pending snapshot retained activity metadata");
+}
+
+function testWorkerToolAuthorityProjection() {
+  const ownerTools = workerToolsForRole("owner");
+  const reviewerTools = workerToolsForRole("reviewer");
+  assert(ownerTools.some((tool) => tool.name === "server_info") && ownerTools.some((tool) => tool.name === "start_job"),
+    "owner Worker catalog lost server_info or persistent-job authority");
+  assert(reviewerTools.some((tool) => tool.name === "server_info") && reviewerTools.some((tool) => tool.name === "read_file")
+    && !reviewerTools.some((tool) => tool.name === "start_job"),
+  "reviewer Worker catalog escaped role filtering");
+  ownerTools[0].name = "mutated-test-tool";
+  assert(workerToolsForRole("owner")[0].name !== "mutated-test-tool",
+    "Worker role catalog returned shared mutable tool definitions");
+
+  const context = workerAuthorityContext({
+    authorized: {
+      tokenKey: "synthetic-token", accountId: "synthetic-account", accountVersion: 1,
+      clientId: "synthetic-client", familyId: "synthetic-family", dpopJkt: "", role: "reviewer",
+    },
+    daemonStatus: {
+      policy: {
+        profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell",
+        unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true,
+      },
+      tools: ["read_file", "start_job"],
+    },
+    daemonTools: ["read_file", "start_job"],
+  });
+  assert(context.advertisedTools.includes("server_info") && context.advertisedTools.includes("read_file")
+      && !context.advertisedTools.includes("start_job"),
+  "Worker advertised-tool projection escaped reviewer authority");
+  assert(context.effectiveTools.includes("server_info") && context.effectiveTools.includes("read_file")
+      && !context.effectiveTools.includes("start_job"),
+  "Worker effective-tool projection escaped reviewer authority");
+  assert(context.authorization.account_role_is_owner === false,
+    "Worker authority projection mislabeled reviewer as owner");
 }
 
 async function testAuthorityRevocationPending() {

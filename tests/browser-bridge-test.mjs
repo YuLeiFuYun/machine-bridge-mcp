@@ -436,6 +436,20 @@ async function testBrowserRequestSettlementEvidence() {
     extensionStatusInfo: () => null,
     extensionReloadRequired: () => false,
   });
+  const acceptedClientMessages = [];
+  const acceptedClientHandlers = new Map();
+  const acceptedClient = {
+    readyState: 1,
+    send(value) { acceptedClientMessages.push(JSON.parse(value)); },
+    close() {},
+    on(event, handler) { acceptedClientHandlers.set(event, handler); },
+  };
+  routes.acceptClient(acceptedClient);
+  acceptedClientHandlers.get("error")?.(new Error("synthetic client socket error"));
+  assert(routes.snapshot().runtime_clients === 1 && acceptedClientMessages[0]?.type === "hello",
+    "runtime client socket error listener changed broker membership or handshake state");
+  acceptedClientHandlers.get("close")?.();
+  assert(routes.snapshot().runtime_clients === 0, "runtime client close did not remove broker membership");
   routes.handleClientMessage(clientSocket, JSON.stringify({ type: "request", id: "proxy-action", method: "action", params: {}, timeout_ms: 1000 }));
   assert(extensionMessages.at(-1)?.method === "action", "browser broker did not forward the mutating proxy request");
   routes.rejectAll("browser extension was replaced; retry the browser request");

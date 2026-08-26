@@ -1,21 +1,16 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, renameSync, rmSync, rmdirSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
-import { filesystemIdentity, filesystemTimeMs } from "./filesystem-identity.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstanceAsync } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
-import { recoverResourceTransactionOwnerStaging } from "./resource-staging-recovery.mjs";
+
 const LOCK_NAME = "transaction.lock";
-const OWNER_NAME = "owner.json";
 const LOCK_PURPOSE = "resource-coordinator";
 const LOCK_WAIT_MS = 5_000;
-const INCOMPLETE_OWNER_GRACE_MS = 5_000;
 const MAX_OWNER_BYTES = 8 * 1024;
-// Current writers use the shared complete-before-visible regular-file primitive. The
-// beta.104 directory reader remains bounded transition compatibility so a previous
-// runtime/job can still hold or leave behind transaction.lock/owner.json during upgrade.
+
 export async function withResourceTransactionLock(root, callback, options = {}) {
   if (typeof callback !== "function") throw new TypeError("resource transaction lock requires a callback");
   const lockPath = join(root, LOCK_NAME);
@@ -28,10 +23,10 @@ export async function withResourceTransactionLock(root, callback, options = {}) 
   while (true) {
     const acquired = tryAcquireFileLock(lockPath, owner);
     if (acquired) return runWithFileLock(lockPath, owner.token, callback);
-    const observed = await inspectExistingLock(lockPath, now());
+    const observed = await inspectExistingLock(lockPath);
     if (observed.kind === "missing") continue;
     if (observed.reclaimable && typeof options.beforeReclaim === "function") await options.beforeReclaim(observed);
-    if (observed.reclaimable && await reclaimObservedLock(lockPath, observed, options)) continue;
+    if (observed.reclaimable && reclaimObservedLock(lockPath, observed)) continue;
     if (deadline.expired()) throw Object.assign(new Error("resource coordinator transaction state is busy; retry after the current operation finishes"), { code: "MBM_RESOURCE_TRANSACTION_BUSY" });
     await sleep(Math.min(25 + Math.floor(random() * 50), Math.max(1, deadline.remainingMs())));
   }
@@ -61,28 +56,16 @@ async function runWithFileLock(lockPath, token, callback) {
   return result;
 }
 
-async function inspectExistingLock(lockPath, now) {
+async function inspectExistingLock(lockPath) {
   let info;
   try { info = lstatSync(lockPath, { bigint: true }); }
   catch (error) { if (error?.code === "ENOENT") return { kind: "missing", reclaimable: false }; throw error; }
   if (info.isSymbolicLink()) throw new Error("resource coordinator transaction lock must not be a symbolic link");
-  if (info.isDirectory()) return inspectDirectoryLock(lockPath, info, now);
+  if (info.isDirectory()) {
+    throw new Error("resource coordinator transaction lock uses an unsupported legacy directory format; preserve the state and upgrade through a supported transition");
+  }
   if (info.isFile()) return inspectFileLock(lockPath);
   throw new Error("resource coordinator transaction lock has an unsupported filesystem type");
-}
-
-async function inspectDirectoryLock(lockPath, info, now) {
-  const identity = directoryIdentity(info);
-  let owner;
-  try { owner = readJson(join(lockPath, OWNER_NAME), MAX_OWNER_BYTES, "resource transaction owner"); }
-  catch (error) {
-    if (!isMissing(error)) throw error;
-    const age = now - filesystemTimeMs(info.mtimeMs, "resource transaction lock modification time");
-    return { kind: "directory", identity, owner: null, reclaimable: age >= INCOMPLETE_OWNER_GRACE_MS };
-  }
-  if (!validDirectoryOwner(owner)) throw new Error("resource coordinator transaction owner is invalid");
-  const status = await inspectProcessInstanceAsync({ pid: owner.pid, startedAt: owner.started_at, processStartedAt: owner.process_started_at });
-  return { kind: "directory", identity, owner, reclaimable: status.reclaimable === true };
 }
 
 async function inspectFileLock(lockPath) {
@@ -92,60 +75,13 @@ async function inspectFileLock(lockPath) {
   return { kind: "file", owner, reclaimable: status.reclaimable === true };
 }
 
-async function reclaimObservedLock(lockPath, observed, options = {}) {
-  if (observed.kind === "file") {
-    return removeOwnedJsonFileSync(lockPath, { token: observed.owner.token, purpose: LOCK_PURPOSE }, { maxBytes: MAX_OWNER_BYTES });
-  }
-  return removeDirectoryGeneration(lockPath, observed.identity, observed.owner?.token ?? null, "stale recovery", {
-    expectedOwnerMissing: observed.owner === null,
-    beforeRestore: options.beforeRestore,
-  });
+function reclaimObservedLock(lockPath, observed) {
+  return removeOwnedJsonFileSync(lockPath, { token: observed.owner.token, purpose: LOCK_PURPOSE }, { maxBytes: MAX_OWNER_BYTES });
 }
 
-async function removeDirectoryGeneration(lockPath, expectedIdentity, expectedToken, reason, { expectedOwnerMissing = false, beforeRestore = null } = {}) {
-  if (expectedOwnerMissing) {
-    let current; try { current = lstatDirectory(lockPath); } catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-    if (!sameDirectoryIdentity(expectedIdentity, directoryIdentity(current))) return false;
-    try { readJson(join(lockPath, OWNER_NAME), MAX_OWNER_BYTES, "resource transaction owner"); return false; }
-    catch (error) { if (!isMissing(error)) throw error; }
-    if (!await recoverResourceTransactionOwnerStaging(lockPath)) return false;
-    try { rmdirSync(lockPath); return true; }
-    catch (error) { if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) return false; throw error; }
-  }
-  const quarantine = `${lockPath}.stale.${process.pid}.${randomBytes(8).toString("hex")}`;
-  try { renameSync(lockPath, quarantine); }
-  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  let verified = false;
-  try {
-    const movedInfo = lstatDirectory(quarantine);
-    if (!sameDirectoryIdentity(expectedIdentity, directoryIdentity(movedInfo))) throw new Error(`resource transaction directory changed during ${reason}`);
-    if (expectedToken !== null) {
-      const movedOwner = readJson(join(quarantine, OWNER_NAME), MAX_OWNER_BYTES, "resource transaction owner");
-      if (!validDirectoryOwner(movedOwner) || movedOwner.token !== expectedToken) throw new Error(`resource transaction owner changed during ${reason}`);
-    }
-    verified = true;
-  } finally { if (!verified) restoreQuarantine(lockPath, quarantine, beforeRestore); }
-  rmSync(quarantine, { recursive: true, force: false });
-  return true;
-}
-function restoreQuarantine(lockPath, quarantine, beforeRestore = null) {
-  if (typeof beforeRestore === "function") beforeRestore({ lockPath, quarantine });
-  try { lstatSync(lockPath); throw new Error("resource transaction lock was replaced before quarantine restore; state requires inspection"); }
-  catch (error) { if (error?.code !== "ENOENT") throw error; }
-  try { renameSync(quarantine, lockPath); }
-  catch (error) { throw new Error("resource transaction quarantine could not be restored; state requires inspection", { cause: error }); }
-}
 function fileOwner(now) {
   return { token: randomBytes(16).toString("hex"), pid: process.pid, purpose: LOCK_PURPOSE,
     startedAt: new Date(now).toISOString(), processStartedAt: new Date(currentProcessStartTimeMs()).toISOString() };
-}
-
-function validDirectoryOwner(owner) {
-  return owner?.schema_version === 1
-    && Number.isInteger(owner?.pid) && owner.pid > 0
-    && Number.isFinite(Date.parse(String(owner.started_at || "")))
-    && Number.isFinite(Date.parse(String(owner.process_started_at || "")))
-    && /^[a-f0-9]{32}$/.test(String(owner.token || ""));
 }
 
 function validFileOwner(owner) {
@@ -166,17 +102,5 @@ function readJson(file, maxBytes, label) {
   return value;
 }
 
-function lstatDirectory(path) {
-  const info = lstatSync(path, { bigint: true });
-  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("resource coordinator transaction lock must be a real directory");
-  return info;
-}
-
-function directoryIdentity(info) {
-  const identity = filesystemIdentity(info, "resource transaction directory");
-  return { dev: identity.dev, ino: identity.ino };
-}
-function sameDirectoryIdentity(left, right) { return left?.dev === right?.dev && left?.ino === right?.ino; }
-function isMissing(error) { return error?.code === "ENOENT" || error?.cause?.code === "ENOENT"; }
 function positiveInteger(value, fallback) { const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback; }
 function defaultSleep(milliseconds) { return new Promise((resolvePromise) => { setTimeout(resolvePromise, milliseconds); }); }

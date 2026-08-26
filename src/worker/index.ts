@@ -30,14 +30,15 @@ import { WorkerObservability } from "./observability.ts";
 import { readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerSocketDisconnect } from "./worker-continuity-evidence.ts";
 import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
-import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole } from "./access.ts";
+import { accountRoleAllowsTool } from "./access.ts";
 import type { AuthorizedToken } from "./access.ts";
 import { OAuthController } from "./oauth-controller.ts";
 import {
   authorityRevocations, authorityRevocationWireMessage,
 } from "./authority-revocations.ts";
-import { accountAuthoritySnapshot, decorateProjectOverview, describeDaemonCeiling } from "./authority.ts";
-import { serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
+import { decorateProjectOverview } from "./authority.ts";
+import { validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
+import { workerAuthorityContext, workerToolsForRole } from "./worker-tool-authority.ts";
 import { McpHttpContractError, httpHeaderContractError, validateHttpRequest } from "./mcp-http-contract.ts";
 import { randomToken } from "./oauth-state.ts";
 import {
@@ -59,7 +60,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.138";
+const SERVER_VERSION = "3.0.0-beta.140";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -84,7 +85,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       supportedVersions: MCP_PROTOCOL_VERSIONS,
       discoveryTtlMs: MCP_DISCOVERY_TTL_MS,
       toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
-      tools: (authorized) => this.allTools(authorized.role),
+      tools: (authorized) => workerToolsForRole(authorized.role),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
       callTool: ({ name, args, base, authorized, signal, requestKey }) => this.callTool(
@@ -443,7 +444,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const compatibility = await initializationCompatibilityResponse({
         request, body, base, authorized: access.authorized, controller: this.mcp,
         capabilities: MCP_LEGACY_SERVER_CAPABILITIES, serverInfo: MCP_SERVER_INFO, instructions: MCP_INSTRUCTIONS,
-        tools: this.allTools(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
+        tools: workerToolsForRole(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
       });
       if (compatibility) return compatibility;
       const removed = removedProtocolResponse(request, body, MCP_PROTOCOL_VERSIONS);
@@ -451,7 +452,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       validateHttpRequest({
         request,
         body,
-        tools: this.allTools(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
+        tools: workerToolsForRole(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
       });
       return await this.mcp.handleRequest({ request, body, base, authorized: access.authorized, proxyMode });
     } catch (error) {
@@ -697,21 +698,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private allTools(role: AccountRole): Array<Record<string, unknown>> {
-    const advertised = accountRoleToolNames(role, workspaceTools.map((tool) => tool.name));
-    const localTools = workspaceTools.filter((tool) => advertised.has(tool.name));
-    return [serverInfoTool, ...localTools].map((tool) => structuredClone(tool));
-  }
-  private effectiveToolNames(role: AccountRole): string[] {
-    return ["server_info", ...accountRoleToolNames(role, this.daemonAdvertisedTools())];
-  }
   private authorityContext(authorized: AuthorizedToken) {
-    const daemon = describeDaemonCeiling(this.daemonStatus(true));
-    const advertisedTools = this.allTools(authorized.role).map((tool) => String(tool.name));
-    const effectiveTools = this.effectiveToolNames(authorized.role);
-    const authorization = accountAuthoritySnapshot({ accountId: authorized.accountId, accountVersion: authorized.accountVersion,
-      role: authorized.role, daemonPolicy: daemon.policy, effectiveTools });
-    return { daemon, effectiveTools, advertisedTools, authorization };
+    return workerAuthorityContext({
+      authorized, daemonStatus: this.daemonStatus(true), daemonTools: this.daemonAdvertisedTools(),
+    });
   }
   private daemonAdvertisedTools(): Set<string> {
     this.reclaimStaleDaemonSockets();

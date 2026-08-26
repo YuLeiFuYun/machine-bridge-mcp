@@ -1324,34 +1324,32 @@ try {
     }
   });
 
-  const legacyLock = join(root, "transaction.lock");
-  mkdirSync(legacyLock, { mode: 0o700 });
-  writeFileSync(join(legacyLock, "owner.json"), `${JSON.stringify({
+  const transactionLock = join(root, "transaction.lock");
+  mkdirSync(transactionLock, { mode: 0o700 });
+  const legacyOwnerFile = join(transactionLock, "owner.json");
+  const legacyOwnerText = `${JSON.stringify({
     schema_version: 1,
     token: "a".repeat(32),
     pid: process.pid,
     started_at: new Date().toISOString(),
     process_started_at: new Date(currentProcessStartTimeMs()).toISOString(),
-  })}\n`, { mode: 0o600 });
-  let legacyWaits = 0;
-  await withResourceTransactionLock(root, () => {
-    const legacyFd = openSync(legacyLock, "r");
-    try {
-      assert.equal(fstatSync(legacyFd).isFile(), true,
-        "current writer did not switch to the owner-state file after the beta.104 directory lock cleared");
-      const owner = JSON.parse(readFileSync(legacyFd, "utf8"));
-      assert.notEqual(owner.token, "a".repeat(32), "current writer entered while a beta.104 directory lock was still owned");
-    } finally {
-      closeSync(legacyFd);
-    }
-  }, {
-    timeoutMs: 500,
-    random: () => 0,
-    sleep: async () => { legacyWaits += 1; rmSync(legacyLock, { recursive: true, force: true }); },
-  });
-  assert.equal(legacyWaits, 1, "beta.61 did not wait for a live beta.60 directory transaction lock");
+  })}\n`;
+  writeFileSync(legacyOwnerFile, legacyOwnerText, { mode: 0o600 });
+  await assert.rejects(
+    () => withResourceTransactionLock(root, () => {}, { timeoutMs: 500, random: () => 0, sleep: async () => {} }),
+    /unsupported legacy directory format/,
+    "obsolete resource transaction directory lock did not fail closed outside the supported rolling transition",
+  );
+  assert.equal(lstatSync(transactionLock).isDirectory(), true,
+    "unsupported resource transaction directory lock was mutated during fail-closed inspection");
+  assert.equal(readFileSync(legacyOwnerFile, "utf8"), legacyOwnerText,
+    "unsupported resource transaction directory evidence changed during fail-closed inspection");
+  rmSync(transactionLock, { recursive: true, force: true });
 
-  writeFileSync(legacyLock, `${JSON.stringify({
+  const priorFileRoot = join(root, "prior-file-lock-fixture");
+  mkdirSync(priorFileRoot, { mode: 0o700 });
+  const priorFileLock = join(priorFileRoot, "transaction.lock");
+  writeFileSync(priorFileLock, `${JSON.stringify({
     pid: process.pid,
     token: "b".repeat(32),
     purpose: "resource-coordinator",
@@ -1359,16 +1357,20 @@ try {
     processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
   })}\n`, { mode: 0o600 });
   let priorFileWaits = 0;
-  await withResourceTransactionLock(root, () => {
-    assert.equal(lstatSync(legacyLock).isFile(), true,
-      "resource transaction writer reverted to the legacy directory shape after an owner-state file lock cleared");
+  await withResourceTransactionLock(priorFileRoot, () => {
+    assert.equal(lstatSync(priorFileLock).isFile(), true,
+      "resource transaction writer changed away from the owner-state file shape after a prior owner released it");
   }, {
     timeoutMs: 500,
     random: () => 0,
-    sleep: async () => { priorFileWaits += 1; rmSync(legacyLock, { force: true }); },
+    sleep: async () => { priorFileWaits += 1; rmSync(priorFileLock, { force: true }); },
   });
-  assert.equal(priorFileWaits, 1, "beta.61 did not wait for a live prior owner-state file lock");
+  assert.equal(priorFileWaits, 1, "resource transaction lock did not wait for a live prior owner-state file lock");
+  rmSync(priorFileRoot, { recursive: true, force: true });
 
+  const publicationRoot = join(root, "publication-hardlink-fixture");
+  mkdirSync(publicationRoot, { mode: 0o700 });
+  const publicationLock = join(publicationRoot, "transaction.lock");
   const publicationOwner = {
     pid: process.pid,
     token: "9".repeat(32),
@@ -1376,13 +1378,13 @@ try {
     startedAt: new Date().toISOString(),
     processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
   };
-  const persistentPublicationLink = join(root, "transaction.lock.persistent-hardlink");
-  writeFileSync(legacyLock, `${JSON.stringify(publicationOwner)}\n`, { mode: 0o600 });
-  linkSync(legacyLock, persistentPublicationLink);
+  const persistentPublicationLink = join(publicationRoot, "transaction.lock.persistent-hardlink");
+  writeFileSync(publicationLock, `${JSON.stringify(publicationOwner)}\n`, { mode: 0o600 });
+  linkSync(publicationLock, persistentPublicationLink);
   let transactionDeadlineWaits = 0;
   let persistentPublicationError = null;
   try {
-    await withResourceTransactionLock(root, () => {}, {
+    await withResourceTransactionLock(publicationRoot, () => {}, {
       timeoutMs: 500,
       random: () => 0,
       sleep: async () => { transactionDeadlineWaits += 1; },
@@ -1393,120 +1395,8 @@ try {
   assert.equal(transactionDeadlineWaits, 0,
     "resource transaction lock expanded a multiple-hard-link integrity failure into transaction-deadline waiting");
   rmSync(persistentPublicationLink, { force: true });
-  rmSync(legacyLock, { force: true });
-
-  mkdirSync(legacyLock, { mode: 0o700 });
-  const oldDirectoryTime = new Date(Date.now() - 10_000);
-  utimesSync(legacyLock, oldDirectoryTime, oldDirectoryTime);
-  let orphanOwnerInjected = false;
-  let orphanRaceWaits = 0;
-  await withResourceTransactionLock(root, () => {
-    assert.equal(orphanOwnerInjected, true, "stale incomplete-directory race fixture did not inject a completing beta.60 owner");
-    assert.equal(lstatSync(legacyLock).isFile(), true,
-      "resource transaction writer did not converge to the owner-state file after legacy orphan recovery");
-  }, {
-    timeoutMs: 500,
-    random: () => 0,
-    beforeReclaim: async (observed) => {
-      if (orphanOwnerInjected || observed.kind !== "directory" || observed.owner !== null) return;
-      orphanOwnerInjected = true;
-      writeFileSync(join(legacyLock, "owner.json"), `${JSON.stringify({
-        schema_version: 1,
-        token: "c".repeat(32),
-        pid: process.pid,
-        started_at: new Date().toISOString(),
-        process_started_at: new Date(currentProcessStartTimeMs()).toISOString(),
-      })}\n`, { mode: 0o600 });
-    },
-    sleep: async () => {
-      orphanRaceWaits += 1;
-      const completedOwner = JSON.parse(readFileSync(join(legacyLock, "owner.json"), "utf8"));
-      assert.equal(completedOwner.token, "c".repeat(32), "orphan reclaim deleted a beta.60 owner that completed after inspection");
-      rmSync(legacyLock, { recursive: true, force: true });
-    },
-  });
-  assert.equal(orphanRaceWaits, 1, "resource transaction lock did not wait after an observed orphan completed before stale reclamation");
-  assert.equal(readdirSync(root).filter((name) => name.startsWith("transaction.lock.stale.")).length, 0,
-    "incomplete-owner reclamation moved a late-completing beta.60 lock out of the canonical mutex");
-
-  mkdirSync(legacyLock, { mode: 0o700 });
-  const deadOwnerStagingName = `.owner.json.99999999.${"1".repeat(16)}.tmp`;
-  const deadOwnerStaging = join(legacyLock, deadOwnerStagingName);
-  writeFileSync(deadOwnerStaging, "partial-owner-publication\n", { mode: 0o600 });
-  utimesSync(deadOwnerStaging, oldDirectoryTime, oldDirectoryTime);
-  utimesSync(legacyLock, oldDirectoryTime, oldDirectoryTime);
-  let recoveredDeadOwnerStaging = false;
-  await withResourceTransactionLock(root, () => {
-    recoveredDeadOwnerStaging = true;
-    assert.equal(lstatSync(legacyLock).isFile(), true,
-      "dead legacy owner-publication staging did not converge to the current owner-state file generation");
-  }, { timeoutMs: 500, random: () => 0, sleep: async () => {} });
-  assert.equal(recoveredDeadOwnerStaging, true,
-    "dead owner-publication staging permanently blocked resource transaction recovery");
-
-  mkdirSync(legacyLock, { mode: 0o700 });
-  const liveOwnerStagingName = `.owner.json.${process.pid}.${"2".repeat(16)}.tmp`;
-  const liveOwnerStaging = join(legacyLock, liveOwnerStagingName);
-  writeFileSync(liveOwnerStaging, "in-progress-owner-publication\n", { mode: 0o600 });
-  utimesSync(legacyLock, oldDirectoryTime, oldDirectoryTime);
-  let liveOwnerWaits = 0;
-  await withResourceTransactionLock(root, () => {}, {
-    timeoutMs: 500,
-    random: () => 0,
-    sleep: async () => {
-      liveOwnerWaits += 1;
-      assert.equal(readFileSync(liveOwnerStaging, "utf8"), "in-progress-owner-publication\n",
-        "resource transaction recovery deleted a live owner publisher staging file");
-      rmSync(legacyLock, { recursive: true, force: true });
-    },
-  });
-  assert.equal(liveOwnerWaits, 1, "resource transaction recovery did not wait for a live owner publisher");
-
-  mkdirSync(legacyLock, { mode: 0o700 });
-  writeFileSync(join(legacyLock, "unexpected.tmp"), "unexpected\n", { mode: 0o600 });
-  utimesSync(legacyLock, oldDirectoryTime, oldDirectoryTime);
-  await assert.rejects(() => withResourceTransactionLock(root, () => {}, {
-    timeoutMs: 500, random: () => 0, sleep: async () => {},
-  }), /unexpected owner-publication state/,
-  "resource transaction recovery deleted an unrecognized ownerless lock-directory entry");
-  rmSync(legacyLock, { recursive: true, force: true });
-
-  mkdirSync(legacyLock, { mode: 0o700 });
-  writeFileSync(join(legacyLock, "owner.json"), `${JSON.stringify({
-    schema_version: 1, token: "d".repeat(32), pid: 99_999_999,
-    started_at: new Date().toISOString(), process_started_at: new Date().toISOString(),
-  })}\n`, { mode: 0o600 });
-  let replacementInjected = false;
-  await assert.rejects(() => withResourceTransactionLock(root, () => {}, {
-    timeoutMs: 500,
-    random: () => 0,
-    sleep: async () => {},
-    beforeReclaim: async (observed) => {
-      if (observed.kind !== "directory" || observed.owner?.token !== "d".repeat(32)) return;
-      writeFileSync(join(legacyLock, "owner.json"), `${JSON.stringify({
-        schema_version: 1, token: "f".repeat(32), pid: 99_999_999,
-        started_at: new Date().toISOString(), process_started_at: new Date().toISOString(),
-      })}\n`, { mode: 0o600 });
-    },
-    beforeRestore: ({ lockPath }) => {
-      replacementInjected = true;
-      mkdirSync(lockPath, { mode: 0o700 });
-      writeFileSync(join(lockPath, "owner.json"), `${JSON.stringify({
-        schema_version: 1, token: "e".repeat(32), pid: process.pid,
-        started_at: new Date().toISOString(), process_started_at: new Date(currentProcessStartTimeMs()).toISOString(),
-      })}\n`, { mode: 0o600 });
-    },
-  }), /replaced before quarantine restore/,
-  "resource transaction quarantine restore overwrote a replacement lock generation");
-  assert.equal(replacementInjected, true, "resource transaction replacement-race fixture never reached quarantine restore");
-  assert.equal(JSON.parse(readFileSync(join(legacyLock, "owner.json"), "utf8")).token, "e".repeat(32),
-    "resource transaction quarantine restore damaged the replacement lock generation");
-  const retainedQuarantines = readdirSync(root).filter((name) => name.startsWith("transaction.lock.stale."));
-  assert(retainedQuarantines.length === 1
-    && JSON.parse(readFileSync(join(root, retainedQuarantines[0], "owner.json"), "utf8")).token === "f".repeat(32),
-  "resource transaction restore race did not retain the quarantined observed generation for inspection");
-  rmSync(legacyLock, { recursive: true, force: true });
-  rmSync(join(root, retainedQuarantines[0]), { recursive: true, force: true });
+  rmSync(publicationLock, { force: true });
+  rmSync(publicationRoot, { recursive: true, force: true });
 
   const light = await coordinator.acquire(resourceCommandProfile("/bin/ps", ["-axo", "pid=,ppid="]));
   assert.equal(light.active, false);

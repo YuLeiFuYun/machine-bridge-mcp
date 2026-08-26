@@ -2061,7 +2061,41 @@ if (architectureGuide.includes("All bridge mutations are serialized in one runti
     || !architectureGuide.includes("Operations touching the same canonical path serialize; independent paths may proceed concurrently")) {
   throw new Error("architecture mutation model drifted from canonical-path reservation semantics");
 }
+const threatModelGuide = readFileSync(join(root, "docs", "THREAT_MODEL.md"), "utf8");
+for (const [name, guide] of [
+  ["architecture guide", architectureGuide],
+  ["threat model", threatModelGuide],
+  ["testing guide", testingGuide],
+]) {
+  for (const forbidden of [
+    "GitHub tag/Release publication requires an explicit confirmation flag",
+    "GitHub tag/Release mutation additionally requires an explicit confirmation flag",
+    "GitHub publication ownership: missing confirmation",
+    "TTY-backed stdin/stdout/stderr",
+    "real owner TTYs",
+  ]) {
+    if (guide.includes(forbidden)) throw new Error(`${name} retained obsolete GitHub user-presence publication contract: ${forbidden}`);
+  }
+  if (!guide.includes("sole explicit current-task owner authorization boundary") || !guide.includes("--owner-confirm")) {
+    throw new Error(`${name} omitted the npm-only explicit publication authorization boundary`);
+  }
+}
 const upgradingGuide = readFileSync(join(root, "docs", "UPGRADING.md"), "utf8");
+for (const obsolete of [
+  "retains a bounded beta.104 transition reader",
+  "Rolling beta.104 compatibility fixtures",
+  "legacy transaction-owner migration check async",
+  "retained by current readers",
+]) {
+  if ([architectureGuide, testingGuide, upgradingGuide].some((source) => source.includes(obsolete))) {
+    throw new Error(`current documentation restored expired resource-transaction compatibility: ${obsolete}`);
+  }
+}
+if (!upgradingGuide.includes("no current reader consumes or migrates the directory format")
+    || !architectureGuide.includes("unsupported legacy transaction-lock directories are retained unchanged and fail closed")
+    || !testingGuide.includes("obsolete directory shape")) {
+  throw new Error("current documentation lost the fail-closed obsolete transaction-lock contract");
+}
 if (!upgradingGuide.includes("historical migration records, not a declaration of the current candidate")
     || upgradingGuide.includes("`3.0.0-beta.7` retains the portable P-256 root by default and is the next supported candidate path")) {
   throw new Error("upgrade history regained stale present-tense candidate guidance");
