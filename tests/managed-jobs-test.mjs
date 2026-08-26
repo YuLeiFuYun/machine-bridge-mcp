@@ -706,7 +706,7 @@ async function testManagedJobCapacityBoundary() {
   });
   const olderActive = recoveryVisibilityManager.start({
     name: "older active recovery job",
-    steps: [{ argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"] }],
+    steps: [{ argv: [process.execPath, "-e", "setTimeout(() => {}, 300000)"] }],
   });
   const durableTerminal = recoveryVisibilityManager.start({
     name: "older durable terminal recovery result",
