@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalRuntime, runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 import { bindRuntimeToolHandlers } from "../src/local/runtime-tool-handlers.mjs";
+import { normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { policyProfile } from "../src/local/tools.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-runtime-handler-matrix-"));
@@ -165,6 +166,9 @@ try {
     && hostedStart.follow_up_read_required === false && hostedStart.result?.ok === true
     && hostedStart.recovery === accepted.recovery,
   "hosted start_job did not coalesce a short terminal managed job into the original response");
+  const normalizedHostedStart = normalizeToolResult(hostedStart).value;
+  assert(normalizedHostedStart.recovery?.job_id === shortJobId && normalizedHostedStart.follow_up_read_required === false,
+    "hosted start_job initial settlement leaked a non-JSON value through the real tool-result boundary");
   console.log(`runtime handler matrix test ok (${names.length} handlers)`);
 } finally {
   await runtime.stop();

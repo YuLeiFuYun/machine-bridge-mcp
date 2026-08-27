@@ -17,12 +17,6 @@ export async function settleManagedJobAcceptance(manager, accepted, context = {}
     return {
       ...accepted,
       ...settled,
-      recovery: accepted.recovery,
-      cleanup: accepted.cleanup,
-      execution_mode: accepted.execution_mode,
-      source_tool: accepted.source_tool,
-      execution_timeout_seconds: accepted.execution_timeout_seconds,
-      retry_safety: accepted.retry_safety,
       progress: {
         status: settled.status,
         current_phase: settled.current_phase ?? null,
