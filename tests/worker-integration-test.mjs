@@ -1606,20 +1606,22 @@ try {
   assert(reviewerDenied.body.error?.code === -32602 && reviewerDenied.body.error?.message === "Unknown tool",
   "reviewer process execution was not rejected at the role-filtered protocol boundary");
 
+  const reviewerRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const reviewerReadPromise = currentMcpCall(base, reviewerToken, 272, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
-  const reviewerRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  const reviewerRelay = await reviewerRelayPromise;
   assert(reviewerRelay.authorization?.role === "reviewer", "reviewer role was not forwarded to the daemon");
   assert(reviewerRelay.authorization?.account_id === reviewerAccount.body.account.account_id, "reviewer account id was not forwarded to the daemon");
   candidateDaemon.send(JSON.stringify({ type: "tool_result", id: reviewerRelay.id, ok: true, result: { entries: [] } }));
   const reviewerRead = await reviewerReadPromise;
   assert(reviewerRead.body.result?.isError === false, "reviewer read-only call failed");
 
+  const relayedImageCallPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const remoteImageCall = currentMcpCall(base, ownerAccessToken, 76, "tools/call", {
     name: "view_image", arguments: { path: "pixel.png" },
   });
-  const relayedImageCall = await waitForWsMessage(candidateDaemon, "tool_call");
+  const relayedImageCall = await relayedImageCallPromise;
   assert(relayedImageCall.tool === "view_image", "Worker relayed the wrong rich-content tool");
   const imageResultAck = waitForWsMessage(candidateDaemon, "tool_result_ack", 10_000, "rich result acknowledgement");
   candidateDaemon.send(JSON.stringify({
@@ -1641,10 +1643,11 @@ try {
   assert(remoteImage.body.result?.structuredContent?.path === "pixel.png", "Worker omitted rich structuredContent");
   assert(!JSON.stringify(remoteImage.body.result).includes("$mcp"), "Worker leaked the internal rich-result envelope");
 
+  const timedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const durableAcceptanceCall = currentMcpCall(base, ownerAccessToken, 75, "tools/call", {
     name: "run_process", arguments: { argv: ["durable-step"], timeout_seconds: 1, idempotency_key: "worker-durable-acceptance" },
   });
-  const timedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  const timedRelay = await timedRelayPromise;
   assert(timedRelay.tool === "run_process" && timedRelay.timeout_ms === 10_000
     && timedRelay.arguments?.timeout_seconds === 1
     && timedRelay.arguments?.idempotency_key === "worker-durable-acceptance",
@@ -1671,11 +1674,12 @@ try {
   "durable process acceptance did not settle independently of the detached one-second step lifetime");
 
   const ambiguousAcceptanceKey = "worker-ambiguous-durable-acceptance";
+  const ambiguousRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const ambiguousAcceptanceCall = currentMcpCall(base, ownerAccessToken, 751, "tools/call", {
     name: "run_process",
     arguments: { argv: ["durable-step-with-lost-acceptance"], timeout_seconds: 1, idempotency_key: ambiguousAcceptanceKey },
   });
-  const ambiguousRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  const ambiguousRelay = await ambiguousRelayPromise;
   assert(ambiguousRelay.tool === "run_process"
     && ambiguousRelay.arguments?.idempotency_key === ambiguousAcceptanceKey
     && ambiguousRelay.timeout_ms === 10_000,
@@ -1713,10 +1717,11 @@ try {
       && reviewerRevokedSubscriptionMessages[1]?.method === "notifications/tools/list_changed",
   "reviewer authority-revocation fixture did not establish a live subscription");
   const reviewerRevokedSubscriptionPending = reviewerRevokedSubscriptionReader.read();
+  const reviewerRevokedRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const reviewerRevokedCall = currentMcpCall(base, reviewerToken, 2730, "tools/call", {
     name: "list_dir", arguments: { path: "." },
   });
-  const reviewerRevokedRelay = await waitForWsMessage(candidateDaemon, "tool_call");
+  const reviewerRevokedRelay = await reviewerRevokedRelayPromise;
   const firstAuthorityRevoke = waitForWsMessage(candidateDaemon, "authority_revoke", 10_000, "reviewer authority revocation");
   const reviewerRoleChange = await fetchJson(`${base}/admin/accounts`, adminRequest("PATCH", "/admin/accounts", {
     account_id: reviewerAccount.body.account.account_id, role: "editor",
@@ -1840,8 +1845,9 @@ try {
   assert(editorStatus.authorization.execution_model.within_effective_authority === "automatic_without_per_operation_prompt", "server_info omitted the automatic execution model");
   assert(editorStatus.authorization.execution_model.owner_ambient_authority === "not_owner", "delegated account was mislabeled as owner ambient authority");
 
+  const editorOverviewRelayPromise = waitForWsMessage(fullDaemon, "tool_call");
   const editorOverviewPromise = toolCallRequest(base, editorToken, 276, "project_overview", {});
-  const editorOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  const editorOverviewRelay = await editorOverviewRelayPromise;
   assert(editorOverviewRelay.authorization?.role === "editor", "project_overview did not relay the editor role");
   fullDaemon.send(JSON.stringify({
     type: "tool_result", id: editorOverviewRelay.id, ok: true,
@@ -1870,8 +1876,9 @@ try {
   "remote project_overview failed to enforce fail-closed non-owner path/activity/unknown-field privacy at the Worker boundary");
   assert(editorOverview?.policyScope === "authenticated_account_effective_authority", "remote project_overview policy scope remained ambiguous");
 
+  const compactOverviewRelayPromise = waitForWsMessage(fullDaemon, "tool_call");
   const compactOverviewPromise = toolCallRequest(base, editorToken, 2761, "project_overview", { detail: "summary" });
-  const compactOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  const compactOverviewRelay = await compactOverviewRelayPromise;
   assert(compactOverviewRelay.authorization?.role === "editor"
     && compactOverviewRelay.arguments && Object.keys(compactOverviewRelay.arguments).length === 0,
   "remote compact project_overview failed to use the backward-compatible default/full daemon request");
@@ -1920,8 +1927,9 @@ try {
   assert(compactOverviewJson.length <= 2600,
     `remote compact project_overview exceeded its hot-path output budget: ${compactOverviewJson.length} chars`);
 
+  const explicitFullOverviewRelayPromise = waitForWsMessage(fullDaemon, "tool_call");
   const explicitFullOverviewPromise = toolCallRequest(base, editorToken, 2762, "project_overview", { detail: "full" });
-  const explicitFullOverviewRelay = await waitForWsMessage(fullDaemon, "tool_call");
+  const explicitFullOverviewRelay = await explicitFullOverviewRelayPromise;
   assert(explicitFullOverviewRelay.arguments && Object.keys(explicitFullOverviewRelay.arguments).length === 0,
     "explicit full project_overview was not normalized for an older default-full daemon");
   fullDaemon.send(JSON.stringify({
