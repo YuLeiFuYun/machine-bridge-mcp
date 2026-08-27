@@ -1122,6 +1122,24 @@ function testRelayHandshakeDiagnostics() {
     last_ready_duration_ms: 123456,
     last_ready_inbound_silence_ms: 15000,
     https_fallback_last_takeover_ms: 1350,
+    recent_outages: Array.from({ length: 10 }, (_, index) => ({
+      outage_number: 10 - index,
+      disconnected_at: `2026-08-04T11:36:${String(10 + index).padStart(2, "0")}.000Z`,
+      ready_at: `2026-08-04T11:36:${String(11 + index).padStart(2, "0")}.000Z`,
+      duration_ms: 1000 + index,
+      attempts: 1,
+      close_category: "relay_heartbeat_timeout",
+      close_code: 1006,
+      network_route: "system-network-stack",
+      last_transport_error_class: "network_error",
+      last_transport_error_reason: "connection_reset",
+      previous_ready_duration_ms: 5000,
+      previous_ready_inbound_silence_ms: 12000,
+      last_connect_stage: "websocket_open",
+      last_connect_duration_ms: 90,
+      last_connect_milestones_ms: { dns_resolved: 10, tls_established: 50, private_stage: 7 },
+      private_value: "must-not-survive",
+    })),
   });
   assert(diagnostics.schema_version === 1
     && diagnostics.network_route === "system-network-stack"
@@ -1155,6 +1173,11 @@ function testRelayHandshakeDiagnostics() {
     && diagnostics.last_transport_confirmation_timeout_age_ms === 15000
     && diagnostics.previous_ready_duration_ms === 123456
     && diagnostics.previous_ready_inbound_silence_ms === 15000
+    && diagnostics.recent_outages.length === 8
+    && diagnostics.recent_outages[0].outage_number === 10
+    && diagnostics.recent_outages[7].outage_number === 3
+    && diagnostics.recent_outages[0].last_connect_milestones_ms.private_stage === undefined
+    && diagnostics.recent_outages[0].private_value === undefined
     && diagnostics.https_fallback_last_takeover_ms === 1350,
   "relay handshake diagnostics lost bounded outage evidence");
   const bounded = relayHandshakeDiagnostics({
@@ -1169,6 +1192,7 @@ function testRelayHandshakeDiagnostics() {
     heartbeat: { last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1 },
     last_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
     https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
+    recent_outages: [{ outage_number: -1, duration_ms: Number.POSITIVE_INFINITY, private_value: "x" }],
   });
   assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0
     && Object.keys(bounded.last_connect_milestones_ms).length === 0
@@ -1180,6 +1204,7 @@ function testRelayHandshakeDiagnostics() {
     && bounded.last_probe_buffered_bytes === 0
     && bounded.last_probe_dispatch_ms === 0
     && bounded.previous_ready_inbound_silence_ms === 0
+    && bounded.recent_outages.length === 0
     && bounded.https_fallback_last_takeover_ms === 0,
     "relay handshake diagnostics accepted invalid numeric fields");
 }

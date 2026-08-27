@@ -457,6 +457,8 @@ transportWatchdogConnection.stop();
   scheduler.advance(10); sockets[0].emit("pong");
   assert(!sockets[0].terminated,
     "relay was terminated after independent application traffic had disproved the transport timeout");
+  assert(connection.status().recent_outages.length === 0,
+    "transport suspicion recovered without reconnect was incorrectly recorded as a completed outage");
   connection.stop();
 }
 
@@ -1704,6 +1706,47 @@ const invalidProxyConnection = new RelayConnection({
 const invalidProxyError = await invalidProxyConnection.start().then(() => null, (error) => error);
 assert(invalidProxyError?.code === "relay_proxy_configuration" && invalidProxyError.message.includes("HTTP_PROXY"), "invalid proxy configuration did not fail fast with corrective guidance");
 assert(invalidProxyConnection.status().network_route === "invalid-application-proxy-configuration", "invalid proxy route was not observable");
+
+const outageHistoryScheduler = new ManualScheduler();
+const outageHistorySockets = [];
+const outageHistoryWallBase = Date.UTC(2026, 7, 27, 14, 0, 0);
+const outageHistoryConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid",
+  secret: "test-daemon-secret-123456",
+  logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket {
+    constructor(url, options) {
+      super(url, options);
+      outageHistorySockets.push(this);
+    }
+  },
+  scheduler: outageHistoryScheduler,
+  now: () => outageHistoryScheduler.now,
+  wallNow: () => outageHistoryWallBase + outageHistoryScheduler.now,
+  reconnectDelay: () => 5,
+});
+outageHistoryConnection.start();
+outageHistorySockets[0].open();
+outageHistoryConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(outageHistoryConnection, "test");
+for (let outageNumber = 1; outageNumber <= 10; outageNumber += 1) {
+  outageHistoryScheduler.advance(7);
+  outageHistorySockets.at(-1).remoteClose(1006, "");
+  outageHistoryScheduler.advance(5);
+  outageHistorySockets.at(-1).open();
+  outageHistoryConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(outageHistoryConnection, "test");
+}
+const outageHistory = outageHistoryConnection.status();
+assert(outageHistory.outage_count === 10 && outageHistory.recent_outages.length === 8,
+  "relay diagnostics did not retain the bounded completed-outage history");
+assert(outageHistory.recent_outages[0].outage_number === 10
+  && outageHistory.recent_outages.at(-1).outage_number === 3,
+"relay completed-outage history was not newest-first or did not evict the oldest entries");
+assert(outageHistory.recent_outages.every((entry) => entry.ready_at && entry.disconnected_at
+    && entry.duration_ms === 5 && entry.previous_ready_duration_ms >= 7),
+"relay completed-outage history lost bounded timing evidence");
+outageHistoryConnection.stop();
 
 console.log("relay connection lifecycle/logging test ok");
 

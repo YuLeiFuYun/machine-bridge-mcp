@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalRuntime, runtimeToolHandlerNames } from "../src/local/runtime.mjs";
+import { bindRuntimeToolHandlers } from "../src/local/runtime-tool-handlers.mjs";
 import { policyProfile } from "../src/local/tools.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-runtime-handler-matrix-"));
@@ -145,6 +146,25 @@ try {
   }
   assert(routed.length === names.length, "runtime handler matrix did not execute every handler exactly once");
   assert(runtime.callRegistry.snapshot().active === 0, "runtime handler matrix leaked call registry state");
+
+  const shortJobId = `job_${"C".repeat(24)}`;
+  const accepted = {
+    job_id: shortJobId, status: "queued", recovery: { tool: "read_job", job_id: shortJobId },
+  };
+  const hostedHandlers = bindRuntimeToolHandlers({
+    managedJobManager: {
+      start() { return accepted; },
+      async readHosted() {
+        return { job_id: shortJobId, status: "succeeded", current_phase: null, current_step: null, result: { ok: true } };
+      },
+      readProgress() { return { status: "succeeded", current_phase: null, current_step: null }; },
+    },
+  });
+  const hostedStart = await hostedHandlers.start_job({}, { origin: "relay", authority: { origin: "relay" } });
+  assert(hostedStart.status === "succeeded" && hostedStart.initial_settlement_terminal === true
+    && hostedStart.follow_up_read_required === false && hostedStart.result?.ok === true
+    && hostedStart.recovery === accepted.recovery,
+  "hosted start_job did not coalesce a short terminal managed job into the original response");
   console.log(`runtime handler matrix test ok (${names.length} handlers)`);
 } finally {
   await runtime.stop();

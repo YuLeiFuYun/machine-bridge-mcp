@@ -1,4 +1,5 @@
 import { clampInteger } from "./numbers.mjs";
+import { settleManagedJobAcceptance } from "./durable-process-initial-settlement.mjs";
 import { waitForManagedJobRead } from "./managed-job-read-wait.mjs";
 
 const RUNTIME_TOOL_HANDLERS = Object.freeze({
@@ -46,7 +47,9 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   list_local_resources: (runtime, _args, context) => runtime.managedJobManager.listResources(context),
   generate_ssh_key_resource: (runtime, args, context) => runtime.generateSshKeyResource(args, context),
   stage_job: (runtime, args, context) => runtime.managedJobManager.stage(args, context),
-  start_job: (runtime, args, context) => runtime.managedJobManager.start(args, context),
+  start_job: (runtime, args, context) => settleManagedJobAcceptance(
+    runtime.managedJobManager, runtime.managedJobManager.start(args, context), context,
+  ),
   list_jobs: (runtime, args, context) => runtime.managedJobManager.list(args, context),
   read_job: (runtime, args, context) => waitForManagedJobRead({
     args, context,

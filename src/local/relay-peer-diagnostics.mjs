@@ -12,6 +12,7 @@ const TRANSPORT_ERROR_REASONS = new Set([
   "network_unreachable", "host_unreachable", "network_down", "local_address_unavailable", "broken_pipe",
   "dns_not_found", "dns_temporary_failure", "tls_certificate", "tls_protocol", "multi_address_failure",
 ]);
+const RECENT_RELAY_OUTAGE_LIMIT = 8;
 
 export function relayHandshakeDiagnostics(value = {}) {
   const status = isPlainRecord(value) ? value : {};
@@ -35,6 +36,7 @@ export function relayHandshakeDiagnostics(value = {}) {
     outage_started_at: typeof status.outage_started_at === "string" ? status.outage_started_at : null,
     outage_duration_ms: clampInteger(status.outage_duration_ms, 0, 0, 31 * 24 * 60 * 60_000),
     outage_attempts: clampInteger(status.outage_attempts, 0, 0, 1_000_000),
+    recent_outages: recentOutages(status.recent_outages),
     last_close_category: typeof status.last_close_category === "string" ? status.last_close_category : null,
     last_close_code: Number.isSafeInteger(status.last_close_code) ? status.last_close_code : null,
     last_transport_error_class: typeof status.last_transport_error_class === "string"
@@ -63,6 +65,51 @@ export function relayHandshakeDiagnostics(value = {}) {
     previous_ready_inbound_silence_ms: clampInteger(status.last_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
     https_fallback_last_takeover_ms: clampInteger(status.https_fallback_last_takeover_ms, 0, 0, 10 * 60_000),
   };
+}
+
+function recentOutages(value) {
+  if (!Array.isArray(value)) return [];
+  const result = [];
+  for (const candidate of value.slice(0, RECENT_RELAY_OUTAGE_LIMIT)) {
+    if (!isPlainRecord(candidate)) continue;
+    const outageNumber = Number(candidate.outage_number);
+    if (!Number.isSafeInteger(outageNumber) || outageNumber < 1 || outageNumber > 1_000_000_000) continue;
+    result.push({
+      outage_number: outageNumber,
+      disconnected_at: boundedTimestamp(candidate.disconnected_at),
+      ready_at: boundedTimestamp(candidate.ready_at),
+      duration_ms: clampInteger(candidate.duration_ms, 0, 0, 31 * 24 * 60 * 60_000),
+      attempts: clampInteger(candidate.attempts, 0, 0, 1_000_000),
+      close_category: typeof candidate.close_category === "string" ? candidate.close_category.slice(0, 128) : null,
+      close_code: Number.isSafeInteger(candidate.close_code) && candidate.close_code >= 0 && candidate.close_code <= 4999
+        ? candidate.close_code : null,
+      network_route: typeof candidate.network_route === "string" ? candidate.network_route.slice(0, 128) : "unresolved",
+      last_transport_error_class: typeof candidate.last_transport_error_class === "string"
+        ? candidate.last_transport_error_class.slice(0, 128) : null,
+      last_transport_error_reason: TRANSPORT_ERROR_REASONS.has(String(candidate.last_transport_error_reason || ""))
+        ? candidate.last_transport_error_reason : "unknown",
+      last_transport_error_ready: candidate.last_transport_error_ready === true,
+      last_transport_error_authenticated: candidate.last_transport_error_authenticated === true,
+      previous_ready_duration_ms: clampInteger(candidate.previous_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
+      previous_ready_inbound_silence_ms: clampInteger(candidate.previous_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
+      last_connect_stage: typeof candidate.last_connect_stage === "string" ? candidate.last_connect_stage.slice(0, 64) : "idle",
+      last_connect_duration_ms: clampInteger(candidate.last_connect_duration_ms, 0, 0, 10 * 60_000),
+      last_connect_milestones_ms: connectMilestones(candidate.last_connect_milestones_ms),
+      last_connect_http_status: boundedHttpStatus(candidate.last_connect_http_status),
+      last_failed_connect_stage: CONNECT_STAGES.has(String(candidate.last_failed_connect_stage || ""))
+        ? candidate.last_failed_connect_stage : null,
+      last_failed_connect_duration_ms: clampInteger(candidate.last_failed_connect_duration_ms, 0, 0, 10 * 60_000),
+      last_failed_connect_milestones_ms: connectMilestones(candidate.last_failed_connect_milestones_ms),
+      last_failed_connect_http_status: boundedHttpStatus(candidate.last_failed_connect_http_status),
+    });
+  }
+  return result;
+}
+
+function boundedTimestamp(value) {
+  if (typeof value !== "string" || value.length > 64) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 function connectMilestones(value) {

@@ -2,7 +2,7 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { waitForManagedJobRead } from "./managed-job-read-wait.mjs";
 import { ACTIVE_JOB_STATES } from "./managed-job-terminal.mjs";
 
-export async function settleDurableProcessAcceptance(manager, accepted, context = {}) {
+export async function settleManagedJobAcceptance(manager, accepted, context = {}) {
   if ((context?.origin !== "relay" && context?.authority?.origin !== "relay") || !accepted?.job_id) return accepted;
   const hostedContext = context?.authority?.origin === "relay"
     ? context : { ...context, authority: { ...(context?.authority || {}), origin: "relay" } };
@@ -39,4 +39,8 @@ export async function settleDurableProcessAcceptance(manager, accepted, context 
       follow_up_read_required: true,
     };
   }
+}
+
+export async function settleDurableProcessAcceptance(manager, accepted, context = {}) {
+  return settleManagedJobAcceptance(manager, accepted, context);
 }
