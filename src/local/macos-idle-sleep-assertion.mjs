@@ -16,7 +16,7 @@ export class MacosIdleSleepAssertion {
     if (this.child) return true;
     let child = null;
     try {
-      child = this.spawnProcess("/usr/bin/caffeinate", ["-i", "-w", String(this.processId)], {
+      child = this.spawnProcess("/usr/bin/caffeinate", ["-i", "-s", "-w", String(this.processId)], {
         stdio: "ignore", shell: false, windowsHide: true,
       });
       this.child = child;
@@ -60,6 +60,11 @@ export class MacosIdleSleepAssertion {
   }
 
   snapshot() {
-    return { supported: this.supported, active: Boolean(this.child), last_error_class: this.lastErrorClass };
+    return {
+      supported: this.supported,
+      active: Boolean(this.child),
+      requests_system_sleep_prevention_on_ac: Boolean(this.child),
+      last_error_class: this.lastErrorClass,
+    };
   }
 }

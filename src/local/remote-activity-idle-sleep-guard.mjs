@@ -67,9 +67,9 @@ export class RemoteActivityIdleSleepGuard {
   snapshot() {
     const assertion = this.assertion.snapshot();
     return {
-      supported: assertion.supported,
-      enabled: this.enabled,
+      supported: assertion.supported, enabled: this.enabled,
       active: assertion.active,
+      requests_system_sleep_prevention_on_ac: assertion.requests_system_sleep_prevention_on_ac,
       active_activities: this.activeActivities,
       grace_ms: this.graceMs,
       ...this.timeline.snapshot(),

@@ -647,7 +647,8 @@ if (!managedJobListingSource.includes('retentionClass === "transient_process" ? 
   throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
 }
 if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
-    || !macosIdleSleepAssertionSource.includes('["-i", "-w", String(this.processId)]')
+    || !macosIdleSleepAssertionSource.includes('["-i", "-s", "-w", String(this.processId)]')
+    || !macosIdleSleepAssertionSource.includes("requests_system_sleep_prevention_on_ac")
     || !macosIdleSleepAssertionSource.includes('shell: false')
     || macosIdleSleepAssertionSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
     || !remoteActivityIdleSleepGuardSource.includes('from "./macos-idle-sleep-assertion.mjs"')
@@ -1910,7 +1911,7 @@ for (const [file, content, required] of [
   ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners do not depend on daemon ownership"],
   ["docs/OPERATIONS.md", operationsDoc, "the thirty-minute default inactivity grace begins only after the last one settles"],
   ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends the same assertion only after resource admission succeeds"],
-  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -w <runner-pid>`"],
+  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -s -w <runner-pid>`"],
   ["docs/LOGGING.md", loggingDoc, "opens one fifteen-second application-confirmation window"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.not_received_after_reconnect` retains the same aggregate-only `calls` shape"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.redelivered_after_proven_non_delivery` with only an aggregate `calls` count"],
@@ -1999,7 +2000,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 12"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 13"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],

@@ -149,8 +149,9 @@ function testRemoteActivityIdleSleepGuard() {
   assert(guard.beginActivity() === true && spawned.length === 1 && timers.length === 0,
     "first remote activity did not establish a handler-lifetime idle-sleep guard");
   assert(spawned[0].executable === "/usr/bin/caffeinate"
-    && JSON.stringify(spawned[0].args) === JSON.stringify(["-i", "-w", "4242"]),
-  "idle-sleep guard did not bind caffeinate to daemon lifetime");
+    && JSON.stringify(spawned[0].args) === JSON.stringify(["-i", "-s", "-w", "4242"])
+    && guard.snapshot().requests_system_sleep_prevention_on_ac === true,
+  "idle-sleep guard did not bind caffeinate to daemon lifetime with AC system-sleep prevention");
   assert(spawned[0].options.stdio === "ignore" && spawned[0].options.shell === false && spawned[0].child.unrefCalled === true,
     "idle-sleep guard retained unnecessary child I/O/event-loop ownership or regained shell interpretation");
   assert(guard.beginActivity() === true && spawned.length === 1 && timers.length === 0,
@@ -178,7 +179,8 @@ function testRemoteActivityIdleSleepGuard() {
     spawnProcess() { unsupportedSpawned = true; return fakeChild(); },
   });
   assert(unsupported.beginActivity() === false && unsupported.endActivity() === false && unsupportedSpawned === false
-    && unsupported.snapshot().supported === false && unsupported.snapshot().enabled === false,
+    && unsupported.snapshot().supported === false && unsupported.snapshot().enabled === false
+    && unsupported.snapshot().requests_system_sleep_prevention_on_ac === false,
   "non-macOS runtime attempted to establish or report support for a platform-specific idle-sleep guard");
 
   const failureEvents = [];
