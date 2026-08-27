@@ -705,6 +705,12 @@ async function testManagedJobCapacityBoundary() {
     && recentRecoveryCapacity?.durable_terminal === MAX_JOBS - TRANSIENT_PROCESS_RECOVERY_SLOTS
     && (await Promise.all(recentTransientIds.map((id) => exists(join(terminalRoot, id))))).every(Boolean),
   "saturated managed-job retention did not preserve the bounded recent transient recovery reserve");
+  const recentRecoveryList = terminalManager.list({ limit: MAX_LISTED_JOBS });
+  assert(recentRecoveryList.jobs.every((job) => !recentTransientIds.includes(job.job_id))
+    && recentRecoveryList.recent_process_recovery.length === TRANSIENT_PROCESS_RECOVERY_SLOTS
+    && recentRecoveryList.recent_process_recovery.every((job) => recentTransientIds.includes(job.job_id))
+    && recentRecoveryList.recent_process_recovery.every((job) => !Object.hasOwn(job, "retention_class")),
+  "saturated managed-job inventory did not surface retained recent process recovery handles outside the durable-first primary window");
   const overflowTransient = terminalManager.createJob({
     name: "recent transient recovery overflow",
     steps: [{ argv: [process.execPath, "-e", ""] }],
@@ -791,7 +797,9 @@ async function testManagedJobCapacityBoundary() {
     && recoveryVisibilityList.capacity?.transient_terminal >= MAX_LISTED_JOBS + 10,
   "managed-job listing did not expose bounded recent helper-churn diagnostics");
   const delegatedRecoveryList = recoveryVisibilityManager.list({ limit: 10 }, { authority: { owner: false } });
-  assert(!Object.hasOwn(delegatedRecoveryList, "recent_activity") && !Object.hasOwn(delegatedRecoveryList, "capacity"),
+  assert(!Object.hasOwn(delegatedRecoveryList, "recent_activity") && !Object.hasOwn(delegatedRecoveryList, "capacity")
+    && Array.isArray(delegatedRecoveryList.recent_process_recovery)
+    && delegatedRecoveryList.recent_process_recovery.every((job) => !Object.hasOwn(job, "retention_class")),
     "non-owner managed-job listing exposed global recent job activity or retained-state composition");
 
   const mixedRoot = join(root, "capacity-mixed-retention-jobs");

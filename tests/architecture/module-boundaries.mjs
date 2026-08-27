@@ -258,6 +258,7 @@ const lineLimits = Object.freeze({
   "src/local/managed-job-hosted-status.mjs": 40,
   "src/local/managed-job-read-wait.mjs": 80,
   "src/local/managed-job-listing.mjs": 60,
+  "src/local/managed-job-recovery-listing.mjs": 30,
   "src/local/process-session-read.mjs": 70,
   "src/local/process-session-remote-poll.mjs": 50,
   "src/local/resource-admission-diagnostic-error.mjs": 35,
