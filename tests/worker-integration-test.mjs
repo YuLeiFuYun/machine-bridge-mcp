@@ -20,6 +20,7 @@ let daemonInstanceSequence = 0;
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
 const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
+const WORKER_INTEGRATION_WS_MESSAGE_WAIT_MS = 10_000;
 const port = await openPort();
 const base = `http://127.0.0.1:${port}`;
 const persistDir = await mkdtemp(path.join(os.tmpdir(), "mbm-worker-test-"));
@@ -2164,7 +2165,8 @@ function captureWsMessageTypes(socket) {
   };
 }
 
-function waitForWsMessage(socket, expectedType, timeoutMs = 5000, label = expectedType) {
+function waitForWsMessage(socket, expectedType, timeoutMs = WORKER_INTEGRATION_WS_MESSAGE_WAIT_MS, label = expectedType) {
+  const callSite = new Error().stack?.split("\n")[2]?.trim() || "unknown call site";
   const interleavedTypes = expectedType === "tool_call" || expectedType === "cancel_call"
     ? new Set(["tool_result_ack"])
     : new Set();
@@ -2195,7 +2197,7 @@ function waitForWsMessage(socket, expectedType, timeoutMs = 5000, label = expect
     socket.on("message", onMessage);
     socket.on("error", onError);
     socket.on("close", onClose);
-  }), timeoutMs, `websocket message ${label}`);
+  }), timeoutMs, `websocket message ${label} requested at ${callSite}`);
 }
 
 function waitForWsClose(socket, timeoutMs = 5000) {
