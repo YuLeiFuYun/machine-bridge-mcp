@@ -10,7 +10,10 @@ import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../src/local
 import {
   managedJobReadNonterminalProgressMinimumMs, managedJobReadWaitMs, waitForManagedJobRead,
 } from "../src/local/managed-job-read-wait.mjs";
-import { managedJobDependencySucceeded, readManagedJobDependencyStatus } from "../src/local/managed-job-dependencies.mjs";
+import {
+  DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS, managedJobDependencySucceeded, readManagedJobDependencyStatus,
+  waitForManagedJobDependencies,
+} from "../src/local/managed-job-dependencies.mjs";
 import { managedJobDependencyCount, managedJobDependencyLabel } from "../src/local/managed-job-dependency-metadata.mjs";
 import {
   managedJobActiveChildRecoveryReady, publishManagedJobActiveChild, terminateManagedJobActiveChild,
@@ -118,6 +121,54 @@ async function testRunnerExitRecoveryRetryPolicy() {
   fatalRecovery.stop();
   assert(fatalCalls === 1 && fatalWarnings.length === 1 && fatalWarnings[0].fields?.retry_scheduled === false,
     "runner-exit recovery retried a non-transient reconciliation failure");
+}
+
+async function testManagedJobDependencyReadRecoveryPolicy() {
+  const jobId = `job_${"r".repeat(24)}`;
+  const witness = { job_id: jobId, plan_sha256: "a".repeat(64), created_at: "2026-08-27T00:00:00.000Z" };
+  const succeeded = { ...witness, status: "succeeded", result_persisted: true };
+  let clockMs = 0;
+  let attempts = 0;
+  const recovered = await waitForManagedJobDependencies({
+    jobRoot: "synthetic",
+    dependencyIds: [jobId],
+    witnesses: [witness],
+    readStatus() {
+      attempts += 1;
+      if (attempts === 1) throw new Error("dependency job status is unavailable (permission_denied)", {
+        cause: Object.assign(new Error("synthetic Windows sharing violation"), { code: "EPERM" }),
+      });
+      return succeeded;
+    },
+    sleep: async (ms) => { clockMs += ms; },
+    now: () => clockMs,
+  });
+  assert(attempts === 2 && recovered.pending === 0 && recovered.completed === 1,
+    "dependency wait did not recover from one transient Windows state-read failure");
+
+  clockMs = 0;
+  attempts = 0;
+  let persistentFailure = null;
+  try {
+    await waitForManagedJobDependencies({
+      jobRoot: "synthetic",
+      dependencyIds: [jobId],
+      witnesses: [witness],
+      readStatus() {
+        attempts += 1;
+        throw new Error("dependency job status is unavailable (permission_denied)", {
+          cause: Object.assign(new Error("synthetic persistent Windows sharing violation"), { code: "EPERM" }),
+        });
+      },
+      sleep: async (ms) => { clockMs += ms; },
+      now: () => clockMs,
+    });
+  } catch (error) { persistentFailure = error; }
+  assert(persistentFailure?.errorClass === "dependency_unavailable"
+    && persistentFailure?.details?.cause_class === "permission_denied"
+    && clockMs >= DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS
+    && clockMs <= DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS + 1_000,
+  "dependency wait did not fail closed after the bounded transient state-read recovery grace");
 }
 
 function testHostedManagedJobStatusProjection() {
@@ -1289,6 +1340,7 @@ try {
   testManagedJobRetentionGraceBoundaries();
 testManagedStateIdentityRetry();
   await testRunnerExitRecoveryRetryPolicy();
+  await testManagedJobDependencyReadRecoveryPolicy();
   testHostedManagedJobStatusProjection();
   await testManagedJobReadWaitPacing();
   await testRunnerClaimBoundary();

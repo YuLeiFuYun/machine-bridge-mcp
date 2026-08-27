@@ -278,6 +278,7 @@ for (const required of ["self-test", "service-platform:test", "full-access:test"
 }
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
 const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs");
+const managedJobDependenciesSource = readLfSource("src", "local", "managed-job-dependencies.mjs");
 const workerTypesGeneratorTestSource = readLfSource("tests", "worker-types-generator-test.mjs");
 const managedJobResourceHookSource = readLfSource("tests", "fixtures", "managed-job-resource-hook.mjs");
 const managedJobResourceFixtureSource = readLfSource("tests", "fixtures", "managed-job-resource-admission-fixture.mjs");
@@ -323,6 +324,12 @@ if (managedJobsTestSource.includes("manager.read({ job_id: orphanUpstream.job_id
     || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_status === "failed"')
     || !managedJobsTestSource.includes('orphanResult.result?.dependency_failure?.dependency_error_class === "dependency_failed"')) {
   throw new Error("same-daemon dependency recovery fixture no longer proves autonomous upstream recovery through the downstream dependency witness");
+}
+if (!managedJobDependenciesSource.includes("export const DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS = 45_000")
+    || !managedJobDependenciesSource.includes('new Set(["identity_changed", "permission_denied", "resource_unavailable"])')
+    || !managedJobsTestSource.includes("testManagedJobDependencyReadRecoveryPolicy")
+    || !managedJobsTestSource.includes('persistentFailure?.details?.cause_class === "permission_denied"')) {
+  throw new Error("managed-job dependency wait lost its bounded transient Windows state-read recovery contract");
 }
 if (!workerTypesGeneratorTestSource.includes("maxRetries: 5")
     || !workerTypesGeneratorTestSource.includes("retryDelay: 50")) {
@@ -2000,7 +2007,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 13"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 14"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],

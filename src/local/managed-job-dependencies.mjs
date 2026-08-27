@@ -4,13 +4,15 @@ import { join } from "node:path";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { managedJobDependencyCount, managedJobDependencyLabel } from "./managed-job-dependency-metadata.mjs";
 import { resolveManagedJobDirectory } from "./managed-job-directory.mjs";
-import { readJson, readRequiredJson } from "./managed-job-storage.mjs";
+import { readJson, readRequiredJson, resourceErrorClass } from "./managed-job-storage.mjs";
 import {
   ACTIVE_JOB_STATES, isTerminalManagedJobResult, isTerminalManagedJobStatus, terminalStatusFromResult,
 } from "./managed-job-terminal.mjs";
 
 const DEPENDENCY_POLL_INTERVAL_MS = 1000;
 const MAX_DEPENDENCY_WAIT_MS = 14 * 24 * 60 * 60 * 1000;
+export const DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS = 45_000;
+const RETRYABLE_DEPENDENCY_READ_ERROR_CLASSES = new Set(["identity_changed", "permission_denied", "resource_unavailable"]);
 
 export class ManagedJobDependencyError extends Error {
   constructor(errorClass, message, details = {}) {
@@ -59,6 +61,7 @@ export async function waitForManagedJobDependencies({
   }
 
   const deadline = createMonotonicDeadline(MAX_DEPENDENCY_WAIT_MS, now);
+  const unavailableSinceById = new Map();
   let previousPending = -1;
   while (!deadline.expired()) {
     throwIfCancelled();
@@ -69,11 +72,21 @@ export async function waitForManagedJobDependencies({
       try {
         status = await readStatus(jobId);
       } catch (error) {
+        const errorClass = resourceErrorClass(error);
+        const elapsedMs = deadline.elapsedMs();
+        const unavailableSinceMs = unavailableSinceById.get(jobId) ?? elapsedMs;
+        if (RETRYABLE_DEPENDENCY_READ_ERROR_CLASSES.has(errorClass)
+          && elapsedMs - unavailableSinceMs < DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS) {
+          unavailableSinceById.set(jobId, unavailableSinceMs);
+          pending += 1;
+          continue;
+        }
         throw new ManagedJobDependencyError("dependency_unavailable", "managed job dependency state is no longer available", {
           dependency_job_id: jobId,
-          cause_class: managedJobDependencyLabel(error?.code || "unavailable"),
+          cause_class: managedJobDependencyLabel(errorClass),
         });
       }
+      unavailableSinceById.delete(jobId);
       assertDependencyWitness(status, witness, jobId);
       if (managedJobDependencySucceeded(status)) continue;
       if (isTerminalManagedJobStatus(status?.status)) {
