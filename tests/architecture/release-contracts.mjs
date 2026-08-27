@@ -573,6 +573,7 @@ const managedJobRunnerExitRecoverySource = readFileSync(join(root, "src", "local
 const atomicFsSource = readFileSync(join(root, "src", "local", "atomic-fs.mjs"), "utf8");
 const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
 const managedJobListingSource = readFileSync(join(root, "src", "local", "managed-job-listing.mjs"), "utf8");
+const managedJobRecoveryListingSource = readFileSync(join(root, "src", "local", "managed-job-recovery-listing.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
 const runtimeRelayControlSource = readFileSync(join(root, "src", "local", "runtime-relay-control.mjs"), "utf8");
 const runtimeRelayAcknowledgementsSource = readFileSync(join(root, "src", "local", "runtime-relay-acknowledgements.mjs"), "utf8");
@@ -637,7 +638,12 @@ if (!workerContinuityEvidenceSource.includes('const KEY = "worker-continuity-evi
 }
 if (!managedJobListingSource.includes('retentionClass === "transient_process" ? 4 : 3')
     || !managedJobListingSource.includes("durable_terminal: durableTerminal")
-    || !managedJobListingSource.includes("transient_terminal: transientTerminal")) {
+    || !managedJobListingSource.includes("transient_terminal: transientTerminal")
+    || !managedJobListingSource.includes('from "./managed-job-recovery-listing.mjs"')
+    || !managedJobListingSource.includes("recent_process_recovery: recentProcessRecovery")
+    || !managedJobRecoveryListingSource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS")
+    || !managedJobRecoveryListingSource.includes("transientProcessWithinRecoveryGrace")
+    || !managedJobRecoveryListingSource.includes("!visibleJobIds.has(record.job.job_id)")) {
   throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
 }
 if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
@@ -1993,10 +1999,13 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 11"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 12"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],
+  ["src/shared/server-metadata.json", serverMetadata, "recent_process_recovery returns up to 16 additional authority-visible public job handles"],
+  ["src/shared/server-metadata.json", serverMetadata, "not a polling or MCP replay/session surface"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "A separate `recent_process_recovery` array returns at most 16 authority-visible public handles"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "effective account policy permits it"],
