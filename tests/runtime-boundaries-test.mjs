@@ -15,7 +15,7 @@ import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-insp
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { settleDurableProcessAcceptance } from "../src/local/durable-process-initial-settlement.mjs";
-import { correlateEventLoopStallWithSystemSleep, parseSystemSleepIntervals } from "../src/local/system-sleep-diagnostics.mjs";
+import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, parseSystemSleepIntervals } from "../src/local/system-sleep-diagnostics.mjs";
 
 await testRuntimeReporting();
 testProcessSessionStatusAuthority();
@@ -53,6 +53,30 @@ function testSystemSleepDiagnostics() {
   } }, { supported: true, available: true, recent_sleep_intervals: intervals });
   assert(unmatched.classification === "no_matching_recent_system_sleep" && unmatched.matched_sleep === null,
     "non-sleep runtime pause was overclassified as system suspension");
+  const sleepDominatedOutage = correlateRelayOutageWithSystemSleep({
+    outage_active: false,
+    last_disconnected_at: "2026-08-24T16:48:10.000Z",
+    last_ready_at: "2026-08-24T17:04:12.000Z",
+  }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(sleepDominatedOutage.classification === "majority_system_sleep_overlap"
+    && sleepDominatedOutage.outage_duration_ms === 962_000
+    && sleepDominatedOutage.sleep_overlap_ms === 959_000
+    && sleepDominatedOutage.sleep_overlap_ratio > 0.99
+    && sleepDominatedOutage.matched_sleep_count === 2,
+  "relay outage dominated by macOS sleep was still represented as independent network-only evidence");
+  const awakeOutage = correlateRelayOutageWithSystemSleep({
+    outage_active: false,
+    last_disconnected_at: "2026-08-24T18:00:00.000Z",
+    last_ready_at: "2026-08-24T18:00:09.000Z",
+  }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(awakeOutage.classification === "no_matching_recent_system_sleep"
+    && awakeOutage.sleep_overlap_ms === 0 && awakeOutage.sleep_overlap_ratio === 0,
+  "awake relay reset was incorrectly attributed to system sleep");
+  const activeOutage = correlateRelayOutageWithSystemSleep({
+    outage_active: true, last_disconnected_at: "2026-08-24T18:00:00.000Z", last_ready_at: "2026-08-24T17:59:59.000Z",
+  }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(activeOutage.classification === "relay_outage_active" && activeOutage.outage_ended_at === null,
+    "active relay outage was misrepresented as a completed sleep correlation");
 }
 
 async function testDurableProcessInitialSettlement() {
@@ -397,6 +421,7 @@ async function testRuntimeDiagnostics() {
       && shell.runtime.processes.draining_calls === 1
       && shell.runtime.execution_guardrails.tool_calls.maximum_concurrent === 16
       && shell.runtime.security_audit.worker_ready === true
+      && shell.runtime.relay_outage_analysis.classification === "no_recorded_relay_outage"
       && shell.observability.in_flight_calls.reserved_capacity === 2,
     "runtime diagnostic omitted privacy-safe control-plane state");
     assert(shell.checks.some((check) => check.layer === "local-shell" && check.ok), "shell diagnostic was not executed");

@@ -7,7 +7,7 @@ import { systemNetworkRouteCheck } from "./system-network-route.mjs";
 import { diagnosticControlPlaneState } from "./runtime-diagnostic-state.mjs";
 import { resourceAdmissionDiagnostic } from "./resource-admission-diagnostics.mjs";
 import { diagnosticActivityProjection, diagnosticInterpretation } from "./runtime-diagnostic-projection.mjs";
-import { correlateEventLoopStallWithSystemSleep, systemSleepDiagnostic } from "./system-sleep-diagnostics.mjs";
+import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, systemSleepDiagnostic } from "./system-sleep-diagnostics.mjs";
 export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
 export async function diagnoseRuntime({
   policy,
@@ -98,7 +98,7 @@ export async function diagnoseRuntime({
   const managedJobs = typeof managedJobManager.status === "function" ? managedJobManager.status(context) : null;
   const activity = diagnosticActivityProjection(controlPlaneState, admissionDiagnostic.snapshot, managedJobs, context);
   activity.state.systemSleep = sleepDiagnostic.snapshot;
-  activity.state.eventLoopPauseAnalysis = correlateEventLoopStallWithSystemSleep(relay, sleepDiagnostic.snapshot);
+  activity.state.eventLoopPauseAnalysis = correlateEventLoopStallWithSystemSleep(relay, sleepDiagnostic.snapshot); activity.state.relayOutageAnalysis = correlateRelayOutageWithSystemSleep(relay, sleepDiagnostic.snapshot);
   const resources = managedJobManager.listResources();
   checks.push({
     layer: "local-resource-registry",

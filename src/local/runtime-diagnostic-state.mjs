@@ -28,6 +28,7 @@ export function diagnosticControlPlaneState(state = {}, relay = null) {
       idle_sleep_guard: state.idleSleepGuard ?? null,
       system_sleep: state.systemSleep ?? null,
       event_loop_pause_analysis: state.eventLoopPauseAnalysis ?? null,
+      relay_outage_analysis: state.relayOutageAnalysis ?? null,
     },
   };
 }

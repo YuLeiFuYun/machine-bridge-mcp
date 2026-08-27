@@ -62,6 +62,74 @@ export function correlateEventLoopStallWithSystemSleep(relay, snapshot) {
   return stallProjection(match ? "matched_system_sleep" : "no_matching_recent_system_sleep", heartbeat, match || null);
 }
 
+export function correlateRelayOutageWithSystemSleep(relay, snapshot) {
+  const startedAt = Date.parse(String(relay?.last_disconnected_at || ""));
+  if (!(startedAt > 0)) return relayOutageProjection("no_recorded_relay_outage");
+  const endedAt = Date.parse(String(relay?.last_ready_at || ""));
+  if (relay?.outage_active === true || !(endedAt >= startedAt)) {
+    return relayOutageProjection("relay_outage_active", {
+      outageStartedAt: new Date(startedAt).toISOString(),
+    });
+  }
+  const outageDurationMs = endedAt - startedAt;
+  if (snapshot?.supported === false) {
+    return relayOutageProjection("unsupported_platform", {
+      outageStartedAt: new Date(startedAt).toISOString(), outageEndedAt: new Date(endedAt).toISOString(), outageDurationMs,
+    });
+  }
+  if (snapshot?.available !== true) {
+    return relayOutageProjection("system_sleep_history_unavailable", {
+      outageStartedAt: new Date(startedAt).toISOString(), outageEndedAt: new Date(endedAt).toISOString(), outageDurationMs,
+    });
+  }
+  const overlap = sleepOverlap(startedAt, endedAt, snapshot.recent_sleep_intervals || []);
+  const ratio = outageDurationMs > 0 ? overlap.durationMs / outageDurationMs : 0;
+  const classification = overlap.durationMs <= 0
+    ? "no_matching_recent_system_sleep"
+    : ratio >= 0.5 ? "majority_system_sleep_overlap" : "partial_system_sleep_overlap";
+  return relayOutageProjection(classification, {
+    outageStartedAt: new Date(startedAt).toISOString(),
+    outageEndedAt: new Date(endedAt).toISOString(),
+    outageDurationMs,
+    sleepOverlapMs: overlap.durationMs,
+    sleepOverlapRatio: Number(ratio.toFixed(4)),
+    matchedSleepCount: overlap.count,
+  });
+}
+
+function sleepOverlap(startedAt, endedAt, intervals) {
+  const segments = [];
+  for (const interval of intervals) {
+    const sleepStart = Date.parse(String(interval?.started_at || ""));
+    const sleepEnd = Date.parse(String(interval?.ended_at || ""));
+    if (!(sleepStart >= 0) || !(sleepEnd > sleepStart)) continue;
+    const start = Math.max(startedAt, sleepStart);
+    const end = Math.min(endedAt, sleepEnd);
+    if (end > start) segments.push([start, end]);
+  }
+  segments.sort((left, right) => left[0] - right[0]);
+  let durationMs = 0; let count = 0; let activeStart = null; let activeEnd = null;
+  for (const [start, end] of segments) {
+    if (activeStart === null) { activeStart = start; activeEnd = end; count += 1; continue; }
+    if (start <= activeEnd) { activeEnd = Math.max(activeEnd, end); continue; }
+    durationMs += activeEnd - activeStart; activeStart = start; activeEnd = end; count += 1;
+  }
+  if (activeStart !== null) durationMs += activeEnd - activeStart;
+  return { durationMs, count };
+}
+
+function relayOutageProjection(classification, values = {}) {
+  return {
+    classification,
+    outage_started_at: values.outageStartedAt || null,
+    outage_ended_at: values.outageEndedAt || null,
+    outage_duration_ms: Number(values.outageDurationMs) || 0,
+    sleep_overlap_ms: Number(values.sleepOverlapMs) || 0,
+    sleep_overlap_ratio: Number(values.sleepOverlapRatio) || 0,
+    matched_sleep_count: Number(values.matchedSleepCount) || 0,
+  };
+}
+
 function stallProjection(classification, heartbeat, matchedSleep) {
   return {
     classification,
