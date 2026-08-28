@@ -1112,6 +1112,24 @@ function testDaemonRelayDiagnostics() {
     previous_ready_duration_ms: 123456,
     previous_ready_inbound_silence_ms: 15000,
     https_fallback_last_takeover_ms: 1350,
+    recent_outages: [{
+      outage_number: 7,
+      disconnected_at: "2026-08-04T11:30:00.000Z",
+      ready_at: "2026-08-04T11:30:02.000Z",
+      duration_ms: 2000,
+      attempts: 1,
+      close_category: "connection_interrupted",
+      close_code: 1006,
+      network_route: "system-network-stack",
+      last_transport_error_class: null,
+      last_transport_error_reason: "unknown",
+      previous_ready_duration_ms: 10000,
+      previous_ready_inbound_silence_ms: 5000,
+      last_connect_stage: "websocket_open",
+      last_connect_duration_ms: 80,
+      last_connect_milestones_ms: { dns_resolved: 15, websocket_open: 80, private_stage: 9 },
+      private_value: "must-not-survive",
+    }],
   });
   assert(diagnostics?.outage_count === 8
     && diagnostics.connect_timeout_ms === 30000
@@ -1145,10 +1163,19 @@ function testDaemonRelayDiagnostics() {
     && diagnostics.last_transport_error_authenticated === false
     && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z"
     && diagnostics.previous_ready_inbound_silence_ms === 15000
+    && diagnostics.recent_outages.length === 1
+    && diagnostics.recent_outages[0].outage_number === 7
+    && diagnostics.recent_outages[0].last_connect_milestones_ms.private_stage === undefined
+    && diagnostics.recent_outages[0].private_value === undefined
     && diagnostics.https_fallback_last_takeover_ms === 1350,
   "Worker relay diagnostics sanitizer lost valid bounded evidence");
-  const readyDiagnostics = relayDiagnosticsAfterReady(diagnostics);
-  assert(readyDiagnostics?.outage_active === false && readyDiagnostics.outage_duration_ms === 9000,
+  const readyDiagnostics = relayDiagnosticsAfterReady(diagnostics, "2026-08-04T11:36:29.000Z");
+  assert(readyDiagnostics?.outage_active === false && readyDiagnostics.outage_duration_ms === 9000
+    && readyDiagnostics.recent_outages.length === 2
+    && readyDiagnostics.recent_outages[0].outage_number === 8
+    && readyDiagnostics.recent_outages[0].ready_at === "2026-08-04T11:36:29.000Z"
+    && readyDiagnostics.recent_outages[0].duration_ms === 9000
+    && readyDiagnostics.recent_outages[1].outage_number === 7,
     "ready daemon diagnostics still reported the preceding reconnect as active");
   const localRetryDiagnostics = sanitizeDaemonRelayDiagnostics({
     schema_version: 1, last_close_category: "local_authority_revocation_retry",
@@ -1168,6 +1195,10 @@ function testDaemonRelayDiagnostics() {
     last_transport_error_reason: "private-network-detail",
     last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1,
     last_transport_error_ready: "yes", last_transport_error_authenticated: 1,
+    recent_outages: Array.from({ length: 10 }, (_, index) => ({
+      outage_number: index + 1, close_category: "private-category", last_transport_error_reason: "private-network-detail",
+      last_connect_milestones_ms: { private_stage: 7 }, private_value: "must-not-survive",
+    })),
   });
   assert(bounded?.network_route === "unresolved"
     && bounded.outage_count === 0
@@ -1183,6 +1214,11 @@ function testDaemonRelayDiagnostics() {
     && bounded.last_transport_error_ready === false
     && bounded.last_transport_error_authenticated === false
     && bounded.previous_ready_inbound_silence_ms === 0
+    && bounded.recent_outages.length === 8
+    && bounded.recent_outages[0].close_category === null
+    && bounded.recent_outages[0].last_transport_error_reason === "unknown"
+    && Object.keys(bounded.recent_outages[0].last_connect_milestones_ms).length === 0
+    && bounded.recent_outages[0].private_value === undefined
     && bounded.https_fallback_last_takeover_ms === 0
     && bounded.last_close_category === null
     && bounded.last_close_code === null

@@ -1,4 +1,5 @@
 export const APPLICATION_PROXY_ROUTE_SCOPE = "application-proxy-selection-only";
+export const RECENT_RELAY_OUTAGE_LIMIT = 8;
 
 export function preferredRelayCloseCategory(current, next) {
   const existing = String(current || "");
@@ -27,6 +28,7 @@ export function relayStatusSnapshot(state, now = Date.now()) {
     outage_attempts: state.outageAttempts,
     outage_started_at: isoTimestamp(state.outageStartedWallAt),
     outage_duration_ms: state.outageStartedAt > 0 ? Math.max(0, current - state.outageStartedAt) : 0,
+    recent_outages: recentOutagesSnapshot(state.recentOutages),
     last_close_category: state.outageCount > 0 ? state.lastCloseCategory : null,
     last_close_code: state.outageCount > 0 ? state.lastCloseCode : null,
     last_transport_error_class: state.outageCount > 0 ? (state.transportError?.errorClass || null) : null,
@@ -82,6 +84,29 @@ export function relayRecoveryFields(state, outageMs) {
   };
 }
 
+export function relayRecoveredOutageSnapshot(state, outageMs) {
+  return {
+    outage_number: state.outageCount,
+    disconnected_at: isoTimestamp(state.lastDisconnectedAt),
+    ready_at: isoTimestamp(state.lastReadyWallAt),
+    duration_ms: Math.max(0, Math.round(Number(outageMs) || 0)),
+    attempts: state.outageAttempts,
+    close_category: state.lastCloseCategory,
+    close_code: state.lastCloseCode,
+    network_route: state.networkRoute,
+    last_transport_error_class: state.transportError?.errorClass || null,
+    ...(state.transportError?.snapshot?.() || {}),
+    previous_ready_duration_ms: state.lastReadyDurationMs,
+    previous_ready_inbound_silence_ms: state.lastReadyInboundSilenceMs,
+    ...connectTimingFields(state),
+  };
+}
+
+export function recordRecoveredOutage(state, outageMs) {
+  state.recentOutages.unshift(relayRecoveredOutageSnapshot(state, outageMs));
+  if (state.recentOutages.length > RECENT_RELAY_OUTAGE_LIMIT) state.recentOutages.length = RECENT_RELAY_OUTAGE_LIMIT;
+}
+
 function isoTimestamp(value) {
   return Number(value) > 0 ? new Date(Number(value)).toISOString() : null;
 }
@@ -96,4 +121,13 @@ function connectTimingFields(state) {
     last_connect_stage: "idle", last_connect_duration_ms: 0,
     last_connect_milestones_ms: {}, last_connect_http_status: null,
   };
+}
+
+function recentOutagesSnapshot(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, RECENT_RELAY_OUTAGE_LIMIT).map((entry) => ({
+    ...entry,
+    last_connect_milestones_ms: { ...(entry.last_connect_milestones_ms || {}) },
+    last_failed_connect_milestones_ms: { ...(entry.last_failed_connect_milestones_ms || {}) },
+  }));
 }

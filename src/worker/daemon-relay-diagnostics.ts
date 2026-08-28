@@ -46,6 +46,32 @@ const CLOSE_CATEGORIES = new Set([
   "unexpected_close",
   "superseded",
 ]);
+const RECENT_RELAY_OUTAGE_LIMIT = 8;
+
+export interface DaemonRelayOutageDiagnostics {
+  outage_number: number;
+  disconnected_at: string | null;
+  ready_at: string | null;
+  duration_ms: number;
+  attempts: number;
+  close_category: string | null;
+  close_code: number | null;
+  network_route: string;
+  last_transport_error_class: string | null;
+  last_transport_error_reason: string;
+  last_transport_error_ready: boolean;
+  last_transport_error_authenticated: boolean;
+  previous_ready_duration_ms: number;
+  previous_ready_inbound_silence_ms: number;
+  last_connect_stage: string;
+  last_connect_duration_ms: number;
+  last_connect_milestones_ms: Record<string, number>;
+  last_connect_http_status: number | null;
+  last_failed_connect_stage: string | null;
+  last_failed_connect_duration_ms: number;
+  last_failed_connect_milestones_ms: Record<string, number>;
+  last_failed_connect_http_status: number | null;
+}
 
 export interface DaemonRelayDiagnostics {
   schema_version: 1;
@@ -65,6 +91,7 @@ export interface DaemonRelayDiagnostics {
   outage_started_at: string | null;
   outage_duration_ms: number;
   outage_attempts: number;
+  recent_outages: DaemonRelayOutageDiagnostics[];
   last_close_category: string | null;
   last_close_code: number | null;
   last_transport_error_class: string | null;
@@ -113,6 +140,7 @@ export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagn
     outage_started_at: timestamp(candidate.outage_started_at),
     outage_duration_ms: boundedInteger(candidate.outage_duration_ms, 0, 31 * 24 * 60 * 60_000, 0),
     outage_attempts: boundedInteger(candidate.outage_attempts, 0, 1_000_000, 0),
+    recent_outages: recentOutages(candidate.recent_outages),
     last_close_category: nullableEnum(candidate.last_close_category, CLOSE_CATEGORIES),
     last_close_code: nullableInteger(candidate.last_close_code, 0, 4999),
     last_transport_error_class: nullableEnum(candidate.last_transport_error_class, TRANSPORT_ERROR_CLASSES),
@@ -158,10 +186,49 @@ export function relayDiagnosticsAfterReady(
   const started = Date.parse(value.outage_started_at ?? "");
   const ready = Date.parse(readyAt ?? "");
   const elapsed = Number.isFinite(started) && Number.isFinite(ready) ? Math.max(0, ready - started) : 0;
+  const readyTimestamp = timestamp(readyAt);
+  const recovered = value.outage_active && value.outage_count > 0 && readyTimestamp
+    ? recoveredOutage(value, readyTimestamp, Math.max(value.outage_duration_ms, elapsed)) : null;
+  const recentOutages = recovered
+    ? [recovered, ...value.recent_outages.filter((entry) => entry.outage_number !== recovered.outage_number)]
+      .slice(0, RECENT_RELAY_OUTAGE_LIMIT)
+    : value.recent_outages;
   return {
     ...value,
     outage_active: false,
     outage_duration_ms: Math.min(31 * 24 * 60 * 60_000, Math.max(value.outage_duration_ms, elapsed)),
+    recent_outages: recentOutages,
+  };
+}
+
+function recoveredOutage(
+  value: DaemonRelayDiagnostics,
+  readyAt: string,
+  durationMs: number,
+): DaemonRelayOutageDiagnostics {
+  return {
+    outage_number: value.outage_count,
+    disconnected_at: value.last_disconnected_at ?? value.outage_started_at,
+    ready_at: readyAt,
+    duration_ms: boundedInteger(durationMs, 0, 31 * 24 * 60 * 60_000, 0),
+    attempts: value.outage_attempts,
+    close_category: value.last_close_category,
+    close_code: value.last_close_code,
+    network_route: value.network_route,
+    last_transport_error_class: value.last_transport_error_class,
+    last_transport_error_reason: value.last_transport_error_reason,
+    last_transport_error_ready: value.last_transport_error_ready,
+    last_transport_error_authenticated: value.last_transport_error_authenticated,
+    previous_ready_duration_ms: value.previous_ready_duration_ms,
+    previous_ready_inbound_silence_ms: value.previous_ready_inbound_silence_ms,
+    last_connect_stage: value.last_connect_stage,
+    last_connect_duration_ms: value.last_connect_duration_ms,
+    last_connect_milestones_ms: { ...value.last_connect_milestones_ms },
+    last_connect_http_status: value.last_connect_http_status,
+    last_failed_connect_stage: value.last_failed_connect_stage,
+    last_failed_connect_duration_ms: value.last_failed_connect_duration_ms,
+    last_failed_connect_milestones_ms: { ...value.last_failed_connect_milestones_ms },
+    last_failed_connect_http_status: value.last_failed_connect_http_status,
   };
 }
 
@@ -188,6 +255,42 @@ function connectMilestones(value: unknown): Record<string, number> {
   for (const key of CONNECT_STAGES) {
     const duration = Number(source[key]);
     if (Number.isSafeInteger(duration) && duration >= 0 && duration <= 10 * 60_000) result[key] = duration;
+  }
+  return result;
+}
+
+function recentOutages(value: unknown): DaemonRelayOutageDiagnostics[] {
+  if (!Array.isArray(value)) return [];
+  const result: DaemonRelayOutageDiagnostics[] = [];
+  for (const candidate of value.slice(0, RECENT_RELAY_OUTAGE_LIMIT)) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const entry = candidate as Record<string, unknown>;
+    const outageNumber = Number(entry.outage_number);
+    if (!Number.isSafeInteger(outageNumber) || outageNumber < 1 || outageNumber > 1_000_000_000) continue;
+    result.push({
+      outage_number: outageNumber,
+      disconnected_at: timestamp(entry.disconnected_at),
+      ready_at: timestamp(entry.ready_at),
+      duration_ms: boundedInteger(entry.duration_ms, 0, 31 * 24 * 60 * 60_000, 0),
+      attempts: boundedInteger(entry.attempts, 0, 1_000_000, 0),
+      close_category: nullableEnum(entry.close_category, CLOSE_CATEGORIES),
+      close_code: nullableInteger(entry.close_code, 0, 4999),
+      network_route: enumText(entry.network_route, NETWORK_ROUTES, "unresolved"),
+      last_transport_error_class: nullableEnum(entry.last_transport_error_class, TRANSPORT_ERROR_CLASSES),
+      last_transport_error_reason: enumText(entry.last_transport_error_reason, TRANSPORT_ERROR_REASONS, "unknown"),
+      last_transport_error_ready: entry.last_transport_error_ready === true,
+      last_transport_error_authenticated: entry.last_transport_error_authenticated === true,
+      previous_ready_duration_ms: boundedInteger(entry.previous_ready_duration_ms, 0, 365 * 24 * 60 * 60_000, 0),
+      previous_ready_inbound_silence_ms: boundedInteger(entry.previous_ready_inbound_silence_ms, 0, 31 * 24 * 60 * 60_000, 0),
+      last_connect_stage: enumText(entry.last_connect_stage, CONNECT_STAGES, "idle"),
+      last_connect_duration_ms: boundedInteger(entry.last_connect_duration_ms, 0, 10 * 60_000, 0),
+      last_connect_milestones_ms: connectMilestones(entry.last_connect_milestones_ms),
+      last_connect_http_status: nullableInteger(entry.last_connect_http_status, 100, 599),
+      last_failed_connect_stage: nullableEnum(entry.last_failed_connect_stage, CONNECT_STAGES),
+      last_failed_connect_duration_ms: boundedInteger(entry.last_failed_connect_duration_ms, 0, 10 * 60_000, 0),
+      last_failed_connect_milestones_ms: connectMilestones(entry.last_failed_connect_milestones_ms),
+      last_failed_connect_http_status: nullableInteger(entry.last_failed_connect_http_status, 100, 599),
+    });
   }
   return result;
 }

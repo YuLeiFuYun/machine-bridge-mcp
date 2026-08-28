@@ -11,7 +11,8 @@ import {
   relayHttpStatusFromError, sanitizeCloseReason, terminateSocket, tracedTlsConnection,
 } from "./relay-connection-support.mjs";
 import {
-  APPLICATION_PROXY_ROUTE_SCOPE, preferredRelayCloseCategory, relayOutageFields, relayRecoveryFields, relayStatusSnapshot,
+  APPLICATION_PROXY_ROUTE_SCOPE, preferredRelayCloseCategory, recordRecoveredOutage, relayOutageFields,
+  relayRecoveryFields, relayStatusSnapshot,
 } from "./relay-diagnostics.mjs";
 import {
   acknowledgementMismatch, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory, relayCloseUserCause,
@@ -89,6 +90,7 @@ export class RelayConnection {
     this.outageWarningCount = 0;
     this.lastOutageWarnAt = 0;
     this.outageCount = 0;
+    this.recentOutages = [];
     this.lastCloseCategory = "connection_interrupted";
     this.lastCloseCode = 0;
     this.transportError = new RelayTransportErrorState();
@@ -278,10 +280,11 @@ export class RelayConnection {
     this.nextReconnectWallAt = 0;
     this.lastReconnectDelayMs = 0;
 
+    const recoveredOutage = this.outageStartedAt > 0;
+    const outageMs = recoveredOutage ? Math.max(0, this.now() - this.outageStartedAt) : 0;
     if (!this.hasConnected) {
       this.logger.info?.("remote relay connected and end-to-end result delivery verified");
-    } else if (this.outageStartedAt > 0) {
-      const outageMs = Math.max(0, this.now() - this.outageStartedAt);
+    } else if (recoveredOutage) {
       if (this.outageNoticeEmitted) {
         const recoveryFields = relayRecoveryFields(this, outageMs);
         this.logger.warn?.(`remote relay WebSocket restored after ${formatDuration(outageMs)} (${formatAttempts(this.outageAttempts)})`, recoveryFields);
@@ -293,6 +296,7 @@ export class RelayConnection {
         });
       }
     }
+    if (recoveredOutage) recordRecoveredOutage(this, outageMs);
 
     const reconnected = this.hasConnected;
     this.hasConnected = true;
