@@ -11,6 +11,7 @@ export interface DaemonAttachment {
   probeId?: string;
   instanceId?: string;
   connectionId?: string;
+  draining?: boolean;
   policy?: DaemonPolicy;
   tools?: string[];
   relayDiagnostics?: DaemonRelayDiagnostics;
@@ -35,6 +36,7 @@ export function sanitizeDaemonAttachment(value: unknown): DaemonAttachment | und
     probeId: sanitizeProbeId(candidate.probeId),
     instanceId: sanitizeDaemonInstanceId(candidate.instanceId),
     connectionId: sanitizeConnectionId(candidate.connectionId),
+    draining: candidate.draining === true ? true : undefined,
     policy,
     tools: sanitizeDaemonTools(candidate.tools, policy),
     relayDiagnostics: sanitizeDaemonRelayDiagnostics(candidate.relayDiagnostics),

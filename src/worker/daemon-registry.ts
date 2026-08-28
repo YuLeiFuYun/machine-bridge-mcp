@@ -9,24 +9,28 @@ import type { DaemonPolicy } from "./policy.ts";
 import type { DaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 
 interface WebSocketContext { getWebSockets(): WebSocket[] }
-
 export class DaemonRegistry implements ReadyDaemonRegistry {
   readonly http = new DaemonHttpRegistry();
   private readonly sockets: DaemonSocketRegistry;
   private readonly lastObservation = new DaemonLastObservation();
   private readonly draining = new WeakSet<DaemonChannel>();
   constructor(context: WebSocketContext) { this.sockets = new DaemonSocketRegistry(context); }
-
   readyChannels(now = Date.now()): DaemonChannel[] {
     const webSockets = this.sockets.readySockets(now);
     const selected = webSockets.length > 0 ? webSockets : this.http.readyChannels(now);
-    return selected.filter((channel) => !this.draining.has(channel));
+    return selected.filter((channel) => !this.isDraining(channel));
   }
   beginDrain(channel: DaemonChannel): boolean {
-    if (!this.readyAttachment(channel) || this.draining.has(channel)) return false;
-    this.draining.add(channel); return true;
+    if (!this.readyAttachment(channel) || this.isDraining(channel)) return false;
+    this.draining.add(channel);
+    if (channel.daemonTransport !== "https") {
+      const socket = channel as WebSocket; const attachment = this.sockets.attachment(socket); if (attachment) socket.serializeAttachment({ ...attachment, draining: true } satisfies DaemonAttachment);
+    }
+    return true;
   }
-  isDraining(channel: DaemonChannel): boolean { return this.draining.has(channel); }
+  isDraining(channel: DaemonChannel): boolean {
+    return this.draining.has(channel) || (channel.daemonTransport !== "https" && this.sockets.attachment(channel as WebSocket)?.draining === true);
+  }
   readyAttachment(channel: DaemonChannel): DaemonAttachment | undefined {
     return channel.daemonTransport === "https"
       ? this.http.attachment(channel as DaemonHttpChannel)

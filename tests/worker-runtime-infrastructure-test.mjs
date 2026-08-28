@@ -4,6 +4,7 @@ import {
   pendingCapacityProjection,
 } from "../src/worker/pending-call-capacity.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
+import { DaemonRegistry } from "../src/worker/daemon-registry.ts";
 import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
 import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
 import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
@@ -1017,6 +1018,12 @@ async function testDaemonSocketIsolation() {
     && promoted.relayDiagnostics?.outage_active === false
     && promoted.relayDiagnostics.outage_duration_ms === 10_000,
   "ready socket promotion retained a reconnect-in-progress or pre-readiness diagnostic duration");
+  const drainRegistry = new DaemonRegistry({ getWebSockets: () => [probing] });
+  assert(drainRegistry.beginDrain(probing) === true && drainRegistry.attachment(probing)?.draining === true,
+    "planned daemon drain was not serialized into the hibernation-safe socket attachment");
+  const rehydratedRegistry = new DaemonRegistry({ getWebSockets: () => [probing] });
+  assert(rehydratedRegistry.isDraining(probing) === true && rehydratedRegistry.readyChannels().length === 0,
+    "planned daemon drain identity was lost across a simulated Worker isolate replacement");
 
   const cleanupSocket = new TestWebSocket();
   cleanupSocket.serializeAttachment({
@@ -1806,10 +1813,17 @@ function testDaemonAndServerInfoProjection() {
     effectiveTools: ["read_file", "git_status"], advertisedTools: ["read_file", "git_status", "write_file"],
     pendingSnapshot, daemonRegistry, observability,
     continuityEvidence: {
-      schema_version: 1, planned_drains: 2, planned_drain_calls: 3,
+      schema_version: 2, planned_drains: 2, planned_drain_calls: 3,
       last_planned_drain_at: "2026-08-10T00:00:05.000Z", socket_disconnects: 4,
-      unplanned_socket_disconnects: 1,
-      last_socket_disconnect: { at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true },
+      unplanned_socket_disconnects: 1, ready_socket_disconnects: 3, unplanned_ready_socket_disconnects: 1,
+      last_socket_disconnect: {
+        at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true,
+        role: "daemon", was_ready: true, connected_at: "2026-08-10T00:00:00.000Z",
+      },
+      last_ready_socket_disconnect: {
+        at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true,
+        role: "daemon", was_ready: true, connected_at: "2026-08-10T00:00:00.000Z",
+      },
       last_request_abort_at: null, last_stream_cancel_control_at: null,
     },
   };
@@ -1824,6 +1838,7 @@ function testDaemonAndServerInfoProjection() {
     && ownerFull.worker.observability.requests.total === 3
     && ownerFull.worker.continuity_evidence.planned_drains === 2
     && ownerFull.worker.continuity_evidence.last_socket_disconnect.planned === true
+    && ownerFull.worker.continuity_evidence.ready_socket_disconnects === 3
     && ownerFull.tools.length === 2,
   "owner server_info full projection lost current Worker activity or pre-dispatch capacity");
   const ownerSummary = buildServerInfoResult(input, "summary");
@@ -1897,26 +1912,44 @@ async function testWorkerContinuityEvidence() {
     "planned-drain continuity evidence was not persisted");
   assert(await recordWorkerSocketDisconnect(storage, {
     planned: true, kind: "close", closeCode: 1001, wasClean: true,
+    role: "daemon", connectedAt: "2026-08-25T12:59:59.000Z",
   }, Date.parse("2026-08-25T13:00:01.000Z")), "planned socket-close evidence was not persisted");
   assert(await recordWorkerSocketDisconnect(storage, {
-    planned: false, kind: "error",
+    planned: false, kind: "error", role: "probing", connectedAt: "2026-08-25T13:00:01.500Z",
   }, Date.parse("2026-08-25T13:00:02.000Z")), "unplanned socket-error evidence was not persisted");
   assert(await recordWorkerClientCancellation(storage, "request_abort", Date.parse("2026-08-25T13:00:03.000Z"))
     && await recordWorkerClientCancellation(storage, "stream_cancel_control", Date.parse("2026-08-25T13:00:04.000Z")),
   "client-cancellation continuity evidence was not persisted");
   const snapshot = await readWorkerContinuityEvidence(storage);
-  assert(snapshot.schema_version === 1
+  assert(snapshot.schema_version === 2
     && snapshot.planned_drains === 1 && snapshot.planned_drain_calls === 3
     && snapshot.socket_disconnects === 2 && snapshot.unplanned_socket_disconnects === 1
+    && snapshot.ready_socket_disconnects === 1 && snapshot.unplanned_ready_socket_disconnects === 0
     && snapshot.last_socket_disconnect?.kind === "error" && snapshot.last_socket_disconnect?.planned === false
+    && snapshot.last_socket_disconnect?.role === "probing" && snapshot.last_socket_disconnect?.was_ready === false
+    && snapshot.last_socket_disconnect?.connected_at === "2026-08-25T13:00:01.500Z"
+    && snapshot.last_ready_socket_disconnect?.kind === "close" && snapshot.last_ready_socket_disconnect?.was_ready === true
     && snapshot.last_request_abort_at === "2026-08-25T13:00:03.000Z"
     && snapshot.last_stream_cancel_control_at === "2026-08-25T13:00:04.000Z",
   "durable continuity evidence lost fixed-category incident history across reads");
   values.set("worker-continuity-evidence", {
+    schema_version: 1, planned_drains: 7, planned_drain_calls: 9, last_planned_drain_at: "2026-08-28T14:20:00.000Z",
+    socket_disconnects: 158, unplanned_socket_disconnects: 109,
+    last_socket_disconnect: { at: "2026-08-28T14:21:56.296Z", planned: false, kind: "close", close_code: 1006, was_clean: false },
+    last_request_abort_at: "2026-08-28T14:22:00.000Z",
+  });
+  const legacy = await readWorkerContinuityEvidence(storage);
+  assert(legacy.schema_version === 2 && legacy.planned_drains === 7 && legacy.planned_drain_calls === 9
+    && legacy.last_planned_drain_at === "2026-08-28T14:20:00.000Z" && legacy.last_request_abort_at === "2026-08-28T14:22:00.000Z"
+    && legacy.socket_disconnects === 0 && legacy.unplanned_socket_disconnects === 0
+    && legacy.ready_socket_disconnects === 0 && legacy.unplanned_ready_socket_disconnects === 0
+    && legacy.last_socket_disconnect === null && legacy.last_ready_socket_disconnect === null,
+  "schema-v2 migration lost compatible non-socket evidence or retained legacy unqualified socket counters");
+  values.set("worker-continuity-evidence", {
     schema_version: 99, planned_drains: 7, last_socket_disconnect: { at: "private", kind: "other" },
   });
   const sanitized = await readWorkerContinuityEvidence(storage);
-  assert(sanitized.schema_version === 1 && sanitized.planned_drains === 0 && sanitized.last_socket_disconnect === null,
+  assert(sanitized.schema_version === 2 && sanitized.planned_drains === 0 && sanitized.last_socket_disconnect === null,
     "durable continuity evidence trusted malformed stored state instead of failing closed to bounded defaults");
 }
 

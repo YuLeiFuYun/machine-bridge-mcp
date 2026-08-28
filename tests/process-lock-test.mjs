@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { inspectProcessInstance } from "../src/local/process-identity.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance } from "../src/local/process-identity.mjs";
 import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -450,6 +450,31 @@ async function symbolicLinkLockTest() {
 }
 
 async function hardLinkLockTest() {
+  const publicationWorkspace = join(temp, "publication-hardlink-workspace");
+  const publicationStateRoot = join(temp, "publication-hardlink-state");
+  await mkdir(publicationWorkspace, { recursive: true });
+  const publicationState = loadState(publicationWorkspace, { stateDir: publicationStateRoot });
+  const publicationFile = join(publicationState.paths.profileDir, "startup.lock");
+  const publicationOwner = {
+    pid: process.pid,
+    token: "9".repeat(32),
+    purpose: "startup",
+    workspace: publicationState.workspace.path,
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+    entryScript: process.argv[1] || "",
+    operation: "publication-crash-recovery",
+  };
+  const publication = createExclusiveFileSync(publicationFile, `${JSON.stringify(publicationOwner)}\n`, {
+    unlink() { throw new Error("synthetic post-link crash window"); },
+  });
+  assert(publication.warnings.length === 1 && existsSync(publication.cleanupArtifact),
+    "exclusive publication crash fixture did not retain the committed staging hard link");
+  const blocked = acquireStartupLock(publicationState, { operation: "publication-recovery-observer" });
+  assert(blocked.acquired === false && blocked.owner?.token === publicationOwner.token && !existsSync(publication.cleanupArtifact),
+    "startup lock reader did not recover the exact internal publication hard link before validating the live owner");
+  await rm(publicationFile, { force: true });
+
   const workspace = join(temp, "hardlink-workspace");
   const stateRoot = join(temp, "hardlink-state");
   await mkdir(workspace, { recursive: true });

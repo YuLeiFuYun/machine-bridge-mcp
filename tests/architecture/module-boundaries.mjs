@@ -1390,11 +1390,15 @@ for (const required of ["createMonotonicDeadline", "inspectProcessInstance", "re
 for (const [name, markers] of [
   ["state.mjs", ["retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(lockPath"]],
   ["managed-job-lock.mjs", ["retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(file"]],
-  ["browser-pairing-store.mjs", ["readPublishedPairing", "retryTransientMultipleLinksSync(() => readPairing(file))"]],
+  ["browser-pairing-store.mjs", ["readPublishedPairing", "retryTransientMultipleLinksSync(() => readPairing(file), { recover: () => recoverExclusiveFilePublicationSync(file) })"]],
   ["managed-job-runner-claim.mjs", ["verifyPathIdentity: true", "rejectMultipleLinks: true", "retryTransientMultipleLinksSync"]],
 ]) {
   const source = readFileSync(join(localRoot, name), "utf8");
   for (const marker of markers) if (!source.includes(marker)) throw new Error(`${name} lost bounded exclusive-publication contention handling: ${marker}`);
+}
+const exclusivePublicationRecoveryBoundary = readFileSync(join(localRoot, "exclusive-publication-recovery.mjs"), "utf8");
+for (const required of ["targetInfo.nlink !== 2n", "stagingPattern", "aliases.length !== 1", "O_NOFOLLOW", "unlinkSync(alias)", "held.nlink === 1n", "heldIdentity.dev === settledIdentity.dev", "heldIdentity.ino === settledIdentity.ino"]) {
+  if (!exclusivePublicationRecoveryBoundary.includes(required)) throw new Error(`exclusive publication recovery lost exact internal-alias/held-inode proof: ${required}`);
 }
 
 const fileSnapshotPreservationBoundary = readFileSync(join(localRoot, "file-snapshot-preservation.mjs"), "utf8");

@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync, unlinkSync, readdirSync
 import os from "node:os";
 import path from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { recoverExclusiveFilePublicationSync } from "./exclusive-publication-recovery.mjs";
 import { preserveFileSnapshotSync } from "./file-snapshot-preservation.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
@@ -506,7 +507,7 @@ function readProcessLockSnapshot(lockPath) {
     opened = retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
-    }));
+    }), { recover: () => recoverExclusiveFilePublicationSync(lockPath) });
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;

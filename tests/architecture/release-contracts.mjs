@@ -591,6 +591,8 @@ const workerDaemonReadyMessagesSource = readFileSync(join(root, "src", "worker",
 const workerDaemonPlannedDrainSource = readFileSync(join(root, "src", "worker", "daemon-planned-drain.ts"), "utf8");
 const workerToolRecoverySource = readFileSync(join(root, "src", "worker", "tool-call-recovery.ts"), "utf8");
 const workerContinuityEvidenceSource = readFileSync(join(root, "src", "worker", "worker-continuity-evidence.ts"), "utf8");
+const workerSocketDisconnectEvidenceSource = readFileSync(join(root, "src", "worker", "worker-socket-disconnect-evidence.ts"), "utf8");
+const workerContinuityPrivacySource = `${workerContinuityEvidenceSource}\n${workerSocketDisconnectEvidenceSource}`;
 const workerServerInfoContinuitySource = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
 const workerIndexContinuitySource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const toolExecutorSource = readFileSync(join(root, "src", "local", "tool-executor.mjs"), "utf8");
@@ -622,7 +624,9 @@ if (plannedDrainIndex < 0 || relayStopIndex <= plannedDrainIndex
     || !workerDaemonReadyMessagesSource.includes('body.type === "daemon_draining"')
     || !workerDaemonReadyMessagesSource.includes("settleDaemonPlannedDrain")
     || !workerDaemonRegistrySource.includes("private readonly draining = new WeakSet<DaemonChannel>()")
-    || !workerDaemonRegistrySource.includes("selected.filter((channel) => !this.draining.has(channel))")
+    || !workerDaemonRegistrySource.includes("selected.filter((channel) => !this.isDraining(channel))")
+    || !workerDaemonRegistrySource.includes("socket.serializeAttachment({ ...attachment, draining: true }")
+    || !workerDaemonRegistrySource.includes("?.draining === true")
     || !workerDaemonPlannedDrainSource.includes("input.beginDrain(input.channel)")
     || !workerDaemonPlannedDrainSource.includes("dispatchedDaemonPlannedDrainError(record.recovery)")
     || !workerDaemonPlannedDrainSource.includes('type: "daemon_draining_ack"')
@@ -632,16 +636,24 @@ if (plannedDrainIndex < 0 || relayStopIndex <= plannedDrainIndex
   throw new Error("planned daemon shutdown lost structured Worker drain settlement or same-job read recovery");
 }
 if (!workerContinuityEvidenceSource.includes('const KEY = "worker-continuity-evidence"')
+    || !workerContinuityEvidenceSource.includes("const SCHEMA_VERSION = 2")
     || !workerContinuityEvidenceSource.includes("storage.transaction")
     || !workerContinuityEvidenceSource.includes("last_planned_drain_at")
     || !workerContinuityEvidenceSource.includes("last_socket_disconnect")
+    || !workerContinuityEvidenceSource.includes("ready_socket_disconnects")
+    || !workerContinuityEvidenceSource.includes("unplanned_ready_socket_disconnects")
+    || !workerContinuityEvidenceSource.includes("last_ready_socket_disconnect")
     || !workerContinuityEvidenceSource.includes("last_request_abort_at")
     || !workerContinuityEvidenceSource.includes("last_stream_cancel_control_at")
+    || !workerSocketDisconnectEvidenceSource.includes('role: "candidate" | "probing" | "daemon" | null')
+    || !workerSocketDisconnectEvidenceSource.includes("was_ready: boolean")
+    || !workerSocketDisconnectEvidenceSource.includes("connected_at: string | null")
     || !workerDaemonPlannedDrainSource.includes("recordWorkerPlannedDrain")
     || !workerIndexContinuitySource.includes("recordWorkerSocketDisconnect")
+    || !workerIndexContinuitySource.includes("if (cleanup.first) await recordWorkerSocketDisconnect")
     || !workerIndexContinuitySource.includes("recordWorkerClientCancellation")
     || !workerServerInfoContinuitySource.includes("continuity_evidence: input.continuityEvidence")
-    || ["account_id", "client_id", "call_id", "tool_name", "arguments", "endpoint", "close_reason", "error_text"].some((field) => workerContinuityEvidenceSource.includes(field))) {
+    || ["account_id", "client_id", "call_id", "tool_name", "arguments", "endpoint", "close_reason", "error_text", "connection_id", "instance_id"].some((field) => workerContinuityPrivacySource.includes(field))) {
   throw new Error("Worker durable continuity evidence lost its transactional privacy-bounded causal summary contract");
 }
 if (!managedJobListingSource.includes("durable_terminal: durableTerminal")
@@ -2047,8 +2059,10 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 17"],
-  ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence survives Worker isolate replacement"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 18"],
+  ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
+  ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
+  ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],
   ["src/shared/server-metadata.json", serverMetadata, "current response still requires read_job continuation retains stronger private recovery priority"],

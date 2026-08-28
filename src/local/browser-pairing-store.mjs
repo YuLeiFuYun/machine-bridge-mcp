@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { inspectPathIfPresentSync, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
+import { recoverExclusiveFilePublicationSync } from "./exclusive-publication-recovery.mjs";
+import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
 import { acquireMaintenanceLock, assertStateMaintenanceAvailable } from "./state.mjs";
-import { ensureOwnerOnlyDir, ownerOnlyFile } from "./secure-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
 const DEFAULT_BROWSER_PORT = 39393;
@@ -83,7 +83,7 @@ async function acquirePairingMigrationLock(stateRoot) {
 }
 
 function readPublishedPairing(file) {
-  return retryTransientMultipleLinksSync(() => readPairing(file));
+  return retryTransientMultipleLinksSync(() => readPairing(file), { recover: () => recoverExclusiveFilePublicationSync(file) });
 }
 
 function readPairing(file) {

@@ -60,7 +60,7 @@ import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.150";
+const SERVER_VERSION = "3.0.0-beta.151";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -387,6 +387,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketClose(ws: WebSocket, code: number, _reason: string, wasClean: boolean): Promise<void> {
+    const attachment = this.daemonRegistry.attachment(ws);
     const planned = this.daemonRegistry.isDraining(ws);
     const cleanup = this.cleanupDaemonSocket(ws, "daemon disconnected");
     if (cleanup?.first) this.observability.event("info", "daemon.websocket.closed", {
@@ -395,17 +396,22 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     });
     if (cleanup) {
       await cleanup.task;
-      await recordWorkerSocketDisconnect(this.ctx.storage, { planned, kind: "close", closeCode: code, wasClean });
+      if (cleanup.first) await recordWorkerSocketDisconnect(this.ctx.storage, {
+        planned, kind: "close", closeCode: code, wasClean, role: attachment?.role, connectedAt: attachment?.connectedAt,
+      });
       await this.scheduleRuntimeAlarm();
     }
   }
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+    const attachment = this.daemonRegistry.attachment(ws);
     const planned = this.daemonRegistry.isDraining(ws);
     const cleanup = this.cleanupDaemonSocket(ws, "daemon transport error");
     if (!cleanup) return;
     if (cleanup.first) this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
     await cleanup.task;
-    await recordWorkerSocketDisconnect(this.ctx.storage, { planned, kind: "error" });
+    if (cleanup.first) await recordWorkerSocketDisconnect(this.ctx.storage, {
+      planned, kind: "error", role: attachment?.role, connectedAt: attachment?.connectedAt,
+    });
     await this.scheduleRuntimeAlarm();
   }
   private cleanupDaemonSocket(ws: WebSocket, message: string) {

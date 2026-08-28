@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { recoverExclusiveFilePublicationSync } from "./exclusive-publication-recovery.mjs";
 import { inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
 
 const RUNNER_CLAIM_BYTES = 1024;
@@ -68,16 +69,16 @@ export function readManagedJobRunnerClaim(file, message = "managed job runner cl
         verifyPathIdentity: true,
         rejectMultipleLinks: true,
       });
-    const bytes = readStableRunnerClaimBytes(readBytes);
+    const bytes = readStableRunnerClaimBytes(readBytes, () => recoverExclusiveFilePublicationSync(file));
     const claim = JSON.parse(bytes.toString("utf8"));
     if (!validRunnerClaim(claim)) throw new Error("managed job runner claim has an invalid shape");
     return claim;
   } catch (error) { throw new Error(message, { cause: error }); }
 }
 
-function readStableRunnerClaimBytes(readBytes) {
+function readStableRunnerClaimBytes(readBytes, recover) {
   for (let attempt = 1; attempt <= 4; attempt += 1) {
-    try { return retryTransientMultipleLinksSync(readBytes); }
+    try { return retryTransientMultipleLinksSync(readBytes, { recover }); }
     catch (error) {
       if (error?.code !== "MBM_IDENTITY_CHANGED" || attempt === 4) throw error;
       Atomics.wait(RUNNER_CLAIM_PUBLICATION_RETRY_BUFFER, 0, 0, 1);

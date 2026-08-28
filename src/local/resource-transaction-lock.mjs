@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
+import { recoverExclusiveFilePublicationSync } from "./exclusive-publication-recovery.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstanceAsync } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
@@ -95,7 +96,7 @@ function validFileOwner(owner) {
 function readJson(file, maxBytes, label) {
   const text = retryTransientMultipleLinksSync(() => readBoundedRegularFileSync(file, maxBytes, label, {
     verifyPathIdentity: true, rejectMultipleLinks: true,
-  })).toString("utf8");
+  }), { recover: () => recoverExclusiveFilePublicationSync(file) }).toString("utf8");
   let value;
   try { value = JSON.parse(text); } catch { throw new Error(`${label} is not valid JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must contain a JSON object`);

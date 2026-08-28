@@ -95,7 +95,7 @@ export class DaemonSocketRegistry {
     if (!attachment || attachment.role === "expired") return undefined;
     socket.serializeAttachment({
       role: "expired", connectedAt: attachment.connectedAt, lastSeenAt: attachment.lastSeenAt,
-      instanceId: attachment.instanceId, connectionId: attachment.connectionId,
+      instanceId: attachment.instanceId, connectionId: attachment.connectionId, draining: attachment.draining,
       relayDiagnostics: attachment.relayDiagnostics,
     } satisfies DaemonAttachment);
     return attachment;
