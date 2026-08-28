@@ -64,6 +64,32 @@ function testSystemSleepDiagnostics() {
     && sleepDominatedOutage.sleep_overlap_ratio > 0.99
     && sleepDominatedOutage.matched_sleep_count === 2,
   "relay outage dominated by macOS sleep was still represented as independent network-only evidence");
+  const wakeBoundaryAftermath = correlateRelayOutageWithSystemSleep({
+    outage_active: false,
+    last_disconnected_at: "2026-08-24T17:04:11.250Z",
+    last_ready_at: "2026-08-24T17:04:15.250Z",
+    heartbeat: {
+      last_event_loop_stall_at: "2026-08-24T17:04:10.810Z",
+      last_event_loop_stall_lag_ms: 947_954,
+    },
+  }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(wakeBoundaryAftermath.classification === "wake_boundary_system_sleep_aftermath"
+    && wakeBoundaryAftermath.outage_duration_ms === 4_000
+    && wakeBoundaryAftermath.sleep_overlap_ms === 0
+    && wakeBoundaryAftermath.sleep_overlap_ratio === 0
+    && wakeBoundaryAftermath.matched_sleep_count === 1,
+  "relay close first observed at wake was misrepresented as an independent awake reset despite matching runtime suspension evidence");
+  const coincidentalWakeBoundary = correlateRelayOutageWithSystemSleep({
+    outage_active: false,
+    last_disconnected_at: "2026-08-24T17:04:11.250Z",
+    last_ready_at: "2026-08-24T17:04:15.250Z",
+    heartbeat: {
+      last_event_loop_stall_at: "2026-08-24T18:04:10.810Z",
+      last_event_loop_stall_lag_ms: 120_000,
+    },
+  }, { supported: true, available: true, recent_sleep_intervals: intervals });
+  assert(coincidentalWakeBoundary.classification === "no_matching_recent_system_sleep",
+    "relay reset near a wake boundary was attributed to sleep without same-sleep event-loop suspension evidence");
   const awakeOutage = correlateRelayOutageWithSystemSleep({
     outage_active: false,
     last_disconnected_at: "2026-08-24T18:00:00.000Z",
