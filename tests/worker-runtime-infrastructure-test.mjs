@@ -54,6 +54,11 @@ import {
   withDaemonLastSeenAt,
 } from "../src/worker/daemon-liveness.ts";
 
+const SYNTHETIC_REFRESH_TOKEN = `mcp_rt_${"r".repeat(43)}`;
+const SYNTHETIC_ACCOUNT_ID = `acct_${"a".repeat(43)}`;
+const SYNTHETIC_CLIENT_ID = `mcp_client_${"c".repeat(43)}`;
+const SYNTHETIC_FAMILY_ID = `mcp_family_${"f".repeat(43)}`;
+
 class TestWebSocket {
   constructor() {
     this.readyState = 1;
@@ -1969,8 +1974,11 @@ function testWorkerObservability() {
       api_key: "opaque-api-value",
       proof: "opaque-proof-value",
       monkey: "safe-animal",
+      account_id: SYNTHETIC_ACCOUNT_ID,
+      client_id: SYNTHETIC_CLIENT_ID,
+      owner_family_id: SYNTHETIC_FAMILY_ID,
       path: "/mcp",
-      detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private",
+      detail: `Bearer abcdefghijklmnopqrstuvwxyz refresh=${SYNTHETIC_REFRESH_TOKEN} account=${SYNTHETIC_ACCOUNT_ID} client=${SYNTHETIC_CLIENT_ID} family=${SYNTHETIC_FAMILY_ID} for operator@example.com under /Users/example/private`,
       level: "info",
       component: "caller",
       event: "caller.override",
@@ -1983,9 +1991,14 @@ function testWorkerObservability() {
   assert(event.access_token === "<redacted>" && event.api_key === "<redacted>" && event.proof === "<redacted>"
     && !lines[0].includes("must-not-leak") && !lines[0].includes("opaque-api-value") && !lines[0].includes("opaque-proof-value"),
   "Worker structured event leaked a sensitive field-name variant");
+  assert(event.account_id === "<redacted>" && event.client_id === "<redacted>" && event.owner_family_id === "<redacted>",
+  "Worker structured event exposed stable authorization identity fields");
   assert(event.monkey === "safe-animal", "Worker sensitive-key matching over-redacted an unrelated field name");
   assert(event.path === "/mcp", "Worker structured event removed a safe route field");
-  assert(!lines[0].includes("abcdefghijklmnopqrstuvwxyz") && !lines[0].includes("operator@example.com") && !lines[0].includes("/Users/example"), "Worker structured event leaked a sensitive value embedded in a non-sensitive field");
+  assert(!lines[0].includes("abcdefghijklmnopqrstuvwxyz") && !lines[0].includes("operator@example.com") && !lines[0].includes("/Users/example")
+    && !lines[0].includes(SYNTHETIC_REFRESH_TOKEN) && !lines[0].includes(SYNTHETIC_ACCOUNT_ID)
+    && !lines[0].includes(SYNTHETIC_CLIENT_ID) && !lines[0].includes(SYNTHETIC_FAMILY_ID),
+  "Worker structured event leaked a sensitive value or stable authorization identity embedded in a non-sensitive field");
   assert(event.detail.includes("Bearer <redacted>") && event.detail.includes("<redacted-email>") && event.detail.includes("<home>"), "Worker structured event did not retain redaction markers");
   assert(event.level === "warn" && event.component === "worker" && event.event === "security.test" && event.timestamp !== "1970-01-01T00:00:00.000Z", "Worker event fields overrode authoritative log metadata");
 
@@ -2067,10 +2080,13 @@ function testThrottledEdgeLogger() {
     write: (level, text) => lines.push({ level, value: JSON.parse(text) }),
   });
   assert(log("warn", "rate.failure", {
-    detail: "Bearer abcdefghijklmnopqrstuvwxyz for operator@example.com under /Users/example/private\nline",
+    detail: `Bearer abcdefghijklmnopqrstuvwxyz refresh=${SYNTHETIC_REFRESH_TOKEN} account=${SYNTHETIC_ACCOUNT_ID} client=${SYNTHETIC_CLIENT_ID} family=${SYNTHETIC_FAMILY_ID} for operator@example.com under /Users/example/private\nline`,
     access_token: "must-not-leak",
     apiKey: "opaque-api-value",
     proof: "opaque-proof-value",
+    account_id: SYNTHETIC_ACCOUNT_ID,
+    client_id: SYNTHETIC_CLIENT_ID,
+    owner_family_id: SYNTHETIC_FAMILY_ID,
     monkey: "safe-animal",
   }) === true, "first edge degradation log was suppressed");
   assert(log("warn", "rate.failure", { detail: "second" }) === false, "duplicate edge degradation log was not suppressed");
@@ -2083,10 +2099,14 @@ function testThrottledEdgeLogger() {
   assert(lines[0].value.detail.includes("Bearer <redacted>")
     && lines[0].value.detail.includes("<redacted-email>") && lines[0].value.detail.includes("<home>")
     && lines[0].value.component === "worker-edge" && lines[0].value.access_token === "<redacted>"
+    && lines[0].value.account_id === "<redacted>" && lines[0].value.client_id === "<redacted>"
+    && lines[0].value.owner_family_id === "<redacted>"
     && lines[0].value.apikey === "<redacted>" && lines[0].value.proof === "<redacted>" && lines[0].value.monkey === "safe-animal"
     && !JSON.stringify(lines[0]).includes("must-not-leak") && !JSON.stringify(lines[0]).includes("opaque-api-value")
     && !JSON.stringify(lines[0]).includes("opaque-proof-value") && !JSON.stringify(lines[0]).includes("abcdefghijklmnopqrstuvwxyz")
-    && !JSON.stringify(lines[0]).includes("operator@example.com") && !JSON.stringify(lines[0]).includes("/Users/example"),
+    && !JSON.stringify(lines[0]).includes("operator@example.com") && !JSON.stringify(lines[0]).includes("/Users/example")
+    && !JSON.stringify(lines[0]).includes(SYNTHETIC_REFRESH_TOKEN) && !JSON.stringify(lines[0]).includes(SYNTHETIC_ACCOUNT_ID)
+    && !JSON.stringify(lines[0]).includes(SYNTHETIC_CLIENT_ID) && !JSON.stringify(lines[0]).includes(SYNTHETIC_FAMILY_ID),
   "edge log did not apply shared field/value privacy redaction without over-redacting unrelated names");
   now += 100;
   assert(log("warn", "prototype.fields", JSON.parse('{"__proto__":"ordinary-proto","constructor":"ordinary-constructor","private_key":"must-not-leak"}')) === true,

@@ -805,13 +805,22 @@ for (const forbidden of ["assertGithubPublicationAuthorized", "--owner-confirm"]
 }
 for (const required of [
   "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
-  "createHardenedNpmSession", "runNpmScript", "nestedNpmEnvironment",
+  "createHardenedNpmSession", "sourceDependencyTreeInstallArguments", "installSourceDependencyTree", "runNpmScript", "nestedNpmEnvironment",
+  "runExecutable", "hardTimeout: true",
   "githubReleaseByTagEndpoint", "waitForGithubReleaseAsset", 'gh, ["api"',
   "GitHub release bytes were verified", "mutationError", "remote-state reconciliation",
   "waitForPublishedReleaseState", "defaultReleaseStateWait", "404 Not Found",
   "GitHub REST release metadata is invalid",
 ]) {
   if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost exact accepted-asset boundary: ${required}`);
+}
+const githubDependencyInstall = githubReleaseSource.indexOf("await installSourceDependencyTree(npmSession.cli)");
+const githubFullVerification = githubReleaseSource.indexOf('await runNpmScript(npmSession.cli, "check")');
+const githubAcceptanceVerification = githubReleaseSource.indexOf("assertLocalAcceptance(npmSession.cli)");
+if ([githubDependencyInstall, githubFullVerification, githubAcceptanceVerification].some((value) => value < 0)
+    || githubDependencyInstall > githubFullVerification
+    || githubFullVerification > githubAcceptanceVerification) {
+  throw new Error("GitHub release no longer rebuilds the exact source dependency tree before full verification and acceptance revalidation");
 }
 if (githubReleaseSource.includes("packReleaseAsset") || githubReleaseSource.includes('["pack", "--silent"')) {
   throw new Error("GitHub release publication regressed to repacking the source directory");
@@ -855,6 +864,10 @@ if (publicationLockCall < 0 || prereleasePublishCall < 0 || publicationLockCall 
 const githubBacklogPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
 if (!githubBacklogPushSource.includes("assertGitHubBacklogReady") || !githubBacklogPushSource.includes('runNetwork(git, ["fetch", "origin", "main", "--prune"]')) {
   throw new Error("guarded GitHub push lost the issue/PR backlog boundary");
+}
+const githubBacklogSource = readFileSync(join(root, "scripts", "github-backlog.mjs"), "utf8");
+for (const required of ["githubBacklogCommandTimeoutMs = 120_000", "timeout: githubBacklogCommandTimeoutMs", 'killSignal: "SIGKILL"', "maxBuffer: 8 * 1024 * 1024"]) {
+  if (!githubBacklogSource.includes(required)) throw new Error(`standalone GitHub backlog command lost its bounded process boundary: ${required}`);
 }
 for (const required of ["createHardenedNpmSession", "verifyCurrentReleaseAcceptance(root, { npmCli: npmSession.cli", "verifyCurrentStableSoak(root, { npmCli: npmSession.cli", "runNetwork(git", "runBacklogCommand", "npmSession.dispose()"]) {
   if (!githubBacklogPushSource.includes(required)) throw new Error(`guarded GitHub push lost hardened/network boundary: ${required}`);
@@ -937,12 +950,22 @@ if (!browserBridgeSource.includes("browserExtensionPathForRuntime({ stateRoot: t
 const npmPublishSource = readFileSync(join(root, "scripts", "publish-npm.mjs"), "utf8");
 for (const required of [
   "assertNpmPublicationAuthorized", "--owner-confirm", "explicit owner authorization",
-  "verifyCurrentReleaseAcceptance", "stageAcceptedCandidateTarball", "prepublishOnly",
+  "verifyCurrentReleaseAcceptance", "sourceDependencyTreeInstallArguments", "stageAcceptedCandidateTarball", "prepublishOnly",
   "candidate.path", "--ignore-scripts=true", "--if-present=false", '"--tag", parsed.npmTag', "validateNpmPublishDryRun",
   '"--dry-run=true"', "disposePublicationResources", "readPublishedNpmPrereleaseIfPresent",
   "waitForPublishedCandidate", "alreadyPublished", "publication outcome is ambiguous",
 ]) {
   if (!npmPublishSource.includes(required)) throw new Error(`npm publication lost exact accepted-tarball boundary: ${required}`);
+}
+const npmDependencyInstall = npmPublishSource.indexOf('"npm source dependency installation"');
+const npmAcceptanceReverify = npmPublishSource.indexOf("verifyAcceptance(repository");
+const npmCandidateStage = npmPublishSource.indexOf("prepareCandidate(repository, acceptance");
+const npmPrepublicationVerification = npmPublishSource.indexOf('"prepublishOnly"');
+if ([npmDependencyInstall, npmAcceptanceReverify, npmCandidateStage, npmPrepublicationVerification].some((value) => value < 0)
+    || npmDependencyInstall > npmAcceptanceReverify
+    || npmAcceptanceReverify > npmCandidateStage
+    || npmCandidateStage > npmPrepublicationVerification) {
+  throw new Error("npm publication no longer rebuilds dependencies and revalidates acceptance through hardened npm before prepublication verification");
 }
 for (const required of [
   "runExecutable", "hardTimeout: true", "npmPrepublicationTimeoutMs = 30 * 60 * 1000",

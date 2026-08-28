@@ -281,6 +281,8 @@ npm run prerelease:publish -- --owner-confirm
 npm run prerelease:install -- --allow-worker-deploy
 ```
 
+The full release gate starts with a real source-tree SBOM check. The GitHub and npm publication commands also rebuild ignored `node_modules` from the committed lockfile through the integrity-pinned hardened npm before their release verification, so publication does not rely on a stale ambient dependency tree.
+
 Formal soak begins only after the exact published prerelease is installed and activated. Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch. Every blocking fix creates a new prerelease and restarts the clock.
 
 Stable promotion must retain the soaked package's functional digest. After the owner reports successful soak, the agent records the soak result and prepares and verifies the stable candidate. Final GitHub tag/Release publication uses `npm run release` automatically once its gates pass; npm stable publication is the sole separately authorized operation and uses `npm run stable:publish -- --owner-confirm`.

@@ -16,6 +16,8 @@ import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "./source-dependency-tree.mjs";
+import { runExecutable } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
 import { githubReleaseByTagEndpoint, waitForGithubReleaseAsset } from "./github-release-asset.mjs";
@@ -78,11 +80,28 @@ function output(command, args, options = {}) {
 }
 
 
-function runNpmScript(npmCli, task) {
-  return run(process.execPath, [
+async function runNpmScript(npmCli, task) {
+  await runExecutable(process.execPath, [
     npmCli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false",
     "--if-present=false", "--prefix", root, task,
-  ], { env: nestedNpmEnvironment(process.env) });
+  ], {
+    cwd: root,
+    env: nestedNpmEnvironment(process.env),
+    timeoutMs: 20 * 60 * 1000,
+    hardTimeout: true,
+  });
+}
+
+async function installSourceDependencyTree(npmCli) {
+  await runExecutable(process.execPath, [npmCli, ...sourceDependencyTreeInstallArguments(root)], {
+    cwd: root,
+    capture: true,
+    env: nestedNpmEnvironment(process.env),
+    timeoutMs: sourceDependencyTreeInstallTimeoutMs,
+    hardTimeout: true,
+    maxOutputBytes: 8 * 1024 * 1024,
+  });
+  ensureClean();
 }
 
 function packageMetadata() {
@@ -334,8 +353,9 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
   let acceptance;
   let verificationError = null;
   try {
-    runNpmScript(npmSession.cli, "check");
-    runNpmScript(npmSession.cli, "version:check");
+    await installSourceDependencyTree(npmSession.cli);
+    await runNpmScript(npmSession.cli, "check");
+    await runNpmScript(npmSession.cli, "version:check");
     ensureClean();
     acceptance = assertLocalAcceptance(npmSession.cli);
     if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak(npmSession.cli);

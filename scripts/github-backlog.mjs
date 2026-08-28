@@ -8,6 +8,7 @@ import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const githubBacklogCommandTimeoutMs = 120_000;
 
 export function closingIssueNumbers(messages) {
   const numbers = new Set();
@@ -99,6 +100,9 @@ function runCommand(command, args, cwd) {
     encoding: "utf8",
     env: process.env,
     stdio: "pipe",
+    timeout: githubBacklogCommandTimeoutMs,
+    killSignal: "SIGKILL",
+    maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
     shell: false,
   });
