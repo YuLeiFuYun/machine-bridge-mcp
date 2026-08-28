@@ -5,9 +5,11 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertNpmPublicationAuthorized,
+  npmAuthenticationRequired,
   npmPrepublicationTimeoutMs,
   npmPublicationConfirmationFlag,
   npmPublicationStageTimeoutMs,
+  npmPublicationUploadStdio,
   npmPublishArguments,
   publishCurrentNpmPackage,
   runNpmPublicationProcess,
@@ -22,13 +24,20 @@ assert(
 
 const publishBase = [
   "publish", "--dry-run=false", "--workspaces=false", "--global=false",
-  "--ignore-scripts=true", "--if-present=false", "--access=public", "--tag",
+  "--ignore-scripts=true", "--if-present=false", "--logs-max=0", "--access=public", "--tag",
 ];
 assert(JSON.stringify(npmPublishArguments("3.0.0-beta.1", "prerelease")) === JSON.stringify([...publishBase, "beta"]), "beta publish arguments are incorrect");
 assert(JSON.stringify(npmPublishArguments("3.0.0-rc.1", "prerelease")) === JSON.stringify([...publishBase, "next"]), "rc publish arguments are incorrect");
 assert(JSON.stringify(npmPublishArguments("3.0.0", "stable")) === JSON.stringify([...publishBase, "latest"]), "stable publish arguments are incorrect");
 expectThrow(() => npmPublishArguments("3.0.0", "prerelease"), "requires a dev, beta, or rc");
 expectThrow(() => npmPublishArguments("3.0.0-beta.1", "stable"), "without a prerelease suffix");
+assert(npmPublicationUploadStdio({ interactiveTty: true }) === "inherit"
+  && npmPublicationUploadStdio({ interactiveTty: false }) === "pipe"
+  && npmPublicationUploadStdio({ interactiveTty: true, capture: true }) === "pipe",
+"npm publication upload TTY selection is incorrect");
+assert(npmAuthenticationRequired({ status: 1, stderr: "npm error code EOTP\nAuthenticate your account at https://example.invalid/auth/cli/secret" })
+  && !npmAuthenticationRequired({ status: 1, stderr: "npm error code E404" }),
+"npm authentication-required classification is incorrect");
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const accepted = {
@@ -80,6 +89,7 @@ assert(verification.args[0] === "/synthetic/hardened/npm-cli.js"
   && verification.args.includes("prepublishOnly")
   && verification.args.includes("--ignore-scripts=false")
   && verification.args.includes("--if-present=false")
+  && verification.args.includes("--logs-max=0")
   && verification.args.includes("--tag")
   && verification.args.includes("beta"),
 "npm prepublication verification did not run through the supplied hardened CLI");
@@ -97,9 +107,11 @@ assert(preflight.options.timeout === npmPublicationStageTimeoutMs
 assert(publication.args[1] === "publish"
   && publication.args[2] === candidatePath
   && publication.args.includes("--ignore-scripts=true")
+  && publication.args.includes("--logs-max=0")
   && publication.args.includes("--prefix")
   && publication.args.includes(root),
 "npm publication did not publish the exact accepted tarball with lifecycle scripts disabled");
+assert(publication.options.stdio === "pipe", "captured npm publication unexpectedly exposed raw upload output");
 assert(!Object.hasOwn(publication.options.env, "NPM_CONFIG_DRY_RUN")
   && !Object.hasOwn(publication.options.env, "NPM_CONFIG_WORKSPACES")
   && publication.options.env.npm_config_registry === "https://registry.example.test",
@@ -200,6 +212,31 @@ await assertRejects(
   }),
   "publication outcome is ambiguous",
 );
+
+const challengeId = "synthetic-private-cli-challenge-123456789";
+let authError = null;
+try {
+  await publishCurrentNpmPackage(root, "prerelease", {
+    ...acceptedOptions,
+    npmCli: "/synthetic/hardened/npm-cli.js",
+    interactiveTty: false,
+    run(command, args, options) {
+      if (args[1] === "publish" && !args.includes("--dry-run=true")) {
+        assert(options.stdio === "pipe", "non-TTY npm upload did not capture the authentication challenge");
+        return {
+          status: 1,
+          stdout: "",
+          stderr: `npm error code EOTP\nAuthenticate your account at https://www.npmjs.com/auth/cli/${challengeId}?state=synthetic-state`,
+        };
+      }
+      return successfulStage(args);
+    },
+    readPublished: () => null,
+  });
+} catch (error) { authError = error; }
+assert(authError?.code === "EOTP" && String(authError.message).includes("real owner TTY")
+  && !String(authError.message).includes(challengeId) && !String(authError.message).includes("synthetic-state"),
+"npm authentication failure was not converted into a privacy-safe actionable recovery result");
 
 let mismatchCalls = 0;
 await assertRejects(

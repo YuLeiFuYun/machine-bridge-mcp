@@ -8,6 +8,7 @@ import { BridgeError } from "./errors.mjs";
 import { assertOwnedByContext, principalBinding } from "./authority-context.mjs";
 import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { startDurableProcessJob } from "./managed-job-durable-process.mjs";
+import { clearTransientProcessRecoveryPending, transientProcessRecoveryStatusFields } from "./managed-job-transient-recovery.mjs";
 import { acceptedManagedJobProjection } from "./managed-job-acceptance.mjs";
 import { managedJobActiveChildFile, managedJobActiveChildRecoveryState } from "./managed-job-active-child.mjs";
 import { resolveManagedJobDependencies } from "./managed-job-dependency-admission.mjs";
@@ -246,7 +247,7 @@ export class ManagedJobManager {
           dependency_total: (plan.depends_on || []).length,
           dependency_pending_count: dependencyResolution.pending,
           ...((plan.depends_on || []).length ? { dependency_witnesses: dependencyResolution.witnesses } : {}),
-          ...(retentionClass === "transient_process" ? { retention_class: "transient_process" } : {}),
+          ...transientProcessRecoveryStatusFields(retentionClass, context),
           ...principalBinding(context),
         };
         atomicWriteJson(statusFile, status, 256 * 1024);
@@ -327,7 +328,12 @@ export class ManagedJobManager {
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     await reconcileManagedJobStatusHosted(this, dir);
-    return this.read(args, context, { skipReconcile: true });
+    const result = this.read(args, context, { skipReconcile: true });
+    if (isTerminalManagedJobStatus(String(result?.status || ""))) {
+      try { clearTransientProcessRecoveryPending(dir); }
+      catch { /* Failed downgrade only retains stronger recovery priority during the bounded grace interval. */ }
+    }
+    return result;
   }
 
   readProgress(args = {}, context = {}) {

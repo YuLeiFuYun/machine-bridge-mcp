@@ -17,10 +17,13 @@ export function transientProcessWithinRecoveryGrace(status, fallbackMtime, now =
 
 export function transientProcessRecoveryIds(items, { now = Date.now(), incomingRetentionClass = "managed", reservedSlots = 0 } = {}) {
   const incomingSlots = incomingRetentionClass === "transient_process" ? Math.min(reservedSlots, TRANSIENT_PROCESS_RECOVERY_SLOTS) : 0;
-  return new Set(items.filter(({ status, mtime }) => transientProcessWithinRecoveryGrace(status, mtime, now))
+  const recent = items.filter(({ status, mtime }) => transientProcessWithinRecoveryGrace(status, mtime, now));
+  const followupRequired = recent.filter(({ status }) => status?.transient_recovery_pending === true);
+  const deliveryReserve = recent.filter(({ status }) => status?.transient_recovery_pending !== true)
     .sort((a, b) => terminalRetentionTime(b.status, b.mtime) - terminalRetentionTime(a.status, a.mtime))
     .slice(0, Math.max(0, TRANSIENT_PROCESS_RECOVERY_SLOTS - incomingSlots))
-    .map(({ status }) => status.job_id));
+    .map(({ status }) => status.job_id);
+  return new Set([...followupRequired.map(({ status }) => status.job_id), ...deliveryReserve]);
 }
 
 export function orderManagedJobTerminalEviction(items, options = {}) {

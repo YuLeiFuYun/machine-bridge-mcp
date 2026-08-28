@@ -108,6 +108,7 @@ try {
     console.log(`Published prerelease activated: ${prerelease.raw}`);
     console.log(`Worker and login daemon version: ${activation.version}`);
     console.log(`Soak activation record: ${recordPath}`);
+    console.log("Browser soak reminder: reload the unpacked Machine Bridge extension after this upgrade and verify browser status reports the expected connected version before counting browser automation as exercised.");
     console.log("Use this prerelease normally. Any blocking issue requires a new beta/rc version and restarts the soak clock.");
   });
 } catch (error) {

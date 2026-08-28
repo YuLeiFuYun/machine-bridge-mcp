@@ -2,12 +2,17 @@ import {
   createDaemonAuthentication,
   createDaemonPreflightHeaders,
   createDeviceIdentity,
+  createDeviceSessionDraft,
   createDeviceSessionIdentity,
   deviceKeyId,
+  finalizeDeviceSessionIdentity,
   publicDeviceJwkJson,
+  signWithDeviceSessionIdentity,
   validateDeviceIdentity,
+  validatePublicDeviceRoot,
   validateDeviceSessionIdentity,
 } from "../src/local/device-identity.mjs";
+import { canonicalPublicJwk, deviceSessionCertificateTranscript } from "../src/shared/device-session-auth.mjs";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, sanitizeDaemonChallengeAttachment, verifyDaemonAuthentication, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
 import { consumeBoundedNonce } from "../src/worker/nonce-store.ts";
 
@@ -41,6 +46,64 @@ assert(sessionIdentity.keyId === deviceKeyId(sessionIdentity.publicJwk), "sessio
 assert(rootIdentity.keyId !== sessionIdentity.keyId, "session identity reused the long-term root key");
 const rootPublicJson = publicDeviceJwkJson(rootIdentity);
 assert(!rootPublicJson.includes('"d"'), "Worker root public-key material contained the private scalar");
+
+for (const [value, fragment] of [
+  [null, "device identity is missing"],
+  [[], "device identity is missing"],
+  [{ ...rootIdentity, scheme: "wrong" }, "scheme is invalid"],
+  [{ ...rootIdentity, privateJwk: { ...rootIdentity.privateJwk, d: undefined } }, "private key is invalid"],
+  [{ ...rootIdentity, publicJwk: createDeviceIdentity().publicJwk }, "public and private keys do not match"],
+  [{ ...rootIdentity, keyId: "device_wrong" }, "key id is invalid"],
+  [{ ...rootIdentity, createdAt: "invalid" }, "creation time is invalid"],
+]) expectThrow(() => validateDeviceIdentity(value), fragment);
+for (const [value, fragment] of [
+  [null, "device root identity is missing"],
+  [{ ...rootIdentity, scheme: "wrong" }, "scheme is invalid"],
+  [{ ...rootIdentity, keyId: "device_wrong" }, "key id is invalid"],
+  [{ ...rootIdentity, createdAt: "invalid" }, "creation time is invalid"],
+]) expectThrow(() => validatePublicDeviceRoot(value), fragment);
+expectThrow(() => createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, 0), "timestamp is invalid");
+expectThrow(() => finalizeDeviceSessionIdentity(null, "A".repeat(86), issuedAt * 1000), "draft is invalid");
+expectThrow(() => finalizeDeviceSessionIdentity(createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, issuedAt * 1000), "bad", issuedAt * 1000), "signature is invalid");
+for (const [value, fragment] of [
+  [{ ...sessionIdentity, certificate: null }, "certificate is missing"],
+  [{ ...sessionIdentity, certificate: { ...sessionIdentity.certificate, scheme: "wrong" } }, "certificate scheme is invalid"],
+  [{ ...sessionIdentity, certificate: { ...sessionIdentity.certificate, public_jwk: rootIdentity.publicJwk } }, "certificate key mismatch"],
+  [{ ...sessionIdentity, certificate: { ...sessionIdentity.certificate, expires_at: Number.NaN } }, "certificate expired"],
+  [{ ...sessionIdentity, certificate: { ...sessionIdentity.certificate, signature: "bad" } }, "certificate signature is invalid"],
+]) expectThrow(() => validateDeviceSessionIdentity(value, issuedAt * 1000), fragment);
+expectThrow(() => signWithDeviceSessionIdentity(sessionIdentity, "", issuedAt * 1000), "transcript is empty or too large");
+expectThrow(() => signWithDeviceSessionIdentity(sessionIdentity, "x".repeat(64 * 1024 + 1), issuedAt * 1000), "transcript is empty or too large");
+
+for (const [value, fragment] of [
+  [null, "public key is invalid"],
+  [[], "public key is invalid"],
+  [{ ...rootIdentity.publicJwk, kty: "RSA" }, "public key is invalid"],
+  [{ ...rootIdentity.publicJwk, crv: "P-384" }, "public key is invalid"],
+  [{ ...rootIdentity.publicJwk, x: "bad" }, "public key is invalid"],
+  [{ ...rootIdentity.publicJwk, y: "bad" }, "public key is invalid"],
+  [{ ...rootIdentity.publicJwk, d: "private" }, "public key is invalid"],
+]) expectThrow(() => canonicalPublicJwk(value), fragment);
+const transcriptBase = {
+  workerOrigin, server, version, rootKeyId: rootIdentity.keyId,
+  publicJwk: rootIdentity.publicJwk, issuedAt, expiresAt: issuedAt + 60, nonce: "a".repeat(24),
+};
+for (const [override, fragment] of [
+  [{ workerOrigin: "not a url" }, "Worker origin is invalid"],
+  [{ workerOrigin: "http://remote.example.com" }, "Worker origin is invalid"],
+  [{ workerOrigin: "https://user@example.com" }, "Worker origin is invalid"],
+  [{ workerOrigin: "https://bridge.example.com/path" }, "Worker origin is invalid"],
+  [{ workerOrigin: "https://bridge.example.com/?query=1" }, "Worker origin is invalid"],
+  [{ server: "" }, "server is invalid"],
+  [{ server: "x".repeat(129) }, "server is invalid"],
+  [{ version: "line\nbreak" }, "version is invalid"],
+  [{ rootKeyId: "short" }, "root key id is invalid"],
+  [{ issuedAt: 0 }, "issued at is invalid"],
+  [{ expiresAt: Number.NaN }, "expires at is invalid"],
+  [{ nonce: "short" }, "nonce is invalid"],
+]) expectThrow(() => deviceSessionCertificateTranscript({ ...transcriptBase, ...override }), fragment);
+assert(deviceSessionCertificateTranscript({ ...transcriptBase, workerOrigin: "http://127.0.0.1" }).includes("http://127.0.0.1"),
+  "loopback HTTP device-session origin was rejected");
 
 const preflightHeaders = new Headers(createDaemonPreflightHeaders(sessionIdentity, workerOrigin, server, version, issuedAt * 1000));
 const preflight = await verifyDaemonPreflight({
@@ -149,6 +212,16 @@ const welcome = {
   authentication: { scheme: challenge.scheme, challenge: challenge.challenge, issued_at: challenge.issuedAt, expires_at: challenge.expiresAt },
 };
 const authentication = await createDaemonAuthentication(sessionIdentity, welcome, instanceId);
+await expectReject(() => createDaemonAuthentication(sessionIdentity, { ...welcome, authentication: null }, instanceId), "supported device challenge");
+await expectReject(() => createDaemonAuthentication(sessionIdentity, {
+  ...welcome, authentication: { ...welcome.authentication, challenge: "bad" },
+}, instanceId), "challenge is invalid");
+await expectReject(() => createDaemonAuthentication(sessionIdentity, {
+  ...welcome, authentication: { ...welcome.authentication, expires_at: welcome.authentication.issued_at },
+}, instanceId), "lifetime is invalid");
+await expectReject(() => createDaemonAuthentication(sessionIdentity, {
+  ...welcome, authentication: { ...welcome.authentication, issued_at: 1, expires_at: 2 },
+}, instanceId), "challenge expired");
 assert(await verifyDaemonAuthentication({
   publicKeyJson: preflight.sessionPublicKeyJson,
   authentication,
@@ -209,4 +282,20 @@ function mutate(value) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function expectThrow(callback, fragment) {
+  try { callback(); } catch (error) {
+    if (String(error?.message || error).includes(fragment)) return;
+    throw error;
+  }
+  throw new Error(`expected throw containing: ${fragment}`);
+}
+
+async function expectReject(callback, fragment) {
+  try { await callback(); } catch (error) {
+    if (String(error?.message || error).includes(fragment)) return;
+    throw error;
+  }
+  throw new Error(`expected rejection containing: ${fragment}`);
 }

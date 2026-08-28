@@ -76,6 +76,7 @@ Version 3 and later must not go directly from implementation to a stable `x.y.z`
 - Only after the candidate-bound OAuth canary evidence and observed live verification may the agent run `npm run release:accept`.
 - The accepted prerelease is reviewed and merged; repository automation then creates its Git tag and GitHub Prerelease with `npm run prerelease:release` once exact-commit and publication-integrity gates pass.
 - npm prerelease publication is the explicit authorization boundary and uses `npm run prerelease:publish -- --owner-confirm` only after a current-task owner request.
+- TTY presence is not publication authorization. However, if npm itself returns an interactive one-time-authentication challenge, that same canonical publish command must be rerun in a real owner terminal and the browser/OTP challenge must complete while that npm process remains running. Do not pass OTPs, tokens, or npm challenge URLs through Machine Bridge or another automation transport; a non-TTY EOTP failure is reconciled against the registry and reported without echoing challenge material.
 - Published-prerelease installation/activation uses `npm run prerelease:install -- --allow-worker-deploy` automatically after npm publication; only this registry-verified activation starts formal soak.
 - Minimum soak is seven days for a major release, three days for a minor release, and one day for a patch release.
 - Every blocking defect requires a new prerelease number and restarts the complete soak interval.
@@ -139,7 +140,7 @@ When the incident is closed, record the causal evidence and the disproved branch
 6. Record exact candidate acceptance only after both candidate-bound canary evidence and observed live verification; commit and push only through `npm run github:push`.
 7. Complete the pull request and exact-commit checks.
 8. Run `npm run prerelease:release` through the local control plane once exact-commit checks pass; tag/GitHub Release publication does not require a separate approval.
-9. Stop only at npm publication unless the owner has explicitly authorized it. When authorized, run `npm run prerelease:publish -- --owner-confirm`, then continue automatically with `npm run prerelease:install -- --allow-worker-deploy` and all non-npm-publication follow-up.
+9. Stop only at npm publication unless the owner has explicitly authorized it. When authorized, run `npm run prerelease:publish -- --owner-confirm`; if npm requires interactive one-time authentication, keep authorization unchanged but move that same canonical command to a real owner TTY and complete the challenge in-process. After publication succeeds, continue automatically with `npm run prerelease:install -- --allow-worker-deploy` and all non-npm-publication follow-up.
 10. Wait for real use. Do not assume successful soak; the owner reports the outcome.
 11. After explicit successful soak feedback, record the exact `prerelease:soak:accept` phrase.
 

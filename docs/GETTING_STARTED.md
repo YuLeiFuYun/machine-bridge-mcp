@@ -74,8 +74,8 @@ Use a temporary package-free directory. An older npm front-end can inspect metad
 install_dir="$(mktemp -d)"
 (
   cd "$install_dir"
-  npx --yes npm@12.0.1 install --global npm@12.0.1
-  npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+  npx --yes npm@12.0.2 install --global npm@12.0.2
+  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 )
 rm -rf "$install_dir"
 
@@ -89,8 +89,8 @@ machine-mcp doctor
 set "MBM_INSTALL_DIR=%TEMP%\machine-bridge-mcp-install-%RANDOM%-%RANDOM%"
 mkdir "%MBM_INSTALL_DIR%"
 pushd "%MBM_INSTALL_DIR%"
-npx --yes npm@12.0.1 install --global npm@12.0.1
-npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+npx --yes npm@12.0.2 install --global npm@12.0.2
+npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 popd
 rmdir /s /q "%MBM_INSTALL_DIR%"
 
@@ -343,8 +343,8 @@ Repeat the isolated global installation, then start Machine Bridge in the target
 install_dir="$(mktemp -d)"
 (
   cd "$install_dir"
-  npx --yes npm@12.0.1 install --global npm@12.0.1
-  npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+  npx --yes npm@12.0.2 install --global npm@12.0.2
+  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
 )
 rm -rf "$install_dir"
 

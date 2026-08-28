@@ -34,7 +34,7 @@ export function npmPublishArguments(version, mode) {
   if (mode === "prerelease" && !parsed.prerelease) throw new Error("prerelease publication requires a dev, beta, or rc version");
   if (mode === "stable" && parsed.prerelease) throw new Error("stable publication requires a version without a prerelease suffix");
   if (!new Set(["prerelease", "stable"]).has(mode)) throw new Error("publication mode must be prerelease or stable");
-  return ["publish", "--dry-run=false", "--workspaces=false", "--global=false", "--ignore-scripts=true", "--if-present=false", "--access=public", "--tag", parsed.npmTag];
+  return ["publish", "--dry-run=false", "--workspaces=false", "--global=false", "--ignore-scripts=true", "--if-present=false", "--logs-max=0", "--access=public", "--tag", parsed.npmTag];
 }
 
 export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {}) {
@@ -78,7 +78,7 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
     const npmCli = explicitNpmCli || session.cli;
     await runNpmStage(run, npmCli, [
       "run", "--dry-run=false", "--workspaces=false", "--global=false", "--ignore-scripts=false",
-      "--if-present=false", "--tag", parsed.npmTag, "--prefix", repository, "prepublishOnly",
+      "--if-present=false", "--logs-max=0", "--tag", parsed.npmTag, "--prefix", repository, "prepublishOnly",
     ], { ...processOptions, timeout: prepublicationTimeout }, "npm prepublication verification");
     const preflightArgs = [
       publishArgs[0], candidate.path,
@@ -97,9 +97,10 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
     } else {
       let uploadError = null;
       try {
+        const uploadOptions = { ...processOptions, stdio: npmPublicationUploadStdio(options) };
         await runNpmStage(run, npmCli, [
           publishArgs[0], candidate.path, ...publishArgs.slice(1), "--prefix", repository,
-        ], processOptions, "npm publish");
+        ], uploadOptions, "npm publish");
       } catch (error) {
         uploadError = error;
       }
@@ -130,6 +131,12 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
           [uploadError, reconciliationError],
           "npm publication outcome is ambiguous because upload and registry reconciliation both failed",
         );
+      } else if (uploadError?.code === "EOTP") {
+        const error = new Error(
+          "npm publication requires one-time authentication; the rejected upload did not produce a visible exact accepted version during bounded registry reconciliation. Re-run the canonical npm publication command in a real owner TTY and complete npm's browser/OTP challenge while that same command remains running; do not pass OTPs, tokens, or challenge URLs through automation",
+        );
+        error.code = "EOTP";
+        throw error;
       } else if (uploadError) {
         throw new Error(
           "npm publication outcome is ambiguous: the upload command returned an error and the exact version is not yet visible; do not retry until registry state is checked",
@@ -193,12 +200,31 @@ export function validateNpmPublishDryRun(stdout, metadata) {
 async function runNpmStage(run, npmCli, args, options, label) {
   const result = await run(process.execPath, [npmCli, ...args], options);
   if (result.error || result.status !== 0) {
+    if (npmAuthenticationRequired(result)) {
+      const error = new Error(`${label} requires npm one-time authentication`);
+      error.code = "EOTP";
+      error.transient = false;
+      error.commandStatus = result.status;
+      throw error;
+    }
     const error = new Error(`${label} failed: ${releaseCommandFailure("npm", args, result, { maxChars: 1200 })}`, result.error ? { cause: result.error } : undefined);
     error.transient = isTransientNetworkFailure(result);
     error.commandStatus = result.status;
     throw error;
   }
   return result;
+}
+
+export function npmPublicationUploadStdio(options = {}) {
+  if (options.capture === true) return "pipe";
+  if (typeof options.interactiveTty === "boolean") return options.interactiveTty ? "inherit" : "pipe";
+  return process.stdin?.isTTY === true && process.stdout?.isTTY === true && process.stderr?.isTTY === true ? "inherit" : "pipe";
+}
+
+export function npmAuthenticationRequired(result) {
+  if (String(result?.error?.code || "").toUpperCase() === "EOTP") return true;
+  const evidence = [result?.stderr, result?.stdout, result?.error?.message].filter(Boolean).join("\n");
+  return /\bEOTP\b|one-time password|authenticate your account at/i.test(evidence);
 }
 
 export async function runNpmPublicationProcess(command, args, options = {}) {

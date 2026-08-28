@@ -18,6 +18,7 @@ import {
   acknowledgementMismatch, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory, relayCloseUserCause,
   relayConnectionId, relayFatalMessage, relayOutageUserAction, relayServerErrorReconnectCategory, sanitizeProtocolErrorCode, welcomeMismatch,
 } from "./relay-connection-classification.mjs";
+import { scheduleRelayReconnect, scheduleRelayReconnectBackoffReset, settleRelayReconnectBackoffOnClose } from "./relay-reconnect.mjs";
 export {
   acknowledgementMismatch, isRelayReadyContext, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory,
   relayOutageUserAction, relayServerErrorReconnectCategory, welcomeMismatch,
@@ -64,6 +65,7 @@ export class RelayConnection {
     this.readinessTimeoutMs = boundedPositiveInteger(options.readinessTimeoutMs, DEFAULT_READINESS_TIMEOUT_MS);
     this.outageWarnAfterMs = boundedPositiveInteger(options.outageWarnAfterMs, DEFAULT_OUTAGE_WARN_AFTER_MS);
     this.outageWarnRepeatMs = boundedPositiveInteger(options.outageWarnRepeatMs, DEFAULT_OUTAGE_WARN_REPEAT_MS);
+    this.reconnectStableReadyMs = boundedPositiveInteger(options.reconnectStableReadyMs, 5_000);
     this.outageWarnMaxRepeatMs = Math.max(
       this.outageWarnRepeatMs,
       boundedPositiveInteger(options.outageWarnMaxRepeatMs, DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS),
@@ -79,6 +81,7 @@ export class RelayConnection {
     this.lastReadyInboundSilenceMs = 0;
     this.reconnectAttempt = 0;
     this.reconnectTimer = null;
+    this.reconnectStabilityTimer = null;
     this.connectTimer = null;
     this.handshakeTimer = null;
     this.readinessTimer = null;
@@ -164,6 +167,7 @@ export class RelayConnection {
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.clearTimer("readinessTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
+    this.clearTimer("reconnectStabilityTimer", "clearTimeout");
     this.clearTimer("outageWarnTimer", "clearTimeout");
     const socket = this.socket;
     this.socket = null;
@@ -273,7 +277,6 @@ export class RelayConnection {
     }
     this.ready = true;
     this.clearTimer("readinessTimer", "clearTimeout");
-    this.reconnectAttempt = 0;
     this.lastReadyAt = this.now();
     this.lastReadyWallAt = this.wallNow();
     this.nextReconnectAt = 0;
@@ -301,6 +304,7 @@ export class RelayConnection {
     const reconnected = this.hasConnected;
     this.hasConnected = true;
     this.resetOutage();
+    scheduleRelayReconnectBackoffReset(this, socket, this.activeSessionId);
     try { this.onReady({ reconnected, sessionId: this.activeSessionId }); } catch (error) {
       this.logger.error?.("relay ready callback failed", { error_class: classifyOperationalError(error) });
     }
@@ -457,7 +461,9 @@ export class RelayConnection {
       const connectedForMs = wasAuthenticated && this.connectedAt > 0 ? Math.max(0, disconnectedAt - this.connectedAt) : 0;
       if (wasReady) this.lastReadyInboundSilenceMs = readyInboundSilenceMs;
       this.lastDisconnectedAt = this.wallNow();
-      if (wasReady && this.lastReadyAt > 0) this.lastReadyDurationMs = Math.max(0, disconnectedAt - this.lastReadyAt);
+      const readyDurationMs = wasReady && this.lastReadyAt > 0 ? Math.max(0, disconnectedAt - this.lastReadyAt) : 0;
+      if (wasReady && this.lastReadyAt > 0) this.lastReadyDurationMs = readyDurationMs;
+      settleRelayReconnectBackoffOnClose(this, wasReady, readyDurationMs);
       this.lastCloseCode = Number(code) || 0;
       this.logger.debug?.("remote relay transport closed", {
         close_code: this.lastCloseCode,
@@ -525,6 +531,7 @@ export class RelayConnection {
     this.clearTimer("handshakeTimer", "clearTimeout");
     this.clearTimer("readinessTimer", "clearTimeout");
     this.clearTimer("reconnectTimer", "clearTimeout");
+    this.clearTimer("reconnectStabilityTimer", "clearTimeout");
     this.clearTimer("outageWarnTimer", "clearTimeout");
     if (wasReady) {
       try { this.onDisconnect(); } catch (error) {
@@ -553,28 +560,7 @@ export class RelayConnection {
   }
 
   scheduleReconnect(category) {
-    if (this.closed || this.reconnectTimer) return;
-    this.recordOutage(category);
-    const delay = this.reconnectDelay(this.reconnectAttempt++, Math.random, this.connectTiming.durationMs, this.connectTimeoutMs);
-    this.lastReconnectDelayMs = delay;
-    this.nextReconnectAt = this.now() + delay;
-    this.nextReconnectWallAt = this.wallNow() + delay;
-    this.scheduleOutageWarning();
-    this.logger.debug?.("scheduling daemon reconnect", {
-      delay_ms: delay,
-      next_reconnect_at: new Date(this.nextReconnectWallAt).toISOString(),
-      attempt: this.outageAttempts,
-      close_category: this.lastCloseCategory,
-      network_route: this.networkRoute,
-      network_route_scope: this.networkRouteScope,
-    });
-    this.reconnectTimer = this.scheduler.setTimeout(() => {
-      this.reconnectTimer = null;
-      this.nextReconnectAt = 0;
-      this.nextReconnectWallAt = 0;
-      this.connect();
-    }, delay);
-    this.reconnectTimer?.unref?.();
+    return scheduleRelayReconnect(this, category);
   }
 
   sendOnSocket(socket, value, onWritten = null) {

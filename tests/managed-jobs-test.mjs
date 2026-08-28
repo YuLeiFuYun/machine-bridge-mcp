@@ -20,6 +20,7 @@ import {
 } from "../src/local/managed-job-active-child.mjs";
 import { MAX_JOBS, MAX_LISTED_JOBS } from "../src/local/managed-job-capacity.mjs";
 import { TRANSIENT_PROCESS_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_SLOTS, transientProcessWithinRecoveryGrace } from "../src/local/managed-job-retention-policy.mjs";
+import { clearTransientProcessRecoveryPending } from "../src/local/managed-job-transient-recovery.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
 import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
@@ -53,6 +54,45 @@ function testManagedJobRetentionGraceBoundaries() {
     "transient recovery grace trusted a future terminal timestamp");
   assert(!transientProcessWithinRecoveryGrace({ finished_at: new Date(now).toISOString() }, now, now),
     "ordinary managed-job history entered the transient recovery grace");
+}
+
+async function testTransientRecoveryMarkerBoundaries() {
+  const root = await mkdtemp(join(tmpdir(), "mbm-transient-recovery-marker-"));
+  const jobId = `job_${"R".repeat(24)}`;
+  const dir = join(root, jobId);
+  const statusFile = join(dir, "status.json");
+  await mkdir(dir, { recursive: true });
+  const writeStatus = async (status) => writeFile(statusFile, `${JSON.stringify(status)}\n`, { mode: 0o600 });
+  try {
+    await writeStatus({ job_id: jobId, status: "succeeded", retention_class: "managed", transient_recovery_pending: true });
+    assert(clearTransientProcessRecoveryPending(dir) === false,
+      "ordinary managed-job terminal state entered transient recovery-marker clearing");
+
+    await writeStatus({ job_id: jobId, status: "running", retention_class: "transient_process", transient_recovery_pending: true });
+    assert(clearTransientProcessRecoveryPending(dir) === false,
+      "active transient process lost its follow-up recovery marker before terminal settlement");
+
+    await writeStatus({ job_id: `${jobId}x`, status: "succeeded", retention_class: "transient_process", transient_recovery_pending: true });
+    let identityFailure = null;
+    try { clearTransientProcessRecoveryPending(dir); } catch (error) { identityFailure = error; }
+    assert(String(identityFailure?.message || "").includes("directory identity is invalid"),
+      "transient recovery-marker mutation trusted mismatched managed-job directory identity");
+
+    await writeStatus({ job_id: jobId, status: "succeeded", retention_class: "transient_process", transient_recovery_pending: true });
+    const held = acquireJobTransitionLock(dir);
+    assert(held, "transient recovery-marker fixture could not acquire its transition lock");
+    try {
+      assert(clearTransientProcessRecoveryPending(dir) === false,
+        "transient recovery-marker mutation ignored an existing state transition owner");
+    } finally { held.release(); }
+    assert(clearTransientProcessRecoveryPending(dir) === true,
+      "terminal transient process did not clear its delivered follow-up recovery marker");
+    const cleared = JSON.parse(await readFile(statusFile, "utf8"));
+    assert(!Object.hasOwn(cleared, "transient_recovery_pending"),
+      "terminal transient process persisted its cleared private recovery marker");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 function testManagedStateIdentityRetry() {
@@ -747,8 +787,9 @@ async function testManagedJobCapacityBoundary() {
     const transient = terminalManager.createJob({
       name: `recent transient recovery result ${index}`,
       steps: [{ argv: [process.execPath, "-e", ""] }],
-    }, { launch: false, retentionClass: "transient_process" });
+    }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
     terminalManager.cancel({ job_id: transient.job_id });
+    if (index !== 0) clearTransientProcessRecoveryPending(join(terminalRoot, transient.job_id));
     recentTransientIds.push(transient.job_id);
   }
   const recentRecoveryCapacity = terminalManager.list({ limit: MAX_LISTED_JOBS }).capacity;
@@ -765,15 +806,27 @@ async function testManagedJobCapacityBoundary() {
   const overflowTransient = terminalManager.createJob({
     name: "recent transient recovery overflow",
     steps: [{ argv: [process.execPath, "-e", ""] }],
-  }, { launch: false, retentionClass: "transient_process" });
+  }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
   terminalManager.cancel({ job_id: overflowTransient.job_id });
   const overflowRecoveryCapacity = terminalManager.list({ limit: MAX_LISTED_JOBS }).capacity;
-  assert(!(await exists(join(terminalRoot, recentTransientIds[0])))
-    && (await Promise.all(recentTransientIds.slice(1).map((id) => exists(join(terminalRoot, id))))).every(Boolean)
+  assert((await Promise.all(recentTransientIds.map((id) => exists(join(terminalRoot, id))))).every(Boolean)
     && await exists(join(terminalRoot, overflowTransient.job_id))
-    && overflowRecoveryCapacity?.transient_terminal === TRANSIENT_PROCESS_RECOVERY_SLOTS
-    && overflowRecoveryCapacity?.durable_terminal === MAX_JOBS - TRANSIENT_PROCESS_RECOVERY_SLOTS,
-  "transient recovery reserve grew without bound instead of reclaiming its oldest helper result");
+    && overflowRecoveryCapacity?.transient_terminal === TRANSIENT_PROCESS_RECOVERY_SLOTS + 1
+    && overflowRecoveryCapacity?.durable_terminal === MAX_JOBS - TRANSIENT_PROCESS_RECOVERY_SLOTS - 1,
+  "follow-up-required transient recovery did not outrank ordinary durable terminal history at saturation");
+  clearTransientProcessRecoveryPending(join(terminalRoot, overflowTransient.job_id));
+  const secondOverflow = terminalManager.createJob({
+    name: "recent transient delivery reserve overflow",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
+  terminalManager.cancel({ job_id: secondOverflow.job_id });
+  clearTransientProcessRecoveryPending(join(terminalRoot, secondOverflow.job_id));
+  const secondRecoveryList = terminalManager.list({ limit: MAX_LISTED_JOBS });
+  assert(await exists(join(terminalRoot, recentTransientIds[0]))
+    && !(await exists(join(terminalRoot, recentTransientIds[1])))
+    && secondRecoveryList.recent_process_recovery.some((job) => job.job_id === recentTransientIds[0])
+    && secondRecoveryList.recent_process_recovery.length === TRANSIENT_PROCESS_RECOVERY_SLOTS,
+  "follow-up-required transient recovery was displaced by newer terminal-delivered helper churn");
 
   const durableHelperRoot = join(root, "durable-helper-retention-jobs");
   const durableHelperManager = createManagedJobTestManager({
@@ -789,14 +842,33 @@ async function testManagedJobCapacityBoundary() {
     argv: [process.execPath, "-e", ""],
     cwd: workspace,
     timeoutSeconds: 30,
-  });
+  }, { authority: { origin: "relay" } });
   await waitForJob(durableHelperManager, durableHelper.job_id);
   const durableHelperPrivateStatus = JSON.parse(await readFile(join(durableHelperRoot, durableHelper.job_id, "status.json"), "utf8"));
-  assert(durableHelperPrivateStatus.retention_class === "transient_process",
-    "durable one-step process carrier did not persist the transient retention class through terminal settlement");
-  assert(!Object.hasOwn(durableHelperManager.read({ job_id: durableHelper.job_id }), "retention_class")
-    && !durableHelperManager.list({ limit: 10 }).jobs.some((job) => Object.hasOwn(job, "retention_class")),
-  "durable one-step process retention class leaked through public managed-job projections");
+  assert(durableHelperPrivateStatus.retention_class === "transient_process"
+    && durableHelperPrivateStatus.transient_recovery_pending === true,
+  "durable one-step process carrier did not persist its private follow-up recovery state through terminal settlement");
+  const durableHelperPublic = await durableHelperManager.readHosted({ job_id: durableHelper.job_id });
+  const durableHelperDeliveredStatus = JSON.parse(await readFile(join(durableHelperRoot, durableHelper.job_id, "status.json"), "utf8"));
+  assert(!Object.hasOwn(durableHelperPublic, "retention_class")
+    && !Object.hasOwn(durableHelperPublic, "transient_recovery_pending")
+    && !Object.hasOwn(durableHelperDeliveredStatus, "transient_recovery_pending")
+    && !durableHelperManager.list({ limit: 10 }).jobs.some((job) => Object.hasOwn(job, "retention_class") || Object.hasOwn(job, "transient_recovery_pending")),
+  "hosted terminal read did not downgrade private follow-up recovery state or leaked it through public projections");
+
+  const localDurableHelper = durableHelperManager.startDurableProcess({
+    sourceTool: "run_process",
+    name: "local retention class wiring",
+    argv: [process.execPath, "-e", ""],
+    cwd: workspace,
+    timeoutSeconds: 30,
+    idempotencyKey: "local-retention-class-wiring",
+  });
+  await waitForJob(durableHelperManager, localDurableHelper.job_id);
+  const localDurableHelperStatus = JSON.parse(await readFile(join(durableHelperRoot, localDurableHelper.job_id, "status.json"), "utf8"));
+  assert(localDurableHelperStatus.retention_class === "transient_process"
+    && !Object.hasOwn(localDurableHelperStatus, "transient_recovery_pending"),
+  "local idempotent durable helper incorrectly retained hosted follow-up priority");
 
   const recoveryVisibilityRoot = join(root, "recovery-visibility-jobs");
   const recoveryVisibilityManager = createManagedJobTestManager({
@@ -1338,7 +1410,8 @@ await writeFile(helperFile, "temporary", "utf8");
 try {
   testTerminalPersistenceBoundary();
   testManagedJobRetentionGraceBoundaries();
-testManagedStateIdentityRetry();
+  await testTransientRecoveryMarkerBoundaries();
+  testManagedStateIdentityRetry();
   await testRunnerExitRecoveryRetryPolicy();
   await testManagedJobDependencyReadRecoveryPolicy();
   testHostedManagedJobStatusProjection();
