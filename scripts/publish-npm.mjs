@@ -13,6 +13,7 @@ import { readPublishedNpmPrereleaseIfPresent } from "./published-release.mjs";
 import { isTransientNetworkFailure } from "./network-retry.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { runExecutable } from "../src/local/shell.mjs";
+import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "./source-dependency-tree.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const NPM_PUBLICATION_CONFIRMATION_FLAG = "--owner-confirm";
@@ -45,17 +46,8 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
   const explicitNpmCli = String(options.npmCli || "").trim();
   const lifecycleNpmCli = String(options.lifecycleNpmCli || process.env.npm_execpath || explicitNpmCli).trim();
   if (!lifecycleNpmCli) throw new Error("npm publication must run through npm so npm_execpath is available");
-  if (!parsed.prerelease && requiresSoakForStable(parsed.raw)) {
-    verifyCurrentStableSoak(repository, { npmCli: lifecycleNpmCli });
-  }
-  const acceptance = options.acceptance || verifyCurrentReleaseAcceptance(repository, {
-    npmCli: lifecycleNpmCli,
-    env: options.env || process.env,
-  });
-  if (acceptance.required !== true) throw new Error("npm publication requires current local candidate acceptance");
   const prepareCandidate = options.prepareCandidate || stageAcceptedCandidateTarball;
-  const candidate = prepareCandidate(repository, acceptance, options);
-  if (!candidate?.path) throw new Error("npm publication candidate tarball path is missing");
+  const verifyAcceptance = options.verifyAcceptance || verifyCurrentReleaseAcceptance;
 
   const createSession = options.createSession || createHardenedNpmSession;
   const run = options.run || runNpmPublicationProcess;
@@ -71,11 +63,28 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
     windowsHide: true,
   };
   let session = null;
+  let acceptance = options.acceptance || null;
+  let candidate = null;
   let publication = null;
   let primaryError = null;
   try {
     session = explicitNpmCli ? null : await createSession(options);
     const npmCli = explicitNpmCli || session.cli;
+    await runNpmStage(run, npmCli, sourceDependencyTreeInstallArguments(repository), {
+      ...processOptions,
+      timeout: sourceDependencyTreeInstallTimeoutMs,
+      stdio: "pipe",
+    }, "npm source dependency installation");
+    if (!parsed.prerelease && requiresSoakForStable(parsed.raw)) {
+      verifyCurrentStableSoak(repository, { npmCli });
+    }
+    acceptance ??= verifyAcceptance(repository, {
+      npmCli,
+      env: options.env || process.env,
+    });
+    if (acceptance.required !== true) throw new Error("npm publication requires current local candidate acceptance");
+    candidate = prepareCandidate(repository, acceptance, options);
+    if (!candidate?.path) throw new Error("npm publication candidate tarball path is missing");
     await runNpmStage(run, npmCli, [
       "run", "--dry-run=false", "--workspaces=false", "--global=false", "--ignore-scripts=false",
       "--if-present=false", "--logs-max=0", "--tag", parsed.npmTag, "--prefix", repository, "prepublishOnly",

@@ -6,6 +6,10 @@ const syntheticHome = ["", "Users", "synthetic-user", "project"].join("/");
 const credentialUrl = ["https://", "synthetic-user", ":", "synthetic-password", "@registry.example.invalid/package"].join("");
 const npmChallengeId = "synthetic-npm-cli-challenge-123456789";
 const npmSessionId = "synthetic-registry-session-987654321";
+const refreshToken = `mcp_rt_${"r".repeat(43)}`;
+const accountId = `acct_${"a".repeat(43)}`;
+const clientId = `mcp_client_${"c".repeat(43)}`;
+const familyId = `mcp_family_${"f".repeat(43)}`;
 const diagnostic = releaseDiagnostic([
   `npm_token=${npmToken}`,
   `registry=${credentialUrl}`,
@@ -13,6 +17,10 @@ const diagnostic = releaseDiagnostic([
   `path=${syntheticHome}`,
   `auth=https://www.npmjs.com/auth/cli/${npmChallengeId}?state=synthetic-state-value`,
   `done=https://registry.npmjs.org/-/v1/done?sessionId=${npmSessionId}`,
+  `refresh=${refreshToken}`,
+  `account=${accountId}`,
+  `client=${clientId}`,
+  `family=${familyId}`,
   "line-two",
 ].join("\n"), 300);
 assert(!diagnostic.includes(npmToken), "npm token was not redacted");
@@ -21,6 +29,9 @@ assert(!diagnostic.includes("owner@example.invalid"), "email was not redacted");
 assert(!diagnostic.includes("synthetic-user"), "home path was not redacted");
 assert(!diagnostic.includes(npmChallengeId) && !diagnostic.includes(npmSessionId) && !diagnostic.includes("synthetic-state-value"),
   "npm authentication challenge material was not redacted");
+assert(!diagnostic.includes(refreshToken) && !diagnostic.includes(accountId)
+  && !diagnostic.includes(clientId) && !diagnostic.includes(familyId),
+"release diagnostic exposed refresh-token or stable authorization identity material");
 assert(!diagnostic.includes("\n"), "diagnostic retained a literal line break");
 assert(diagnostic.includes("\\n"), "diagnostic did not preserve bounded line-break evidence");
 assert(releaseDiagnostic("x".repeat(500), 64).length <= 64, "release diagnostic exceeded its bound");

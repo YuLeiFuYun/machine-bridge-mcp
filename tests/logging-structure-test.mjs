@@ -4,6 +4,10 @@ const stdout = captureStream();
 const stderr = captureStream();
 const logger = createLogger({ level: "debug", format: "json", component: "test", stdout, stderr, color: false });
 const syntheticHomePath = ["", "Users", "synthetic-user", "project"].join("/");
+const syntheticRefreshToken = `mcp_rt_${"r".repeat(43)}`;
+const syntheticAccountId = `acct_${"a".repeat(43)}`;
+const syntheticClientId = `mcp_client_${"c".repeat(43)}`;
+const syntheticFamilyId = `mcp_family_${"f".repeat(43)}`;
 
 logger.event("info", "tool.call.completed", {
   call_id: "call-123",
@@ -13,8 +17,11 @@ logger.event("info", "tool.call.completed", {
   apiKey: "opaque-api-value",
   proof: "opaque-proof-value",
   monkey: "safe-animal",
+  account_id: syntheticAccountId,
+  clientId: syntheticClientId,
+  owner_family_id: syntheticFamilyId,
   workspace_path: syntheticHomePath,
-  note: "Bearer abc.def.ghi",
+  note: `Bearer abc.def.ghi refresh=${syntheticRefreshToken} account=${syntheticAccountId} client=${syntheticClientId} family=${syntheticFamilyId}`,
   timestamp: "1970-01-01T00:00:00.000Z",
   level: "debug",
   component: "caller",
@@ -36,9 +43,14 @@ assert(completed.event === "tool.call.completed" && completed.message === "Tool 
 assert(completed.call_id === "call-123" && completed.tool === "read_file" && completed.duration_ms === 12, "safe lifecycle fields were lost");
 assert(completed.password === "<redacted>" && completed.apiKey === "<redacted>" && completed.proof === "<redacted>",
   "sensitive structured field-name variants were not redacted");
+assert(completed.account_id === "<redacted>" && completed.clientId === "<redacted>" && completed.owner_family_id === "<redacted>",
+  "stable authorization identity fields were not redacted");
 assert(completed.monkey === "safe-animal", "sensitive-key matching over-redacted an unrelated field name");
 assert(completed.workspace_path === "<local-path>", "local path field was not redacted");
-assert(!stdout.lines[0].includes("must-not-appear") && !stdout.lines[0].includes(syntheticHomePath), "structured log leaked sensitive values");
+assert(!stdout.lines[0].includes("must-not-appear") && !stdout.lines[0].includes(syntheticHomePath)
+  && !stdout.lines[0].includes(syntheticRefreshToken) && !stdout.lines[0].includes(syntheticAccountId)
+  && !stdout.lines[0].includes(syntheticClientId) && !stdout.lines[0].includes(syntheticFamilyId),
+"structured log leaked sensitive values or stable authorization identity");
 assert(failed.event === "tool.call.failed" && failed.error_code === "permission_denied", "structured error event is incomplete");
 
 const human = captureStream();

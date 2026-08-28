@@ -137,15 +137,23 @@ export const PLATFORM_ONLY_CHECK_TASKS = Object.freeze([
   "managed-jobs:test",
 ]);
 
-export const FULL_ONLY_CHECK_TASKS = Object.freeze([
+export const FULL_PREFLIGHT_CHECK_TASKS = Object.freeze([
+  "sbom:test",
+]);
+
+export const FULL_POST_PLATFORM_CHECK_TASKS = Object.freeze([
   "coverage:test",
   "browser-bridge:test",
   "package:test",
-  "sbom:test",
   "install:test",
   "stdio:integration-test",
   "worker:integration-test",
   "oauth-browser:test",
+]);
+
+export const FULL_ONLY_CHECK_TASKS = Object.freeze([
+  ...FULL_PREFLIGHT_CHECK_TASKS,
+  ...FULL_POST_PLATFORM_CHECK_TASKS,
 ]);
 
 export const PLATFORM_CHECK_TASKS = Object.freeze([
@@ -154,8 +162,10 @@ export const PLATFORM_CHECK_TASKS = Object.freeze([
 ]);
 
 export const FULL_CHECK_TASKS = Object.freeze([
-  ...PLATFORM_CHECK_TASKS,
-  ...FULL_ONLY_CHECK_TASKS,
+  ...FULL_PREFLIGHT_CHECK_TASKS,
+  ...FAST_CHECK_TASKS,
+  ...PLATFORM_ONLY_CHECK_TASKS,
+  ...FULL_POST_PLATFORM_CHECK_TASKS,
 ]);
 
 export function checkTasks(mode) {

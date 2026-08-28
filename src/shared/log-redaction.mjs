@@ -1,4 +1,4 @@
-const SECRET_VALUE = /\b(?:account_admin|account_password|daemon_secret|token_version|mcp_at|mcp_code)_[A-Za-z0-9_-]+\b/g;
+const SECRET_VALUE = /\b(?:account_admin|account_password|daemon_secret|token_version|mcp_at|mcp_rt|mcp_code|mcp_family|mcp_client|acct)_[A-Za-z0-9_-]+\b/g;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
 const EMAIL_VALUE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
@@ -14,7 +14,7 @@ const NPM_CLI_AUTH_CHALLENGE = /(https?:\/\/[^\s"'<>]*\/auth\/cli\/)[^?&#\s"'<>]
 const SENSITIVE_URL_PARAMETER = /([?&#](?:access_token|refresh_token|token|code|state|auth|authid|session|sessionid|otp|verifier|proof|credential|client_secret|api[_-]?key|private[_-]?key)=)[^&#\s"'<>]*/gi;
 const API_SECRET = /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g;
 const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g;
-const SENSITIVE_FIELD_NAME = /(?:authorization|cookie|password|passwd|secret|token|verifier|proof|credential|(?:api|private|access|signing)[._-]?key|(?:^|[._-])key(?:$|[._-]))/i;
+const SENSITIVE_FIELD_NAME = /(?:authorization|cookie|password|passwd|secret|token|verifier|proof|credential|(?:account|client|family)[._-]?id|(?:api|private|access|signing)[._-]?key|(?:^|[._-])key(?:$|[._-]))/i;
 
 export function isSensitiveLogFieldName(value) {
   let name;

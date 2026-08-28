@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { assertGitHubBacklogReady, backlogBlockers, closingIssueNumbers } from "../scripts/github-backlog.mjs";
+import { assertGitHubBacklogReady, backlogBlockers, closingIssueNumbers, githubBacklogCommandTimeoutMs } from "../scripts/github-backlog.mjs";
+
+assert.equal(githubBacklogCommandTimeoutMs, 120_000, "standalone GitHub backlog probes lost their bounded network-command deadline");
 
 assert.deepEqual([...closingIssueNumbers("fix output\n\nCloses #47\nResolves: #51\nfixed #52")], [47, 51, 52], "closing keyword parser missed supported forms");
 assert.deepEqual([...closingIssueNumbers("mentions #47 but does not close it")], [], "plain issue references incorrectly satisfied the backlog gate");

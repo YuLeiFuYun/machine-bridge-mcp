@@ -4,6 +4,8 @@ import {
   FAST_CHECK_TASKS,
   FULL_CHECK_TASKS,
   FULL_ONLY_CHECK_TASKS,
+  FULL_POST_PLATFORM_CHECK_TASKS,
+  FULL_PREFLIGHT_CHECK_TASKS,
   PLATFORM_CHECK_TASKS,
   PLATFORM_ONLY_CHECK_TASKS,
   SERIAL_FAST_CHECK_TASKS,
@@ -22,6 +24,8 @@ for (const [name, tasks] of Object.entries({
   platform_only: PLATFORM_ONLY_CHECK_TASKS,
   platform: PLATFORM_CHECK_TASKS,
   full_only: FULL_ONLY_CHECK_TASKS,
+  full_preflight: FULL_PREFLIGHT_CHECK_TASKS,
+  full_post_platform: FULL_POST_PLATFORM_CHECK_TASKS,
   full: FULL_CHECK_TASKS,
 })) {
   assert.equal(new Set(tasks).size, tasks.length, `${name} check plan contains duplicate tasks`);
@@ -32,6 +36,11 @@ assert.equal(new Set(SERIAL_FAST_CHECK_TASKS).size, SERIAL_FAST_CHECK_TASKS.leng
 for (const task of ["coverage:test", "browser-bridge:test", "package:test", "sbom:test", "install:test", "stdio:integration-test", "worker:integration-test", "oauth-browser:test"]) {
   assert(FULL_ONLY_CHECK_TASKS.includes(task), `environment-sensitive task is not full-only: ${task}`);
 }
+assert.deepEqual(FULL_PREFLIGHT_CHECK_TASKS, ["sbom:test"], "full plan lost its cheap exact-dependency/SBOM preflight");
+assert(FULL_CHECK_TASKS[0] === "sbom:test"
+  && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("managed-jobs:test")
+  && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("coverage:test"),
+"full plan no longer starts by failing fast on an invalid source dependency tree before other verification work");
 for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
   assert(PLATFORM_ONLY_CHECK_TASKS.includes(task), `cross-platform behavior task is not platform-only: ${task}`);
 }

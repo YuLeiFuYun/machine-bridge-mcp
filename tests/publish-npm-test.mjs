@@ -14,6 +14,7 @@ import {
   publishCurrentNpmPackage,
   runNpmPublicationProcess,
 } from "../scripts/publish-npm.mjs";
+import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "../scripts/source-dependency-tree.mjs";
 
 expectThrow(() => assertNpmPublicationAuthorized({ argv: ["prerelease"] }), "explicit owner authorization");
 assert(
@@ -82,8 +83,13 @@ const published = await publishCurrentNpmPackage(root, "prerelease", {
 });
 assert(published.tag === "beta" && published.shasum === accepted.metadata.shasum,
   "npm publication did not retain accepted artifact identity");
-assert(invocations.length === 3, "npm publication did not separate verification, dry-run, and exact upload stages");
-const [verification, preflight, publication] = invocations;
+assert(invocations.length === 4, "npm publication did not separate dependency install, verification, dry-run, and exact upload stages");
+const [dependencyInstall, verification, preflight, publication] = invocations;
+assert(dependencyInstall.args[0] === "/synthetic/hardened/npm-cli.js"
+  && JSON.stringify(dependencyInstall.args.slice(1)) === JSON.stringify(sourceDependencyTreeInstallArguments(root))
+  && dependencyInstall.options.stdio === "pipe"
+  && dependencyInstall.options.timeout === sourceDependencyTreeInstallTimeoutMs,
+"npm publication did not rebuild the exact source dependency tree through the supplied hardened CLI");
 assert(verification.args[0] === "/synthetic/hardened/npm-cli.js"
   && verification.args[1] === "run"
   && verification.args.includes("prepublishOnly")
@@ -117,6 +123,20 @@ assert(!Object.hasOwn(publication.options.env, "NPM_CONFIG_DRY_RUN")
   && publication.options.env.npm_config_registry === "https://registry.example.test",
 "npm publication retained inherited execution modes or removed registry configuration");
 
+let failedDependencyInstallCalls = 0;
+await assertRejects(
+  () => publishCurrentNpmPackage(root, "prerelease", {
+    ...acceptedOptions,
+    npmCli: "/synthetic/hardened/npm-cli.js",
+    run() {
+      failedDependencyInstallCalls += 1;
+      return { status: 1, stdout: "", stderr: "dependency installation failed" };
+    },
+  }),
+  "npm source dependency installation failed",
+);
+assert(failedDependencyInstallCalls === 1, "npm publication continued after exact dependency installation failed");
+
 let failedVerificationCalls = 0;
 await assertRejects(
   () => publishCurrentNpmPackage(root, "prerelease", {
@@ -124,12 +144,14 @@ await assertRejects(
     npmCli: "/synthetic/hardened/npm-cli.js",
     run() {
       failedVerificationCalls += 1;
-      return { status: 1, stdout: "", stderr: "verification failed" };
+      return failedVerificationCalls === 1
+        ? { status: 0, stdout: "ok", stderr: "" }
+        : { status: 1, stdout: "", stderr: "verification failed" };
     },
   }),
   "npm prepublication verification failed",
 );
-assert(failedVerificationCalls === 1, "npm publish was attempted after prepublication verification failed");
+assert(failedVerificationCalls === 2, "npm publish was attempted after prepublication verification failed");
 
 let mismatchedPreflightCalls = 0;
 await assertRejects(
@@ -146,7 +168,7 @@ await assertRejects(
   }),
   "dry-run shasum does not match",
 );
-assert(mismatchedPreflightCalls === 2, "npm upload was attempted after dry-run artifact identity mismatch");
+assert(mismatchedPreflightCalls === 3, "npm upload was attempted after dry-run artifact identity mismatch");
 
 const preexistingInvocations = [];
 const preexisting = await publishCurrentNpmPackage(root, "prerelease", {
@@ -159,7 +181,7 @@ const preexisting = await publishCurrentNpmPackage(root, "prerelease", {
   },
   readPublished: () => publishedRecord(),
 });
-assert(preexisting.alreadyPublished === true && preexistingInvocations.length === 2,
+assert(preexisting.alreadyPublished === true && preexistingInvocations.length === 3,
   "exact preexisting npm version was uploaded again instead of settling idempotently");
 
 let eventualReads = 0;
@@ -248,7 +270,27 @@ await assertRejects(
   }),
   "does not match the exact accepted candidate",
 );
-assert(mismatchCalls === 2, "npm upload was attempted after detecting an immutable registry mismatch");
+assert(mismatchCalls === 3, "npm upload was attempted after detecting an immutable registry mismatch");
+
+let acceptanceNpmCli = "";
+let implicitAcceptanceRuns = 0;
+const implicitAcceptance = await publishCurrentNpmPackage(root, "prerelease", {
+  ...acceptedOptions,
+  acceptance: undefined,
+  npmCli: "/synthetic/hardened/npm-cli.js",
+  capture: true,
+  verifyAcceptance(repository, options) {
+    assert(repository === root, "npm publication acceptance verification escaped the repository root");
+    acceptanceNpmCli = options.npmCli;
+    return accepted;
+  },
+  run(command, args) { implicitAcceptanceRuns += 1; return successfulStage(args); },
+  readPublished: () => publishedRecord(),
+});
+assert(implicitAcceptance.alreadyPublished === true
+  && acceptanceNpmCli === "/synthetic/hardened/npm-cli.js"
+  && implicitAcceptanceRuns === 3,
+"npm publication acceptance revalidation did not use the hardened npm session after exact dependency installation");
 
 const cleanupFailure = await publishCurrentNpmPackage(root, "prerelease", {
   ...acceptedOptions,

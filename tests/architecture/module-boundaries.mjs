@@ -237,6 +237,8 @@ const lineLimits = Object.freeze({
   "src/local/runtime-capabilities.mjs": 100,
   "src/local/application-capability-projection.mjs": 50,
   "src/local/cli.mjs": 900,
+  "src/local/state.mjs": 980,
+  "src/local/service.mjs": 750,
   "src/local/cli-ready-output.mjs": 80,
   "src/local/cli-service.mjs": 220,
   "src/worker/index.ts": 830,
