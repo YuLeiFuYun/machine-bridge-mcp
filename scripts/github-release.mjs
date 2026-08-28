@@ -351,6 +351,7 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
 
   const npmSession = await createHardenedNpmSession();
   let acceptance;
+  let candidate = null;
   let verificationError = null;
   try {
     await installSourceDependencyTree(npmSession.cli);
@@ -359,6 +360,7 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
     ensureClean();
     acceptance = assertLocalAcceptance(npmSession.cli);
     if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak(npmSession.cli);
+    candidate = stageAcceptedCandidateTarball(root, acceptance, { npmCli: npmSession.cli, env: process.env });
   } catch (error) {
     verificationError = error;
   }
@@ -368,19 +370,25 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
     throw new AggregateError([verificationError, npmCleanupError], "GitHub release verification failed and hardened npm cleanup was incomplete");
   }
   if (verificationError) throw verificationError;
-  if (npmCleanupError) throw npmCleanupError;
-
-  const head = output(git, ["rev-parse", "HEAD"]);
-  const originMain = output(git, ["rev-parse", "origin/main"]);
-  if (head !== originMain) {
-    fail("HEAD does not match origin/main; local acceptance must be committed, pushed through npm run github:push, reviewed, and merged before release publication");
+  if (npmCleanupError) {
+    let candidateCleanupError = null;
+    try { candidate?.dispose(); } catch (error) { candidateCleanupError = error; }
+    if (candidateCleanupError) {
+      throw new AggregateError([npmCleanupError, candidateCleanupError], "hardened npm cleanup and candidate staging cleanup were both incomplete");
+    }
+    throw npmCleanupError;
   }
-  assertSuccessfulCi(head);
 
-  const candidate = stageAcceptedCandidateTarball(root, acceptance);
   let primaryError = null;
   let releaseVerified = false;
   try {
+    const head = output(git, ["rev-parse", "HEAD"]);
+    const originMain = output(git, ["rev-parse", "origin/main"]);
+    if (head !== originMain) {
+      fail("HEAD does not match origin/main; local acceptance must be committed, pushed through npm run github:push, reviewed, and merged before release publication");
+    }
+    assertSuccessfulCi(head);
+
     const existingLocal = localTagCommit(tag);
     if (existingLocal && existingLocal !== head) {
       fail(`local ${tag} points to ${existingLocal}, not ${head}`);

@@ -836,7 +836,7 @@ for (const [label, source] of [["release", githubReleaseSource], ["push", readFi
     throw new Error(`GitHub ${label} helper regained PATH-resolved git/gh execution`);
   }
 }
-const githubCandidateStage = githubReleaseSource.indexOf("stageAcceptedCandidateTarball(root, acceptance)");
+const githubCandidateStage = githubReleaseSource.indexOf("stageAcceptedCandidateTarball(root, acceptance, { npmCli: npmSession.cli, env: process.env })");
 const githubRemoteTagRead = githubReleaseSource.indexOf("remoteTagCommit(tag)", githubCandidateStage);
 const githubReleaseUpload = githubReleaseSource.indexOf("ensureRelease(tag, pkg.version, candidate.path", githubCandidateStage);
 const githubAssetVerification = githubReleaseSource.indexOf("releaseAssetInfo(tag, acceptance.metadata.filename, acceptance.artifactSha256)", githubCandidateStage);
@@ -1014,6 +1014,7 @@ if (!hardenedNpmSessionSource.includes("export function settleHardenedNpmSession
 const acceptedCandidateSource = readFileSync(join(root, "scripts", "accepted-candidate-tarball.mjs"), "utf8");
 for (const required of [
   "rejectMultipleLinks: true", "verifyTarball", "mkdtempSync", 'mode: 0o600',
+  "packProject", "computePromotionContentDigest", "options.npmCli", "rematerialized accepted candidate",
   "accepted candidate staging failed and temporary cleanup was incomplete",
 ]) {
   if (!acceptedCandidateSource.includes(required)) throw new Error(`accepted candidate staging lost required boundary: ${required}`);

@@ -83,7 +83,11 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
       env: options.env || process.env,
     });
     if (acceptance.required !== true) throw new Error("npm publication requires current local candidate acceptance");
-    candidate = prepareCandidate(repository, acceptance, options);
+    candidate = prepareCandidate(repository, acceptance, {
+      ...options,
+      npmCli,
+      env: options.env || process.env,
+    });
     if (!candidate?.path) throw new Error("npm publication candidate tarball path is missing");
     await runNpmStage(run, npmCli, [
       "run", "--dry-run=false", "--workspaces=false", "--global=false", "--ignore-scripts=false",
