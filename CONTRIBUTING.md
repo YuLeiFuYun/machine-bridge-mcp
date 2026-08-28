@@ -48,7 +48,7 @@ Repository tests are verification inputs, not npm tarball entries under the curr
 8. only after the candidate-bound canary and observed live verification both succeed, record exact candidate acceptance;
 9. commit and push only with `npm run github:push`, then complete review and required checks;
 10. create the GitHub Prerelease with `npm run prerelease:release` once exact-commit and release-integrity gates pass;
-11. stop only for npm publication authorization; when explicitly authorized, run `npm run prerelease:publish -- --owner-confirm`, then continue automatically with `npm run prerelease:install -- --allow-worker-deploy`;
+11. stop only for npm publication authorization; when explicitly authorized, run `npm run prerelease:publish -- --owner-confirm`; if npm returns an interactive one-time-authentication challenge, rerun that same canonical command in a real owner TTY and complete the challenge while the process remains running, without passing OTPs/tokens/challenge URLs through automation; then continue automatically with `npm run prerelease:install -- --allow-worker-deploy`;
 12. use the published prerelease for at least seven days for a major, three days for a minor, or one day for a patch;
 13. every blocking defect increments the prerelease number and restarts the interval;
 14. after explicit owner confirmation, record the soak result; stable promotion must pass `npm run release:soak:verify` and preserve the functional promotion digest;

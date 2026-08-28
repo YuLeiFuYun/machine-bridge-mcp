@@ -107,7 +107,7 @@ try {
   const coverage = collectCoverage(coverageDir);
   const thresholds = {
     "src/local/authority-context.mjs": [85, 55],
-    "src/local/device-identity.mjs": [90, null],
+    "src/local/device-identity.mjs": [95, 75],
     "src/local/operation-authorization.mjs": [85, 45],
     "src/local/operation-risk.mjs": [85, 60],
     "src/local/fixed-process-environment.mjs": [100, 80],
@@ -125,7 +125,7 @@ try {
     "src/local/security-audit-storage.mjs": [85, 60],
     "src/local/security-audit-state.mjs": [90, 65],
     "src/local/delegated-process-sandbox.mjs": [80, 45],
-    "src/shared/device-session-auth.mjs": [100, null],
+    "src/shared/device-session-auth.mjs": [100, 90],
     "src/shared/mcp-protocol.mjs": [90, 70],
     "src/shared/tool-argument-validation.mjs": [90, 70],
     "src/shared/tool-call-capacity.mjs": [100, 75],
@@ -263,8 +263,10 @@ try {
     "src/local/state.mjs": [85, 45],
     "src/local/state-root-retirement.mjs": [90, 70],
     "src/local/relay-connection.mjs": [90, 55],
+    "src/local/relay-reconnect.mjs": [100, 80],
     "src/local/relay-connection-classification.mjs": [90, 60],
     "src/local/managed-jobs.mjs": [85, 50],
+    "src/local/managed-job-transient-recovery.mjs": [100, 90],
     "src/local/managed-job-capacity.mjs": [100, 75],
     "src/local/managed-job-directory-generation.mjs": [90, 70],
     "src/local/managed-job-retention.mjs": [90, 70],

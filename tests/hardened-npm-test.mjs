@@ -21,7 +21,7 @@ try {
   const fixtures = join(root, "fixtures");
   mkdirSync(fixtures);
   const definitions = [
-    { name: "npm", version: "12.0.1", maximumBytes: 2 * 1024 * 1024 },
+    { name: "npm", version: "12.0.2", maximumBytes: 2 * 1024 * 1024 },
     { name: "undici", version: "6.28.0", maximumBytes: 512 * 1024 },
     { name: "brace-expansion", version: "5.0.9", maximumBytes: 512 * 1024 },
   ];
@@ -43,7 +43,7 @@ try {
       readArtifact: (artifact) => bytesByName.get(artifact.name),
     },
   });
-  assert.equal(session.version, "12.0.1");
+  assert.equal(session.version, "12.0.2");
   assert.equal(session.undiciVersion, "6.28.0");
   session.dispose();
   assert.equal(session.dispose(), undefined, "hardened npm session disposal was not idempotent");
@@ -65,7 +65,7 @@ try {
     artifacts,
     readArtifact: (artifact) => bytesByName.get(artifact.name),
   });
-  assert.equal(prepared.version, "12.0.1");
+  assert.equal(prepared.version, "12.0.2");
   assert.equal(prepared.undiciVersion, "6.28.0");
   assert.equal(prepared.braceExpansionVersion, "5.0.9");
   assert.equal(verifyHardenedNpm(preparedRoot, { artifacts }).cli, prepared.cli);
@@ -237,7 +237,11 @@ try {
   assert.throws(() => hardenedNpmIdentity(deceptiveOrigin), /artifact metadata is invalid/);
 
   const identity = hardenedNpmIdentity(artifacts);
-  assert.match(identity.directoryName, /^npm-12\.0\.1-hardened-[a-f0-9]{16}$/);
+  const fixtureNpm = artifacts.find((artifact) => artifact.name === "npm");
+  assert(fixtureNpm, "hardened npm fixture omitted the npm artifact");
+  const identityPrefix = `npm-${fixtureNpm.version}-hardened-`;
+  assert(identity.directoryName.startsWith(identityPrefix), "hardened npm identity lost the fixture npm version");
+  assert.match(identity.directoryName.slice(identityPrefix.length), /^[a-f0-9]{16}$/);
   const corrupt = artifacts.map((item) => ({ ...item }));
   corrupt[1].integrity = corrupt[1].integrity.replace(/^sha512-./, (value) => value === "sha512-A" ? "sha512-B" : "sha512-A");
   await assert.rejects(

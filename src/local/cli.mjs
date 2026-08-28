@@ -817,7 +817,7 @@ function usage() {
   console.log(`machine-bridge-mcp
 
 Installation (run from a package-free temporary directory; Node.js >=26):
-  npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
+  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
 
 Usage:
   npx machine-bridge-mcp@latest                  # no global install; autostart may rely on npm cache

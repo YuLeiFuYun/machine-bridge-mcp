@@ -22,9 +22,9 @@ import {
 export const HARDENED_NPM_ARTIFACTS = Object.freeze([
   Object.freeze({
     name: "npm",
-    version: "12.0.1",
-    url: "https://registry.npmjs.org/npm/-/npm-12.0.1.tgz",
-    integrity: "sha512-L5T9i/YAQWQWqTS/xZxJkei/9zcu99hCeE4qi41IyBVV7mRQad3qc2JfuOktwmH+qwGI/V2rbCL+/UYxb1+RQA==",
+    version: "12.0.2",
+    url: "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz",
+    integrity: "sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9QlixX+zdaSNHsd0qUXsbDLr50xzY6Sw7cJVr0uzHKDOle0swmPW/p5Qw==",
     maximumBytes: 20 * 1024 * 1024,
   }),
   Object.freeze({

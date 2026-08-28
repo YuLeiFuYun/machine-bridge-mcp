@@ -80,7 +80,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.120.0") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.127.0") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -89,9 +89,9 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.120.0"
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.127.0"
     || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.3"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.120.0"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.127.0"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.3") {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
@@ -581,6 +581,7 @@ const atomicFsSource = readFileSync(join(root, "src", "local", "atomic-fs.mjs"),
 const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
 const managedJobListingSource = readFileSync(join(root, "src", "local", "managed-job-listing.mjs"), "utf8");
 const managedJobRecoveryListingSource = readFileSync(join(root, "src", "local", "managed-job-recovery-listing.mjs"), "utf8");
+const managedJobTransientRecoverySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
 const runtimeRelayControlSource = readFileSync(join(root, "src", "local", "runtime-relay-control.mjs"), "utf8");
 const runtimeRelayAcknowledgementsSource = readFileSync(join(root, "src", "local", "runtime-relay-acknowledgements.mjs"), "utf8");
@@ -643,13 +644,14 @@ if (!workerContinuityEvidenceSource.includes('const KEY = "worker-continuity-evi
     || ["account_id", "client_id", "call_id", "tool_name", "arguments", "endpoint", "close_reason", "error_text"].some((field) => workerContinuityEvidenceSource.includes(field))) {
   throw new Error("Worker durable continuity evidence lost its transactional privacy-bounded causal summary contract");
 }
-if (!managedJobListingSource.includes('retentionClass === "transient_process" ? 4 : 3')
-    || !managedJobListingSource.includes("durable_terminal: durableTerminal")
+if (!managedJobListingSource.includes("durable_terminal: durableTerminal")
     || !managedJobListingSource.includes("transient_terminal: transientTerminal")
     || !managedJobListingSource.includes('from "./managed-job-recovery-listing.mjs"')
     || !managedJobListingSource.includes("recent_process_recovery: recentProcessRecovery")
+    || !managedJobRecoveryListingSource.includes('return retentionClass === "transient_process" ? 4 : 3')
     || !managedJobRecoveryListingSource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS")
     || !managedJobRecoveryListingSource.includes("transientProcessWithinRecoveryGrace")
+    || !managedJobRecoveryListingSource.includes("Number(right.recoveryPending === true)")
     || !managedJobRecoveryListingSource.includes("!visibleJobIds.has(record.job.job_id)")) {
   throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
 }
@@ -994,7 +996,7 @@ for (const required of [
   if (!acceptedCandidateSource.includes(required)) throw new Error(`accepted candidate staging lost required boundary: ${required}`);
 }
 const publishedPrereleaseInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
-for (const required of ["createHardenedNpmSession", "resolveNpmGlobalPrefix", "readGithubPrerelease", "expectedArtifactSha256: acceptance.artifactSha256", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--include=prod", "validateActivationRecoveryPayload", "globalInstallAttempted", "globalInstallCompleted", "may have changed the installed package", "withReleaseRuntimeLock"]) {
+for (const required of ["createHardenedNpmSession", "resolveNpmGlobalPrefix", "readGithubPrerelease", "expectedArtifactSha256: acceptance.artifactSha256", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--include=prod", "validateActivationRecoveryPayload", "globalInstallAttempted", "globalInstallCompleted", "may have changed the installed package", "withReleaseRuntimeLock", "Browser soak reminder: reload the unpacked Machine Bridge extension"]) {
   if (!publishedPrereleaseInstallSource.includes(required)) throw new Error(`published prerelease installation lost hardened activation boundary: ${required}`);
 }
 const publishedAcceptanceCheck = publishedPrereleaseInstallSource.indexOf("verifyCurrentReleaseAcceptance(root");
@@ -1230,7 +1232,11 @@ if (!coverageRunnerSource.includes('"src/local/managed-job-retention.mjs"')) {
   throw new Error("critical managed-job retention coverage threshold is missing");
 }
 if (!managedJobSource.includes('retentionClass = "managed"')
-    || !managedJobSource.includes('retention_class: "transient_process"')
+    || !managedJobSource.includes("transientProcessRecoveryStatusFields(retentionClass, context)")
+    || !managedJobTransientRecoverySource.includes('retentionClass !== "transient_process"')
+    || !managedJobTransientRecoverySource.includes('context?.origin === "relay"')
+    || !managedJobTransientRecoverySource.includes('context?.authority?.origin === "relay"')
+    || !managedJobTransientRecoverySource.includes('transient_recovery_pending: true')
     || !managedJobSource.includes("incomingRetentionClass: retentionClass")
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
     || !managedJobRetentionSource.includes("orderManagedJobTerminalEviction(removable")
@@ -1240,11 +1246,13 @@ if (!managedJobSource.includes('retentionClass = "managed"')
     || !managedJobRetentionPolicySource.includes("export function transientProcessRecoveryIds")
     || !managedJobRetentionPolicySource.includes("export function orderManagedJobTerminalEviction")
     || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS - incomingSlots")
+    || !managedJobRetentionPolicySource.includes("status?.transient_recovery_pending === true")
     || !managedJobsIntegrationSource.includes("transient recovery grace excluded its exact documented boundary")
     || !managedJobsIntegrationSource.includes("saturated managed-job retention did not preserve the bounded recent transient recovery reserve")
-    || !managedJobsIntegrationSource.includes("transient recovery reserve grew without bound")
-    || !managedJobsIntegrationSource.includes("transient helper churn evicted an explicit managed-job recovery result")
-    || !managedJobsIntegrationSource.includes("internal transient-process retention class leaked through public managed-job projections")
+    || !managedJobsIntegrationSource.includes("follow-up-required transient recovery did not outrank ordinary durable terminal history at saturation")
+    || !managedJobsIntegrationSource.includes("follow-up-required transient recovery was displaced by newer terminal-delivered helper churn")
+    || !managedJobsIntegrationSource.includes("durable one-step process carrier did not persist its private follow-up recovery state through terminal settlement")
+    || !managedJobsIntegrationSource.includes("transient_recovery_pending")
     || !managedJobsIntegrationSource.includes('missingJobError?.code === "not_found"')) {
   throw new Error("managed-job retention lost its bounded recent transient recovery reserve, durable-history preference, dependency protection, or typed missing-state contract");
 }
@@ -1496,7 +1504,7 @@ const hardenedNpmDownloadSource = readFileSync(join(root, "src", "local", "harde
 const hardenedNpmDownloadTimeoutSource = readFileSync(join(root, "src", "local", "hardened-npm-download-timeout.mjs"), "utf8");
 const hardenedNpmVerificationSource = readFileSync(join(root, "src", "local", "hardened-npm-verification.mjs"), "utf8");
 if (!npmBootstrapSource.includes("prepareHardenedNpm")
-    || !hardenedNpmSource.includes("npm-12.0.1.tgz") || !hardenedNpmSource.includes("sha512-L5T9i/YAQWQWqTS/")
+    || !hardenedNpmSource.includes("npm-12.0.2.tgz") || !hardenedNpmSource.includes("sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9Ql")
     || !hardenedNpmSource.includes("undici-6.28.0.tgz") || !hardenedNpmSource.includes("brace-expansion-5.0.9.tgz")
     || !hardenedNpmDownloadSource.includes("proxyAgentForHttp") || !hardenedNpmDownloadSource.includes("status !== 200")
     || !hardenedNpmDownloadSource.includes("downloadHardenedNpmArtifact") || !hardenedNpmDownloadSource.includes("DOWNLOAD_ATTEMPTS = 3")
@@ -1634,7 +1642,7 @@ for (const required of [
 }
 
 
-const pinnedInstallCommand = "npx --yes npm@12.0.1 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
+const pinnedInstallCommand = "npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
 if (packageJson.engines?.npm !== ">=12.0.0") throw new Error("package metadata no longer declares the npm 12 runtime requirement");
 const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.mjs"), "utf8");
 if (!installSmokeSource.includes("package-free-cwd") || !installSmokeSource.includes('pkg.engines?.npm !== ">=12.0.0"')) {
@@ -1996,7 +2004,9 @@ for (const [file, content, required] of [
   ["docs/MANAGED_JOBS.md", managedJobsDoc, "`read_job` may be used for bounded same-response follow-up until terminal state"],
   ["docs/MANAGED_JOBS.md", managedJobsDoc, "do not substitute repeated `list_jobs` calls"],
   ["src/shared/server-metadata.json", serverMetadata, "durable-first one-step jobs with a 10-second acceptance budget"],
-  ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport: a protocol-level Ping is attempted every 5 seconds"],
+  ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport"],
+  ["src/shared/server-metadata.json", serverMetadata, "reconnect attempt history resets only after 5 seconds of generation-stable readiness"],
+  ["src/shared/server-metadata.json", serverMetadata, "A protocol-level Ping is attempted every 5 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "A new daemon-backed call may wait at most 15 seconds for verified recovery"],
   ["src/shared/server-metadata.json", serverMetadata, "A resume_calls_ack.missing_ids entry is emitted only while the daemon still has a fail-closed proof"],
   ["src/shared/server-metadata.json", serverMetadata, "automatic_redelivery_safe becomes false"],
@@ -2013,13 +2023,14 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 15"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 16"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],
-  ["src/shared/server-metadata.json", serverMetadata, "recent_process_recovery returns up to 16 additional authority-visible public job handles"],
+  ["src/shared/server-metadata.json", serverMetadata, "current response still requires read_job continuation retains stronger private recovery priority"],
+  ["src/shared/server-metadata.json", serverMetadata, "recent_process_recovery remains capped at 16 additional authority-visible public job handles"],
   ["src/shared/server-metadata.json", serverMetadata, "not a polling or MCP replay/session surface"],
-  ["docs/MANAGED_JOBS.md", managedJobsDoc, "A separate `recent_process_recovery` array returns at most 16 authority-visible public handles"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "A separate `recent_process_recovery` array remains capped at 16 authority-visible public handles"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "effective account policy permits it"],

@@ -10,6 +10,8 @@ const GOOGLE_API_KEY = /\bAIza[A-Za-z0-9_-]{30,}\b/g;
 const PAYMENT_API_KEY = /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}\b/g;
 const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const URL_CREDENTIALS = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@[^\s/"'<>]+/gi;
+const NPM_CLI_AUTH_CHALLENGE = /(https?:\/\/[^\s"'<>]*\/auth\/cli\/)[^?&#\s"'<>]+/gi;
+const SENSITIVE_URL_PARAMETER = /([?&#](?:access_token|refresh_token|token|code|state|auth|authid|session|sessionid|otp|verifier|proof|credential|client_secret|api[_-]?key|private[_-]?key)=)[^&#\s"'<>]*/gi;
 const API_SECRET = /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g;
 const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g;
 const SENSITIVE_FIELD_NAME = /(?:authorization|cookie|password|passwd|secret|token|verifier|proof|credential|(?:api|private|access|signing)[._-]?key|(?:^|[._-])key(?:$|[._-]))/i;
@@ -36,6 +38,8 @@ export function sanitizePortableLogText(value, options = {}) {
     .replace(PAYMENT_API_KEY, "<redacted-api-secret>")
     .replace(JWT_VALUE, "<redacted-bearer-token>")
     .replace(URL_CREDENTIALS, "<redacted-credential-url>")
+    .replace(NPM_CLI_AUTH_CHALLENGE, "$1<redacted-challenge>")
+    .replace(SENSITIVE_URL_PARAMETER, "$1<redacted>")
     .replace(API_SECRET, "<redacted-api-secret>")
     .replace(PRIVATE_KEY_HEADER, "<redacted-private-key-header>")
     .replace(EMAIL_VALUE, "<redacted-email>");

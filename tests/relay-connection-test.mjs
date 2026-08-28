@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, relayOutageUserAction, welcomeMismatch } from "../src/local/relay-connection.mjs";
 import { classifyRelayTransportError, observeTlsLookup } from "../src/local/relay-connection-support.mjs";
+import { scheduleRelayReconnect, scheduleRelayReconnectBackoffReset, settleRelayReconnectBackoffOnClose } from "../src/local/relay-reconnect.mjs";
 import { classifyRelayTransportErrorReason } from "../src/local/relay-transport-error-state.mjs";
 import { RelayTransportConfirmation } from "../src/local/relay-transport-confirmation.mjs";
 import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
@@ -186,6 +187,85 @@ class ManualScheduler {
     }
     this.now = target;
   }
+}
+
+{
+  const retryScheduler = new ManualScheduler();
+  const socketA = {};
+  const state = {
+    scheduler: retryScheduler,
+    reconnectAttempt: 2,
+    reconnectStableReadyMs: 10,
+    reconnectStabilityTimer: null,
+    reconnectTimer: null,
+    closed: false,
+    socket: socketA,
+    ready: true,
+    activeSessionId: "session_a",
+    connectTiming: { durationMs: 0 },
+    connectTimeoutMs: 100,
+    lastReconnectDelayMs: 0,
+    nextReconnectAt: 0,
+    nextReconnectWallAt: 0,
+    outageAttempts: 0,
+    lastCloseCategory: "connection_interrupted",
+    networkRoute: "direct",
+    networkRouteScope: "system",
+    reconnectAttempts: [],
+    connectCalls: 0,
+    clearTimer(name) {
+      const id = this[name];
+      if (id !== null) retryScheduler.clearTimeout(id);
+      this[name] = null;
+    },
+    recordOutage() {},
+    reconnectDelay(attempt) { this.reconnectAttempts.push(attempt); return 5; },
+    now: () => retryScheduler.now,
+    wallNow: () => retryScheduler.now,
+    scheduleOutageWarning() {},
+    logger: { debug() {} },
+    connect() { this.connectCalls += 1; },
+  };
+  scheduleRelayReconnectBackoffReset(state, socketA, "session_a");
+  state.socket = {};
+  retryScheduler.advance(10);
+  assert(state.reconnectAttempt === 2,
+    "stale reconnect-stability timer reset backoff for a replacement relay generation");
+  state.socket = socketA;
+  scheduleRelayReconnectBackoffReset(state, socketA, "session_a");
+  retryScheduler.advance(10);
+  assert(state.reconnectAttempt === 0,
+    "current reconnect-stability timer did not reset backoff after minimum uptime");
+  scheduleRelayReconnectBackoffReset(state, socketA, "session_a");
+  assert(state.reconnectStabilityTimer === null,
+    "zero reconnect history scheduled an unnecessary stability timer");
+
+  state.reconnectAttempt = 3;
+  settleRelayReconnectBackoffOnClose(state, false, 100);
+  settleRelayReconnectBackoffOnClose(state, true, 9);
+  assert(state.reconnectAttempt === 3,
+    "unstable or non-ready relay close erased reconnect failure history");
+  settleRelayReconnectBackoffOnClose(state, true, 10);
+  assert(state.reconnectAttempt === 0,
+    "stable ready duration did not clear reconnect failure history on close");
+
+  state.reconnectAttempt = 1;
+  state.closed = true;
+  scheduleRelayReconnect(state, "connection_interrupted");
+  assert(state.reconnectAttempts.length === 0,
+    "closed relay scheduled another reconnect");
+  state.closed = false;
+  state.reconnectTimer = 999;
+  scheduleRelayReconnect(state, "connection_interrupted");
+  assert(state.reconnectAttempts.length === 0,
+    "relay scheduled a duplicate reconnect while one was already pending");
+  state.reconnectTimer = null;
+  scheduleRelayReconnect(state, "connection_interrupted");
+  assert(state.reconnectAttempts[0] === 1 && state.reconnectAttempt === 2,
+    "reconnect scheduling lost the retained attempt before advancing backoff state");
+  retryScheduler.advance(5);
+  assert(state.connectCalls === 1 && state.reconnectTimer === null,
+    "scheduled reconnect did not release its timer before invoking connect");
 }
 
 
@@ -1590,6 +1670,50 @@ assert(reconnectDelay(4, () => 0, 15_000, 15_000) === 250,
   "a connection attempt that already consumed its full deadline was followed by another full idle backoff");
 assert(reconnectDelay(4, () => 0, 100, 15_000) === 15_000,
   "fast connection failures no longer retain exponential reconnect backoff");
+
+{
+  const flapScheduler = new ManualScheduler();
+  const flapSockets = [];
+  const reconnectAttempts = [];
+  const flapConnection = new RelayConnection({
+    workerUrl: "https://relay.example.invalid",
+    logger: captureLogger([]),
+    WebSocketClass: class extends FakeSocket {
+      constructor(url, options) { super(url, options); flapSockets.push(this); }
+    },
+    scheduler: flapScheduler,
+    now: () => flapScheduler.now,
+    reconnectStableReadyMs: 5_000,
+    reconnectDelay: (attempt) => { reconnectAttempts.push(attempt); return 10; },
+  });
+  const firstReady = flapConnection.start();
+  flapSockets[0].open();
+  flapConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(flapConnection, "test");
+  await firstReady;
+  flapSockets[0].remoteClose(1006, "");
+  assert(JSON.stringify(reconnectAttempts) === JSON.stringify([0]),
+    "first relay interruption did not start from the initial reconnect backoff");
+  flapScheduler.advance(10);
+  flapSockets[1].open();
+  flapConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(flapConnection, "test");
+  flapScheduler.advance(4_999);
+  flapSockets[1].remoteClose(1006, "");
+  assert(JSON.stringify(reconnectAttempts) === JSON.stringify([0, 1]),
+    "a short verified-ready relay flap erased reconnect failure history before minimum uptime");
+  flapScheduler.advance(10);
+  flapSockets[2].open();
+  flapConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+  completeRelayReadiness(flapConnection, "test");
+  flapScheduler.advance(5_000);
+  assert(flapConnection.status().reconnect_attempt === 0,
+    "stable verified-ready uptime did not clear reconnect failure history");
+  flapSockets[2].remoteClose(1006, "");
+  assert(JSON.stringify(reconnectAttempts) === JSON.stringify([0, 1, 0]),
+    "a stable verified-ready relay did not restart later reconnect backoff from its initial attempt");
+  flapConnection.stop();
+}
 
 {
   const monotonicScheduler = new ManualScheduler();

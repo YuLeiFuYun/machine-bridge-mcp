@@ -152,13 +152,13 @@ async function runNpm(npmCli, args, cwd, runCommand, options, timeoutMs, allowFa
 }
 
 function validateTemplate(manifest, lock) {
-  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.120.0") {
+  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.127.0") {
     throw new Error("Wrangler toolchain manifest lost its exact private Wrangler dependency");
   }
   if (manifest.overrides?.undici !== "7.29.0" || manifest.overrides?.sharp !== "0.35.3") {
     throw new Error("Wrangler toolchain manifest lost its security overrides");
   }
-  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.3": true, "workerd@1.20260801.1": true };
+  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.3": true, "workerd@1.20260826.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
     throw new Error("Wrangler toolchain manifest lost its exact install-script policy");
   }

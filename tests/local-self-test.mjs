@@ -1414,7 +1414,7 @@ async function ciBootstrapSelfTest() {
   const hardenedNpm = await readFile(new URL("../src/local/hardened-npm.mjs", import.meta.url), "utf8");
   const hardenedNpmDownload = await readFile(new URL("../src/local/hardened-npm-download.mjs", import.meta.url), "utf8");
   if (!bootstrap.includes("prepareHardenedNpm")
-      || !hardenedNpm.includes("npm-12.0.1.tgz") || !hardenedNpm.includes("sha512-L5T9i/YAQWQWqTS/")
+      || !hardenedNpm.includes("npm-12.0.2.tgz") || !hardenedNpm.includes("sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9Ql")
       || !hardenedNpm.includes("undici-6.28.0.tgz") || !hardenedNpm.includes("brace-expansion-5.0.9.tgz")
       || !hardenedNpmDownload.includes("proxyAgentForHttp") || !hardenedNpmDownload.includes("status !== 200")
       || !hardenedNpmDownload.includes("downloadHardenedNpmArtifact")) {

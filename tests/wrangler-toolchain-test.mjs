@@ -214,7 +214,7 @@ async function withForeignMaintenanceLock(stateRoot, callback) {
 function createFakeNpmRunner(options = {}) {
   const calls = [];
   const versions = {
-    wrangler: options.wrangler || "4.120.0",
+    wrangler: options.wrangler || "4.127.0",
     undici: options.undici || "7.29.0",
     sharp: options.sharp || "0.35.3",
   };
