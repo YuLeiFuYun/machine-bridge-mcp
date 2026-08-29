@@ -1400,6 +1400,11 @@ const exclusivePublicationRecoveryBoundary = readFileSync(join(localRoot, "exclu
 for (const required of ["targetInfo.nlink !== 2n", "stagingPattern", "aliases.length !== 1", "O_NOFOLLOW", "unlinkSync(alias)", "held.nlink === 1n", "heldIdentity.dev === settledIdentity.dev", "heldIdentity.ino === settledIdentity.ino"]) {
   if (!exclusivePublicationRecoveryBoundary.includes(required)) throw new Error(`exclusive publication recovery lost exact internal-alias/held-inode proof: ${required}`);
 }
+const exclusivePublicationOpenIndex = exclusivePublicationRecoveryBoundary.indexOf("openSync(target");
+const exclusivePublicationPathCheckIndex = exclusivePublicationRecoveryBoundary.indexOf("lstatSync(target");
+if (exclusivePublicationOpenIndex < 0 || exclusivePublicationPathCheckIndex < 0 || exclusivePublicationOpenIndex >= exclusivePublicationPathCheckIndex) {
+  throw new Error("exclusive publication recovery must derive held-descriptor identity before checking the target path");
+}
 
 const fileSnapshotPreservationBoundary = readFileSync(join(localRoot, "file-snapshot-preservation.mjs"), "utf8");
 for (const required of ["options.create || createExclusiveFileSync", "options.unlinkSource || unlinkRegularFileIfIdentitySync", "options.unlinkBackup || unlinkSync", "new AggregateError([primaryError, cleanupError]"]) {

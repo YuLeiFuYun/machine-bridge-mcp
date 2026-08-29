@@ -3,21 +3,19 @@ import { basename, dirname, join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 
 export function recoverExclusiveFilePublicationSync(target) {
-  let targetInfo;
-  try { targetInfo = lstatSync(target, { bigint: true }); }
-  catch (error) { if (error?.code === "ENOENT") return false; throw error; }
-  if (targetInfo.isSymbolicLink() || !targetInfo.isFile() || targetInfo.nlink !== 2n) return false;
-  const targetIdentity = filesystemIdentity(targetInfo, "exclusive publication target");
-  const aliases = publicationAliases(target, targetIdentity);
-  if (aliases.length !== 1) return false;
-  const alias = aliases[0];
   let targetFd;
   try { targetFd = openSync(target, Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0)); }
   catch { return false; }
   try {
     const openedTarget = fstatSync(targetFd, { bigint: true });
-    if (!openedTarget.isFile() || openedTarget.nlink !== 2n
-      || !sameFilesystemIdentity(targetIdentity, filesystemIdentity(openedTarget, "exclusive publication open target"))) return false;
+    if (!openedTarget.isFile() || openedTarget.nlink !== 2n) return false;
+    const targetIdentity = filesystemIdentity(openedTarget, "exclusive publication open target");
+    const targetInfo = lstatSync(target, { bigint: true });
+    if (targetInfo.isSymbolicLink() || !targetInfo.isFile() || targetInfo.nlink !== 2n
+      || !sameFilesystemIdentity(targetIdentity, filesystemIdentity(targetInfo, "exclusive publication target"))) return false;
+    const aliases = publicationAliases(target, targetIdentity);
+    if (aliases.length !== 1) return false;
+    const alias = aliases[0];
     const currentAlias = lstatSync(alias, { bigint: true });
     if (currentAlias.isSymbolicLink() || !currentAlias.isFile() || currentAlias.nlink !== 2n
       || !sameFilesystemIdentity(targetIdentity, filesystemIdentity(currentAlias, "exclusive publication staging alias"))) return false;
