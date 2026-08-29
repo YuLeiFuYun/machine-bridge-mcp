@@ -4,6 +4,7 @@ import {
   pendingCapacityProjection,
 } from "../src/worker/pending-call-capacity.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
+import { DaemonRegistry } from "../src/worker/daemon-registry.ts";
 import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
 import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
 import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
@@ -1017,6 +1018,12 @@ async function testDaemonSocketIsolation() {
     && promoted.relayDiagnostics?.outage_active === false
     && promoted.relayDiagnostics.outage_duration_ms === 10_000,
   "ready socket promotion retained a reconnect-in-progress or pre-readiness diagnostic duration");
+  const drainRegistry = new DaemonRegistry({ getWebSockets: () => [probing] });
+  assert(drainRegistry.beginDrain(probing) === true && drainRegistry.attachment(probing)?.draining === true,
+    "planned daemon drain was not serialized into the hibernation-safe socket attachment");
+  const rehydratedRegistry = new DaemonRegistry({ getWebSockets: () => [probing] });
+  assert(rehydratedRegistry.isDraining(probing) === true && rehydratedRegistry.readyChannels().length === 0,
+    "planned daemon drain identity was lost across a simulated Worker isolate replacement");
 
   const cleanupSocket = new TestWebSocket();
   cleanupSocket.serializeAttachment({
@@ -1088,6 +1095,12 @@ function testDaemonRelayDiagnostics() {
     outage_started_at: "2026-08-04T11:36:20.000Z",
     outage_duration_ms: 9000,
     outage_attempts: 2,
+    probe_dispatch_pending_at_start: true,
+    probe_dispatch_age_ms_at_start: 23,
+    probe_outstanding_at_start: false,
+    probe_age_ms_at_start: 0,
+    transport_confirmation_pending_at_start: true,
+    application_inbound_silence_ms_at_start: 4800,
     last_close_category: "relay_heartbeat_timeout",
     last_close_code: 1006,
     last_transport_error_class: "network_error",
@@ -1108,7 +1121,7 @@ function testDaemonRelayDiagnostics() {
     last_transport_confirmation_ms: 2300,
     max_transport_confirmation_ms: 4100,
     last_transport_confirmation_timeout_age_ms: 15000,
-    last_disconnected_at: "2026-08-04T11:36:20.000Z",
+    last_disconnected_at: "2026-08-04T11:36:27.000Z",
     last_connect_milestones_ms: { socket_constructing: 0, dns_resolved: 17, tcp_connected: 29, tls_established: 51, private_stage: 7 },
     last_failed_connect_stage: "tls_established",
     last_failed_connect_duration_ms: 61,
@@ -1120,6 +1133,7 @@ function testDaemonRelayDiagnostics() {
     recent_outages: [{
       outage_number: 7,
       disconnected_at: "2026-08-04T11:30:00.000Z",
+      last_disconnect_at: "2026-08-04T11:30:01.000Z",
       ready_at: "2026-08-04T11:30:02.000Z",
       duration_ms: 2000,
       attempts: 1,
@@ -1130,6 +1144,12 @@ function testDaemonRelayDiagnostics() {
       last_transport_error_reason: "unknown",
       previous_ready_duration_ms: 10000,
       previous_ready_inbound_silence_ms: 5000,
+      probe_dispatch_pending_at_start: false,
+      probe_dispatch_age_ms_at_start: 0,
+      probe_outstanding_at_start: true,
+      probe_age_ms_at_start: 7000,
+      transport_confirmation_pending_at_start: false,
+      application_inbound_silence_ms_at_start: 5000,
       last_connect_stage: "websocket_open",
       last_connect_duration_ms: 80,
       last_connect_milestones_ms: { dns_resolved: 15, websocket_open: 80, private_stage: 9 },
@@ -1167,9 +1187,18 @@ function testDaemonRelayDiagnostics() {
     && diagnostics.last_transport_error_ready === false
     && diagnostics.last_transport_error_authenticated === false
     && diagnostics.outage_started_at === "2026-08-04T11:36:20.000Z"
+    && diagnostics.last_disconnected_at === "2026-08-04T11:36:27.000Z"
     && diagnostics.previous_ready_inbound_silence_ms === 15000
+    && diagnostics.probe_dispatch_pending_at_start === true
+    && diagnostics.probe_dispatch_age_ms_at_start === 23
+    && diagnostics.probe_outstanding_at_start === false
+    && diagnostics.transport_confirmation_pending_at_start === true
+    && diagnostics.application_inbound_silence_ms_at_start === 4800
     && diagnostics.recent_outages.length === 1
     && diagnostics.recent_outages[0].outage_number === 7
+    && diagnostics.recent_outages[0].last_disconnect_at === "2026-08-04T11:30:01.000Z"
+    && diagnostics.recent_outages[0].probe_outstanding_at_start === true
+    && diagnostics.recent_outages[0].probe_age_ms_at_start === 7000
     && diagnostics.recent_outages[0].last_connect_milestones_ms.private_stage === undefined
     && diagnostics.recent_outages[0].private_value === undefined
     && diagnostics.https_fallback_last_takeover_ms === 1350,
@@ -1178,8 +1207,14 @@ function testDaemonRelayDiagnostics() {
   assert(readyDiagnostics?.outage_active === false && readyDiagnostics.outage_duration_ms === 9000
     && readyDiagnostics.recent_outages.length === 2
     && readyDiagnostics.recent_outages[0].outage_number === 8
+    && readyDiagnostics.recent_outages[0].disconnected_at === "2026-08-04T11:36:20.000Z"
+    && readyDiagnostics.recent_outages[0].last_disconnect_at === "2026-08-04T11:36:27.000Z"
     && readyDiagnostics.recent_outages[0].ready_at === "2026-08-04T11:36:29.000Z"
     && readyDiagnostics.recent_outages[0].duration_ms === 9000
+    && readyDiagnostics.recent_outages[0].probe_dispatch_pending_at_start === true
+    && readyDiagnostics.recent_outages[0].probe_dispatch_age_ms_at_start === 23
+    && readyDiagnostics.recent_outages[0].transport_confirmation_pending_at_start === true
+    && readyDiagnostics.recent_outages[0].application_inbound_silence_ms_at_start === 4800
     && readyDiagnostics.recent_outages[1].outage_number === 7,
     "ready daemon diagnostics still reported the preceding reconnect as active");
   const localRetryDiagnostics = sanitizeDaemonRelayDiagnostics({
@@ -1478,9 +1513,11 @@ function testRelayTimeoutContract() {
     && remoteListJobsDescription.includes("use read_job instead"),
   "remote list_jobs description no longer routes known-job follow-up through read_job");
   assert(remoteReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
-    && remoteReadJob?.inputSchema?.properties?.wait_ms?.maximum === 300_000
+    && remoteReadJob?.inputSchema?.properties?.wait_ms?.maximum === 60_000
     && remoteReadJobDescription.includes("server-side long-poll")
     && remoteReadJobDescription.includes("wait up to 40 seconds")
+    && remoteReadJobDescription.includes("public hosted wait_ms maximum is 60 seconds")
+    && remoteReadJobDescription.includes("rather than one overlong host call")
     && remoteReadJobDescription.includes("wait_ms=0")
     && remoteReadJobDescription.includes("same assistant response")
     && remoteReadJobDescription.includes("Do not busy-loop")
@@ -1488,10 +1525,10 @@ function testRelayTimeoutContract() {
   "remote read_job schema/description lost paced same-turn autonomous follow-up");
   const immediateJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 0 });
   const defaultJobReadBudget = daemonToolTimeoutBudget("read_job", {});
-  const maximumJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 300_000 });
+  const maximumJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 60_000 });
   assert(immediateJobReadBudget.executionTimeoutMs === 10_000 && immediateJobReadBudget.settlementTimeoutMs === 15_000
     && defaultJobReadBudget.executionTimeoutMs === 50_000 && defaultJobReadBudget.settlementTimeoutMs === 55_000
-    && maximumJobReadBudget.executionTimeoutMs === 310_000 && maximumJobReadBudget.settlementTimeoutMs === 315_000,
+    && maximumJobReadBudget.executionTimeoutMs === 70_000 && maximumJobReadBudget.settlementTimeoutMs === 75_000,
   "remote read_job long-poll did not retain enough execution/settlement headroom inside its dedicated relay ceiling");
   const recoveredJobReadBudget = daemonToolTimeoutBudgetAfterDelay(defaultJobReadBudget, 15_000);
   const recoveredJobReadArgs = managedJobReadArgumentsWithinExecutionBudget({}, recoveredJobReadBudget.executionTimeoutMs);
@@ -1551,7 +1588,7 @@ function testRelayTimeoutContract() {
   assert(deliveryContract.remote_process_blocking_poll_wait_max_ms === 1_000
     && deliveryContract.remote_process_blocking_poll_cooldown_ms === 15_000
     && deliveryContract.remote_managed_job_read_wait_default_ms === 40_000
-    && deliveryContract.remote_managed_job_read_wait_max_ms === 300_000
+    && deliveryContract.remote_managed_job_read_wait_max_ms === 60_000
     && deliveryContract.remote_managed_job_read_concurrency_max_per_account === MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT
     && deliveryContract.tool_schema_generation === workerToolSchemaGeneration
     && deliveryContract.tool_schema_server_version === "test-version"
@@ -1806,10 +1843,17 @@ function testDaemonAndServerInfoProjection() {
     effectiveTools: ["read_file", "git_status"], advertisedTools: ["read_file", "git_status", "write_file"],
     pendingSnapshot, daemonRegistry, observability,
     continuityEvidence: {
-      schema_version: 1, planned_drains: 2, planned_drain_calls: 3,
+      schema_version: 2, planned_drains: 2, planned_drain_calls: 3,
       last_planned_drain_at: "2026-08-10T00:00:05.000Z", socket_disconnects: 4,
-      unplanned_socket_disconnects: 1,
-      last_socket_disconnect: { at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true },
+      unplanned_socket_disconnects: 1, ready_socket_disconnects: 3, unplanned_ready_socket_disconnects: 1,
+      last_socket_disconnect: {
+        at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true,
+        role: "daemon", was_ready: true, connected_at: "2026-08-10T00:00:00.000Z",
+      },
+      last_ready_socket_disconnect: {
+        at: "2026-08-10T00:00:06.000Z", planned: true, kind: "close", close_code: 1001, was_clean: true,
+        role: "daemon", was_ready: true, connected_at: "2026-08-10T00:00:00.000Z",
+      },
       last_request_abort_at: null, last_stream_cancel_control_at: null,
     },
   };
@@ -1824,6 +1868,7 @@ function testDaemonAndServerInfoProjection() {
     && ownerFull.worker.observability.requests.total === 3
     && ownerFull.worker.continuity_evidence.planned_drains === 2
     && ownerFull.worker.continuity_evidence.last_socket_disconnect.planned === true
+    && ownerFull.worker.continuity_evidence.ready_socket_disconnects === 3
     && ownerFull.tools.length === 2,
   "owner server_info full projection lost current Worker activity or pre-dispatch capacity");
   const ownerSummary = buildServerInfoResult(input, "summary");
@@ -1897,26 +1942,44 @@ async function testWorkerContinuityEvidence() {
     "planned-drain continuity evidence was not persisted");
   assert(await recordWorkerSocketDisconnect(storage, {
     planned: true, kind: "close", closeCode: 1001, wasClean: true,
+    role: "daemon", connectedAt: "2026-08-25T12:59:59.000Z",
   }, Date.parse("2026-08-25T13:00:01.000Z")), "planned socket-close evidence was not persisted");
   assert(await recordWorkerSocketDisconnect(storage, {
-    planned: false, kind: "error",
+    planned: false, kind: "error", role: "probing", connectedAt: "2026-08-25T13:00:01.500Z",
   }, Date.parse("2026-08-25T13:00:02.000Z")), "unplanned socket-error evidence was not persisted");
   assert(await recordWorkerClientCancellation(storage, "request_abort", Date.parse("2026-08-25T13:00:03.000Z"))
     && await recordWorkerClientCancellation(storage, "stream_cancel_control", Date.parse("2026-08-25T13:00:04.000Z")),
   "client-cancellation continuity evidence was not persisted");
   const snapshot = await readWorkerContinuityEvidence(storage);
-  assert(snapshot.schema_version === 1
+  assert(snapshot.schema_version === 2
     && snapshot.planned_drains === 1 && snapshot.planned_drain_calls === 3
     && snapshot.socket_disconnects === 2 && snapshot.unplanned_socket_disconnects === 1
+    && snapshot.ready_socket_disconnects === 1 && snapshot.unplanned_ready_socket_disconnects === 0
     && snapshot.last_socket_disconnect?.kind === "error" && snapshot.last_socket_disconnect?.planned === false
+    && snapshot.last_socket_disconnect?.role === "probing" && snapshot.last_socket_disconnect?.was_ready === false
+    && snapshot.last_socket_disconnect?.connected_at === "2026-08-25T13:00:01.500Z"
+    && snapshot.last_ready_socket_disconnect?.kind === "close" && snapshot.last_ready_socket_disconnect?.was_ready === true
     && snapshot.last_request_abort_at === "2026-08-25T13:00:03.000Z"
     && snapshot.last_stream_cancel_control_at === "2026-08-25T13:00:04.000Z",
   "durable continuity evidence lost fixed-category incident history across reads");
   values.set("worker-continuity-evidence", {
+    schema_version: 1, planned_drains: 7, planned_drain_calls: 9, last_planned_drain_at: "2026-08-28T14:20:00.000Z",
+    socket_disconnects: 158, unplanned_socket_disconnects: 109,
+    last_socket_disconnect: { at: "2026-08-28T14:21:56.296Z", planned: false, kind: "close", close_code: 1006, was_clean: false },
+    last_request_abort_at: "2026-08-28T14:22:00.000Z",
+  });
+  const legacy = await readWorkerContinuityEvidence(storage);
+  assert(legacy.schema_version === 2 && legacy.planned_drains === 7 && legacy.planned_drain_calls === 9
+    && legacy.last_planned_drain_at === "2026-08-28T14:20:00.000Z" && legacy.last_request_abort_at === "2026-08-28T14:22:00.000Z"
+    && legacy.socket_disconnects === 0 && legacy.unplanned_socket_disconnects === 0
+    && legacy.ready_socket_disconnects === 0 && legacy.unplanned_ready_socket_disconnects === 0
+    && legacy.last_socket_disconnect === null && legacy.last_ready_socket_disconnect === null,
+  "schema-v2 migration lost compatible non-socket evidence or retained legacy unqualified socket counters");
+  values.set("worker-continuity-evidence", {
     schema_version: 99, planned_drains: 7, last_socket_disconnect: { at: "private", kind: "other" },
   });
   const sanitized = await readWorkerContinuityEvidence(storage);
-  assert(sanitized.schema_version === 1 && sanitized.planned_drains === 0 && sanitized.last_socket_disconnect === null,
+  assert(sanitized.schema_version === 2 && sanitized.planned_drains === 0 && sanitized.last_socket_disconnect === null,
     "durable continuity evidence trusted malformed stored state instead of failing closed to bounded defaults");
 }
 

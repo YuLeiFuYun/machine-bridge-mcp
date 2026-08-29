@@ -51,6 +51,7 @@ const RECENT_RELAY_OUTAGE_LIMIT = 8;
 export interface DaemonRelayOutageDiagnostics {
   outage_number: number;
   disconnected_at: string | null;
+  last_disconnect_at: string | null;
   ready_at: string | null;
   duration_ms: number;
   attempts: number;
@@ -63,6 +64,12 @@ export interface DaemonRelayOutageDiagnostics {
   last_transport_error_authenticated: boolean;
   previous_ready_duration_ms: number;
   previous_ready_inbound_silence_ms: number;
+  probe_dispatch_pending_at_start: boolean;
+  probe_dispatch_age_ms_at_start: number;
+  probe_outstanding_at_start: boolean;
+  probe_age_ms_at_start: number;
+  transport_confirmation_pending_at_start: boolean;
+  application_inbound_silence_ms_at_start: number;
   last_connect_stage: string;
   last_connect_duration_ms: number;
   last_connect_milestones_ms: Record<string, number>;
@@ -91,6 +98,12 @@ export interface DaemonRelayDiagnostics {
   outage_started_at: string | null;
   outage_duration_ms: number;
   outage_attempts: number;
+  probe_dispatch_pending_at_start: boolean;
+  probe_dispatch_age_ms_at_start: number;
+  probe_outstanding_at_start: boolean;
+  probe_age_ms_at_start: number;
+  transport_confirmation_pending_at_start: boolean;
+  application_inbound_silence_ms_at_start: number;
   recent_outages: DaemonRelayOutageDiagnostics[];
   last_close_category: string | null;
   last_close_code: number | null;
@@ -140,6 +153,12 @@ export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagn
     outage_started_at: timestamp(candidate.outage_started_at),
     outage_duration_ms: boundedInteger(candidate.outage_duration_ms, 0, 31 * 24 * 60 * 60_000, 0),
     outage_attempts: boundedInteger(candidate.outage_attempts, 0, 1_000_000, 0),
+    probe_dispatch_pending_at_start: candidate.probe_dispatch_pending_at_start === true,
+    probe_dispatch_age_ms_at_start: boundedInteger(candidate.probe_dispatch_age_ms_at_start, 0, 31 * 24 * 60 * 60_000, 0),
+    probe_outstanding_at_start: candidate.probe_outstanding_at_start === true,
+    probe_age_ms_at_start: boundedInteger(candidate.probe_age_ms_at_start, 0, 31 * 24 * 60 * 60_000, 0),
+    transport_confirmation_pending_at_start: candidate.transport_confirmation_pending_at_start === true,
+    application_inbound_silence_ms_at_start: boundedInteger(candidate.application_inbound_silence_ms_at_start, 0, 31 * 24 * 60 * 60_000, 0),
     recent_outages: recentOutages(candidate.recent_outages),
     last_close_category: nullableEnum(candidate.last_close_category, CLOSE_CATEGORIES),
     last_close_code: nullableInteger(candidate.last_close_code, 0, 4999),
@@ -208,7 +227,8 @@ function recoveredOutage(
 ): DaemonRelayOutageDiagnostics {
   return {
     outage_number: value.outage_count,
-    disconnected_at: value.last_disconnected_at ?? value.outage_started_at,
+    disconnected_at: value.outage_started_at ?? value.last_disconnected_at,
+    last_disconnect_at: value.last_disconnected_at,
     ready_at: readyAt,
     duration_ms: boundedInteger(durationMs, 0, 31 * 24 * 60 * 60_000, 0),
     attempts: value.outage_attempts,
@@ -221,6 +241,12 @@ function recoveredOutage(
     last_transport_error_authenticated: value.last_transport_error_authenticated,
     previous_ready_duration_ms: value.previous_ready_duration_ms,
     previous_ready_inbound_silence_ms: value.previous_ready_inbound_silence_ms,
+    probe_dispatch_pending_at_start: value.probe_dispatch_pending_at_start,
+    probe_dispatch_age_ms_at_start: value.probe_dispatch_age_ms_at_start,
+    probe_outstanding_at_start: value.probe_outstanding_at_start,
+    probe_age_ms_at_start: value.probe_age_ms_at_start,
+    transport_confirmation_pending_at_start: value.transport_confirmation_pending_at_start,
+    application_inbound_silence_ms_at_start: value.application_inbound_silence_ms_at_start,
     last_connect_stage: value.last_connect_stage,
     last_connect_duration_ms: value.last_connect_duration_ms,
     last_connect_milestones_ms: { ...value.last_connect_milestones_ms },
@@ -270,6 +296,7 @@ function recentOutages(value: unknown): DaemonRelayOutageDiagnostics[] {
     result.push({
       outage_number: outageNumber,
       disconnected_at: timestamp(entry.disconnected_at),
+      last_disconnect_at: timestamp(entry.last_disconnect_at),
       ready_at: timestamp(entry.ready_at),
       duration_ms: boundedInteger(entry.duration_ms, 0, 31 * 24 * 60 * 60_000, 0),
       attempts: boundedInteger(entry.attempts, 0, 1_000_000, 0),
@@ -282,6 +309,12 @@ function recentOutages(value: unknown): DaemonRelayOutageDiagnostics[] {
       last_transport_error_authenticated: entry.last_transport_error_authenticated === true,
       previous_ready_duration_ms: boundedInteger(entry.previous_ready_duration_ms, 0, 365 * 24 * 60 * 60_000, 0),
       previous_ready_inbound_silence_ms: boundedInteger(entry.previous_ready_inbound_silence_ms, 0, 31 * 24 * 60 * 60_000, 0),
+      probe_dispatch_pending_at_start: entry.probe_dispatch_pending_at_start === true,
+      probe_dispatch_age_ms_at_start: boundedInteger(entry.probe_dispatch_age_ms_at_start, 0, 31 * 24 * 60 * 60_000, 0),
+      probe_outstanding_at_start: entry.probe_outstanding_at_start === true,
+      probe_age_ms_at_start: boundedInteger(entry.probe_age_ms_at_start, 0, 31 * 24 * 60 * 60_000, 0),
+      transport_confirmation_pending_at_start: entry.transport_confirmation_pending_at_start === true,
+      application_inbound_silence_ms_at_start: boundedInteger(entry.application_inbound_silence_ms_at_start, 0, 31 * 24 * 60 * 60_000, 0),
       last_connect_stage: enumText(entry.last_connect_stage, CONNECT_STAGES, "idle"),
       last_connect_duration_ms: boundedInteger(entry.last_connect_duration_ms, 0, 10 * 60_000, 0),
       last_connect_milestones_ms: connectMilestones(entry.last_connect_milestones_ms),

@@ -63,9 +63,12 @@ export function correlateEventLoopStallWithSystemSleep(relay, snapshot) {
 }
 
 export function correlateRelayOutageWithSystemSleep(relay, snapshot) {
-  const startedAt = Date.parse(String(relay?.last_disconnected_at || ""));
+  const completed = relay?.outage_active === true ? null : relay?.recent_outages?.[0];
+  const startedAt = Date.parse(String(relay?.outage_active === true
+    ? relay?.outage_started_at || relay?.last_disconnected_at || ""
+    : completed?.disconnected_at || relay?.last_disconnected_at || ""));
   if (!(startedAt > 0)) return relayOutageProjection("no_recorded_relay_outage");
-  const endedAt = Date.parse(String(relay?.last_ready_at || ""));
+  const endedAt = Date.parse(String(completed?.ready_at || relay?.last_ready_at || ""));
   if (relay?.outage_active === true || !(endedAt >= startedAt)) {
     return relayOutageProjection("relay_outage_active", {
       outageStartedAt: new Date(startedAt).toISOString(),

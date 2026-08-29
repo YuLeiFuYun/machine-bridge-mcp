@@ -2,8 +2,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
-import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
-import { verifyTarball } from "./release-acceptance.mjs";
+import { CANDIDATE_MANIFEST_SCHEMA_VERSION, validateCandidateManifest } from "./release-candidate-manifest.mjs";
+import { packProject, verifyTarball } from "./release-acceptance.mjs";
+import { computePromotionContentDigest } from "./promotion-digest.mjs";
 
 const MAX_CANDIDATE_MANIFEST_BYTES = 64 * 1024;
 
@@ -13,11 +14,15 @@ export function resolveAcceptedCandidateTarball(repositoryRoot, acceptance) {
 }
 
 export function stageAcceptedCandidateTarball(repositoryRoot, acceptance, options = {}) {
-  const inspected = inspectAcceptedCandidate(repositoryRoot, acceptance);
+  const root = resolve(repositoryRoot);
   const parent = resolve(String(options.tempRoot || tmpdir()));
   const stagingRoot = mkdtempSync(join(parent, "mbm-accepted-candidate-"));
   let disposed = false;
   try {
+    const npmCli = String(options.npmCli || "").trim();
+    const inspected = npmCli
+      ? rematerializeAcceptedCandidate(root, acceptance, stagingRoot, { npmCli, env: options.env })
+      : inspectAcceptedCandidate(root, acceptance);
     const stagedPath = join(stagingRoot, inspected.manifest.filename);
     writeFileSync(stagedPath, inspected.bytes, { flag: "wx", mode: 0o600 });
     verifyTarball(stagedPath, acceptance.metadata);
@@ -37,6 +42,39 @@ export function stageAcceptedCandidateTarball(repositoryRoot, acceptance, option
     }
     throw error;
   }
+}
+
+function rematerializeAcceptedCandidate(root, acceptance, stagingRoot, options) {
+  if (acceptance?.required !== true || !acceptance.metadata || !acceptance.record) {
+    throw new Error("exact npm publication requires current local candidate acceptance");
+  }
+  const materializedRoot = mkdtempSync(join(stagingRoot, "materialized-"));
+  const metadata = packProject(root, materializedRoot, {
+    npmCli: options.npmCli,
+    env: options.env || process.env,
+  });
+  for (const key of ["package_name", "package_version", "filename", "shasum", "integrity"]) {
+    if (metadata[key] !== acceptance.metadata[key]) {
+      throw new Error(`rematerialized accepted candidate ${key} does not match the acceptance record`);
+    }
+  }
+  const promotionDigest = computePromotionContentDigest(root, { npmCli: options.npmCli });
+  if (promotionDigest !== acceptance.record.promotion_content_sha256) {
+    throw new Error("rematerialized accepted candidate promotion digest does not match the acceptance record");
+  }
+  const path = join(materializedRoot, metadata.filename);
+  const bytes = verifyTarball(path, acceptance.metadata);
+  const manifest = validateCandidateManifest({
+    schema_version: CANDIDATE_MANIFEST_SCHEMA_VERSION,
+    result: "pending",
+    ...metadata,
+    promotion_content_sha256: promotionDigest,
+    prepared_at: new Date().toISOString(),
+  }, {
+    packageName: acceptance.metadata.package_name,
+    packageVersion: acceptance.metadata.package_version,
+  });
+  return { path, manifest, bytes };
 }
 
 function inspectAcceptedCandidate(repositoryRoot, acceptance) {

@@ -55,8 +55,13 @@ function testSystemSleepDiagnostics() {
     "non-sleep runtime pause was overclassified as system suspension");
   const sleepDominatedOutage = correlateRelayOutageWithSystemSleep({
     outage_active: false,
-    last_disconnected_at: "2026-08-24T16:48:10.000Z",
+    last_disconnected_at: "2026-08-24T17:04:11.250Z",
     last_ready_at: "2026-08-24T17:04:12.000Z",
+    recent_outages: [{
+      disconnected_at: "2026-08-24T16:48:10.000Z",
+      last_disconnect_at: "2026-08-24T17:04:11.250Z",
+      ready_at: "2026-08-24T17:04:12.000Z",
+    }],
   }, { supported: true, available: true, recent_sleep_intervals: intervals });
   assert(sleepDominatedOutage.classification === "majority_system_sleep_overlap"
     && sleepDominatedOutage.outage_duration_ms === 962_000
@@ -99,7 +104,8 @@ function testSystemSleepDiagnostics() {
     && awakeOutage.sleep_overlap_ms === 0 && awakeOutage.sleep_overlap_ratio === 0,
   "awake relay reset was incorrectly attributed to system sleep");
   const activeOutage = correlateRelayOutageWithSystemSleep({
-    outage_active: true, last_disconnected_at: "2026-08-24T18:00:00.000Z", last_ready_at: "2026-08-24T17:59:59.000Z",
+    outage_active: true, outage_started_at: "2026-08-24T18:00:00.000Z",
+    last_disconnected_at: "2026-08-24T18:00:04.000Z", last_ready_at: "2026-08-24T17:59:59.000Z",
   }, { supported: true, available: true, recent_sleep_intervals: intervals });
   assert(activeOutage.classification === "relay_outage_active" && activeOutage.outage_ended_at === null,
     "active relay outage was misrepresented as a completed sleep correlation");

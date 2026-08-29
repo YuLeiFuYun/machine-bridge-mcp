@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publication-recovery.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeMs } from "./process-identity.mjs";
 import { ownerOnlyFile, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
@@ -78,10 +79,11 @@ function pidLockOwner(pid, startedAtMs) {
 function readPidLockSnapshot(file) {
   let opened;
   try {
-    opened = retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(file, 1024, "job lock", {
+    opened = retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(file, 1024, "job lock", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
-    }));
+      allowedMultipleLinkIdentity: residueIdentity,
+    }), { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(file) });
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;

@@ -10,6 +10,7 @@ export function preferredRelayCloseCategory(current, next) {
 export function relayStatusSnapshot(state, now = Date.now()) {
   const current = Number(now) || 0;
   const liveness = state.liveness?.snapshot(current) || null;
+  const initialLiveness = state.outageStartedLiveness || {};
   return {
     authenticated: state.authenticated === true,
     ready: state.ready === true,
@@ -28,6 +29,12 @@ export function relayStatusSnapshot(state, now = Date.now()) {
     outage_attempts: state.outageAttempts,
     outage_started_at: isoTimestamp(state.outageStartedWallAt),
     outage_duration_ms: state.outageStartedAt > 0 ? Math.max(0, current - state.outageStartedAt) : 0,
+    probe_dispatch_pending_at_start: initialLiveness.probe_dispatch_pending === true,
+    probe_dispatch_age_ms_at_start: boundedMs(initialLiveness.probe_dispatch_age_ms),
+    probe_outstanding_at_start: initialLiveness.probe_outstanding === true,
+    probe_age_ms_at_start: boundedMs(initialLiveness.probe_age_ms),
+    transport_confirmation_pending_at_start: initialLiveness.transport_confirmation_pending === true,
+    application_inbound_silence_ms_at_start: boundedMs(initialLiveness.application_inbound_silence_ms),
     recent_outages: recentOutagesSnapshot(state.recentOutages),
     last_close_category: state.outageCount > 0 ? state.lastCloseCategory : null,
     last_close_code: state.outageCount > 0 ? state.lastCloseCode : null,
@@ -85,9 +92,11 @@ export function relayRecoveryFields(state, outageMs) {
 }
 
 export function relayRecoveredOutageSnapshot(state, outageMs) {
+  const initialLiveness = state.outageStartedLiveness || {};
   return {
     outage_number: state.outageCount,
-    disconnected_at: isoTimestamp(state.lastDisconnectedAt),
+    disconnected_at: isoTimestamp(state.outageStartedWallAt),
+    last_disconnect_at: isoTimestamp(state.lastDisconnectedAt),
     ready_at: isoTimestamp(state.lastReadyWallAt),
     duration_ms: Math.max(0, Math.round(Number(outageMs) || 0)),
     attempts: state.outageAttempts,
@@ -98,6 +107,12 @@ export function relayRecoveredOutageSnapshot(state, outageMs) {
     ...(state.transportError?.snapshot?.() || {}),
     previous_ready_duration_ms: state.lastReadyDurationMs,
     previous_ready_inbound_silence_ms: state.lastReadyInboundSilenceMs,
+    probe_dispatch_pending_at_start: initialLiveness.probe_dispatch_pending === true,
+    probe_dispatch_age_ms_at_start: boundedMs(initialLiveness.probe_dispatch_age_ms),
+    probe_outstanding_at_start: initialLiveness.probe_outstanding === true,
+    probe_age_ms_at_start: boundedMs(initialLiveness.probe_age_ms),
+    transport_confirmation_pending_at_start: initialLiveness.transport_confirmation_pending === true,
+    application_inbound_silence_ms_at_start: boundedMs(initialLiveness.application_inbound_silence_ms),
     ...connectTimingFields(state),
   };
 }
@@ -113,6 +128,11 @@ function isoTimestamp(value) {
 
 function roundSeconds(milliseconds) {
   return Math.max(1, Math.round(Number(milliseconds || 0) / 1000));
+}
+
+function boundedMs(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.min(31 * 24 * 60 * 60_000, Math.round(number)) : 0;
 }
 
 function connectTimingFields(state) {

@@ -108,6 +108,17 @@ class DelayedSendSocket extends FakeSocket {
   }
 }
 
+class FirstPingFailSocket extends FakeSocket {
+  static created = 0;
+  constructor(url, options) { super(url, options); this.failFirstPing = FirstPingFailSocket.created++ === 0; }
+  ping(value = "", callback) {
+    if (typeof value === "function") { callback = value; value = ""; }
+    if (!this.failFirstPing) return super.ping(value, callback);
+    this.pings.push(String(value));
+    callback?.(Object.assign(new Error("synthetic ping reset"), { code: "ECONNRESET" }));
+  }
+}
+
 {
   const connection = new RelayConnection({ workerUrl: "https://relay.example.invalid", WebSocketClass: FakeSocket });
   const oldSocket = new DelayedSendSocket("wss://relay.example.invalid/daemon/ws", {});
@@ -1868,9 +1879,65 @@ assert(outageHistory.recent_outages[0].outage_number === 10
   && outageHistory.recent_outages.at(-1).outage_number === 3,
 "relay completed-outage history was not newest-first or did not evict the oldest entries");
 assert(outageHistory.recent_outages.every((entry) => entry.ready_at && entry.disconnected_at
+    && entry.last_disconnect_at === entry.disconnected_at
     && entry.duration_ms === 5 && entry.previous_ready_duration_ms >= 7),
 "relay completed-outage history lost bounded timing evidence");
 outageHistoryConnection.stop();
+
+const multiAttemptScheduler = new ManualScheduler();
+const multiAttemptSockets = [];
+const multiAttemptWallBase = Date.UTC(2026, 7, 27, 16, 0, 0);
+const multiAttemptConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid", secret: "test-daemon-secret-123456", logger: captureLogger([]),
+  WebSocketClass: class extends FakeSocket { constructor(url, options) { super(url, options); multiAttemptSockets.push(this); } },
+  scheduler: multiAttemptScheduler, now: () => multiAttemptScheduler.now,
+  wallNow: () => multiAttemptWallBase + multiAttemptScheduler.now, reconnectDelay: () => 5,
+});
+multiAttemptConnection.start(); multiAttemptSockets[0].open();
+multiAttemptConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(multiAttemptConnection, "test");
+multiAttemptScheduler.advance(100); multiAttemptSockets.at(-1).remoteClose(1006, "");
+multiAttemptScheduler.advance(5); multiAttemptSockets.at(-1).open(); multiAttemptSockets.at(-1).remoteClose(1006, "");
+multiAttemptScheduler.advance(5); multiAttemptSockets.at(-1).open(); multiAttemptSockets.at(-1).remoteClose(1006, "");
+multiAttemptScheduler.advance(5); multiAttemptSockets.at(-1).open();
+multiAttemptConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(multiAttemptConnection, "test");
+const multiAttemptOutage = multiAttemptConnection.status().recent_outages[0];
+const multiAttemptStartedAt = Date.parse(multiAttemptOutage.disconnected_at);
+const multiAttemptLastDisconnectAt = Date.parse(multiAttemptOutage.last_disconnect_at);
+const multiAttemptReadyAt = Date.parse(multiAttemptOutage.ready_at);
+assert(multiAttemptLastDisconnectAt - multiAttemptStartedAt === 10
+  && multiAttemptReadyAt - multiAttemptStartedAt === multiAttemptOutage.duration_ms
+  && multiAttemptOutage.duration_ms === 15 && multiAttemptOutage.attempts === 3,
+"multi-attempt relay outage mixed its first outage start with the final reconnect failure timestamp");
+multiAttemptConnection.stop();
+
+FirstPingFailSocket.created = 0;
+const pingFailureScheduler = new ManualScheduler();
+const pingFailureSockets = [];
+const pingFailureConnection = new RelayConnection({
+  workerUrl: "https://relay.example.invalid", secret: "test-daemon-secret-123456", logger: captureLogger([]),
+  WebSocketClass: class extends FirstPingFailSocket {
+    constructor(url, options) { super(url, options); pingFailureSockets.push(this); }
+  },
+  scheduler: pingFailureScheduler, now: () => pingFailureScheduler.now,
+  wallNow: () => Date.UTC(2026, 7, 27, 17, 0, 0) + pingFailureScheduler.now,
+  transportPingIntervalMs: 5, transportPongTimeoutMs: 10, reconnectDelay: () => 5,
+});
+pingFailureConnection.start(); pingFailureSockets[0].open();
+pingFailureConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(pingFailureConnection, "test");
+pingFailureScheduler.advance(5);
+assert(pingFailureSockets[0].terminated === true, "synthetic protocol Ping failure did not terminate the affected relay socket");
+pingFailureScheduler.advance(5); pingFailureSockets.at(-1).open();
+pingFailureConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
+completeRelayReadiness(pingFailureConnection, "test");
+const pingFailureOutage = pingFailureConnection.status().recent_outages[0];
+assert(pingFailureOutage.probe_dispatch_pending_at_start === true
+  && pingFailureOutage.probe_outstanding_at_start === false
+  && pingFailureOutage.transport_confirmation_pending_at_start === false,
+"relay outage history did not freeze the pre-close liveness phase for a protocol Ping dispatch failure");
+pingFailureConnection.stop();
 
 console.log("relay connection lifecycle/logging test ok");
 

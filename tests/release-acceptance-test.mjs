@@ -94,6 +94,19 @@ try {
     && readFileSync(stagedCandidate.path).equals(readFileSync(acceptedCandidate.path)),
   "accepted candidate staging did not preserve the exact verified bytes");
   stagedCandidate.dispose();
+  writeFileSync(candidateManifestPath, `${JSON.stringify({ ...candidateManifest, package_version: "3.0.0-beta.2" }, null, 2)}\n`);
+  expectThrow(() => resolveAcceptedCandidateTarball(root, verified), "version does not match the current package");
+  assert(process.env.npm_execpath, "release acceptance test requires npm_execpath for accepted-candidate rematerialization");
+  const rematerializedCandidate = stageAcceptedCandidateTarball(root, verified, {
+    tempRoot: root,
+    npmCli: process.env.npm_execpath,
+  });
+  assert(rematerializedCandidate.path !== acceptedCandidate.path
+    && rematerializedCandidate.manifest.package_version === metadata.package_version
+    && readFileSync(rematerializedCandidate.path).equals(readFileSync(join(output, metadata.filename))),
+  "accepted candidate staging still depended on a stale worktree-local candidate instead of exact acceptance rematerialization");
+  rematerializedCandidate.dispose();
+  writeFileSync(candidateManifestPath, `${JSON.stringify(candidateManifest, null, 2)}\n`);
   writeFileSync(candidateManifestPath, `${JSON.stringify({ ...candidateManifest, shasum: "f".repeat(40) }, null, 2)}\n`);
   expectThrow(() => resolveAcceptedCandidateTarball(root, verified), "shasum does not match");
   writeFileSync(candidateManifestPath, `${JSON.stringify(candidateManifest, null, 2)}\n`);

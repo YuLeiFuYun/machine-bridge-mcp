@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
+import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publication-recovery.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
@@ -8,7 +9,6 @@ import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync, retryTransien
 const MAX_LOCK_BYTES = 8 * 1024;
 const DEFAULT_WAIT_MS = 5_000;
 const DEFAULT_POLL_MS = 25;
-
 export async function withOwnerStateLock(root, callback, options = {}) {
   if (typeof callback !== "function") throw new TypeError("owner-state lock requires a callback");
   const requestedRoot = String(root || "").trim();
@@ -31,7 +31,9 @@ export async function withOwnerStateLock(root, callback, options = {}) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const inspected = retryTransientMultipleLinksSync(() => readOwnerStateLock(lockPath, purpose));
+      const inspected = retryTransientMultipleLinksSync((residueIdentity) => readOwnerStateLock(lockPath, purpose, residueIdentity), {
+        verifyResidue: () => verifyExclusiveFilePublicationResidueSync(lockPath),
+      });
       if (inspected.kind === "missing") continue;
       if (inspected.kind === "invalid") {
         throw new Error(`${label} lock is malformed; inspect the owner-only state directory`);
@@ -39,7 +41,10 @@ export async function withOwnerStateLock(root, callback, options = {}) {
       const existing = inspected.owner;
       const identity = inspectProcessInstance(existing, { maxAgeMs });
       if (identity.reclaimable) {
-        if (removeOwnedJsonFileSync(lockPath, { token: existing.token, purpose }, { maxBytes: MAX_LOCK_BYTES })) continue;
+        if (removeOwnedJsonFileSync(lockPath, { token: existing.token, purpose }, {
+          maxBytes: MAX_LOCK_BYTES,
+          allowedMultipleLinkIdentity: inspected.residueIdentity,
+        })) continue;
       }
       if (deadline.expired()) {
         const pid = Number.isInteger(existing.pid) ? `pid ${existing.pid}` : "unknown process";
@@ -82,19 +87,25 @@ function lockOwner(purpose) {
   };
 }
 
-export function readOwnerStateLock(file, purpose) {
+export function readOwnerStateLock(file, purpose, residueIdentity = null) {
   let text;
-  try { text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock", { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8"); }
+  try {
+    text = readBoundedRegularFileSync(file, MAX_LOCK_BYTES, "owner-state lock", {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+      allowedMultipleLinkIdentity: residueIdentity,
+    }).toString("utf8");
+  }
   catch (error) { if (error?.code === "ENOENT") return { kind: "missing" }; throw error; }
   let parsed;
-  try { parsed = JSON.parse(text); } catch { return { kind: "invalid" }; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid" };
-  if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid" };
-  if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return { kind: "invalid" };
-  if (parsed.purpose !== purpose) return { kind: "invalid" };
-  if (!Number.isFinite(Date.parse(String(parsed.startedAt || "")))) return { kind: "invalid" };
-  if (!Number.isFinite(Date.parse(String(parsed.processStartedAt || "")))) return { kind: "invalid" };
-  return { kind: "owner", owner: parsed };
+  try { parsed = JSON.parse(text); } catch { return { kind: "invalid", residueIdentity }; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid", residueIdentity };
+  if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid", residueIdentity };
+  if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return { kind: "invalid", residueIdentity };
+  if (parsed.purpose !== purpose) return { kind: "invalid", residueIdentity };
+  if (!Number.isFinite(Date.parse(String(parsed.startedAt || "")))) return { kind: "invalid", residueIdentity };
+  if (!Number.isFinite(Date.parse(String(parsed.processStartedAt || "")))) return { kind: "invalid", residueIdentity };
+  return { kind: "owner", owner: parsed, residueIdentity };
 }
 
 function boundedIdentifier(value, fallback) {
