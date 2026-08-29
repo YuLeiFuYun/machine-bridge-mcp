@@ -105,22 +105,27 @@ export function replaceFileAtomicallySync(target, content, options = {}) {
 
 export function removeOwnedJsonFileSync(target, expected = {}, options = {}) {
   const maxBytes = Number.isInteger(options.maxBytes) ? options.maxBytes : 4096;
-  const snapshot = ownedJsonSnapshot(target, maxBytes);
+  const allowedMultipleLinkIdentity = options.allowedMultipleLinkIdentity || null;
+  const snapshot = ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity);
   if (!snapshot || !matchesExpected(snapshot.value, expected)) return false;
   let current;
   try { current = lstatSync(target, { bigint: true }); } catch (error) { return error?.code === "ENOENT"; }
-  if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1n || !sameIdentity(snapshot.info, current)) return false;
-  const currentSnapshot = ownedJsonSnapshot(target, maxBytes);
+  const currentIdentity = filesystemIdentity(current, "owned JSON snapshot");
+  const allowedLinkCount = current.nlink === 1n
+    || (current.nlink === 2n && sameFilesystemIdentity(allowedMultipleLinkIdentity, currentIdentity));
+  if (current.isSymbolicLink() || !current.isFile() || !allowedLinkCount || !sameIdentity(snapshot.info, current)) return false;
+  const currentSnapshot = ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity);
   if (!currentSnapshot || !sameIdentity(snapshot.info, currentSnapshot.info) || !matchesExpected(currentSnapshot.value, expected)) return false;
   try { unlinkSync(target); return true; } catch (error) { return error?.code === "ENOENT"; }
 }
 
-function ownedJsonSnapshot(target, maxBytes) {
+function ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity = null) {
   let opened;
   try {
     opened = readBoundedRegularFileWithInfoSync(target, maxBytes, "owned JSON snapshot", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
+      allowedMultipleLinkIdentity,
     });
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;

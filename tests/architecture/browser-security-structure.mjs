@@ -135,8 +135,12 @@ if (!cliLocalAdminSource.includes('readBrowserPairingPort(state.paths.stateRoot)
   throw new Error("browser CLI regained a duplicate pairing-state parser instead of the pairing-store projection");
 }
 const pairingStoreSource = readFileSync(join(root, "src", "local", "browser-pairing-store.mjs"), "utf8");
-for (const required of ["export function readBrowserPairingPort", "readPairing(file)", "verifyPathIdentity: true", "rejectMultipleLinks: true"]) {
+for (const required of ["export function readBrowserPairingPort", "readPairing(file)", "readExclusivePublicationFileSync", "ownerPrivate: true"]) {
   if (!pairingStoreSource.includes(required)) throw new Error(`browser pairing-store projection lost secure bounded-state ownership: ${required}`);
+}
+const exclusivePublicationReadSource = readFileSync(join(root, "src", "local", "exclusive-publication-recovery.mjs"), "utf8");
+for (const required of ["readBoundedRegularFileSync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "allowedMultipleLinkIdentity: residueIdentity", "assertOwnerPrivateMode"]) {
+  if (!exclusivePublicationReadSource.includes(required)) throw new Error(`browser pairing secure publication-read boundary regressed: ${required}`);
 }
 if (!appAutomationSource.includes('from "./app-automation-macos-jxa.mjs"')) {
   throw new Error("application automation orchestration lost its dedicated macOS JXA implementation boundary");

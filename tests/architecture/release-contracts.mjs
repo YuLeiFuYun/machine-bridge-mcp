@@ -80,7 +80,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.127.0") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.127.1") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -89,9 +89,9 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.127.0"
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.127.1"
     || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.3"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.127.0"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.127.1"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.3") {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");

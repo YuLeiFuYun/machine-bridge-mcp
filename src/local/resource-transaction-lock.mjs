@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
-import { recoverExclusiveFilePublicationSync } from "./exclusive-publication-recovery.mjs";
+import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publication-recovery.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstanceAsync } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
@@ -70,14 +70,18 @@ async function inspectExistingLock(lockPath) {
 }
 
 async function inspectFileLock(lockPath) {
-  const owner = readJson(lockPath, MAX_OWNER_BYTES, "resource transaction owner-state lock");
+  const snapshot = readJson(lockPath, MAX_OWNER_BYTES, "resource transaction owner-state lock");
+  const owner = snapshot.value;
   if (!validFileOwner(owner)) throw new Error("resource coordinator owner-state lock is invalid");
   const status = await inspectProcessInstanceAsync(owner);
-  return { kind: "file", owner, reclaimable: status.reclaimable === true };
+  return { kind: "file", owner, reclaimable: status.reclaimable === true, residueIdentity: snapshot.residueIdentity };
 }
 
 function reclaimObservedLock(lockPath, observed) {
-  return removeOwnedJsonFileSync(lockPath, { token: observed.owner.token, purpose: LOCK_PURPOSE }, { maxBytes: MAX_OWNER_BYTES });
+  return removeOwnedJsonFileSync(lockPath, { token: observed.owner.token, purpose: LOCK_PURPOSE }, {
+    maxBytes: MAX_OWNER_BYTES,
+    allowedMultipleLinkIdentity: observed.residueIdentity,
+  });
 }
 
 function fileOwner(now) {
@@ -94,13 +98,19 @@ function validFileOwner(owner) {
 }
 
 function readJson(file, maxBytes, label) {
-  const text = retryTransientMultipleLinksSync(() => readBoundedRegularFileSync(file, maxBytes, label, {
-    verifyPathIdentity: true, rejectMultipleLinks: true,
-  }), { recover: () => recoverExclusiveFilePublicationSync(file) }).toString("utf8");
+  let residueIdentity = null;
+  const text = retryTransientMultipleLinksSync((verifiedResidueIdentity) => {
+    residueIdentity = verifiedResidueIdentity;
+    return readBoundedRegularFileSync(file, maxBytes, label, {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+      allowedMultipleLinkIdentity: verifiedResidueIdentity,
+    });
+  }, { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(file) }).toString("utf8");
   let value;
   try { value = JSON.parse(text); } catch { throw new Error(`${label} is not valid JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must contain a JSON object`);
-  return value;
+  return { value, residueIdentity };
 }
 
 function positiveInteger(value, fallback) { const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback; }

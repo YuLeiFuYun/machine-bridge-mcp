@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
-import { recoverExclusiveFilePublicationSync } from "./exclusive-publication-recovery.mjs";
-import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
+import { readExclusivePublicationFileSync } from "./exclusive-publication-recovery.mjs";
+import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile } from "./secure-file.mjs";
 import { acquireMaintenanceLock, assertStateMaintenanceAvailable } from "./state.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
@@ -83,13 +83,12 @@ async function acquirePairingMigrationLock(stateRoot) {
 }
 
 function readPublishedPairing(file) {
-  return retryTransientMultipleLinksSync(() => readPairing(file), { recover: () => recoverExclusiveFilePublicationSync(file) });
+  return readPairing(file);
 }
 
 function readPairing(file) {
-  ownerOnlyFile(file);
   let parsed;
-  try { parsed = JSON.parse(readBoundedRegularFileSync(file, 64 * 1024, "browser pairing state", { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8")); }
+  try { parsed = JSON.parse(readExclusivePublicationFileSync(file, 64 * 1024, "browser pairing state", { ownerPrivate: true }).toString("utf8")); }
   catch { throw new Error("browser pairing state is not valid bounded JSON"); }
   if (parsed?.schemaVersion === PAIRING_SCHEMA_VERSION && parsed?.pairingAuthVersion === PAIRING_AUTH_VERSION) {
     return { requiresMigration: false, value: normalizePairing(parsed) };

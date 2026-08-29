@@ -1,6 +1,5 @@
 import { closeSync, constants as fsConstants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync } from "node:fs";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
-
 const MULTIPLE_LINK_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 export function openRegularFileSync(file, flags, options = {}) {
   const mode = Number.isInteger(options.mode) ? options.mode : undefined;
@@ -21,7 +20,8 @@ export function openRegularFileSync(file, flags, options = {}) {
     if (!info.isFile()) throw new Error(`${label} is not a regular file`);
     const descriptorIdentityInfo = options.fstatSync ? info : fstatSync(fd, { bigint: true });
     const identity = filesystemIdentity(descriptorIdentityInfo, label);
-    if (options.rejectMultipleLinks === true && Number(info.nlink) > 1) {
+    if (options.rejectMultipleLinks === true && Number(info.nlink) > 1
+      && !(Number(info.nlink) === 2 && sameFilesystemIdentity(identity, options.allowedMultipleLinkIdentity))) {
       throw Object.assign(new Error(`${label} must not have multiple hard links`), { code: "MBM_MULTIPLE_HARD_LINKS" });
     }
     if (options.verifyPathIdentity === true) {
@@ -52,10 +52,11 @@ function withRegularFileSync(file, flags, options, callback) {
 
 export function retryTransientMultipleLinksSync(callback, options = {}) {
   for (let attempt = 1; attempt <= 4; attempt += 1) {
-    try { return callback(); }
+    try { return callback(null); }
     catch (error) {
       if (error?.code !== "MBM_MULTIPLE_HARD_LINKS") throw error;
-      if (attempt === 4 && typeof options.recover === "function" && options.recover() === true) return callback();
+      const residueIdentity = attempt === 4 && typeof options.verifyResidue === "function" ? options.verifyResidue() : null;
+      if (residueIdentity) return callback(residueIdentity);
       if (attempt === 4) throw error;
       Atomics.wait(MULTIPLE_LINK_RETRY_BUFFER, 0, 0, 1);
     }
@@ -90,8 +91,6 @@ export function unlinkRegularFileIfIdentitySync(file, expectedIdentity, label = 
     throw error;
   }
 }
-
-
 export function inspectPathIfPresentSync(file, label = "path", options = {}) {
   const inspect = options.lstatSync || lstatSync;
   try { return inspect(file); }
@@ -112,6 +111,7 @@ export function readBoundedRegularFileWithInfoSync(file, maxBytes, label = "path
     label,
     verifyPathIdentity: options.verifyPathIdentity === true,
     rejectMultipleLinks: options.rejectMultipleLinks === true,
+    allowedMultipleLinkIdentity: options.allowedMultipleLinkIdentity || null,
   }, (fd, info, identity, identityInfo) => {
     if (info.size > limit) throw new Error(`file exceeds ${limit} bytes`);
     options.afterOpen?.({ fd, info });

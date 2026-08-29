@@ -471,9 +471,33 @@ async function hardLinkLockTest() {
   assert(publication.warnings.length === 1 && existsSync(publication.cleanupArtifact),
     "exclusive publication crash fixture did not retain the committed staging hard link");
   const blocked = acquireStartupLock(publicationState, { operation: "publication-recovery-observer" });
-  assert(blocked.acquired === false && blocked.owner?.token === publicationOwner.token && !existsSync(publication.cleanupArtifact),
-    "startup lock reader did not recover the exact internal publication hard link before validating the live owner");
+  assert(blocked.acquired === false && blocked.owner?.token === publicationOwner.token && existsSync(publication.cleanupArtifact),
+    "startup lock reader did not verify the committed internal publication residue without mutating its staging alias");
   await rm(publicationFile, { force: true });
+  assert(existsSync(publication.cleanupArtifact),
+    "canonical lock cleanup unexpectedly removed the internal publication residue by pathname");
+
+  const staleWorkspace = join(temp, "stale-publication-hardlink-workspace");
+  const staleStateRoot = join(temp, "stale-publication-hardlink-state");
+  await mkdir(staleWorkspace, { recursive: true });
+  const staleState = loadState(staleWorkspace, { stateDir: staleStateRoot });
+  const staleFile = join(staleState.paths.profileDir, "startup.lock");
+  const staleOwner = {
+    ...publicationOwner,
+    pid: 2147483647,
+    token: "8".repeat(32),
+    workspace: staleState.workspace.path,
+    processStartedAt: "2020-01-01T00:00:00.000Z",
+  };
+  const stalePublication = createExclusiveFileSync(staleFile, `${JSON.stringify(staleOwner)}\n`, {
+    unlink() { throw new Error("synthetic stale post-link crash window"); },
+  });
+  const reacquired = acquireStartupLock(staleState, { operation: "publication-residue-reclaim" });
+  assert(reacquired.acquired === true && existsSync(stalePublication.cleanupArtifact),
+    "stale publication residue did not release only the canonical target before reacquiring the lock");
+  reacquired.release();
+  assert(!existsSync(staleFile) && existsSync(stalePublication.cleanupArtifact),
+    "reclaimed publication residue mutated its staging alias or left the replacement lock behind");
 
   const workspace = join(temp, "hardlink-workspace");
   const stateRoot = join(temp, "hardlink-state");

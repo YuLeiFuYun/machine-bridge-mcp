@@ -1388,17 +1388,20 @@ for (const required of ["createMonotonicDeadline", "inspectProcessInstance", "re
   if (!ownerStateLockBoundary.includes(required)) throw new Error(`owner-state lock lost bounded ownership or causal cleanup semantics: ${required}`);
 }
 for (const [name, markers] of [
-  ["state.mjs", ["retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(lockPath"]],
-  ["managed-job-lock.mjs", ["retryTransientMultipleLinksSync(() => readBoundedRegularFileWithInfoSync(file"]],
-  ["browser-pairing-store.mjs", ["readPublishedPairing", "retryTransientMultipleLinksSync(() => readPairing(file), { recover: () => recoverExclusiveFilePublicationSync(file) })"]],
+  ["state.mjs", ["retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(lockPath", "allowedMultipleLinkIdentity: residueIdentity"]],
+  ["managed-job-lock.mjs", ["retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(file", "allowedMultipleLinkIdentity: residueIdentity"]],
+  ["browser-pairing-store.mjs", ["readPublishedPairing", "readExclusivePublicationFileSync", "ownerPrivate: true"]],
   ["managed-job-runner-claim.mjs", ["verifyPathIdentity: true", "rejectMultipleLinks: true", "retryTransientMultipleLinksSync"]],
 ]) {
   const source = readFileSync(join(localRoot, name), "utf8");
   for (const marker of markers) if (!source.includes(marker)) throw new Error(`${name} lost bounded exclusive-publication contention handling: ${marker}`);
 }
 const exclusivePublicationRecoveryBoundary = readFileSync(join(localRoot, "exclusive-publication-recovery.mjs"), "utf8");
-for (const required of ["targetInfo.nlink !== 2n", "stagingPattern", "aliases.length !== 1", "O_NOFOLLOW", "unlinkSync(alias)", "held.nlink === 1n", "heldIdentity.dev === settledIdentity.dev", "heldIdentity.ino === settledIdentity.ino"]) {
-  if (!exclusivePublicationRecoveryBoundary.includes(required)) throw new Error(`exclusive publication recovery lost exact internal-alias/held-inode proof: ${required}`);
+for (const required of ["verifyExclusiveFilePublicationResidueSync", "openRegularFileSync(target", "stagingPattern", "matchingAliases !== 1", "openedAlias.info.nlink", "settled.nlink !== 2n", "sameFilesystemIdentity(openedTarget.identity, settledIdentity)"]) {
+  if (!exclusivePublicationRecoveryBoundary.includes(required)) throw new Error(`exclusive publication residue verification lost exact internal-alias/descriptor proof: ${required}`);
+}
+if (exclusivePublicationRecoveryBoundary.includes("unlinkSync") || exclusivePublicationRecoveryBoundary.includes("rmSync")) {
+  throw new Error("exclusive publication residue verifier regained destructive pathname cleanup");
 }
 
 const fileSnapshotPreservationBoundary = readFileSync(join(localRoot, "file-snapshot-preservation.mjs"), "utf8");
@@ -1406,8 +1409,8 @@ for (const required of ["options.create || createExclusiveFileSync", "options.un
   if (!fileSnapshotPreservationBoundary.includes(required)) throw new Error(`file snapshot preservation lost commit/identity/cleanup causality: ${required}`);
 }
 const exclusiveFileBoundary = readFileSync(join(localRoot, "exclusive-file.mjs"), "utf8");
-for (const required of ["new AggregateError([primaryError, ...cleanupErrors]", "Object.defineProperties(result", "cleanupArtifact", "ownsTemporary", "readBoundedRegularFileWithInfoSync", "opened.identityInfo", "rejectMultipleLinks: true", "current.nlink !== 1n"]) {
-  if (!exclusiveFileBoundary.includes(required)) throw new Error(`exclusive-file boundary lost atomic cleanup causality or post-commit visibility: ${required}`);
+for (const required of ["new AggregateError([primaryError, ...cleanupErrors]", "Object.defineProperties(result", "cleanupArtifact", "ownsTemporary", "readBoundedRegularFileWithInfoSync", "opened.identityInfo", "rejectMultipleLinks: true", "allowedMultipleLinkIdentity", "current.nlink === 2n", "sameFilesystemIdentity(allowedMultipleLinkIdentity, currentIdentity)", "ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity)"]) {
+  if (!exclusiveFileBoundary.includes(required)) throw new Error(`exclusive-file boundary lost atomic cleanup causality or verified-residue canonical removal: ${required}`);
 }
 if (exclusiveFileBoundary.includes("cleanupTargetOnFailure")) {
   throw new Error("exclusive-file boundary regained unsafe deletion of an unowned target after failed exclusive link");
