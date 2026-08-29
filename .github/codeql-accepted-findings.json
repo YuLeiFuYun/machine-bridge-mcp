@@ -18,6 +18,12 @@
       "path": "src/local/account-admin.mjs",
       "reason": "Account credentials are not human passwords: generateAccountPassword creates a mandatory 256-bit random token, the Worker rejects caller-chosen formats, and each account stores only a verifier derived with an independent 128-bit salt and HMAC-SHA-256. The rule models low-entropy password guessing, which does not apply to this machine-generated credential contract; reassess or migrate to a portable slow KDF before expiry.",
       "expires": "2026-10-21"
+    },
+    {
+      "ruleId": "js/file-system-race",
+      "path": "src/local/exclusive-publication-recovery.mjs",
+      "reason": "The pre-open lstat is not trusted as the opened object: recovery opens with O_NOFOLLOW, immediately fstats the held descriptor, requires the same filesystem identity and the expected two-link state, and fails closed before unlinking when a replacement differs. A same-identity replacement still denotes the intended committed publication inode. CodeQL models the initial check/open pair without the descriptor-identity revalidation; reassess this exception against future CodeQL query revisions before expiry.",
+      "expires": "2026-10-14"
     }
   ]
 }
