@@ -515,9 +515,11 @@ try {
   assert(retainedFamilyTools.result?.ttlMs === 0, "current tools/list still advertised a reusable cross-release schema cache");
   const retainedReadJob = retainedFamilyTools.result?.tools?.find((tool) => tool.name === "read_job");
   assert(retainedReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
-    && retainedReadJob?.inputSchema?.properties?.wait_ms?.maximum === 300_000
+    && retainedReadJob?.inputSchema?.properties?.wait_ms?.maximum === 60_000
     && String(retainedReadJob?.description || "").includes(`Tool schema generation ${TOOL_SCHEMA_GENERATION}.`)
     && String(retainedReadJob?.description || "").includes("server-side long-poll")
+    && String(retainedReadJob?.description || "").includes("public hosted wait_ms maximum is 60 seconds")
+    && String(retainedReadJob?.description || "").includes("rather than one overlong host call")
     && String(retainedReadJob?.description || "").includes("wait_ms=0")
     && String(retainedReadJob?.description || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
     && !String(retainedReadJob?.description || "").includes("read an active job at most once"),
@@ -844,7 +846,7 @@ try {
     && firstStatus.tool_delivery?.remote_process_execution_timeout_max_ms === 600_000
     && firstStatus.tool_delivery?.managed_job_resource_admission_wait_max_ms === 1_800_000
     && firstStatus.tool_delivery?.remote_managed_job_read_wait_default_ms === 40_000
-    && firstStatus.tool_delivery?.remote_managed_job_read_wait_max_ms === 300_000
+    && firstStatus.tool_delivery?.remote_managed_job_read_wait_max_ms === 60_000
     && firstStatus.tool_delivery?.remote_process_session_start_execution_max_ms === 10_000
     && firstStatus.tool_delivery?.tool_schema_generation === TOOL_SCHEMA_GENERATION
     && firstStatus.tool_delivery?.tool_schema_server_version === firstStatus.version

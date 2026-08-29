@@ -550,11 +550,11 @@ async function testToolExecutor() {
   assert((await managedJobReadExecutor.execute("read_job", { job_id: "job_123456789012345678901234", wait_ms: 40_001 }, {
     callId: "relay-read-job-over-local-maximum", origin: "relay", authorization: { role: "owner" },
   })).wait_ms === 40_001, "relay read_job did not accept the hosted wait extension above the local schema maximum");
-  assert((await managedJobReadExecutor.execute("read_job", { job_id: "job_123456789012345678901234", wait_ms: 300_000 }, {
+  assert((await managedJobReadExecutor.execute("read_job", { job_id: "job_123456789012345678901234", wait_ms: 60_000 }, {
     callId: "relay-read-job-hosted-maximum", origin: "relay", authorization: { role: "owner" },
-  })).wait_ms === 300_000, "relay read_job did not accept the hosted maximum wait");
+  })).wait_ms === 60_000, "relay read_job did not accept the hosted maximum wait");
   await expectReject(() => managedJobReadExecutor.execute("read_job", {
-    job_id: "job_123456789012345678901234", wait_ms: 300_001,
+    job_id: "job_123456789012345678901234", wait_ms: 60_001,
   }, { callId: "relay-read-job-over-hosted-maximum", origin: "relay", authorization: { role: "owner" } }),
   "invalid_request", "tool arguments do not match the input schema");
   await expectReject(() => managedJobReadExecutor.execute("read_job", {
@@ -1097,6 +1097,12 @@ function testRelayHandshakeDiagnostics() {
     outage_started_at: "2026-08-04T11:36:20.000Z",
     outage_duration_ms: 9000,
     outage_attempts: 2,
+    probe_dispatch_pending_at_start: true,
+    probe_dispatch_age_ms_at_start: 23,
+    probe_outstanding_at_start: false,
+    probe_age_ms_at_start: 0,
+    transport_confirmation_pending_at_start: true,
+    application_inbound_silence_ms_at_start: 4800,
     last_close_category: "relay_heartbeat_timeout",
     last_close_code: 1006,
     last_transport_error_class: "ECONNRESET",
@@ -1135,6 +1141,13 @@ function testRelayHandshakeDiagnostics() {
       last_transport_error_reason: "connection_reset",
       previous_ready_duration_ms: 5000,
       previous_ready_inbound_silence_ms: 12000,
+      last_disconnect_at: `2026-08-04T11:36:${String(10 + index).padStart(2, "0")}.500Z`,
+      probe_dispatch_pending_at_start: true,
+      probe_dispatch_age_ms_at_start: 17,
+      probe_outstanding_at_start: false,
+      probe_age_ms_at_start: 0,
+      transport_confirmation_pending_at_start: false,
+      application_inbound_silence_ms_at_start: 4800,
       last_connect_stage: "websocket_open",
       last_connect_duration_ms: 90,
       last_connect_milestones_ms: { dns_resolved: 10, tls_established: 50, private_stage: 7 },
@@ -1146,6 +1159,11 @@ function testRelayHandshakeDiagnostics() {
     && diagnostics.connect_timeout_ms === 30000
     && diagnostics.outage_count === 4
     && diagnostics.outage_attempts === 2
+    && diagnostics.probe_dispatch_pending_at_start === true
+    && diagnostics.probe_dispatch_age_ms_at_start === 23
+    && diagnostics.probe_outstanding_at_start === false
+    && diagnostics.transport_confirmation_pending_at_start === true
+    && diagnostics.application_inbound_silence_ms_at_start === 4800
     && diagnostics.last_close_category === "relay_heartbeat_timeout"
     && diagnostics.last_connect_milestones_ms.dns_resolved === 31
     && diagnostics.last_connect_milestones_ms.tls_established === 87
@@ -1176,6 +1194,12 @@ function testRelayHandshakeDiagnostics() {
     && diagnostics.recent_outages.length === 8
     && diagnostics.recent_outages[0].outage_number === 10
     && diagnostics.recent_outages[7].outage_number === 3
+    && diagnostics.recent_outages[0].last_disconnect_at === "2026-08-04T11:36:10.500Z"
+    && diagnostics.recent_outages[0].probe_dispatch_pending_at_start === true
+    && diagnostics.recent_outages[0].probe_dispatch_age_ms_at_start === 17
+    && diagnostics.recent_outages[0].probe_outstanding_at_start === false
+    && diagnostics.recent_outages[0].transport_confirmation_pending_at_start === false
+    && diagnostics.recent_outages[0].application_inbound_silence_ms_at_start === 4800
     && diagnostics.recent_outages[0].last_connect_milestones_ms.private_stage === undefined
     && diagnostics.recent_outages[0].private_value === undefined
     && diagnostics.https_fallback_last_takeover_ms === 1350,

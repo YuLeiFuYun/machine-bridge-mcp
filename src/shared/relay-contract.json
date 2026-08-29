@@ -30,7 +30,7 @@
   "maximumDurableProcessExecutionTimeoutMs": 600000,
   "maximumManagedJobResourceAdmissionWaitMs": 1800000,
   "defaultManagedJobReadWaitMs": 40000,
-  "maximumManagedJobReadWaitMs": 300000,
+  "maximumManagedJobReadWaitMs": 60000,
   "managedJobReadPollIntervalMs": 5000,
   "managedJobReadNonterminalProgressMinimumMs": 30000,
   "managedJobReadReconcileIntervalMs": 30000,

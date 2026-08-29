@@ -251,7 +251,8 @@ async function testManagedJobReadWaitPacing() {
   assert(managedJobReadWaitMs({ wait_ms: 0 }, relayContext) === 0, "hosted read_job lost its explicit immediate-checkpoint override");
   assert(managedJobReadNonterminalProgressMinimumMs({ wait_ms: 0 }, relayContext) === 0,
     "explicit immediate read_job checkpoint unexpectedly gained a coalescing delay");
-  assert(managedJobReadWaitMs({ wait_ms: 300_000 }, relayContext) === 300_000, "hosted read_job rejected its advertised maximum wait");
+  assert(managedJobReadWaitMs({ wait_ms: 60_000 }, relayContext) === 60_000, "hosted read_job rejected its advertised maximum wait");
+  assert(managedJobReadWaitMs({ wait_ms: 180_000 }, relayContext) === 60_000, "hosted read_job policy did not clamp an interruption-prone overlong wait to the public maximum");
   assert(managedJobReadWaitMs({}, {}) === 0 && managedJobReadWaitMs({ wait_ms: 40_000 }, {}) === 40_000,
     "local read_job wait defaults or maximum drifted from the local contract");
 

@@ -1763,7 +1763,7 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
   throw new Error("server_info or relay contract retained an obsolete/mis-scoped process timing projection");
 }
 if (relayContract.defaultManagedJobReadWaitMs !== 40_000
-    || relayContract.maximumManagedJobReadWaitMs !== 300_000
+    || relayContract.maximumManagedJobReadWaitMs !== 60_000
     || relayContract.managedJobReadPollIntervalMs !== 5_000
     || relayContract.managedJobReadNonterminalProgressMinimumMs !== 30_000
     || relayContract.managedJobReadReconcileIntervalMs !== 30_000
@@ -1782,7 +1782,7 @@ if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)")
     || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 3
     || !workerRuntimeSource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
-  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / thirty-second progress coalescing / five-minute opt-in contract");
+  throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / sixty-second public maximum / thirty-second progress coalescing contract");
 }
 const mcpResponseProxySource = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
 const mcpResponseCancelSource = readFileSync(join(root, "src", "worker", "mcp-response-cancel.ts"), "utf8");
@@ -1957,6 +1957,8 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`resume_calls_ack.missing_ids`"],
   ["docs/OPERATIONS.md", operationsDoc, "`previous_ready_inbound_silence_ms` measures how long"],
   ["docs/OPERATIONS.md", operationsDoc, "`recent_outages`, a newest-first in-memory history capped at eight completed WebSocket reconnect episodes"],
+  ["docs/OPERATIONS.md", operationsDoc, "`last_disconnect_at` is the final failed reconnect/close transition"],
+  ["docs/OPERATIONS.md", operationsDoc, "`probe_dispatch_pending_at_start`"],
   ["docs/OPERATIONS.md", operationsDoc, "`remote_managed_job_initial_settlement_wait_ms`"],
   ["docs/OPERATIONS.md", operationsDoc, "`server_info.daemon.previous_connection` retains only the last verified channel's transport"],
   ["docs/OPERATIONS.md", operationsDoc, "`diagnose_runtime.runtime.idle_sleep_guard`"],
@@ -2048,6 +2050,8 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "automatic_redelivery_safe becomes false"],
   ["src/shared/server-metadata.json", serverMetadata, "previous_ready_inbound_silence_ms"],
   ["src/shared/server-metadata.json", serverMetadata, "recent_outages"],
+  ["src/shared/server-metadata.json", serverMetadata, "last_disconnect_at is the final failed reconnect/close transition"],
+  ["src/shared/server-metadata.json", serverMetadata, "probe_dispatch_pending_at_start"],
   ["src/shared/server-metadata.json", serverMetadata, "managed-job initial-settlement window"],
   ["src/shared/server-metadata.json", serverMetadata, "separate pre-spawn resource-admission wait of up to 30 minutes"],
   ["src/shared/server-metadata.json", serverMetadata, "read_job.current_phase=resource_admission"],
@@ -2059,7 +2063,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 18"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 20"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],

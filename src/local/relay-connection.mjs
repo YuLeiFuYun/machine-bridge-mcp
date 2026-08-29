@@ -94,6 +94,8 @@ export class RelayConnection {
     this.lastOutageWarnAt = 0;
     this.outageCount = 0;
     this.recentOutages = [];
+    this.lastDisconnectLiveness = null;
+    this.outageStartedLiveness = null;
     this.lastCloseCategory = "connection_interrupted";
     this.lastCloseCode = 0;
     this.transportError = new RelayTransportErrorState();
@@ -371,6 +373,7 @@ export class RelayConnection {
       }
       const errorClass = this.transportError.record(classifyRelayTransportError(error), { error });
       this.lastCloseCode = 0;
+      this.lastDisconnectLiveness = null;
       this.lastDisconnectedAt = this.wallNow();
       this.connectTiming.captureFailure();
       this.logger.debug?.("remote relay connection could not be created", { error_class: errorClass });
@@ -439,7 +442,9 @@ export class RelayConnection {
       const wasReady = this.ready;
       const wasAuthenticated = this.authenticated;
       const disconnectedWorkerConnectionId = this.workerConnectionId;
-      const readyInboundSilenceMs = this.liveness.silenceMs(this.now());
+      const disconnectedAt = this.now();
+      const readyInboundSilenceMs = this.liveness.silenceMs(disconnectedAt);
+      this.lastDisconnectLiveness = this.liveness.snapshot(disconnectedAt);
       this.socket = null;
       this.authenticated = false;
       this.ready = false;
@@ -457,7 +462,6 @@ export class RelayConnection {
       if (category !== "relay_transport_error") {
         this.transportError.clear();
       }
-      const disconnectedAt = this.now();
       const connectedForMs = wasAuthenticated && this.connectedAt > 0 ? Math.max(0, disconnectedAt - this.connectedAt) : 0;
       if (wasReady) this.lastReadyInboundSilenceMs = readyInboundSilenceMs;
       this.lastDisconnectedAt = this.wallNow();
@@ -595,6 +599,7 @@ export class RelayConnection {
     if (this.outageStartedAt === 0) {
       this.outageStartedAt = now;
       this.outageStartedWallAt = this.wallNow();
+      this.outageStartedLiveness = this.lastDisconnectLiveness;
       this.outageCount += 1;
       this.outageAttempts = 0;
       this.outageNoticeEmitted = false;
@@ -644,6 +649,8 @@ export class RelayConnection {
     this.outageNoticeEmitted = false;
     this.outageWarningCount = 0;
     this.lastOutageWarnAt = 0;
+    this.lastDisconnectLiveness = null;
+    this.outageStartedLiveness = null;
     this.nextReconnectAt = 0;
     this.nextReconnectWallAt = 0;
     this.pendingCloseCategory = "";
