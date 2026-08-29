@@ -1594,6 +1594,7 @@ const expectedCodeql = new Set([
   "js/shell-command-injection-from-environment\0src/local/process-execution.mjs",
   "js/indirect-command-line-injection\0src/local/process-execution.mjs",
   "js/insufficient-password-hash\0src/local/account-admin.mjs",
+  "js/file-system-race\0src/local/exclusive-publication-recovery.mjs",
 ]);
 if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((item) => !acceptedCodeql.has(item))) {
   throw new Error("CodeQL exception inventory contains an unreviewed or missing exact finding");
