@@ -1,19 +1,22 @@
-const SECRET_VALUE = /\b(?:account_admin|account_password|daemon_secret|token_version|mcp_at|mcp_rt|mcp_code|mcp_family|mcp_client|acct)_[A-Za-z0-9_-]+\b/g;
-const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*\b/gi;
-const EMAIL_VALUE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
-const GITHUB_TOKEN = /\bgh[pousr]_[A-Za-z0-9_]{30,}\b/g;
-const GITLAB_TOKEN = /\bglpat-[A-Za-z0-9_-]{20,}\b/g;
-const NPM_TOKEN = /\bnpm_[A-Za-z0-9]{30,}\b/g;
-const SLACK_TOKEN = /\bxox[aboprs]-[A-Za-z0-9-]{10,}\b/g;
-const GOOGLE_API_KEY = /\bAIza[A-Za-z0-9_-]{30,}\b/g;
-const PAYMENT_API_KEY = /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}\b/g;
-const JWT_VALUE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
-const URL_CREDENTIALS = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@[^\s/"'<>]+/gi;
+import { sensitiveValuePattern } from "./sensitive-value-patterns.mjs";
+
+const SECRET_VALUE = /\b(?:account_admin|daemon_secret|token_version|mcp_family|mcp_client|acct)_[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g;
+const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*(?![A-Za-z0-9._~+\/-=])/gi;
+const EMAIL_VALUE = sensitiveValuePattern("emailAddress", "gi");
+const AWS_ACCESS_KEY = sensitiveValuePattern("awsAccessKey");
+const GITHUB_TOKEN = sensitiveValuePattern("githubAccessToken");
+const GITLAB_TOKEN = sensitiveValuePattern("gitlabAccessToken");
+const NPM_TOKEN = sensitiveValuePattern("npmAccessToken");
+const SLACK_TOKEN = sensitiveValuePattern("slackAccessToken");
+const GOOGLE_API_KEY = sensitiveValuePattern("googleApiKey");
+const PAYMENT_API_KEY = sensitiveValuePattern("livePaymentApiKey");
+const MACHINE_BRIDGE_CREDENTIAL = sensitiveValuePattern("machineBridgeCredential");
+const JWT_VALUE = sensitiveValuePattern("jwtLikeBearerToken");
+const URL_CREDENTIALS = sensitiveValuePattern("credentialUrl", "gi");
 const NPM_CLI_AUTH_CHALLENGE = /(https?:\/\/[^\s"'<>]*\/auth\/cli\/)[^?&#\s"'<>]+/gi;
 const SENSITIVE_URL_PARAMETER = /([?&#](?:access_token|refresh_token|token|code|state|auth|authid|session|sessionid|otp|verifier|proof|credential|client_secret|api[_-]?key|private[_-]?key)=)[^&#\s"'<>]*/gi;
-const API_SECRET = /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g;
-const PRIVATE_KEY_HEADER = /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g;
+const API_SECRET = sensitiveValuePattern("apiSecretToken");
+const PRIVATE_KEY_HEADER = sensitiveValuePattern("privateKeyHeader");
 const SENSITIVE_FIELD_NAME = /(?:authorization|cookie|password|passwd|secret|token|verifier|proof|credential|(?:account|client|family)[._-]?id|(?:api|private|access|signing)[._-]?key|(?:^|[._-])key(?:$|[._-]))/i;
 
 export function isSensitiveLogFieldName(value) {
@@ -36,6 +39,7 @@ export function sanitizePortableLogText(value, options = {}) {
     .replace(SLACK_TOKEN, "<redacted-access-token>")
     .replace(GOOGLE_API_KEY, "<redacted-cloud-key>")
     .replace(PAYMENT_API_KEY, "<redacted-api-secret>")
+    .replace(MACHINE_BRIDGE_CREDENTIAL, "<redacted-secret>")
     .replace(JWT_VALUE, "<redacted-bearer-token>")
     .replace(URL_CREDENTIALS, "<redacted-credential-url>")
     .replace(NPM_CLI_AUTH_CHALLENGE, "$1<redacted-challenge>")

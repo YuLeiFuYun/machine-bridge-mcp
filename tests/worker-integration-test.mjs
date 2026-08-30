@@ -516,14 +516,16 @@ try {
   const retainedReadJob = retainedFamilyTools.result?.tools?.find((tool) => tool.name === "read_job");
   assert(retainedReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
     && retainedReadJob?.inputSchema?.properties?.wait_ms?.maximum === 60_000
+    && retainedReadJob?.inputSchema?.required?.includes("recovery_key")
+    && retainedReadJob?.inputSchema?.properties?.recovery_key?.pattern === "^mcp_jr_[A-Za-z0-9_-]{43}$"
     && String(retainedReadJob?.description || "").includes(`Tool schema generation ${TOOL_SCHEMA_GENERATION}.`)
     && String(retainedReadJob?.description || "").includes("server-side long-poll")
-    && String(retainedReadJob?.description || "").includes("public hosted wait_ms maximum is 60 seconds")
-    && String(retainedReadJob?.description || "").includes("rather than one overlong host call")
-    && String(retainedReadJob?.description || "").includes("wait_ms=0")
+    && String(retainedReadJob?.description || "").includes("public wait_ms maximum of 60 seconds")
+    && String(retainedReadJob?.description || "").includes("job_id alone is not remote read authority")
+    && String(retainedReadJob?.description || "").includes("same assistant response")
     && String(retainedReadJob?.description || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
     && !String(retainedReadJob?.description || "").includes("read an active job at most once"),
-  "current tools/list omitted paced read_job/schema-freshness guidance");
+  "current tools/list omitted capability-bound paced read_job/schema-freshness guidance");
 
   const currentDiscovery = await fetchJson(`${base}/mcp`, {
     method: "POST",
@@ -917,7 +919,7 @@ try {
   assert(statusBeforeHello.daemon?.tools?.includes("read_file"), "candidate connection changed active tools before hello");
 
   const candidateInstanceId = nextDaemonInstanceId();
-  const candidateTools = ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command", "read_job"];
+  const candidateTools = ["session_bootstrap", "resolve_task_capabilities", "list_dir", "view_image", "run_process", "exec_command", "start_job", "read_job"];
   const candidatePolicy = { profile: "agent", allowWrite: true, allowExec: true, execMode: "direct", unrestrictedPaths: false, minimalEnv: true, exposeAbsolutePaths: false };
   const firstClosed = waitForWsClose(firstDaemon);
   const replacementProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
@@ -1095,8 +1097,10 @@ try {
   "remote tools/list lost the durable-process execution and recovery contract");
   const remoteBrowserWait = remoteAgentTools.find((tool) => tool.name === "browser_wait");
   assert(remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.maximum === 45
-    && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 20,
-  "remote tools/list lost the reply-safe browser foreground timeout contract");
+    && remoteBrowserWait?.inputSchema?.properties?.timeout_seconds?.default === 20
+    && remoteBrowserWait?.inputSchema?.required?.includes("tab_id")
+    && String(remoteBrowserWait?.description || "").includes("explicit tab_id"),
+  "remote tools/list lost the reply-safe browser timeout or explicit-tab concurrency contract");
   const remoteReadProcess = remoteAgentTools.find((tool) => tool.name === "read_process");
   const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
   assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1000
@@ -1108,10 +1112,11 @@ try {
     && remoteReadProcessDescription.includes("must not busy-loop"),
   "remote tools/list lost the one-second server-paced process-follow-up contract");
   const remoteListJobsDescription = String(remoteAgentTools.find((tool) => tool.name === "list_jobs")?.description || "");
-  assert(remoteListJobsDescription.includes("inventory operation")
-    && remoteListJobsDescription.includes("Do not repeat list_jobs")
-    && remoteListJobsDescription.includes("use read_job instead"),
-  "remote tools/list lost known-job routing away from list_jobs polling");
+  assert(remoteListJobsDescription.includes("aggregate retained/capacity/activity state only")
+    && remoteListJobsDescription.includes("deliberately omits job handles")
+    && remoteListJobsDescription.includes("recovery_key")
+    && remoteListJobsDescription.includes("do not repeat list_jobs"),
+  "remote tools/list lost aggregate-only hosted managed-job inventory guidance");
   const overLimitMessages = captureWsMessageTypes(candidateDaemon);
   const overLimit = await callTool(base, ownerAccessToken, 2502, "run_process", {
     argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "worker-over-limit",
@@ -1290,9 +1295,30 @@ try {
   assert(reconnectResult.body.result?.structuredContent?.resumed === true, "MCP request did not complete after same-instance daemon reconnect");
 
   const plannedDrainJobId = `job_${"d".repeat(64)}`;
+  const plannedDrainAcceptanceRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const plannedDrainAcceptanceCall = toolCallRequest(base, ownerAccessToken, 88030, "start_job", {
+    idempotency_key: "planned-drain-capability", steps: [{ argv: ["true"] }],
+  });
+  const plannedDrainAcceptanceRelay = await plannedDrainAcceptanceRelayPromise;
+  assert(plannedDrainAcceptanceRelay.tool === "start_job"
+    && !("recovery_key" in plannedDrainAcceptanceRelay.arguments)
+    && !("control_key" in plannedDrainAcceptanceRelay.arguments),
+  "hosted managed-job capability material crossed the Worker/daemon request boundary");
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result", id: plannedDrainAcceptanceRelay.id, ok: true,
+    result: { accepted: true, job_id: plannedDrainJobId, status: "running", recovery: { tool: "read_job", job_id: plannedDrainJobId } },
+  }));
+  const plannedDrainAcceptanceResult = await plannedDrainAcceptanceCall;
+  const plannedDrainRecoveryKey = plannedDrainAcceptanceResult.body.result?.structuredContent?.recovery_key;
+  assert(typeof plannedDrainRecoveryKey === "string" && /^mcp_jr_[A-Za-z0-9_-]{43}$/.test(plannedDrainRecoveryKey),
+    "hosted managed-job acceptance did not return a read recovery capability");
   const plannedDrainRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
-  const plannedDrainCall = toolCallRequest(base, ownerAccessToken, 88031, "read_job", { job_id: plannedDrainJobId, wait_ms: 0 });
-  await plannedDrainRelayPromise;
+  const plannedDrainCall = toolCallRequest(base, ownerAccessToken, 88031, "read_job", {
+    job_id: plannedDrainJobId, recovery_key: plannedDrainRecoveryKey, wait_ms: 0,
+  });
+  const plannedDrainRelay = await plannedDrainRelayPromise;
+  assert(plannedDrainRelay.arguments?.job_id === plannedDrainJobId && !("recovery_key" in plannedDrainRelay.arguments),
+    "hosted read_job forwarded its recovery capability to the daemon");
   const plannedDrainBaseline = await callServerInfo(base, ownerAccessToken, 88032);
   const plannedDrainAckPromise = waitForWsMessage(candidateDaemon, "daemon_draining_ack");
   const plannedDrainId = `drain_${"p".repeat(24)}`;
@@ -1672,8 +1698,10 @@ try {
   assert(durableAcceptanceResult.response.status === 200
     && durableAcceptanceResult.body.result?.isError === false
     && durableAcceptanceResult.body.result?.structuredContent?.execution_mode === "durable_job"
-    && durableAcceptanceResult.body.result?.structuredContent?.job_id === durableJobId,
-  "durable process acceptance did not settle independently of the detached one-second step lifetime");
+    && durableAcceptanceResult.body.result?.structuredContent?.job_id === durableJobId
+    && /^mcp_jr_[A-Za-z0-9_-]{43}$/.test(String(durableAcceptanceResult.body.result?.structuredContent?.recovery_key || ""))
+    && /^mcp_jc_[A-Za-z0-9_-]{43}$/.test(String(durableAcceptanceResult.body.result?.structuredContent?.control_key || "")),
+  "durable process acceptance did not settle independently of the detached one-second step lifetime or return hosted recovery capabilities");
 
   const ambiguousAcceptanceKey = "worker-ambiguous-durable-acceptance";
   const ambiguousRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");

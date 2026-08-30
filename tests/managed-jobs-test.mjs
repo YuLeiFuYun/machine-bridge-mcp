@@ -28,6 +28,7 @@ import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunner
 import { createManagedJobRunnerExitRecovery } from "../src/local/managed-job-runner-exit-recovery.mjs";
 import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal, terminalStatusFromResult } from "../src/local/managed-job-terminal.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
+import { managedJobTransitionConflict } from "../src/local/managed-job-state-validation.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
@@ -38,6 +39,11 @@ const MANAGED_JOB_MULTI_STEP_WAIT_MS = 600_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 120;
 const MANAGED_JOB_TREE_TIMEOUT_SECONDS = 15;
 const MANAGED_JOB_TREE_READY_MS = 10_000;
+
+const transitionConflict = managedJobTransitionConflict();
+assert(transitionConflict.code === "conflict" && transitionConflict.retryable === true
+  && transitionConflict.details?.job_transition_pending === true,
+"managed-job transition contention lost its typed retryable conflict contract");
 const RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500;
 const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 

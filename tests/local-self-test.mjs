@@ -1152,12 +1152,14 @@ async function cliSelfTest() {
 }
 
 function logSelfTest() {
+  const syntheticAccessToken = ["mcp", "at", "A".repeat(43)].join("_");
+  const syntheticAccountPassword = ["account", "password", "P".repeat(43)].join("_");
   const rendered = formatFields({
-    token: "mcp_at_should-not-appear",
-    nested: { password: "secret", message: "account_password_abcdef\nforged" },
+    token: syntheticAccessToken,
+    nested: { password: "secret", message: `${syntheticAccountPassword}\nforged` },
     authorization: "Bearer abcdefghijklmnopqrstuvwxyz",
   });
-  if (rendered.includes("should-not-appear") || rendered.includes("password_abcdef") || rendered.includes("Bearer abcdef")) {
+  if (rendered.includes(syntheticAccessToken) || rendered.includes(syntheticAccountPassword) || rendered.includes("Bearer abcdef")) {
     throw new Error("structured log secret redaction failed");
   }
   if (rendered.includes("\nforged")) throw new Error("structured log newline injection was not escaped");

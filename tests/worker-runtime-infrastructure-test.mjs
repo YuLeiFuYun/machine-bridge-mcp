@@ -18,7 +18,9 @@ import {
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../src/worker/managed-job-read-timeout.ts";
-import { serverInfoTool, validateWorkerToolArguments, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { issueManagedJobCapability, verifyManagedJobCapability } from "../src/worker/managed-job-capability.ts";
+import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../src/worker/managed-job-hosted-authority.ts";
+import { serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
 import { workerAuthorityContext, workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -110,7 +112,7 @@ await testDaemonSocketIsolation();
 testDaemonRelayDiagnostics();
 await testWorkerTaskLifetime();
 testWorkerRuntimeConfig();
-testRelayTimeoutContract();
+await testRelayTimeoutContract();
 testWorkerPolicyParity();
 testWorkerErrors();
 testDaemonAndServerInfoProjection();
@@ -1291,7 +1293,7 @@ function testWorkerRuntimeConfig() {
   assert(workerBodyLimitBytes(String(32 * 1024 * 1024)) === 16 * 1024 * 1024, "Worker body limit exceeded the hard maximum");
 }
 
-function testRelayTimeoutContract() {
+async function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
   assert(relayContract.newCallReconnectGraceMs === 15_000,
     "new-call recovery no longer covers the bounded HTTPS fallback window before the original execution budget is reduced");
@@ -1464,13 +1466,14 @@ function testRelayTimeoutContract() {
   const remoteListJobsDescription = String(workspaceTools.find((tool) => tool.name === "list_jobs")?.description || "");
   const remoteReadJob = workspaceTools.find((tool) => tool.name === "read_job");
   const remoteReadJobDescription = String(remoteReadJob?.description || "");
+  const remoteCancelJob = workspaceTools.find((tool) => tool.name === "cancel_job");
   assert(remoteStartJob?.inputSchema?.required?.includes("idempotency_key")
+    && remoteStartJob?.inputSchema?.properties?.dependency_recovery?.type === "object"
     && remoteStartJobDescription.includes("idempotency_key known before dispatch")
-    && remoteStartJobDescription.includes("same idempotency_key")
-    && remoteStartJobDescription.includes("durable background ownership")
-    && remoteStartJobDescription.includes("bounded same-response read_job follow-up")
+    && remoteStartJobDescription.includes("recovery_key and control_key")
+    && remoteStartJobDescription.includes("dependency_recovery")
     && remoteStartJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
-  "remote start_job schema/description omitted idempotent acceptance recovery or the durable autonomous-follow-up contract");
+  "remote start_job schema/description omitted idempotent acceptance, managed-job capabilities, or autonomous follow-up");
   const startJobWithoutRecoveryKey = validateWorkerToolArguments("start_job", { steps: [{ argv: ["true"] }] });
   const startJobWithRecoveryKey = validateWorkerToolArguments("start_job", {
     idempotency_key: "hosted-start-job-validator", steps: [{ argv: ["true"] }],
@@ -1487,8 +1490,8 @@ function testRelayTimeoutContract() {
   "hosted start_job timeout/disconnect recovery did not bind the same idempotency credential used by admission");
   const readJobRecovery = daemonToolRecovery("read_job", { job_id: `job_${"r".repeat(64)}` });
   const readJobDisconnect = publicWorkerToolError(dispatchedDaemonDisconnectError("daemon restart", readJobRecovery, "daemon_planned_drain"));
-  assert(readJobRecovery?.credential === "job_id"
-    && readJobRecovery?.action === "retry_read_job_with_same_job_id"
+  assert(readJobRecovery?.credential === "job_id+recovery_key"
+    && readJobRecovery?.action === "retry_read_job_with_same_job_id_and_recovery_key"
     && readJobDisconnect.code === "unavailable"
     && readJobDisconnect.retryable === true
     && readJobDisconnect.details?.side_effects_started === false
@@ -1508,21 +1511,98 @@ function testRelayTimeoutContract() {
       && tool?.inputSchema?.properties?.finally_steps?.items?.properties?.timeout_seconds?.maximum === 21_600,
     "remote managed-job schema cannot express one continuous step beyond 100 minutes");
   }
-  assert(remoteListJobsDescription.includes("inventory operation")
-    && remoteListJobsDescription.includes("Do not repeat list_jobs")
-    && remoteListJobsDescription.includes("use read_job instead"),
-  "remote list_jobs description no longer routes known-job follow-up through read_job");
+  assert(remoteListJobsDescription.includes("aggregate retained/capacity/activity state only")
+    && remoteListJobsDescription.includes("deliberately omits job handles")
+    && remoteListJobsDescription.includes("recovery_key")
+    && remoteListJobsDescription.includes("do not repeat list_jobs"),
+  "remote list_jobs description no longer enforces aggregate-only hosted recovery inventory");
   assert(remoteReadJob?.inputSchema?.properties?.wait_ms?.default === 40_000
     && remoteReadJob?.inputSchema?.properties?.wait_ms?.maximum === 60_000
+    && remoteReadJob?.inputSchema?.required?.includes("recovery_key")
+    && remoteReadJob?.inputSchema?.properties?.recovery_key?.pattern === "^mcp_jr_[A-Za-z0-9_-]{43}$"
     && remoteReadJobDescription.includes("server-side long-poll")
     && remoteReadJobDescription.includes("wait up to 40 seconds")
-    && remoteReadJobDescription.includes("public hosted wait_ms maximum is 60 seconds")
-    && remoteReadJobDescription.includes("rather than one overlong host call")
-    && remoteReadJobDescription.includes("wait_ms=0")
+    && remoteReadJobDescription.includes("public wait_ms maximum of 60 seconds")
+    && remoteReadJobDescription.includes("job_id alone is not remote read authority")
     && remoteReadJobDescription.includes("same assistant response")
-    && remoteReadJobDescription.includes("Do not busy-loop")
+    && remoteReadJobDescription.includes("do not busy-loop")
     && remoteReadJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
-  "remote read_job schema/description lost paced same-turn autonomous follow-up");
+  "remote read_job schema/description lost capability-bound paced same-turn follow-up");
+  assert(remoteCancelJob?.inputSchema?.required?.includes("control_key")
+    && remoteCancelJob?.inputSchema?.properties?.control_key?.pattern === "^mcp_jc_[A-Za-z0-9_-]{43}$"
+    && String(remoteCancelJob?.description || "").includes("job_id or recovery_key alone is not cancellation authority"),
+  "remote cancel_job schema/description lost control-capability enforcement");
+  const capabilityAuthority = {
+    tokenKey: "synthetic-token", accountId: "synthetic-account", accountVersion: 4,
+    clientId: "synthetic-client", familyId: "synthetic-family", dpopJkt: "", role: "owner",
+  };
+  const otherCapabilityAuthority = { ...capabilityAuthority, familyId: "other-family" };
+  const capabilityKeyMaterial = "synthetic-worker-identity-key";
+  const capabilityJobId = `job_${"q".repeat(24)}`;
+  const recoveryKey = await issueManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "read");
+  const controlKey = await issueManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "control");
+  assert(await verifyManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "read", recoveryKey)
+    && await verifyManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "control", controlKey)
+    && !await verifyManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "control", recoveryKey)
+    && !await verifyManagedJobCapability(capabilityKeyMaterial, otherCapabilityAuthority, capabilityJobId, "read", recoveryKey),
+  "managed-job capabilities lost purpose/principal binding");
+  const projectedReadArgs = await hostedManagedJobDaemonArguments("read_job", {
+    job_id: capabilityJobId, recovery_key: recoveryKey, wait_ms: 0,
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(projectedReadArgs.job_id === capabilityJobId && projectedReadArgs.wait_ms === 0 && !("recovery_key" in projectedReadArgs),
+    "hosted read_job forwarded its bearer recovery capability to the daemon");
+  const projectedDependencyArgs = await hostedManagedJobDaemonArguments("start_job", {
+    idempotency_key: "capability-dependency", depends_on: [capabilityJobId],
+    dependency_recovery: { [capabilityJobId]: recoveryKey }, steps: [{ argv: ["true"] }],
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(Array.isArray(projectedDependencyArgs.depends_on) && !("dependency_recovery" in projectedDependencyArgs),
+    "hosted dependency authorization material crossed the Worker/daemon boundary");
+  let wrongCapabilityError;
+  try {
+    await hostedManagedJobDaemonArguments("read_job", {
+      job_id: capabilityJobId, recovery_key: recoveryKey,
+    }, otherCapabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { wrongCapabilityError = error; }
+  assert(wrongCapabilityError instanceof WorkerToolError && wrongCapabilityError.code === "authorization_denied"
+    && wrongCapabilityError.details?.side_effects_started === false,
+  "wrong-principal hosted job recovery did not fail before daemon dispatch");
+  const acceptedWithCapabilities = await projectHostedManagedJobResult("start_job", {
+    accepted: true, job_id: capabilityJobId, recovery: { tool: "read_job", job_id: capabilityJobId },
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(acceptedWithCapabilities.recovery_key === recoveryKey && acceptedWithCapabilities.control_key === controlKey
+    && acceptedWithCapabilities.recovery?.recovery_key === recoveryKey
+    && acceptedWithCapabilities.recovery?.control_key === controlKey,
+  "hosted managed-job acceptance did not return deterministic recovery/control capabilities");
+  const aggregateInventory = await projectHostedManagedJobResult("list_jobs", {
+    jobs: [{ job_id: capabilityJobId, name: "must-not-cross-hosted-boundary", status: "running" }],
+    recent_process_recovery: [{ job_id: capabilityJobId }], retained: 1, maximum: 512,
+    capacity: { retained_state: 1 }, recent_activity: { created_recently: 1 },
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(Array.isArray(aggregateInventory.jobs) && aggregateInventory.jobs.length === 0
+    && Array.isArray(aggregateInventory.recent_process_recovery) && aggregateInventory.recent_process_recovery.length === 0
+    && aggregateInventory.hosted_inventory_scope === "aggregate_only"
+    && !JSON.stringify(aggregateInventory).includes(capabilityJobId)
+    && !JSON.stringify(aggregateInventory).includes("must-not-cross-hosted-boundary"),
+  "hosted list_jobs still exposed globally discoverable durable job handles or names");
+  const validReadCapabilityShape = validateWorkerToolArguments("read_job", { job_id: capabilityJobId, recovery_key: recoveryKey, wait_ms: 0 });
+  const missingReadCapabilityShape = validateWorkerToolArguments("read_job", { job_id: capabilityJobId, wait_ms: 0 });
+  const validCancelCapabilityShape = validateWorkerToolArguments("cancel_job", { job_id: capabilityJobId, control_key: controlKey });
+  const dependencyWithoutCapability = validateWorkerToolArguments("start_job", {
+    idempotency_key: "dependency-without-capability", depends_on: [capabilityJobId], steps: [{ argv: ["true"] }],
+  });
+  assert(validReadCapabilityShape.valid && !missingReadCapabilityShape.valid && validCancelCapabilityShape.valid
+    && !dependencyWithoutCapability.valid,
+  "actual Worker validator did not enforce hosted managed-job capabilities/dependency recovery");
+  assert(!workerToolParameterHeaders.has("mcp-param-recovery-key")
+    && !workerToolParameterHeaders.has("mcp-param-control-key")
+    && !workerToolParameterHeaders.has("mcp-param-dependency-recovery"),
+  "managed-job bearer capabilities leaked into mirrored HTTP routing headers");
+  assert(!validateWorkerToolArguments("browser_inspect_page", {}).valid
+    && validateWorkerToolArguments("browser_inspect_page", { tab_id: 1 }).valid
+    && !validateWorkerToolArguments("computer_observe", { surface: "browser" }).valid
+    && validateWorkerToolArguments("computer_observe", { surface: "browser", tab_id: 1 }).valid
+    && validateWorkerToolArguments("computer_observe", { surface: "application", application: "synthetic" }).valid,
+  "hosted browser schemas still allowed implicit active-tab targeting or over-required tab_id for applications");
   const immediateJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 0 });
   const defaultJobReadBudget = daemonToolTimeoutBudget("read_job", {});
   const maximumJobReadBudget = daemonToolTimeoutBudget("read_job", { wait_ms: 60_000 });

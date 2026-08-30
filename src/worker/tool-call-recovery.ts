@@ -7,10 +7,10 @@ export function daemonToolRecovery(name: string, args: Record<string, unknown>):
     return {
       mode: "read_same_job",
       source_tool: name,
-      credential: "job_id",
+      credential: "job_id+recovery_key",
       credential_source: "original_request_arguments",
       job_id: jobId,
-      action: "retry_read_job_with_same_job_id",
+      action: "retry_read_job_with_same_job_id_and_recovery_key",
       duplicate_execution_prevented_by_read_only_operation: true,
     };
   }

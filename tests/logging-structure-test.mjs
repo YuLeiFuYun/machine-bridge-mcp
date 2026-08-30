@@ -1,4 +1,5 @@
 import { createLogger } from "../src/local/log.mjs";
+import { sanitizePortableLogText } from "../src/shared/log-redaction.mjs";
 
 const stdout = captureStream();
 const stderr = captureStream();
@@ -91,6 +92,24 @@ rawLogger.rawPlain("literal raw output");
 rawLogger.rawJson({ explicit_raw: "literal raw json" });
 assert(rawOutput.lines[0] === "literal raw output" && rawOutput.lines[1].includes("literal raw json"),
   "explicit raw-output methods stopped preserving user-requested terminal payloads");
+
+const delimiterEdgeCredentials = [
+  [`glpat-${"A".repeat(20)}-`, "<redacted-access-token>"],
+  [`xoxb-${"B".repeat(10)}-`, "<redacted-access-token>"],
+  [`AIza${"C".repeat(30)}-`, "<redacted-cloud-key>"],
+  [`sk-${"D".repeat(20)}-`, "<redacted-api-secret>"],
+  [`eyJ${"E".repeat(8)}.${"F".repeat(8)}.${"G".repeat(8)}-`, "<redacted-bearer-token>"],
+  [`mcp_rt_${"R".repeat(42)}-`, "<redacted-secret>"],
+  [`mcp_jr_${"J".repeat(42)}-`, "<redacted-secret>"],
+  [`mcp_jc_${"C".repeat(42)}-`, "<redacted-secret>"],
+  [`Bearer ${"K".repeat(20)}-`, "Bearer <redacted>"],
+];
+for (const [credential, expected] of delimiterEdgeCredentials) {
+  const sanitized = sanitizePortableLogText(credential, { maxChars: 1000 });
+  assert(sanitized === expected, `credential delimiter-edge redaction was partial: ${expected}`);
+}
+assert(sanitizePortableLogText("capability_routing=enabled", { maxChars: 1000 }) === "capability_routing=enabled",
+  "safe capability metadata was over-redacted");
 
 console.log("structured logging test ok");
 
