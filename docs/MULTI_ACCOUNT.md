@@ -126,9 +126,9 @@ Interactive processes, retained output sessions, and managed jobs bind to:
 - OAuth client ID;
 - refresh-token family ID.
 
-A different account, client, or token family cannot inspect, continue, send input to, cancel, or terminate the object.
+For delegated (non-owner) principals, a different account, client, or token family cannot inspect, continue, send input to, cancel, or terminate the object. The `owner` role is intentionally a local-machine administration role and remains a global object administrator at the daemon boundary; owner CLI/stdio diagnostics can inspect and control retained objects across delegated principals.
 
-This binding prevents horizontal control between two clients authorized for the same account as well as between different accounts.
+Hosted managed-job recovery adds a stricter Worker boundary even for owner accounts: detailed `list_jobs` handles are not remotely enumerable, and `read_job`, `cancel_job`, and `depends_on` require purpose-scoped capabilities bound to the accepting account version, OAuth client, refresh family, role, and job. This prevents Machine Bridge's own global owner inventory from becoming cross-conversation recovery authority. It does not claim to distinguish two host conversations if the host itself incorrectly forwards the other conversation's valid capability.
 
 ## Administrative boundary
 

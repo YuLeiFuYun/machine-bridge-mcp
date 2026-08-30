@@ -235,6 +235,47 @@ assert.equal(missingDurableRecoveryKey.result.structuredContent.error.code, "inv
 assert.equal(missingDurableRecoveryKey.result.structuredContent.error.details.side_effects_started, false);
 assert.equal(missingDurableRecoveryKey.result.structuredContent.error.details.schema_refresh_recommended, true);
 assert.equal(missingDurableRecoveryKey.result.structuredContent.error.details.recovery_credential_required, "idempotency_key");
+const missingHostedJobRecovery = await jsonResult(await handle(request("tools/call", {
+  name: "read_job", arguments: { job_id: `job_${"h".repeat(24)}`, wait_ms: 0 },
+}), { accept: "application/json" }));
+assert.equal(missingHostedJobRecovery.result.isError, true);
+assert.equal(missingHostedJobRecovery.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(missingHostedJobRecovery.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(missingHostedJobRecovery.result.structuredContent.error.details.recovery_credential_required, "recovery_key");
+assert(missingHostedJobRecovery.result.structuredContent.error.message.includes("job_id alone is not remote managed-job authority")
+  && missingHostedJobRecovery.result.structuredContent.error.message.includes("local CLI/stdio"));
+const staleMissingHostedJobRecovery = await jsonResult(await handle(request("tools/call", {
+  name: "read_job", arguments: { job_id: `job_${"s".repeat(24)}`, wait_ms: 300000 },
+}), { accept: "application/json" }));
+assert.equal(staleMissingHostedJobRecovery.result.isError, true);
+assert.equal(staleMissingHostedJobRecovery.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(staleMissingHostedJobRecovery.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(staleMissingHostedJobRecovery.result.structuredContent.error.details.recovery_credential_required, "recovery_key");
+assert(staleMissingHostedJobRecovery.result.structuredContent.error.details.validation_issues.some((issue) => issue.instancePath === "/wait_ms" && issue.keyword === "maximum"));
+const missingHostedJobControl = await jsonResult(await handle(request("tools/call", {
+  name: "cancel_job", arguments: { job_id: `job_${"h".repeat(24)}` },
+}), { accept: "application/json" }));
+assert.equal(missingHostedJobControl.result.isError, true);
+assert.equal(missingHostedJobControl.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(missingHostedJobControl.result.structuredContent.error.details.recovery_credential_required, "control_key");
+const missingHostedDependencyRecovery = await jsonResult(await handle(request("tools/call", {
+  name: "start_job", arguments: {
+    idempotency_key: "stale-dependency-schema", depends_on: [`job_${"d".repeat(24)}`], steps: [{ argv: ["true"] }],
+  },
+}), { accept: "application/json" }));
+assert.equal(missingHostedDependencyRecovery.result.isError, true);
+assert.equal(missingHostedDependencyRecovery.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(missingHostedDependencyRecovery.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(missingHostedDependencyRecovery.result.structuredContent.error.details.required_field, "dependency_recovery");
+const missingHostedBrowserTab = await jsonResult(await handle(request("tools/call", {
+  name: "browser_inspect_page", arguments: {},
+}), { accept: "application/json" }));
+assert.equal(missingHostedBrowserTab.result.isError, true);
+assert.equal(missingHostedBrowserTab.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(missingHostedBrowserTab.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(missingHostedBrowserTab.result.structuredContent.error.details.required_field, "tab_id");
+assert(missingHostedBrowserTab.result.structuredContent.error.message.includes("browser_list_tabs")
+  && missingHostedBrowserTab.result.structuredContent.error.message.includes("active-tab"));
 const staleReadPollSchema = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: 5000 },
 }), { accept: "application/json" }));
@@ -250,6 +291,18 @@ assert(staleReadPollSchema.result.structuredContent.error.message.includes("one-
   && staleReadPollSchema.result.structuredContent.error.message.includes("run_process/read_job")
   && !staleReadPollSchema.result.structuredContent.error.message.includes("short polling"),
 "stale read_process compatibility guidance lost server-paced follow-up limits");
+const staleReadJobSchema = await jsonResult(await handle(request("tools/call", {
+  name: "read_job", arguments: { job_id: `job_${"j".repeat(24)}`, recovery_key: `mcp_jr_${"r".repeat(43)}`, wait_ms: 300000 },
+}), { accept: "application/json" }));
+assert.equal(staleReadJobSchema.result.isError, true);
+assert.equal(staleReadJobSchema.result.structuredContent.error.code, "invalid_request");
+assert.equal(staleReadJobSchema.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(staleReadJobSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
+assert.equal(staleReadJobSchema.result.structuredContent.error.details.validation_issues[0].instancePath, "/wait_ms");
+assert(staleReadJobSchema.result.structuredContent.error.message.includes("refresh tools/list")
+  && staleReadJobSchema.result.structuredContent.error.message.includes("same durable job")
+  && staleReadJobSchema.result.structuredContent.error.message.includes("server-paced read_job"),
+"stale read_job compatibility guidance lost refresh/continuation semantics");
 const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: "5000" },
 }), { accept: "application/json" }));

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { assertStateMaintenanceAvailable } from "./state.mjs";
 import { ensureOwnerOnlyDir, inspectPathIfPresentSync } from "./secure-file.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
@@ -25,6 +25,7 @@ import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { createManagedJobRunnerExitRecovery } from "./managed-job-runner-exit-recovery.mjs";
 import { relaunchDependencyWaitManagedJob, relaunchInterruptedManagedJob } from "./managed-job-relaunch.mjs";
 import { managedJobIdempotencyDigest, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./managed-job-idempotency.mjs";
+import { assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity, isKnownManagedJobStatus, managedJobTransitionConflict } from "./managed-job-state-validation.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
 import { retiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
 import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
@@ -351,7 +352,7 @@ export class ManagedJobManager {
     this.assertMaintenanceAvailable();
     const dir = this.jobDir(args.job_id);
     const transition = acquireJobTransitionLock(dir);
-    if (!transition) throw new Error("job state is being modified by another process; retry after inspecting its current status");
+    if (!transition) throw managedJobTransitionConflict();
     try {
       this.reconcileStatus(dir);
       const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
@@ -528,7 +529,7 @@ function cancelManagedJob(manager, args = {}, context = {}) {
   manager.assertMaintenanceAvailable();
   const dir = manager.jobDir(args.job_id);
   const transition = acquireJobTransitionLock(dir);
-  if (!transition) throw new Error("job state is being modified by another process; retry after inspecting its current status");
+  if (!transition) throw managedJobTransitionConflict();
   try {
     manager.reconcileStatus(dir);
     const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
@@ -563,22 +564,6 @@ function cancelManagedJob(manager, args = {}, context = {}) {
     };
   } finally {
     transition.release();
-  }
-}
-
-function isKnownManagedJobStatus(value) {
-  return value === "staged" || ACTIVE_JOB_STATES.has(value) || isTerminalManagedJobStatus(value);
-}
-
-function assertManagedJobDirectoryIdentity(dir, status) {
-  if (status?.job_id !== basename(dir)) {
-    throw new BridgeError("integrity_error", "managed job state does not match its directory");
-  }
-}
-
-function assertKnownManagedJobStatus(status) {
-  if (!isKnownManagedJobStatus(status?.status)) {
-    throw new BridgeError("integrity_error", "managed job status is invalid");
   }
 }
 

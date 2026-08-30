@@ -56,11 +56,12 @@ import {
 import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./managed-job-read-timeout.ts";
+import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./managed-job-hosted-authority.ts";
 import {
   closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
 } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.154";
+const SERVER_VERSION = "3.0.0-beta.155";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -509,10 +510,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
       const overviewDetail = name === "project_overview" ? projectOverviewDetail(args) : "full";
-      const daemonArgs = name === "project_overview" ? {} : args;
+      const daemonArgs = await hostedManagedJobDaemonArguments(name, name === "project_overview" ? {} : args,
+        authorized, this.oauth.identityKey());
       const result = await this.callDaemonTool(name, daemonArgs, authorized, requestKey, signal);
-      return name === "project_overview" ? projectProjectOverview(decorateProjectOverview(result, { accountId: authorized.accountId,
-        accountVersion: authorized.accountVersion, role: authorized.role }), overviewDetail) : result;
+      if (name === "project_overview") {
+        return projectProjectOverview(decorateProjectOverview(result, { accountId: authorized.accountId,
+          accountVersion: authorized.accountVersion, role: authorized.role }), overviewDetail);
+      }
+      return projectHostedManagedJobResult(name, result, authorized, this.oauth.identityKey());
     }
     throw new Error("unknown tool");
   }

@@ -343,6 +343,7 @@ const lineLimits = Object.freeze({
   "src/shared/tool-call-capacity.mjs": 80,
   "src/shared/project-overview-projection.mjs": 110,
   "src/shared/activation-recovery.mjs": 70,
+  "src/shared/sensitive-value-patterns.mjs": 50,
   "src/local/call-capacity.mjs": 70,
   "src/local/git-service.mjs": 220,
   "src/local/git-config-safety.mjs": 65,
@@ -388,6 +389,7 @@ const lineLimits = Object.freeze({
   "src/local/managed-jobs.mjs": 700,
   "src/local/job-runner.mjs": 710,
   "src/local/managed-job-idempotency.mjs": 50,
+  "src/local/managed-job-state-validation.mjs": 40,
   "src/local/managed-job-lock.mjs": 140,
   "src/local/managed-job-capacity.mjs": 50,
   "src/local/managed-job-retention.mjs": 130,
@@ -481,6 +483,10 @@ const lineLimits = Object.freeze({
   "src/worker/worker-rate-limit-key.ts": 50,
   "src/worker/worker-edge-log.ts": 80,
   "src/worker/managed-job-read-timeout.ts": 40,
+  "src/worker/managed-job-capability.ts": 80,
+  "src/worker/managed-job-hosted-authority.ts": 130,
+  "src/worker/managed-job-hosted-schema.ts": 90,
+  "src/worker/hosted-browser-target-schema.ts": 50,
   "src/worker/tool-call-recovery.ts": 40,
   "src/worker/oauth-token-issuance.ts": 120,
   "src/worker/oauth-token-derivation.ts": 70,
@@ -1606,7 +1612,7 @@ for (const source of [workerIndexBoundary, workerEntryBoundary]) {
 
 const serverInfoBoundary = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
 for (const required of [
-  'projectOverviewDetail(args)', 'const daemonArgs = name === "project_overview" ? {} : args',
+  'projectOverviewDetail(args)', 'hostedManagedJobDaemonArguments(name, name === "project_overview" ? {} : args',
   'projectProjectOverview(decorateProjectOverview', '), overviewDetail)',
 ]) {
   if (!workerIndexBoundary.includes(required)) throw new Error(`remote project_overview lost post-authority compact projection boundary: ${required}`);

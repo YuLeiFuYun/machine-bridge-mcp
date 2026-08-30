@@ -70,8 +70,16 @@ try {
 
   assertSensitiveContent("npm-token.txt", npmToken, "npm access token");
   assertSensitiveContent("slack-token.txt", ["xoxb", "1234567890", "ABCDEFGHIJK"].join("-"), "Slack access token");
+  assertSensitiveContent("gitlab-edge-token.txt", `glpat-${"G".repeat(20)}-`, "GitLab access token");
+  assertSensitiveContent("slack-edge-token.txt", `xoxb-${"S".repeat(10)}-`, "Slack access token");
   assertSensitiveContent("google-key.txt", ["AI", "za", "A".repeat(35)].join(""), "Google API key");
+  assertSensitiveContent("google-edge-key.txt", `${["AI", "za"].join("")}${"K".repeat(30)}-`, "Google API key");
+  assertSensitiveContent("api-edge-token.txt", `sk-${"Q".repeat(20)}-`, "API secret token");
+  assertSensitiveContent("machine-refresh-token.txt", ["mcp", "rt", `${"R".repeat(42)}-`].join("_"), "Machine Bridge credential");
+  assertSensitiveContent("machine-recovery-key.txt", ["mcp", "jr", `${"J".repeat(42)}-`].join("_"), "Machine Bridge credential");
+  assertSensitiveContent("machine-control-key.txt", ["mcp", "jc", `${"C".repeat(42)}-`].join("_"), "Machine Bridge credential");
   assertSensitiveContent("jwt.txt", ["eyJ" + "A".repeat(12), "B".repeat(12), "C".repeat(12)].join("."), "JWT-like bearer token");
+  assertSensitiveContent("jwt-edge.txt", [`eyJ${"A".repeat(8)}`, "B".repeat(8), `${"C".repeat(8)}-`].join("."), "JWT-like bearer token");
   assertSensitiveContent("private-key.txt", ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "), "private key material");
   assertSensitiveContent("credential-url.txt", ["https://operator", ["private-value@host", "actual-domain", "test/path"].join(".")].join(":"), "URL with embedded credentials");
 

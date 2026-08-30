@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
+import { sensitiveValuePattern } from "../src/shared/sensitive-value-patterns.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const selfPath = "scripts/privacy-check.mjs";
@@ -248,16 +249,17 @@ function escapeRegExp(value) {
 
 function scanBuiltIn(relativePath, text, out) {
   const rules = [
-    ["private key material", /-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----/g],
-    ["AWS access key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g],
-    ["GitHub access token", /\bgh[pousr]_[A-Za-z0-9_]{30,}\b/g],
-    ["GitLab access token", /\bglpat-[A-Za-z0-9_-]{20,}\b/g],
-    ["npm access token", /\bnpm_[A-Za-z0-9]{30,}\b/g],
-    ["Slack access token", /\bxox[aboprs]-[A-Za-z0-9-]{10,}\b/g],
-    ["Google API key", /\bAIza[A-Za-z0-9_-]{30,}\b/g],
-    ["live payment API key", /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}\b/g],
-    ["API secret token", /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g],
-    ["JWT-like bearer token", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g],
+    ["private key material", sensitiveValuePattern("privateKeyHeader")],
+    ["AWS access key", sensitiveValuePattern("awsAccessKey")],
+    ["GitHub access token", sensitiveValuePattern("githubAccessToken")],
+    ["GitLab access token", sensitiveValuePattern("gitlabAccessToken")],
+    ["npm access token", sensitiveValuePattern("npmAccessToken")],
+    ["Slack access token", sensitiveValuePattern("slackAccessToken")],
+    ["Google API key", sensitiveValuePattern("googleApiKey")],
+    ["live payment API key", sensitiveValuePattern("livePaymentApiKey")],
+    ["Machine Bridge credential", sensitiveValuePattern("machineBridgeCredential")],
+    ["API secret token", sensitiveValuePattern("apiSecretToken")],
+    ["JWT-like bearer token", sensitiveValuePattern("jwtLikeBearerToken")],
     ["absolute macOS/Linux home path", /(?:^|[\s"'=(:,])\/(?:Users|home)\/([^/\s"'<>]+)\//gm],
     ["absolute Windows home path", /(?:^|[\s"'=(:,])\b[A-Za-z]:\\Users\\([^\\\s"'<>]+)\\/gm],
   ];
@@ -267,12 +269,12 @@ function scanBuiltIn(relativePath, text, out) {
       out.push({ path: relativePath, line: lineNumber(text, match.index || 0), rule });
     }
   }
-  const credentialUrl = /https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@([^\s/"'<>]+)/gi;
+  const credentialUrl = sensitiveValuePattern("credentialUrl", "gi");
   for (const match of text.matchAll(credentialUrl)) {
     if (isReservedExampleHost(stripHostPort(match[1]))) continue;
     out.push({ path: relativePath, line: lineNumber(text, match.index || 0), rule: "URL with embedded credentials" });
   }
-  const emailLike = /\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b/gi;
+  const emailLike = sensitiveValuePattern("emailAddress", "gi");
   for (const match of text.matchAll(emailLike)) {
     if (isReservedExampleHost(match[1]) || String(match[1]).toLowerCase().endsWith(".noreply.github.com")) continue;
     out.push({ path: relativePath, line: lineNumber(text, match.index || 0), rule: "non-example email address" });

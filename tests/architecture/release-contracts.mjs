@@ -135,16 +135,18 @@ if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-type
 if (packageJson.scripts?.["worker:dry-run"] !== "node scripts/run-worker-dry-run.mjs") throw new Error("Worker deployment dry-run bypasses the bounded Wrangler lifecycle adapter");
 const workerTypesGeneratorSource = readFileSync(join(root, "scripts", "generate-worker-types.mjs"), "utf8");
 const workerToolCatalogSource = readFileSync(join(root, "src", "worker", "tool-catalog.ts"), "utf8");
+const workerHostedManagedJobSchemaSource = readFileSync(join(root, "src", "worker", "managed-job-hosted-schema.ts"), "utf8");
+const workerToolGuidanceSource = `${workerToolCatalogSource}\n${workerHostedManagedJobSchemaSource}`;
 if (workerToolCatalogSource.includes("use process sessions or managed jobs for longer work")
     || !workerToolCatalogSource.includes("split longer browser/application workflows into independently terminal calls")
     || !workerToolCatalogSource.includes("start_process only when interactive stdin or incremental process output is actually required")) {
   throw new Error("Worker configurable-foreground guidance can still route generic long work into process sessions");
 }
 for (const stale of ["host response/execution budget", "host budget is nearly exhausted", "continue only while the host", "read an active job at most once", "stop polling until a later user turn"]) {
-  if (workerToolCatalogSource.includes(stale)) throw new Error(`Worker tool guidance can still trigger speculative or forced hosted handoff: ${stale}`);
+  if (workerToolGuidanceSource.includes(stale)) throw new Error(`Worker tool guidance can still trigger speculative or forced hosted handoff: ${stale}`);
 }
-for (const required of ["HOSTED_CONTINUATION_RULE", "Do not infer or preempt a host/tool deadline from elapsed wall-clock time", "server-side long-poll", "wait_ms=0", "defaultManagedJobReadWaitMs", "maximumManagedJobReadWaitMs", "same MCP call", "cooldown boundary", "Tool schema generation", "workerToolSchemaGeneration"]) {
-  if (!workerToolCatalogSource.includes(required)) throw new Error(`Worker tool catalog lost autonomous/paced/schema-freshness guidance: ${required}`);
+for (const required of ["HOSTED_CONTINUATION_RULE", "Do not infer or preempt a host/tool deadline from elapsed wall-clock time", "server-side long-poll", "defaultManagedJobReadWaitMs", "maximumManagedJobReadWaitMs", "same MCP call", "cooldown boundary", "Tool schema generation", "workerToolSchemaGeneration"]) {
+  if (!workerToolGuidanceSource.includes(required)) throw new Error(`Worker tool catalog/guidance lost autonomous/paced/schema-freshness guidance: ${required}`);
 }
 if (workerToolCatalogSource.indexOf("const HOSTED_CONTINUATION_RULE") > workerToolCatalogSource.indexOf("export const workspaceTools")) {
   throw new Error("Worker eager tool-catalog initialization can access hosted continuation guidance before initialization");
@@ -632,7 +634,8 @@ if (plannedDrainIndex < 0 || relayStopIndex <= plannedDrainIndex
     || !workerDaemonPlannedDrainSource.includes('type: "daemon_draining_ack"')
     || !workerToolRecoverySource.includes('name === "read_job"')
     || !workerToolRecoverySource.includes('mode: "read_same_job"')
-    || !workerToolRecoverySource.includes('action: "retry_read_job_with_same_job_id"')) {
+    || !workerToolRecoverySource.includes('credential: "job_id+recovery_key"')
+    || !workerToolRecoverySource.includes('action: "retry_read_job_with_same_job_id_and_recovery_key"')) {
   throw new Error("planned daemon shutdown lost structured Worker drain settlement or same-job read recovery");
 }
 if (!workerContinuityEvidenceSource.includes('const KEY = "worker-continuity-evidence"')
@@ -1905,6 +1908,18 @@ const privacyDoc = readFileSync(join(root, "docs", "PRIVACY.md"), "utf8");
 const managedJobsDoc = readFileSync(join(root, "docs", "MANAGED_JOBS.md"), "utf8");
 const multiAccountDoc = readFileSync(join(root, "docs", "MULTI_ACCOUNT.md"), "utf8");
 const serverMetadata = readFileSync(join(root, "src", "shared", "server-metadata.json"), "utf8");
+const sensitiveValuePatternsSource = readFileSync(join(root, "src", "shared", "sensitive-value-patterns.mjs"), "utf8");
+const logRedactionSource = readFileSync(join(root, "src", "shared", "log-redaction.mjs"), "utf8");
+const privacyCheckerSource = readFileSync(join(root, "scripts", "privacy-check.mjs"), "utf8");
+for (const [file, source] of [["src/shared/log-redaction.mjs", logRedactionSource], ["scripts/privacy-check.mjs", privacyCheckerSource]]) {
+  if (!source.includes("sensitive-value-patterns.mjs")) throw new Error(`${file} stopped using the shared credential-pattern catalog`);
+  for (const duplicated of ["glpat-[A-Za-z0-9_-]", "xox[aboprs]-[A-Za-z0-9-]", "AIza[A-Za-z0-9_-]", "sk-(?:proj-)?[A-Za-z0-9_-]"]) {
+    if (source.includes(duplicated)) throw new Error(`${file} reintroduced a private common credential regex instead of the shared catalog: ${duplicated}`);
+  }
+}
+for (const required of ["machineBridgeCredential", "mcp_jr", "mcp_jc", "(?![A-Za-z0-9_-])"]) {
+  if (!sensitiveValuePatternsSource.includes(required)) throw new Error(`shared credential-pattern catalog lost required boundary: ${required}`);
+}
 for (const [file, content, stale] of [
   ["README.md", readme, "ordinary daemon tools use at most 30 seconds"],
   ["README.md", readme, "Remote foreground process, shell, browser, and application calls are bounded to 60 seconds"],
@@ -1913,7 +1928,10 @@ for (const [file, content, stale] of [
   ["docs/ARCHITECTURE.md", architecture, "process-session startup defaults to ten seconds"],
   ["docs/ARCHITECTURE.md", architecture, "general host snapshot as fresh for 1.5 seconds"],
   ["docs/ARCHITECTURE.md", architecture, "ordinary daemon tools at 30 seconds"],
+  ["docs/ARCHITECTURE.md", architecture, "public maximum remains five minutes"],
   ["docs/TESTING.md", testingDoc, "hosted timeout projection (30-second ordinary"],
+  ["docs/TESTING.md", testingDoc, "explicit maximum remains five minutes"],
+  ["docs/TESTING.md", testingDoc, "310/315 seconds at the explicit maximum"],
   ["docs/TESTING.md", testingDoc, "Ordinary daemon tools use at most 30 seconds"],
   ["docs/TESTING.md", testingDoc, "a 60-second call that spends ten seconds in recovery"],
   ["docs/TESTING.md", testingDoc, "`full-access:test` exercises the same real-machine wait path with an explicit five-minute cooperative admission budget"],
@@ -1927,6 +1945,13 @@ for (const [file, content, stale] of [
   if (content.includes(stale)) throw new Error(`${file} retained stale hosted timing guidance: ${stale}`);
 }
 for (const [file, content, required] of [
+  ["docs/PRIVACY.md", privacyDoc, "same common credential-pattern source"],
+  ["docs/PRIVACY.md", privacyDoc, "managed-job capability forms"],
+  ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "owner` role is intentionally a local-machine administration role"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "`recovery_key` for reads/dependency references"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "Hosted `list_jobs` is intentionally aggregate-only"],
+  ["docs/OPERATIONS.md", operationsDoc, "Hosted `list_jobs` is aggregate-only"],
+  ["docs/ARCHITECTURE.md", architecture, "requires an explicit `tab_id`"],
   ["README.md", readme, "Hosted synchronous calls otherwise retain their ordinary 20-second execution plus separate five-second Worker settlement margin"],
   ["README.md", readme, "compound `computer_observe` / `computer_act` retain 30-second defaults"],
   ["README.md", readme, "independent fifteen-second application-confirmation window"],
@@ -2026,7 +2051,7 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`relay_device_session_expired`"],
   ["docs/OPERATIONS.md", operationsDoc, "thirty-second bounded dispatch window"],
   ["docs/OPERATIONS.md", operationsDoc, "original call deadline expired during reconnect"],
-  ["docs/OPERATIONS.md", operationsDoc, "`read_job` may follow the known durable job repeatedly in the same assistant response"],
+  ["docs/OPERATIONS.md", operationsDoc, "hosted `read_job` may follow the known durable `job_id` with its preserved `recovery_key` repeatedly in the same assistant response"],
   ["docs/OPERATIONS.md", operationsDoc, "`status_polling_mode=bounded_followup`"],
   ["docs/OPERATIONS.md", operationsDoc, "delegated non-owner reads omit that machine-user scheduling timing"],
   ["docs/OPERATIONS.md", operationsDoc, "`waiters.drain_active`"],
@@ -2039,7 +2064,7 @@ for (const [file, content, required] of [
   ["docs/PRIVACY.md", privacyDoc, "`.git/worktrees/*/gitdir` can legitimately contain absolute local filesystem paths"],
   ["docs/PRIVACY.md", privacyDoc, "Treat that stdout/JSON as secret material"],
   ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "must not be copied to shared logs or support artifacts"],
-  ["docs/MANAGED_JOBS.md", managedJobsDoc, "`read_job` may be used for bounded same-response follow-up until terminal state"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "`read_job` with the same `job_id` and `recovery_key` may be used for bounded same-response follow-up until terminal state"],
   ["docs/MANAGED_JOBS.md", managedJobsDoc, "do not substitute repeated `list_jobs` calls"],
   ["src/shared/server-metadata.json", serverMetadata, "durable-first one-step jobs with a 10-second acceptance budget"],
   ["src/shared/server-metadata.json", serverMetadata, "WebSocket remains the preferred daemon transport"],
@@ -2056,23 +2081,23 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "separate pre-spawn resource-admission wait of up to 30 minutes"],
   ["src/shared/server-metadata.json", serverMetadata, "read_job.current_phase=resource_admission"],
   ["src/shared/server-metadata.json", serverMetadata, "Hosted read-only status and diagnostic tools must not be used as busy loops"],
-  ["src/shared/server-metadata.json", serverMetadata, "read_job's server-side paced long-poll by default"],
+  ["src/shared/server-metadata.json", serverMetadata, "read_job with its recovery_key and the server-side paced long-poll by default"],
   ["src/shared/server-metadata.json", serverMetadata, "repeated would-block request inside the fifteen-second cooldown stays inside that same MCP call"],
   ["src/shared/server-metadata.json", serverMetadata, "Bounded same-response follow-up is allowed when the current task needs terminal state or additional output"],
   ["src/shared/server-metadata.json", serverMetadata, "Do not infer or preempt a host/tool deadline from elapsed wall-clock time"],
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 20"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 21"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],
   ["src/shared/server-metadata.json", serverMetadata, "current response still requires read_job continuation retains stronger private recovery priority"],
-  ["src/shared/server-metadata.json", serverMetadata, "recent_process_recovery remains capped at 16 additional authority-visible public job handles"],
-  ["src/shared/server-metadata.json", serverMetadata, "not a polling or MCP replay/session surface"],
-  ["docs/MANAGED_JOBS.md", managedJobsDoc, "A separate `recent_process_recovery` array remains capped at 16 authority-visible public handles"],
+  ["src/shared/server-metadata.json", serverMetadata, "Local/stdio list_jobs keeps its detailed primary jobs window capped at 50 and its recent_process_recovery handles capped at 16"],
+  ["src/shared/server-metadata.json", serverMetadata, "Hosted list_jobs removes those job IDs/names/handles"],
+  ["docs/MANAGED_JOBS.md", managedJobsDoc, "The daemon/local inventory's separate `recent_process_recovery` array remains capped at 16 authority-visible handles"],
   ["src/shared/server-metadata.json", serverMetadata, "1–600-second detached execution timeout"],
   ["src/shared/server-metadata.json", serverMetadata, "ordinary one-step remote process work"],
   ["src/shared/server-metadata.json", serverMetadata, "effective account policy permits it"],
