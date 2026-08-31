@@ -870,11 +870,24 @@ const liveLeaseIdentity = {
 };
 assert.equal(resourceLeaseOwnerStatus(liveLeaseIdentity, {}).current, true,
   "missing async process-start evidence reclaimed a still-live lease instead of failing closed");
-const reusedProcessStarts = { [String(process.pid)]: currentProcessStartedAt + 60_000 };
-assert.equal(resourceLeaseOwnerStatus(liveLeaseIdentity, reusedProcessStarts).reason, "pid_reused",
-  "process-start snapshot mismatch did not identify PID reuse");
-assert.equal(resourceLeaseIsStale(liveLeaseIdentity, reusedProcessStarts, Date.now(), 30_000), true,
-  "PID-reused lease was not reclaimable from async snapshot evidence");
+const mismatchedSelfProcessStarts = { [String(process.pid)]: currentProcessStartedAt + 60_000 };
+assert.equal(resourceLeaseOwnerStatus(liveLeaseIdentity, mismatchedSelfProcessStarts).reason, "current_process",
+  "external process-start snapshot overruled the running coordinator's own process identity");
+assert.equal(resourceLeaseIsStale(liveLeaseIdentity, mismatchedSelfProcessStarts, Date.now(), 30_000), false,
+  "external process-start snapshot reclaimed a lease owned by the running coordinator process");
+const foreignRecordedStart = currentProcessStartedAt - 120_000;
+const foreignLeaseIdentity = {
+  acquired_at: new Date(currentProcessStartedAt).toISOString(),
+  owner: {
+    kind: "process", pid: process.ppid, process_started_at: new Date(foreignRecordedStart).toISOString(),
+    process_group_id: null, process_group_isolated: false,
+  },
+};
+const reusedForeignProcessStarts = { [String(process.ppid)]: foreignRecordedStart + 60_000 };
+assert.equal(resourceLeaseOwnerStatus(foreignLeaseIdentity, reusedForeignProcessStarts).reason, "pid_reused",
+  "foreign process-start snapshot mismatch did not identify PID reuse");
+assert.equal(resourceLeaseIsStale(foreignLeaseIdentity, reusedForeignProcessStarts, Date.now(), 30_000), true,
+  "PID-reused foreign lease was not reclaimable from async snapshot evidence");
 const waiterSnapshotRoot = mkdtempSync(join(tmpdir(), "mbm-resource-waiter-snapshot-"));
 const waiterSnapshotDir = join(waiterSnapshotRoot, "waiters");
 mkdirSync(waiterSnapshotDir, { mode: 0o700 });
@@ -883,10 +896,34 @@ try {
   const liveEntries = readdirSync(waiterSnapshotDir, { withFileTypes: true });
   assert.equal(pruneAndReadResourceWaiters(waiterSnapshotDir, liveEntries, Date.now(), {}).length, 1,
     "missing async process-start evidence reclaimed a live waiter instead of failing closed");
-  const reusedEntries = readdirSync(waiterSnapshotDir, { withFileTypes: true });
-  assert.equal(pruneAndReadResourceWaiters(waiterSnapshotDir, reusedEntries, Date.now(), reusedProcessStarts).length, 0,
-    "PID-reused waiter was not reclaimed from async snapshot evidence");
+  const mismatchedSelfEntries = readdirSync(waiterSnapshotDir, { withFileTypes: true });
+  assert.equal(pruneAndReadResourceWaiters(waiterSnapshotDir, mismatchedSelfEntries, Date.now(), mismatchedSelfProcessStarts).length, 1,
+    "external process-start snapshot reclaimed a waiter owned by the running coordinator process");
+  const waiterFile = join(waiterSnapshotDir, mismatchedSelfEntries[0].name);
+  const foreignWaiter = JSON.parse(readFileSync(waiterFile, "utf8"));
+  foreignWaiter.owner = { pid: process.ppid, process_started_at: new Date(foreignRecordedStart).toISOString() };
+  writeFileSync(waiterFile, `${JSON.stringify(foreignWaiter)}\n`, { mode: 0o600 });
+  const reusedForeignEntries = readdirSync(waiterSnapshotDir, { withFileTypes: true });
+  assert.equal(pruneAndReadResourceWaiters(waiterSnapshotDir, reusedForeignEntries, Date.now(), reusedForeignProcessStarts).length, 0,
+    "PID-reused foreign waiter was not reclaimed from async snapshot evidence");
 } finally { rmSync(waiterSnapshotRoot, { recursive: true, force: true }); }
+const mismatchedSelfCoordinatorRoot = mkdtempSync(join(tmpdir(), "mbm-resource-self-identity-"));
+try {
+  const mismatchedSelfCoordinator = new ResourceCoordinator({
+    root: mismatchedSelfCoordinatorRoot,
+    sampleHost: () => ({ ...green, sampled_at_ms: Date.now(), cpu_busy_cores: 0, load1: 0 }),
+    sampleProcessStarts: async () => mismatchedSelfProcessStarts,
+    random: () => 0,
+    sleep: async () => {},
+  });
+  const selfLease = await mismatchedSelfCoordinator.acquire(scriptHeavy, { cwd: repositoryRoot, waitMs: 100 });
+  assert.equal(selfLease.active, true,
+    "mismatched external process-start snapshot self-pruned the current waiter into fairness_wait");
+  const selfSnapshot = await mismatchedSelfCoordinator.snapshot({ cwd: repositoryRoot });
+  assert.equal(selfSnapshot.active_leases, 1,
+    "mismatched external process-start snapshot self-pruned the current provisional lease");
+  await selfLease.release();
+} finally { rmSync(mismatchedSelfCoordinatorRoot, { recursive: true, force: true }); }
 let releaseHostProbes;
 const hostProbeGate = new Promise((resolvePromise) => { releaseHostProbes = resolvePromise; });
 const hostProbeCalls = [];
@@ -1553,6 +1590,18 @@ try {
     (error) => error?.code === RESOURCE_STAGING_BUSY_CODE && /staging file is still owned by a live publisher/.test(error.message),
     "live publisher staging was reclaimed as a crash artifact",
   );
+  const mismatchedSelfStagingCoordinator = new ResourceCoordinator({
+    root,
+    sampleHost: () => ({ ...green, sampled_at_ms: Date.now(), cpu_busy_cores: 0, load1: 0 }),
+    sampleProcessStarts: async () => mismatchedSelfProcessStarts,
+    sleep: async () => {},
+    random: () => 0,
+  });
+  await assert.rejects(
+    () => mismatchedSelfStagingCoordinator.snapshot({ cwd: root }),
+    (error) => error?.code === RESOURCE_STAGING_BUSY_CODE && /staging file is still owned by a live publisher/.test(error.message),
+    "external process-start snapshot reclaimed staging owned by the running coordinator process",
+  );
   rmSync(liveStaging, { force: true });
 
   const transientRoot = `${root}-live-staging-retry`;
@@ -1652,6 +1701,7 @@ try {
   const wakeRoot = `${root}-waiter-wake`; let wakeSleeps = 0;
   const wakeCoordinator = new ResourceCoordinator({
     root: wakeRoot, sampleHost: () => ({ ...green, sampled_at_ms: Date.now(), cpu_busy_cores: 0, load1: 0 }), random: () => 0,
+    sampleProcessStarts: async () => ({ [String(process.pid)]: currentProcessStartedAt }),
     evaluate: () => ({ admitted: false, state: "green", reason: "fairness_wait" }),
     sleep: async (_ms, signal) => {
       if (!signal) return;
