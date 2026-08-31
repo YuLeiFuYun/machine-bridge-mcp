@@ -72,6 +72,7 @@ const tests = [
   "tests/computer-use-test.mjs",
   "tests/computer-use-result-budget-test.mjs",
   "tests/relay-connection-test.mjs",
+  "tests/relay-http-fallback-test.mjs",
   "tests/managed-job-boundary-test.mjs",
   "tests/managed-jobs-test.mjs",
   "tests/account-admin-test.mjs",

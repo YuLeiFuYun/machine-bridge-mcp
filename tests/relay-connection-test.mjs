@@ -1807,11 +1807,33 @@ assert(reconnectDelay(4, () => 0, 100, 15_000) === 15_000,
 
 const directProxy = proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "");
 assert(directProxy.agent === null && directProxy.mode === "direct", "NO_PROXY/direct relay routing did not bypass proxy construction");
+const dedicatedProxy = proxyAgentForWebSocket(
+  "wss://relay.example.invalid/daemon/ws",
+  () => { throw new Error("standard proxy resolution must not run when MBM_RELAY_PROXY is configured"); },
+  { MBM_RELAY_PROXY: "http://proxy.example.invalid:8080", NO_PROXY: "relay.example.invalid" },
+);
+assert(dedicatedProxy.agent && dedicatedProxy.mode === "proxy",
+  "dedicated relay proxy did not override standard proxy/NO_PROXY resolution");
+const clearedDedicatedProxy = proxyAgentForWebSocket(
+  "wss://relay.example.invalid/daemon/ws",
+  () => "http://proxy.example.invalid:8081",
+  { MBM_RELAY_PROXY: "" },
+);
+assert(clearedDedicatedProxy.agent && clearedDedicatedProxy.mode === "proxy",
+  "empty MBM_RELAY_PROXY did not fall back to standard environment-proxy resolution");
 let unsupportedProxyRejected = false;
 try { proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "socks5://proxy.example.invalid:1080"); } catch (error) {
   unsupportedProxyRejected = String(error?.message || error).includes("HTTP or HTTPS");
 }
 assert(unsupportedProxyRejected, "unsupported relay proxy protocol was accepted");
+let unsupportedDedicatedProxyRejected = false;
+try {
+  proxyAgentForWebSocket("wss://relay.example.invalid/daemon/ws", () => "", { MBM_RELAY_PROXY: "socks5://proxy.example.invalid:1080" });
+} catch (error) {
+  unsupportedDedicatedProxyRejected = error?.code === "relay_proxy_configuration"
+    && String(error?.message || error).includes("HTTP or HTTPS");
+}
+assert(unsupportedDedicatedProxyRejected, "unsupported dedicated relay proxy protocol was accepted");
 
 const proxyMarker = { proxy: true };
 const proxySockets = [];
@@ -1831,6 +1853,40 @@ proxyConnection.start();
 assert(proxySockets[0].options.agent === proxyMarker && proxyConnection.status().network_route === "application-http-proxy", "relay WebSocket did not receive the selected proxy agent");
 proxyConnection.stop();
 
+{
+  const previousRelayProxy = process.env.MBM_RELAY_PROXY;
+  const previousNoProxy = process.env.NO_PROXY;
+  const previousNoProxyLower = process.env.no_proxy;
+  try {
+    process.env.MBM_RELAY_PROXY = "http://proxy.example.invalid:8080";
+    process.env.NO_PROXY = "relay.example.invalid";
+    process.env.no_proxy = "relay.example.invalid";
+    const dedicatedSockets = [];
+    const dedicatedConnection = new RelayConnection({
+      workerUrl: "https://relay.example.invalid",
+      secret: "test-daemon-secret-123456",
+      logger: captureLogger([]),
+      WebSocketClass: class extends FakeSocket {
+        constructor(url, options) {
+          super(url, options);
+          dedicatedSockets.push(this);
+        }
+      },
+    });
+    dedicatedConnection.start();
+    assert(dedicatedSockets[0].options.agent && dedicatedConnection.status().network_route === "application-http-proxy",
+      "default relay construction allowed NO_PROXY to bypass MBM_RELAY_PROXY");
+    dedicatedConnection.stop();
+  } finally {
+    if (previousRelayProxy === undefined) delete process.env.MBM_RELAY_PROXY;
+    else process.env.MBM_RELAY_PROXY = previousRelayProxy;
+    if (previousNoProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = previousNoProxy;
+    if (previousNoProxyLower === undefined) delete process.env.no_proxy;
+    else process.env.no_proxy = previousNoProxyLower;
+  }
+}
+
 const invalidProxyConnection = new RelayConnection({
   workerUrl: "https://relay.example.invalid",
   secret: "test-daemon-secret-123456",
@@ -1839,7 +1895,10 @@ const invalidProxyConnection = new RelayConnection({
   proxyAgentForUrl: () => { const error = new Error("relay proxy configuration is invalid"); error.code = "relay_proxy_configuration"; throw error; },
 });
 const invalidProxyError = await invalidProxyConnection.start().then(() => null, (error) => error);
-assert(invalidProxyError?.code === "relay_proxy_configuration" && invalidProxyError.message.includes("HTTP_PROXY"), "invalid proxy configuration did not fail fast with corrective guidance");
+assert(invalidProxyError?.code === "relay_proxy_configuration"
+  && invalidProxyError.message.includes("MBM_RELAY_PROXY")
+  && invalidProxyError.message.includes("HTTP_PROXY"),
+"invalid proxy configuration did not fail fast with corrective guidance");
 assert(invalidProxyConnection.status().network_route === "invalid-application-proxy-configuration", "invalid proxy route was not observable");
 
 const outageHistoryScheduler = new ManualScheduler();

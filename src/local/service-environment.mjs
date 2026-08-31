@@ -8,6 +8,7 @@ const MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1024;
 const SERVICE_ENVIRONMENT_FILE = "service-environment.json";
 
 export const SERVICE_NETWORK_ENVIRONMENT_KEYS = Object.freeze([
+  "MBM_RELAY_PROXY",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",

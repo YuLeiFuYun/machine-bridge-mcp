@@ -190,6 +190,12 @@ Computer Use screenshots share the ordinary MCP result-size boundary. When an im
 
 Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets. In particular, raw serialized HTML may contain hidden bootstrap/session/account/authentication values that are not visible in the rendered page; `browser_get_source` therefore should be used only when raw markup is required, with semantic inspection preferred for routine browser work.
 
+## Network egress boundaries
+
+Machine Bridge can select an application-layer HTTP(S) proxy for relay traffic. A non-empty `MBM_RELAY_PROXY` takes precedence over standard proxy/`NO_PROXY` resolution for both the WebSocket relay and signed HTTP fallback, and a failed proxy connection is not retried directly. Proxy URLs and credentials are not returned through runtime diagnostics or operational logs.
+
+This is not an operating-system network-isolation boundary. Machine Bridge does not bind the proxy's upstream socket to a physical interface, implement an independent routing table, or prevent a system VPN/TUN from intercepting traffic to a remotely addressed proxy. When relay traffic must be isolated from such a tunnel, use a loopback-only sidecar whose own outbound socket and DNS path are explicitly routed outside that tunnel. The sidecar and upstream proxy remain separate trusted network components.
+
 ## Filesystem and mutation integrity
 
 Workspace-confined profiles canonicalize existing paths and write ancestors. Final symbolic-link writes are rejected. Patch add, update, delete, and move destinations are classified before mutation.
