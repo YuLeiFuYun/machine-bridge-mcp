@@ -18,7 +18,7 @@ try {
   chmodSync(posixWrapper, 0o755);
   writeFileSync(join(bin, "npm.cmd"), `@echo off\r\n"${cmdQuote(process.execPath)}" "${cmdQuote(prepared.cli)}" %*\r\n`);
   writeFileSync(githubPath, `${bin}\n`, { flag: "a" });
-  console.log(`Prepared integrity-verified hardened npm ${prepared.version} (undici ${prepared.undiciVersion}; brace-expansion ${prepared.braceExpansionVersion}) at ${bin}`);
+  console.log(`Prepared integrity-verified hardened npm ${prepared.version} (undici ${prepared.undiciVersion}; brace-expansion ${prepared.braceExpansionVersion})`);
 } catch (error) {
   let cleanupError = null;
   try { rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }

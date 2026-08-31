@@ -5,11 +5,13 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { mergeFunctionExecutions } from "./coverage-range-merge.mjs";
+import { verificationChildEnvironment } from "./verification-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs", "scripts/verification-generation-guard.mjs", "scripts/verification-state.mjs"]);
 const generationBefore = captureCoverageGeneration(root);
 const coverageDir = mkdtempSync(resolve(tmpdir(), "machine-bridge-coverage-"));
+const coverageEnvironment = verificationChildEnvironment(process.env);
 const tests = [
   "tests/policy-test.mjs",
   "tests/runtime-infrastructure-test.mjs",
@@ -90,7 +92,7 @@ try {
   for (const test of tests) {
     const run = spawnSync(process.execPath, [test], {
       cwd: root,
-      env: { ...process.env, NODE_V8_COVERAGE: coverageDir },
+      env: { ...coverageEnvironment, NODE_V8_COVERAGE: coverageDir },
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
     });

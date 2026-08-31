@@ -182,7 +182,7 @@ try {
   assert.equal(invalidProxy.networkRoute, "invalid-proxy-configuration");
   assert.equal(workerHealthUserReason(invalidProxy.error), "HTTP proxy configuration is invalid");
   assert.throws(() => proxyAgentForHttp("ftp://worker-health.example.invalid"), /must use http or https/);
-  assert.equal(proxyAgentForWebSocket("wss://worker-health.example.invalid", () => "").mode, "direct");
+  assert.equal(proxyAgentForWebSocket("wss://worker-health.example.invalid", () => "", {}).mode, "direct");
   assert.throws(() => proxyAgentForWebSocket("https://worker-health.example.invalid"), /must use ws or wss/);
 
   assert.equal(workerHealthRequiresRedeploy("version_mismatch:1.0.0!=2.0.0"), true);

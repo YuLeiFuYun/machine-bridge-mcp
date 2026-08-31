@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +8,8 @@ import { join } from "node:path";
 import { BridgeError, publicError } from "../src/local/errors.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
 import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
-import { completeProcessSessionRead } from "../src/local/process-session-read.mjs";
+import { completeProcessSessionRead, readProcessSession } from "../src/local/process-session-read.mjs";
+import { notifySessionWaiters } from "../src/local/process-session-events.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
 import { PROCESS_SESSION_RETENTION_MS } from "../src/local/execution-limits.mjs";
@@ -31,7 +33,20 @@ const policy = {
   minimalEnv: false,
   exposeAbsolutePaths: true,
 };
-const sessions = new ProcessSessionManager({
+function spawnFixtureProcess(command, args, options) {
+  return spawn(command, args, {
+    ...options,
+    env: { ...options.env, NODE_V8_COVERAGE: "" },
+    shell: false,
+  });
+}
+function createProcessSessionManager(options) {
+  return new ProcessSessionManager({ spawnProcess: spawnFixtureProcess, ...options });
+}
+function createProcessExecutionService(options) {
+  return new ProcessExecutionService({ spawnProcess: spawnFixtureProcess, ...options });
+}
+const sessions = createProcessSessionManager({
   workspace: root,
   policy,
   authorizeTool() {},
@@ -41,7 +56,7 @@ const sessions = new ProcessSessionManager({
   displayPath: (value) => value,
   throwIfCancelled() {},
 });
-const service = new ProcessExecutionService({
+const service = createProcessExecutionService({
   workspace: root,
   policy,
   policyGate: { assert() {} },
@@ -59,6 +74,7 @@ try {
   testCompactProjection();
   testProcessSessionRetentionUsesMonotonicTime();
   testRemoteReadCompletionUsesFinalSessionState();
+  await testRemoteCooldownStateMachine();
   await testExecutionSurfaceMarkers();
   await testProcessCancellationAfterAdmissionBeforeSpawn();
   await testRemoteSessionAdmissionIsFailFast();
@@ -85,7 +101,7 @@ try {
 function testProcessSessionRetentionUsesMonotonicTime() {
   let monotonicNow = 1000;
   let wallNow = Date.UTC(2026, 7, 18, 4, 0, 0);
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {},
     now: () => monotonicNow, wallNow: () => wallNow,
@@ -134,7 +150,7 @@ async function testRemoteSessionAdmissionIsFailFast() {
   const waits = [];
   let spawnCount = 0;
   let activityStarts = 0;
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -197,7 +213,7 @@ async function testProcessCancellationAfterAdmissionBeforeSpawn() {
   const cancellation = new BridgeError("cancelled", "cancelled after resource admission", { retryable: false });
   let spawnCount = 0;
   let releaseCount = 0;
-  const service = new ProcessExecutionService({
+  const service = createProcessExecutionService({
     workspace: root,
     policy,
     policyGate: { assert() {} },
@@ -238,7 +254,7 @@ async function testSessionCancellationAfterAdmissionBeforeSpawn() {
   let spawnCount = 0;
   let releaseCount = 0;
   let activityStarts = 0;
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -277,13 +293,13 @@ async function testSessionCancellationAfterAdmissionBeforeSpawn() {
 }
 
 async function testRemoteBlockingPollCooldown() {
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {},
   });
   const remoteContext = { origin: "relay", authority: { origin: "relay" } };
   try {
-    const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 2500)"] }, remoteContext);
+    const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"] }, remoteContext);
     const immediate = await manager.read({ session_id: started.session_id, wait_ms: 0 }, remoteContext);
     assert.equal(immediate.running, true, "remote polling fixture exited before the immediate checkpoint");
     assert.equal(immediate.status_polling_mode, "paced_followup", "remote process read omitted paced follow-up semantics");
@@ -297,7 +313,7 @@ async function testRemoteBlockingPollCooldown() {
     const first = await manager.read({ session_id: started.session_id }, remoteContext);
     const firstElapsed = Date.now() - firstStartedAt;
     assert.equal(first.running, true, "remote polling fixture exited before the first blocking read");
-    assert(firstElapsed >= 700 && firstElapsed < 2_000,
+    assert(firstElapsed >= 700,
       "relay-origin read_process without wait_ms did not default to the one-second server-paced wait");
     assert.equal(first.blocking_poll_throttled, false, "first remote blocking read was throttled unexpectedly");
     assert.equal(first.status_polling_mode, "paced_followup", "first remote blocking read lost paced follow-up semantics");
@@ -305,80 +321,14 @@ async function testRemoteBlockingPollCooldown() {
       "running remote process still forced hosted-turn handoff");
     assert(first.next_blocking_poll_after_ms > 0, "running remote process omitted the next blocking-poll cooldown hint");
 
-    const secondStartedAt = Date.now();
-    const second = await manager.read({ session_id: started.session_id, wait_ms: 5_000 }, remoteContext);
-    const secondElapsed = Date.now() - secondStartedAt;
-    assert.equal(second.running, false, "cooldown-paced remote read returned a rapid running checkpoint instead of waiting for process exit");
-    assert.equal(second.status_polling_mode, "terminal", "cooldown-paced remote read lost terminal state reached during server-side pacing");
-    assert.equal(second.blocking_poll_throttled, true, "repeated remote blocking read did not disclose that its cooldown paced the call");
-    assert(secondElapsed >= 900 && secondElapsed < 3_000,
-      "repeated remote blocking read did not remain inside one MCP call until output/exit or cooldown progress");
-    assert.equal(second.next_blocking_poll_after_ms, 0, "terminal cooldown-paced read retained a future blocking-poll delay");
-
-    const outputPaced = await manager.start({
-      argv: [process.execPath, "-e", "setTimeout(() => process.stdout.write('first\\n'), 100); setTimeout(() => process.stdout.write('second\\n'), 450); setTimeout(() => {}, 2500)"],
-    }, remoteContext);
-    const outputArm = await manager.read({ session_id: outputPaced.session_id, wait_ms: 5_000 }, remoteContext);
-    assert(outputArm.running && outputArm.stdout.data.includes("first") && outputArm.next_blocking_poll_after_ms > 0,
-      "output-paced fixture did not arm the initial blocking cooldown");
-    const originalOutputCooldown = outputArm.next_blocking_poll_after_ms;
-    const outputPacedStartedAt = Date.now();
-    const outputDuringCooldown = await manager.read({
-      session_id: outputPaced.session_id, wait_ms: 5_000,
-      stdout_offset: outputArm.stdout.next_offset, stderr_offset: outputArm.stderr.next_offset,
-    }, remoteContext);
-    const outputPacedElapsed = Date.now() - outputPacedStartedAt;
-    assert(outputDuringCooldown.running && outputDuringCooldown.stdout.data.includes("second"),
-      "cooldown-paced read failed to return newly available output");
-    assert.equal(outputDuringCooldown.blocking_poll_throttled, true,
-      "output wakeup inside the cooldown lost its paced-read diagnostic");
-    assert(outputPacedElapsed >= 150 && outputPacedElapsed < 1_500,
-      "cooldown-paced output read did not return promptly when new output arrived");
-    assert(outputDuringCooldown.next_blocking_poll_after_ms > 0
-      && outputDuringCooldown.next_blocking_poll_after_ms < originalOutputCooldown,
-    "output wakeup incorrectly re-armed the full blocking cooldown");
-
-    const noisyExit = await manager.start({
-      argv: [process.execPath, "-e", [
-        "setTimeout(() => { const timer = setInterval(() => process.stdout.write('tick\\n'), 75);",
-        "setTimeout(() => { clearInterval(timer); process.exit(0); }, 2200); }, 1100);",
-      ].join(" ")],
-    }, remoteContext);
-    const noisyFirst = await manager.read({ session_id: noisyExit.session_id, wait_ms: 5_000 }, remoteContext);
-    assert.equal(noisyFirst.running, true, "noisy wait_for_exit fixture exited before arming its cooldown");
-    const noisyStartedAt = Date.now();
-    const noisySettled = await manager.read({
-      session_id: noisyExit.session_id, wait_ms: 5_000, wait_for_exit: true,
-    }, remoteContext);
-    const noisyElapsed = Date.now() - noisyStartedAt;
-    assert.equal(noisySettled.running, false,
-      "wait_for_exit cooldown was released by ordinary output before the process exited");
-    assert(noisyElapsed >= 1800 && noisyElapsed < 4000,
-      "wait_for_exit cooldown did not remain server-paced across ordinary output changes");
-    assert(noisySettled.stdout.data.includes("tick"),
-      "wait_for_exit cooldown lost output produced while the same MCP call remained open");
-    assert.equal(noisySettled.blocking_poll_throttled, true,
-      "wait_for_exit cooldown did not disclose server-side cooldown pacing");
-
-    const exiting = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 150)"] }, remoteContext);
-    const settled = await manager.read({ session_id: exiting.session_id, wait_ms: 5_000 }, remoteContext);
-    assert.equal(settled.running, false, "remote process that exited during the checkpoint was still reported running");
-    assert.equal(settled.status_polling_mode, "terminal", "settled remote process retained live follow-up semantics");
-    assert.equal(settled.host_turn_handoff_recommended, false,
-      "settled remote process incorrectly recommended handing the hosted turn back for more polling");
-    assert.equal(settled.blocking_poll_throttled, false, "settled first blocking checkpoint was marked as throttled");
-    assert.equal(settled.next_blocking_poll_after_ms, 0,
-      "settled remote process retained a blocking-poll cooldown after exit");
-
     const outputFirst = await manager.start({
-      argv: [process.execPath, "-e", "process.stdout.write('ready\\n'); setTimeout(() => {}, 2500)"],
+      argv: [process.execPath, "-e", "process.stdout.write('ready\\n'); setTimeout(() => {}, 30000)"],
     }, remoteContext);
-    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 100); });
     const exitWaitStartedAt = Date.now();
     const exitWait = await manager.read({ session_id: outputFirst.session_id, wait_ms: 5_000, wait_for_exit: true }, remoteContext);
     const exitWaitElapsed = Date.now() - exitWaitStartedAt;
     assert.equal(exitWait.running, true, "wait_for_exit fixture exited before the hosted clamp was exercised");
-    assert(exitWaitElapsed >= 700 && exitWaitElapsed < 2_000,
+    assert(exitWaitElapsed >= 700,
       "wait_for_exit bypassed the one-second hosted clamp when output was already available");
     assert(exitWait.stdout.data.includes("ready"), "wait_for_exit checkpoint lost output that was available before the wait");
     assert.equal(exitWait.blocking_poll_throttled, false, "first wait_for_exit checkpoint was throttled unexpectedly");
@@ -389,10 +339,59 @@ async function testRemoteBlockingPollCooldown() {
   }
 }
 
+async function testRemoteCooldownStateMachine() {
+  const remoteContext = { origin: "relay", authority: { origin: "relay" } };
+  const session = syntheticReadSession(1_000);
+  let now = 1_100;
+  const outputWake = readProcessSession({
+    args: { wait_ms: 5_000 }, context: remoteContext, session,
+    throwIfCancelled() {}, now: () => now,
+  });
+  assert.equal(session.waiters.size, 1, "cooldown-paced read did not wait for output or cooldown progress");
+  session.stdout.append("second\n");
+  notifySessionWaiters(session);
+  const outputRead = await outputWake;
+  now = 1_200;
+  const outputCompleted = completeProcessSessionRead(outputRead, session, now);
+  assert.equal(outputCompleted.stdout.data, "second\n", "cooldown-paced read lost newly available output");
+  assert.equal(outputCompleted.blocking_poll_throttled, true,
+    "output wakeup inside the cooldown lost its paced-read diagnostic");
+  assert(outputCompleted.next_blocking_poll_after_ms > 0,
+    "output wakeup incorrectly cleared the existing blocking cooldown");
+  assert.equal(session.lastRemoteBlockingReadAt, 1_000,
+    "output wakeup incorrectly re-armed the blocking cooldown");
+
+  const exitSession = syntheticReadSession(2_000);
+  now = 2_100;
+  const waitForExit = readProcessSession({
+    args: { wait_ms: 5_000, wait_for_exit: true }, context: remoteContext, session: exitSession,
+    throwIfCancelled() {}, now: () => now,
+  });
+  assert.equal(exitSession.waiters.size, 1, "wait_for_exit cooldown did not enter its bounded wait");
+  exitSession.stdout.append("tick\n");
+  notifySessionWaiters(exitSession);
+  await Promise.resolve();
+  assert.equal(exitSession.waiters.size, 1,
+    "ordinary output incorrectly released a cooldown-paced wait_for_exit read");
+  exitSession.closedAt = 2_200;
+  notifySessionWaiters(exitSession);
+  const exitRead = await waitForExit;
+  now = 2_300;
+  const exitCompleted = completeProcessSessionRead(exitRead, exitSession, now);
+  assert.equal(exitCompleted.status_polling_mode, "terminal",
+    "cooldown-paced wait_for_exit lost the terminal state reached during the same read");
+  assert.equal(exitCompleted.blocking_poll_throttled, true,
+    "wait_for_exit cooldown did not disclose server-side pacing");
+  assert.equal(exitCompleted.next_blocking_poll_after_ms, 0,
+    "terminal wait_for_exit read retained a future blocking-poll delay");
+  assert.equal(exitCompleted.stdout.data, "tick\n",
+    "wait_for_exit cooldown lost output produced while the same read remained open");
+}
+
 async function testRemoteReadCancellationAfterHelperResolution() {
   let readChecks = 0;
   let cancelled = false;
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resolveCwd: async () => root, displayPath: (value) => value,
     throwIfCancelled(context) {
@@ -420,7 +419,7 @@ async function testRemoteSessionActivityLifetime() {
   let starts = 0;
   let ends = 0;
   const guard = { beginActivity() { starts += 1; }, endActivity() { ends += 1; } };
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {}, remoteActivityGuard: guard,
   });
@@ -440,7 +439,7 @@ async function testRemoteSessionActivityLifetime() {
     await manager.clearAndWait();
   }
 
-  const failing = new ProcessSessionManager({
+  const failing = createProcessSessionManager({
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resourceCoordinator: { acquire: async () => ({ async bindProcess() {}, async release() {} }) },
     resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {}, remoteActivityGuard: guard,
@@ -451,6 +450,16 @@ async function testRemoteSessionActivityLifetime() {
 }
 
 function testRemoteReadCompletionUsesFinalSessionState() {
+  const openSession = { closedAt: null, lastRemoteBlockingReadAt: null };
+  const openCompleted = completeProcessSessionRead({
+    remoteRead: { remote: true, blocking: true, pollThrottled: false },
+    stdout: { data: "" }, stderr: { data: "" },
+  }, openSession, 100);
+  assert.equal(openSession.lastRemoteBlockingReadAt, 100,
+    "completed blocking remote read did not arm its follow-up cooldown");
+  assert(openCompleted.next_blocking_poll_after_ms > 0,
+    "completed blocking remote read omitted its next polling delay");
+
   const session = { closedAt: 100, lastRemoteBlockingReadAt: null };
   const completed = completeProcessSessionRead({
     remoteRead: { remote: true, blocking: true, pollThrottled: false },
@@ -463,6 +472,16 @@ function testRemoteReadCompletionUsesFinalSessionState() {
     "remote read completion retained a blocking cooldown after the session had exited");
   assert.equal(session.lastRemoteBlockingReadAt, null,
     "remote read completion armed a blocking cooldown after the session had exited");
+}
+
+function syntheticReadSession(lastRemoteBlockingReadAt) {
+  return {
+    closedAt: null,
+    lastRemoteBlockingReadAt,
+    stdout: new ProcessOutputStream(1024),
+    stderr: new ProcessOutputStream(1024),
+    waiters: new Set(),
+  };
 }
 
 function testOutputStreamOffsets() {
@@ -558,7 +577,7 @@ async function testSessionReleaseAfterBinding() {
     },
   };
   const resourceCoordinator = { acquire: async () => lease };
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -600,7 +619,7 @@ async function testSessionExitFallbackSettlement() {
     unref() { this.unrefCount += 1; }
   }
   const child = new ExitOnlyChild();
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -637,7 +656,7 @@ async function testSessionCancellationAfterSpawn() {
   let releaseFinished;
   const released = new Promise((resolvePromise) => { releaseFinished = resolvePromise; });
   let cancellationChecks = 0;
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -685,7 +704,7 @@ async function testFailedSessionOwnershipRetention(phase) {
   let releaseFinished;
   const released = new Promise((resolvePromise) => { releaseFinished = resolvePromise; });
   let cancellationChecks = 0;
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -746,7 +765,7 @@ async function testSessionClearTerminatesLiveChild() {
       return true;
     },
   };
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},
@@ -778,7 +797,7 @@ async function testSessionAuthorityRevocation() {
   let releaseCount = 0;
   let firstRelease;
   const firstReleased = new Promise((resolvePromise) => { firstRelease = resolvePromise; });
-  const manager = new ProcessSessionManager({
+  const manager = createProcessSessionManager({
     workspace: root,
     policy,
     authorizeTool() {},

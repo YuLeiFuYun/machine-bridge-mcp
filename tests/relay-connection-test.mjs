@@ -6,6 +6,9 @@ import { classifyRelayTransportErrorReason } from "../src/local/relay-transport-
 import { RelayTransportConfirmation } from "../src/local/relay-transport-confirmation.mjs";
 import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
 
+// Keep direct/default relay cases hermetic from the owner machine's persisted service route.
+delete process.env.MBM_RELAY_PROXY;
+
 const TEST_CONNECTION_ID = `connection_${"a".repeat(43)}`;
 const lookupStages = [];
 observeTlsLookup((stage) => lookupStages.push(stage), Object.assign(new Error("dns unavailable"), { code: "EAI_AGAIN" }));
