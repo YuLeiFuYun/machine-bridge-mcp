@@ -1409,6 +1409,18 @@ function spawnManagedJobTestRunner(command, args, options) {
   return spawn(command, ["--import", runnerResourceHook, ...args], options);
 }
 
+function managedJobTestRunnerForCoordinatorRoot(coordinatorRoot) {
+  return (command, args, options = {}) => spawnManagedJobTestRunner(command, args, {
+    ...options,
+    env: {
+      ...(options.env || {}),
+      AGENT_RESOURCE_COORDINATOR_ROOT: coordinatorRoot,
+      // This recovery fixture measures resource replacement/reconstruction, not nested V8 instrumentation latency.
+      NODE_V8_COVERAGE: "",
+    },
+  });
+}
+
 await mkdir(workspace, { recursive: true });
 await writeFile(secretFile, `${secret}\n`, { mode: 0o600 });
 if (process.platform !== "win32") await chmod(secretFile, 0o600);
@@ -2437,6 +2449,8 @@ try {
   const changedResourceFile = join(root, "recovery-changed-resource.txt");
   const changedResourceReadyFile = join(root, "recovery-changed-resource-ready.txt");
   const changedResourceCleanupFile = join(root, "recovery-changed-resource-cleanup.txt");
+  const changedResourceCoordinatorRoot = join(root, "resource-coordinator-recovery-changed");
+  const changedResourceRunnerSpawn = managedJobTestRunnerForCoordinatorRoot(changedResourceCoordinatorRoot);
   await writeFile(changedResourceFile, "recovery-secret-v1", { mode: 0o600 });
   const changedResource = inspectResourceFile(changedResourceFile);
   const changedResourceManager = createManagedJobTestManager({
@@ -2444,6 +2458,7 @@ try {
     workspace,
     policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
     resources: { "recovery-secret": changedResource },
+    runnerSpawnProcess: changedResourceRunnerSpawn,
   });
   const changedResourceJob = changedResourceManager.start({
     name: "recover after resource replacement",
@@ -2487,6 +2502,7 @@ try {
     workspace,
     policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
     resources: { "recovery-secret": inspectResourceFile(changedResourceFile) },
+    runnerSpawnProcess: changedResourceRunnerSpawn,
   });
   const changedRecovery = await waitForJob(
     changedRecoveryManager,

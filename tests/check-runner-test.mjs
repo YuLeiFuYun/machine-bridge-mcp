@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVerificationPlan } from "../scripts/check-runner.mjs";
+import { verificationChildEnvironment } from "../scripts/verification-environment.mjs";
 import {
   rerunVerificationUnderIdleSleepGuard,
   VERIFICATION_IDLE_SLEEP_GUARD_ENV,
@@ -12,6 +13,27 @@ import { runWithStableGeneration } from "../scripts/verification-generation-guar
 
 const root = await mkdtemp(join(tmpdir(), "mbm-check-runner-test-"));
 try {
+  const isolatedEnvironment = verificationChildEnvironment({
+    MBM_RELAY_PROXY: "http://127.0.0.1:17891",
+    mbm_relay_proxy: "http://127.0.0.1:17892",
+    MbM_ReLaY_PrOxY: "http://127.0.0.1:17893",
+    MBM_DEBUG: "1",
+    MBM_MACOS_BACKGROUND_VISUAL_BACKEND: "skylight-experimental",
+    MBM_MACOS_TRUST_BROKER: "/Applications/Example Trust Broker.app/Contents/MacOS/example-trust-broker",
+    HTTPS_PROXY: "http://proxy.example.invalid:8080",
+    CHECK_RUNNER_PRESERVED: "yes",
+  });
+  assert.equal(Object.keys(isolatedEnvironment).some((key) => key.toUpperCase() === "MBM_RELAY_PROXY"), false,
+    "verification child environment retained a case-variant daemon-only relay proxy route");
+  for (const key of ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER"]) {
+    assert.equal(isolatedEnvironment[key], undefined,
+      `verification child environment retained owner runtime configuration: ${key}`);
+  }
+  assert.equal(isolatedEnvironment.HTTPS_PROXY, "http://proxy.example.invalid:8080",
+    "verification child environment removed the ordinary HTTPS proxy route");
+  assert.equal(isolatedEnvironment.CHECK_RUNNER_PRESERVED, "yes",
+    "verification child environment removed an unrelated value");
+
   const fakeNpm = join(root, "fake-npm.mjs");
   await writeFile(fakeNpm, `
 const task = process.argv.at(-1);
@@ -92,15 +114,27 @@ if (task === "noisy-success") {
       "prehooked-test": "node tests/setup.mjs",
       "compound-test": "node tests/compound-test.mjs && node tests/second.mjs",
     },
+    env: {
+      MBM_RELAY_PROXY: "http://127.0.0.1:17891",
+      CHECK_RUNNER_PRESERVED: "yes",
+    },
     spawnProcess: direct.spawn,
   });
   await turn();
   assert.equal(direct.invocations[0].executable, process.execPath, "simple Node package script did not bypass nested npm");
   assert.deepEqual(direct.invocations[0].args, ["tests/direct-test.mjs", "--check"], "direct Node package script arguments drifted");
   assert.equal(direct.invocations[0].options.env.npm_lifecycle_event, "direct-test", "direct Node execution lost npm lifecycle identity");
+  assert.equal(direct.invocations[0].options.env.MBM_RELAY_PROXY, undefined,
+    "direct Node verification inherited the owner daemon's relay-only proxy route");
+  assert.equal(direct.invocations[0].options.env.CHECK_RUNNER_PRESERVED, "yes",
+    "verification environment isolation removed an unrelated environment value");
   direct.finish("direct-test", 0);
   await turn();
   assert(direct.invocations[1].args.includes(fakeNpm) && direct.invocations[1].args.at(-1) === "hooked-test", "package script with lifecycle hooks bypassed npm");
+  assert.equal(direct.invocations[1].options.env.MBM_RELAY_PROXY, undefined,
+    "nested npm verification inherited the owner daemon's relay-only proxy route");
+  assert.equal(direct.invocations[1].options.env.CHECK_RUNNER_PRESERVED, "yes",
+    "nested npm verification lost an unrelated environment value");
   direct.finish("hooked-test", 0);
   await turn();
   assert(direct.invocations[2].args.includes(fakeNpm) && direct.invocations[2].args.at(-1) === "compound-test", "compound package script bypassed npm shell semantics");

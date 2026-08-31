@@ -430,6 +430,23 @@ for (const fixture of ["tests/coverage-range-merge-test.mjs", "tests/coverage-ge
 for (const required of ["captureCoverageGeneration", "generationBefore", "generationAfter", "mergeFunctionExecutions"]) {
   if (!coverageRunnerSource.includes(required)) throw new Error(`critical coverage evidence lost generation/range contract: ${required}`);
 }
+const processOutputContinuationTestSource = readFileSync(join(root, "tests", "process-output-continuation-test.mjs"), "utf8");
+for (const required of ["spawnFixtureProcess", 'NODE_V8_COVERAGE: ""', "createProcessExecutionService", "createProcessSessionManager"]) {
+  if (!processOutputContinuationTestSource.includes(required)) {
+    throw new Error(`process-output coverage fixture regained nested child instrumentation: ${required}`);
+  }
+}
+const stdioIntegrationTestSource = readFileSync(join(root, "tests", "stdio-integration-test.mjs"), "utf8");
+for (const required of ["PROCESS_TOOL_RESPONSE_WAIT_MS", "responseFor(6, PROCESS_TOOL_RESPONSE_WAIT_MS)", "responseFor(61, PROCESS_TOOL_RESPONSE_WAIT_MS)"]) {
+  if (!stdioIntegrationTestSource.includes(required)) {
+    throw new Error(`stdio process fixture lost its admission-aware response budget: ${required}`);
+  }
+}
+for (const required of ["managedJobTestRunnerForCoordinatorRoot", 'AGENT_RESOURCE_COORDINATOR_ROOT: coordinatorRoot', 'NODE_V8_COVERAGE: ""', "changedResourceRunnerSpawn"]) {
+  if (!managedJobsTestSource.includes(required)) {
+    throw new Error(`managed-job resource-recovery fixture regained nested coverage timing: ${required}`);
+  }
+}
 for (const fixture of ["tests/resource-admission-test.mjs", "tests/resource-build-root-test.mjs"]) {
   if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical resource coverage lost direct scheduler fixture: ${fixture}`);
 }
@@ -567,6 +584,14 @@ if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAcces
 const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 for (const required of ["SPARSE_PROGRESS_TASKS", "local self-test phase started:", "local self-test phase completed:", "sparseLineForwarder"]) {
   if (!checkRunnerSource.includes(required)) throw new Error(`check runner lost sparse self-test phase observability: ${required}`);
+}
+const verificationEnvironmentSource = readFileSync(join(root, "scripts", "verification-environment.mjs"), "utf8");
+if (!checkRunnerSource.includes("verificationChildEnvironment")
+    || !coverageRunnerSource.includes("verificationChildEnvironment")
+    || !verificationEnvironmentSource.includes("key.toUpperCase()")
+    || ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER", "MBM_RELAY_PROXY"]
+      .some((key) => !verificationEnvironmentSource.includes(`"${key}"`))) {
+  throw new Error("verification runners lost case-insensitive isolation from owner runtime configuration");
 }
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
@@ -1538,6 +1563,10 @@ if (packageJson.scripts?.["ci-bootstrap:test"] !== "node tests/ci-bootstrap-test
   throw new Error("fresh-checkout npm bootstrap regression is missing from the fast gate");
 }
 const npmBootstrapSource = readFileSync(join(root, "scripts", "prepare-pinned-npm.mjs"), "utf8");
+if (!npmBootstrapSource.includes("Prepared integrity-verified hardened npm")
+    || npmBootstrapSource.includes(" at ${bin}")) {
+  throw new Error("pinned npm bootstrap must not publish its temporary absolute bin path in CI output");
+}
 const hardenedNpmSource = readFileSync(join(root, "src", "local", "hardened-npm.mjs"), "utf8");
 const hardenedNpmDownloadSource = readFileSync(join(root, "src", "local", "hardened-npm-download.mjs"), "utf8");
 const hardenedNpmDownloadTimeoutSource = readFileSync(join(root, "src", "local", "hardened-npm-download-timeout.mjs"), "utf8");
@@ -1603,6 +1632,9 @@ if (acceptedCodeql.size !== expectedCodeql.size || [...expectedCodeql].some((ite
 }
 const processExecutionSource = readLfSource("src", "local", "process-execution.mjs");
 const shellSource = readFileSync(join(root, "src", "local", "shell.mjs"), "utf8");
+if (shellSource.includes("MBM_PASS_ENV")) {
+  throw new Error("minimal execution environment regained an ambient parent-environment bypass");
+}
 if (!processExecutionSource.includes('import { spawn } from "node:child_process";')
     || !processExecutionSource.includes("function spawnDirectProcess")
     || !processExecutionSource.includes("return spawn(command, args, {")

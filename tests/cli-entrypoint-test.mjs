@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readLoopbackJson } from "../src/local/loopback-health.mjs";
 import { workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
@@ -41,6 +41,15 @@ assert(help.stdout.includes("newly generated account passwords are included once
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-state-"));
 const workspaceRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-workspace-"));
 try {
+  const debugSecret = `ghp_${"A".repeat(36)}`;
+  const missingDebugWorkspace = join(homedir(), `.mbm-debug-${debugSecret}-${process.pid}-missing`);
+  const debugFailure = run(["workspace", "set", missingDebugWorkspace, "--state-dir", stateRoot], { MBM_DEBUG: "1" });
+  assert(debugFailure.status !== 0, "debug redaction fixture unexpectedly resolved a missing workspace");
+  assert(!debugFailure.stderr.includes(homedir()), "debug top-level exception leaked the local home path");
+  assert(!debugFailure.stderr.includes(debugSecret), "debug top-level exception leaked a credential-shaped value");
+  assert(debugFailure.stderr.includes("<home>") && debugFailure.stderr.includes("<redacted-access-token>"),
+    "debug top-level exception did not use the shared log redaction boundary");
+
   const initial = run(["workspace", "show", "--state-dir", stateRoot]);
   assert(initial.status === 0, `workspace show failed: ${initial.stderr}`);
   assert(initial.stdout.includes("No workspace selected yet"), "workspace show returned an unexpected initial state");
@@ -136,10 +145,10 @@ function normalizePathText(value) {
   return String(value).split("\\").join("/").toLowerCase();
 }
 
-function run(args) {
+function run(args, envOverrides = {}) {
   return spawnSync(process.execPath, [entry, ...args], {
     cwd: root,
-    env: process.env,
+    env: { ...process.env, ...envOverrides },
     encoding: "utf8",
     windowsHide: true,
   });

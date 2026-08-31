@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { wranglerCommand } from "../src/local/shell.mjs";
+import { executionEnv, wranglerCommand } from "../src/local/shell.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-wrangler-command-"));
 try {
@@ -18,6 +18,28 @@ try {
   }
   if (command.cmd.endsWith(".cmd") || command.argsPrefix.some((value) => value.endsWith(".cmd"))) {
     throw new Error("Wrangler command regressed to a Windows command-shell shim");
+  }
+  const previousPassEnv = process.env.MBM_PASS_ENV;
+  const previousPrivateValue = process.env.MBM_SHELL_TEST_PRIVATE;
+  try {
+    process.env.MBM_PASS_ENV = "true";
+    process.env.MBM_SHELL_TEST_PRIVATE = "must-not-be-inherited";
+    const minimal = executionEnv(root, { runtimeDir: root });
+    if (minimal.MBM_SHELL_TEST_PRIVATE !== undefined) {
+      throw new Error("minimal execution environment was widened by an ambient process override");
+    }
+    if (minimal.HOME !== join(root, "home") || minimal.MBM_WORKSPACE !== root) {
+      throw new Error("minimal execution environment lost its private runtime identity");
+    }
+    const full = executionEnv(root, { fullEnv: true, runtimeDir: root });
+    if (full.MBM_SHELL_TEST_PRIVATE !== "must-not-be-inherited") {
+      throw new Error("explicit full execution environment no longer inherits the parent environment");
+    }
+  } finally {
+    if (previousPassEnv === undefined) delete process.env.MBM_PASS_ENV;
+    else process.env.MBM_PASS_ENV = previousPassEnv;
+    if (previousPrivateValue === undefined) delete process.env.MBM_SHELL_TEST_PRIVATE;
+    else process.env.MBM_SHELL_TEST_PRIVATE = previousPrivateValue;
   }
   if (process.platform !== "win32") {
     const target = join(root, "real-wrangler.js");

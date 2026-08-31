@@ -796,12 +796,23 @@ const largerChild = resourceLease("c".repeat(32), 200, { ...parentEnvelope, cpu:
 const siblingChild = resourceLease("d".repeat(32), 300, { ...parentEnvelope, cpu: 2 }, hierarchyNow - 60_000);
 const processParents = parseResourceProcessParents("100 1\n150 100\n200 100\n300 100\n400 100\n");
 assert(processParents, "process parent snapshot did not parse");
+let observedProcessParentProbe = null;
 assert.deepEqual(await sampleResourceProcessParentsAsync({
-  run: async () => ({ ok: true, stdout: "100 1\n200 100\n" }),
+  run: async (command, args) => {
+    observedProcessParentProbe = { command, args };
+    return { ok: true, stdout: "100 1\n200 100\n" };
+  },
 }), { "100": 1, "200": 100 });
-if (process.platform !== "win32") {
-  assert(await sampleResourceProcessParentsAsync(), "default bounded async process-parent probe returned no process graph");
-}
+assert.deepEqual(observedProcessParentProbe, process.platform === "win32"
+  ? {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
+    }
+  : { command: "ps", args: ["-axo", "pid=,ppid="] },
+"async process-parent sampling changed its bounded platform command");
+assert.equal(await sampleResourceProcessParentsAsync({
+  run: async () => ({ ok: false, stdout: "" }),
+}), null, "failed async process-parent sampling did not retain the conservative no-graph fallback");
 let asyncAncestryClock = 20_000;
 let asyncAncestrySamples = 0;
 let finishAsyncAncestry;
@@ -1617,6 +1628,7 @@ try {
   const reboundCoordinator = new ResourceCoordinator({
     root: reboundRoot, now: () => reboundNow, random: () => 0,
     sampleHost: () => ({ ...green, sampled_at_ms: reboundNow, cpu_busy_cores: reboundSamples++ === 0 ? 5.7 : 1, load1: 0 }),
+    sampleProcessStarts: async () => ({ [String(process.pid)]: currentProcessStartedAt }),
     evaluate: (host, _leases, request) => {
       evaluatedJobs.push(request.compiler_jobs);
       return host.cpu_busy_cores > 2

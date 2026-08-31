@@ -159,7 +159,7 @@ export function workspaceShellCommand(command) {
 export function executionEnv(workspace, options = {}) {
   // Minimal mode deliberately replaces user home/temp/cache locations so common
   // toolchains do not inherit credential-bearing configuration by accident.
-  if (options.fullEnv || process.env.MBM_PASS_ENV === "true") return { ...process.env, MBM_WORKSPACE: workspace };
+  if (options.fullEnv) return { ...process.env, MBM_WORKSPACE: workspace };
   const runtimeDir = options.runtimeDir ? path.resolve(String(options.runtimeDir)) : "";
   if (!runtimeDir) throw new Error("minimal execution environment requires a runtime directory");
   const runtimeHome = path.join(runtimeDir, "home");

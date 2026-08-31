@@ -87,6 +87,7 @@ The default `full` profile prioritizes owner automation over least privilege.
 - `review` exposes read-only workspace, Git, and image tools.
 
 A stored `full` label is canonical. Per-capability narrowing is represented as `custom`, not as a partially restricted `full`.
+Whether a process receives the complete parent environment is derived from that effective policy (or an already accepted managed-job plan). Ambient process variables cannot promote an isolated execution environment to full inheritance. Optional owner runtime settings such as the macOS trust broker and experimental native visual backend are separate configuration inputs, not execution-authority overrides.
 
 `run_process` avoids shell parsing but an invoked interpreter, package manager, compiler, test runner, or repository script can execute arbitrary code. `exec_command` additionally enables shell expansion.
 

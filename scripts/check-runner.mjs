@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { verificationChildEnvironment } from "./verification-environment.mjs";
 
 const FAILURE_OUTPUT_BYTES_PER_STREAM = 64 * 1024;
 const MAX_VERIFICATION_CONCURRENCY = 16;
@@ -167,7 +167,7 @@ function sparseLineForwarder(output, prefixes) {
 
 function taskInvocation(task, packageScripts, npmCli, cwd, env) {
   const cleanEnvironment = {
-    ...nestedNpmEnvironment(env),
+    ...verificationChildEnvironment(env),
     NO_COLOR: env.NO_COLOR || "1",
   };
   const direct = directNodeInvocation(task, packageScripts);
