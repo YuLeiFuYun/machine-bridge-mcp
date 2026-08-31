@@ -129,6 +129,8 @@ https://<worker>.<account>.workers.dev/mcp
 
 Remote readiness is end-to-end. A daemon becomes available only after a Worker probe traverses the same authenticated local dispatch and result-delivery path used by real tool calls. A replacement daemon is verified before it displaces a healthy incumbent.
 
+When the relay must use a proxy but should not inherit an operating-system VPN/TUN path, set `MBM_RELAY_PROXY` to a dedicated HTTP(S) proxy endpoint. It takes precedence over `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` for both the preferred WebSocket relay and signed HTTP fallback; a configured proxy failure never falls back to a direct relay connection. A common deployment is a loopback-only sidecar whose own upstream socket is pinned to the intended physical/network interface. Machine Bridge does not itself bind the sidecar's upstream socket, so pointing `MBM_RELAY_PROXY` at a remote proxy does not by itself bypass an operating-system tunnel. See [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
 For account roles, OAuth lifecycle, supported callback behavior, and tenancy limits, read [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) and [docs/MULTI_ACCOUNT.md](docs/MULTI_ACCOUNT.md).
 
 ## Local stdio quick start

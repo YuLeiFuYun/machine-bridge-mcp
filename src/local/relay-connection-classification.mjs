@@ -48,7 +48,7 @@ export function relayFatalMessage(category) {
     return "remote relay protocol error; upgrade and redeploy both components, then restart the daemon";
   }
   if (category === "relay_proxy_configuration") {
-    return "remote relay proxy configuration is invalid; check HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
+    return "remote relay proxy configuration is invalid; check MBM_RELAY_PROXY, HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
   }
   if (category === "relay_device_session_expired") {
     return "daemon device session expired; restart the daemon to obtain a fresh root-signed session certificate";

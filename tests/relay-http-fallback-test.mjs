@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import http from "node:http";
+import net from "node:net";
 import { createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
 import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { DaemonHttpRelayConnection } from "../src/local/daemon-http-relay-connection.mjs";
+import { postDaemonHttpRelay } from "../src/local/daemon-http-relay-request.mjs";
 import { RelayInboundSequence, RelayOutboundSequence } from "../src/local/daemon-http-relay-sequence.mjs";
 import { ResilientRelayConnection } from "../src/local/resilient-relay-connection.mjs";
 import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
@@ -75,6 +78,82 @@ function testTransportSequences() {
   assert.equal(channel.readyState, 1, "verified HTTPS fallback did not become schedulable");
   assert.throws(() => channel.send(JSON.stringify({ payload: "x".repeat(8_500_000) })), /capacity exceeded/,
     "single unsendable Worker fallback payload exceeded envelope limit without rejection");
+}
+
+async function testDedicatedHttpFallbackProxy() {
+  const target = http.createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end("{}", "utf8");
+  });
+  const proxy = http.createServer();
+  let proxyConnects = 0;
+  proxy.on("connect", (_request, clientSocket, head) => {
+    proxyConnects += 1;
+    const upstream = net.connect(target.address().port, "127.0.0.1", () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    });
+    upstream.on("error", () => clientSocket.destroy());
+  });
+  await new Promise((resolve, reject) => {
+    target.listen(0, "127.0.0.1", resolve).once("error", reject);
+  });
+  await new Promise((resolve, reject) => {
+    proxy.listen(0, "127.0.0.1", resolve).once("error", reject);
+  });
+  const previousRelayProxy = process.env.MBM_RELAY_PROXY;
+  const previousNoProxy = process.env.NO_PROXY;
+  const previousNoProxyLower = process.env.no_proxy;
+  try {
+    process.env.MBM_RELAY_PROXY = `http://127.0.0.1:${proxy.address().port}`;
+    process.env.NO_PROXY = "relay-fallback.example.invalid";
+    process.env.no_proxy = "relay-fallback.example.invalid";
+    const result = await postDaemonHttpRelay({
+      url: `http://relay-fallback.example.invalid:${target.address().port}/daemon/http`,
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      timeoutMs: 2_000,
+      maximumResponseBytes: 1024,
+    });
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.networkRoute, "application-http-proxy",
+      "signed HTTPS fallback did not report the dedicated application proxy route");
+    assert.equal(proxyConnects, 1,
+      "signed HTTPS fallback allowed NO_PROXY to bypass MBM_RELAY_PROXY");
+
+    const unavailableProxy = http.createServer();
+    await new Promise((resolve, reject) => {
+      unavailableProxy.listen(0, "127.0.0.1", resolve).once("error", reject);
+    });
+    const unavailablePort = unavailableProxy.address().port;
+    await new Promise(resolve => { unavailableProxy.close(resolve); });
+    process.env.MBM_RELAY_PROXY = `http://127.0.0.1:${unavailablePort}`;
+    process.env.NO_PROXY = "127.0.0.1";
+    process.env.no_proxy = "127.0.0.1";
+    await assert.rejects(
+      postDaemonHttpRelay({
+        url: `http://127.0.0.1:${target.address().port}/daemon/http`,
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        timeoutMs: 2_000,
+        maximumResponseBytes: 1024,
+      }),
+      "unreachable MBM_RELAY_PROXY fell back to a directly reachable relay target",
+    );
+  } finally {
+    if (previousRelayProxy === undefined) delete process.env.MBM_RELAY_PROXY;
+    else process.env.MBM_RELAY_PROXY = previousRelayProxy;
+    if (previousNoProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = previousNoProxy;
+    if (previousNoProxyLower === undefined) delete process.env.no_proxy;
+    else process.env.no_proxy = previousNoProxyLower;
+    await Promise.all([
+      new Promise(resolve => { target.close(resolve); }),
+      new Promise(resolve => { proxy.close(resolve); }),
+    ]);
+  }
 }
 
 async function testHttpFallbackFailureClassification() {
@@ -500,6 +579,7 @@ class FakeHttpRelay extends FakeRelayBase {
 
 await testSignedHttpRelayAuthentication();
 testTransportSequences();
+await testDedicatedHttpFallbackProxy();
 await testHttpFallbackFailureClassification();
 await testLocalLostResponseDoesNotReplayToolCall();
 await testSessionResetDoesNotCommitPriorInboundSequence();
