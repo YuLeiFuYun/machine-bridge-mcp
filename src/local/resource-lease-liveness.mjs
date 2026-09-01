@@ -1,7 +1,10 @@
-import { inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
 
 export function resourceLeaseOwnerStatus(lease, processStarts = null) {
-  return resourceLeaseOwnerStatusFromStart(lease, processStartTimeFromSnapshot(processStarts, lease.owner.pid));
+  const observedStart = lease.owner.pid === process.pid
+    ? currentProcessStartTimeMs()
+    : processStartTimeFromSnapshot(processStarts, lease.owner.pid);
+  return resourceLeaseOwnerStatusFromStart(lease, observedStart);
 }
 
 export function resourceLeaseOwnerStatusFromStart(lease, observedStart = null) {

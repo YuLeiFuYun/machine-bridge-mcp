@@ -1,7 +1,7 @@
 import { lstatSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
-import { inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
 
 const STAGING = /^\.(?<target>(?<kind>lease|wait)_[a-f0-9]{32}\.json)\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
 const FINAL = Object.freeze({ lease: /^lease_[a-f0-9]{32}\.json$/, wait: /^wait_[a-f0-9]{32}\.json$/ });
@@ -71,7 +71,9 @@ function inspectOptional(file, label) {
 }
 
 function stagingPublisherMayBeCurrent(pid, staging, processStarts = undefined) {
-  const options = { getProcessStartTime: (value) => processStartTimeFromSnapshot(processStarts, value) };
+  const options = {
+    getProcessStartTime: (value) => value === process.pid ? currentProcessStartTimeMs() : processStartTimeFromSnapshot(processStarts, value),
+  };
   const status = inspectProcessInstance({ pid, startedAt: staging.modified_at }, options);
   return status.alive === true && status.reclaimable !== true;
 }

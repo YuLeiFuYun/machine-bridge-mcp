@@ -107,7 +107,9 @@ function compareWaiters(left, right, now) {
 function waiterIsStale(waiter, now, processStarts) {
   if (Date.parse(waiter.expires_at) < now) return true;
   const status = inspectProcessInstance({ pid: waiter.owner.pid, startedAt: waiter.enqueued_at,
-    processStartedAt: waiter.owner.process_started_at }, { getProcessStartTime: (pid) => processStartTimeFromSnapshot(processStarts, pid) });
+    processStartedAt: waiter.owner.process_started_at }, {
+    getProcessStartTime: (pid) => pid === process.pid ? currentProcessStartTimeMs() : processStartTimeFromSnapshot(processStarts, pid),
+  });
   return status.reclaimable === true;
 }
 
