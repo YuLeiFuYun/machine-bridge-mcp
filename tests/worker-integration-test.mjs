@@ -485,6 +485,7 @@ try {
   });
   assert(familyRefreshAfterRetry.response.status === 200, "concurrent refresh recovery incorrectly revoked the token family");
   let ownerAccessToken = familyRefreshAfterRetry.body.access_token;
+  let ownerRefreshToken = familyRefreshAfterRetry.body.refresh_token;
   const conformanceCheckout = String(process.env.MBM_OFFICIAL_CONFORMANCE_CHECKOUT || "").trim();
   const conformanceScenarios = String(process.env.MBM_OFFICIAL_CONFORMANCE_SCENARIOS || "").split(",").map((value) => value.trim()).filter(Boolean);
   if (conformanceCheckout && conformanceScenarios.length > 0) {
@@ -1616,6 +1617,27 @@ try {
     && !idlessMessages.stop().includes("tool_call"),
   "Worker accepted tools/call as a notification or dispatched it without a request id");
 
+  // Keep this long integration suite from turning the production per-credential 120/60s limiter into a CI timing oracle.
+  // Rate-limit keys/429 behavior have dedicated tests; this phase only needs the same owner authority on fresh credentials.
+  const ownerPhaseRefresh = await fetchJson(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: ownerRefreshToken,
+      client_id: registration.body.client_id,
+      resource: `${base}/mcp`,
+    }),
+  });
+  assert(ownerPhaseRefresh.response.status === 200
+    && typeof ownerPhaseRefresh.body.access_token === "string"
+    && ownerPhaseRefresh.body.access_token !== ownerAccessToken
+    && typeof ownerPhaseRefresh.body.refresh_token === "string"
+    && ownerPhaseRefresh.body.refresh_token !== ownerRefreshToken,
+  "owner phase-boundary refresh did not rotate the integration credentials");
+  ownerAccessToken = ownerPhaseRefresh.body.access_token;
+  ownerRefreshToken = ownerPhaseRefresh.body.refresh_token;
+
   const activeTools = await callToolsList(base, ownerAccessToken, 26);
   assert(JSON.stringify(activeTools.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
     "verified daemon replacement changed the stable owner tool catalog");
@@ -1675,7 +1697,12 @@ try {
   const durableAcceptanceCall = currentMcpCall(base, ownerAccessToken, 75, "tools/call", {
     name: "run_process", arguments: { argv: ["durable-step"], timeout_seconds: 1, idempotency_key: "worker-durable-acceptance" },
   });
-  const timedRelay = await timedRelayPromise;
+  const timedRelay = await Promise.race([
+    timedRelayPromise,
+    durableAcceptanceCall.then((result) => {
+      throw new Error(`durable acceptance HTTP response settled before daemon relay: ${result.response.status}`);
+    }),
+  ]);
   assert(timedRelay.tool === "run_process" && timedRelay.timeout_ms === 10_000
     && timedRelay.arguments?.timeout_seconds === 1
     && timedRelay.arguments?.idempotency_key === "worker-durable-acceptance",
