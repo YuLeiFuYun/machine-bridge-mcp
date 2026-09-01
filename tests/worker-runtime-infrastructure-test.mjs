@@ -20,7 +20,7 @@ import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDe
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../src/worker/managed-job-read-timeout.ts";
 import { issueManagedJobCapability, verifyManagedJobCapability } from "../src/worker/managed-job-capability.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../src/worker/managed-job-hosted-authority.ts";
-import { serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
 import { workerAuthorityContext, workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -38,6 +38,12 @@ import { DaemonLastObservation } from "../src/worker/daemon-last-observation.ts"
 import { buildServerInfoResult, serverInfoDetail } from "../src/worker/server-info.ts";
 import { remoteToolDeliveryContract } from "../src/worker/server-info-tool-delivery.ts";
 import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../src/worker/mcp-subscription-contract.ts";
+import {
+  JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID,
+  managedJobMonitorResource, managedJobMonitorResources, supportsManagedJobMonitor,
+} from "../src/worker/mcp-job-monitor-ui.ts";
+import { ManagedJobMonitorClaims, claimManagedJobMonitor, hasManagedJobMonitorClaim } from "../src/worker/mcp-job-monitor-claims.ts";
+import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_RENDER_TOOL, renderManagedJobMonitor } from "../src/worker/mcp-job-monitor-tools.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
 import { applyCors, corsPreflight, searchParamsObject } from "../src/worker/http.ts";
@@ -1467,13 +1473,26 @@ async function testRelayTimeoutContract() {
   const remoteReadJob = workspaceTools.find((tool) => tool.name === "read_job");
   const remoteReadJobDescription = String(remoteReadJob?.description || "");
   const remoteCancelJob = workspaceTools.find((tool) => tool.name === "cancel_job");
+  const ownerJobMonitorRender = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_RENDER_TOOL);
+  const ownerJobMonitorClaim = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_CLAIM_TOOL);
   assert(remoteStartJob?.inputSchema?.required?.includes("idempotency_key")
     && remoteStartJob?.inputSchema?.properties?.dependency_recovery?.type === "object"
+    && remoteStartJob?._meta?.ui?.resourceUri === undefined
+    && remoteStartJob?._meta?.["ui/resourceUri"] === undefined
+    && ownerJobMonitorRender?._meta?.ui?.resourceUri === JOB_MONITOR_RESOURCE_URI
+    && JSON.stringify(ownerJobMonitorRender?._meta?.ui?.visibility) === '["model"]'
+    && ownerJobMonitorRender?._meta?.["openai/outputTemplate"] === JOB_MONITOR_RESOURCE_URI
+    && JSON.stringify(remoteReadJob?._meta?.ui?.visibility) === '["model","app"]'
+    && remoteReadJob?._meta?.["openai/widgetAccessible"] === true
+    && JSON.stringify(ownerJobMonitorClaim?._meta?.ui?.visibility) === '["app"]'
+    && ownerJobMonitorClaim?._meta?.["openai/widgetAccessible"] === true
     && remoteStartJobDescription.includes("idempotency_key known before dispatch")
     && remoteStartJobDescription.includes("recovery_key and control_key")
     && remoteStartJobDescription.includes("dependency_recovery")
+    && remoteStartJobDescription.includes("render_job_monitor")
+    && remoteStartJobDescription.includes("status_polling_mode=ui_monitor")
     && remoteStartJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
-  "remote start_job schema/description omitted idempotent acceptance, managed-job capabilities, or autonomous follow-up");
+  "remote start_job schema/description omitted idempotent acceptance, managed-job capabilities, or the UI monitor handoff");
   const startJobWithoutRecoveryKey = validateWorkerToolArguments("start_job", { steps: [{ argv: ["true"] }] });
   const startJobWithRecoveryKey = validateWorkerToolArguments("start_job", {
     idempotency_key: "hosted-start-job-validator", steps: [{ argv: ["true"] }],
@@ -1520,6 +1539,7 @@ async function testRelayTimeoutContract() {
     && remoteReadJob?.inputSchema?.properties?.wait_ms?.maximum === 60_000
     && remoteReadJob?.inputSchema?.required?.includes("recovery_key")
     && remoteReadJob?.inputSchema?.properties?.recovery_key?.pattern === "^mcp_jr_[A-Za-z0-9_-]{43}$"
+    && remoteReadJob?.inputSchema?.properties?.ui_monitor_id?.pattern === "^mcp_jm_[a-f0-9]{32}$"
     && remoteReadJobDescription.includes("server-side long-poll")
     && remoteReadJobDescription.includes("wait up to 40 seconds")
     && remoteReadJobDescription.includes("public wait_ms maximum of 60 seconds")
@@ -1546,11 +1566,20 @@ async function testRelayTimeoutContract() {
     && !await verifyManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "control", recoveryKey)
     && !await verifyManagedJobCapability(capabilityKeyMaterial, otherCapabilityAuthority, capabilityJobId, "read", recoveryKey),
   "managed-job capabilities lost purpose/principal binding");
+  const claimScope = {};
+  const renderResult = await renderManagedJobMonitor(claimScope, { job_id: capabilityJobId, recovery_key: recoveryKey },
+    capabilityAuthority, capabilityKeyMaterial);
+  const monitorId = renderResult.ui_monitor_id;
+  assert(renderResult.job_id === capabilityJobId && /^mcp_jm_[a-f0-9]{32}$/.test(String(monitorId))
+    && renderResult.ui_monitor_claim_required === true && renderResult.follow_up_read_required === true
+    && jobMonitorRenderTool.name === JOB_MONITOR_RENDER_TOOL,
+  "managed-job render tool did not verify read authority or issue a bounded render-instance ID");
   const projectedReadArgs = await hostedManagedJobDaemonArguments("read_job", {
-    job_id: capabilityJobId, recovery_key: recoveryKey, wait_ms: 0,
+    job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId, wait_ms: 0,
   }, capabilityAuthority, capabilityKeyMaterial);
-  assert(projectedReadArgs.job_id === capabilityJobId && projectedReadArgs.wait_ms === 0 && !("recovery_key" in projectedReadArgs),
-    "hosted read_job forwarded its bearer recovery capability to the daemon");
+  assert(projectedReadArgs.job_id === capabilityJobId && projectedReadArgs.wait_ms === 0
+    && !("recovery_key" in projectedReadArgs) && !("ui_monitor_id" in projectedReadArgs),
+    "hosted read_job forwarded Worker-only recovery/monitor coordination material to the daemon");
   const projectedDependencyArgs = await hostedManagedJobDaemonArguments("start_job", {
     idempotency_key: "capability-dependency", depends_on: [capabilityJobId],
     dependency_recovery: { [capabilityJobId]: recoveryKey }, steps: [{ argv: ["true"] }],
@@ -1573,6 +1602,95 @@ async function testRelayTimeoutContract() {
     && acceptedWithCapabilities.recovery?.recovery_key === recoveryKey
     && acceptedWithCapabilities.recovery?.control_key === controlKey,
   "hosted managed-job acceptance did not return deterministic recovery/control capabilities");
+  const uiClientCapabilities = { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } } };
+  const activeWithoutUi = await projectHostedManagedJobResult("start_job", {
+    accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: {} });
+  const activeWithUi = await projectHostedManagedJobResult("start_job", {
+    accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities });
+  assert(activeWithoutUi.follow_up_read_required === true && activeWithoutUi.status_polling_mode !== "ui_monitor"
+    && activeWithUi.follow_up_read_required === true && activeWithUi.ui_monitor_candidate === true
+    && activeWithUi.ui_monitor_claim_required === true && activeWithUi.status_polling_mode !== "ui_monitor"
+    && activeWithUi.host_turn_handoff_recommended === false
+    && activeWithUi.completion_delivery === "mcp_app_job_monitor_pending_claim"
+    && activeWithUi.ui_monitor_render_tool === JOB_MONITOR_RENDER_TOOL
+    && activeWithUi.ui_resource_uri === undefined,
+  "MCP Apps capability alone incorrectly transferred active start_job continuation before the monitor proved server-tool access");
+  const activeClaimed = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "running", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: true });
+  assert(activeClaimed.follow_up_read_required === false && activeClaimed.ui_follow_up_read_required === true
+    && activeClaimed.ui_monitor_claimed === true && activeClaimed.status_polling_mode === "ui_monitor"
+    && activeClaimed.host_turn_handoff_recommended === true && activeClaimed.same_response_followup_supported === false
+    && activeClaimed.completion_delivery === "mcp_app_job_monitor",
+  "a proven Job Monitor claim did not transfer active read_job continuation out of the model turn");
+  const terminalWithUi = await projectHostedManagedJobResult("start_job", {
+    accepted: true, job_id: capabilityJobId, status: "succeeded", follow_up_read_required: false,
+  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities, uiMonitorClaimed: true });
+  assert(terminalWithUi.follow_up_read_required === false && terminalWithUi.status_polling_mode !== "ui_monitor",
+    "already-terminal start_job was incorrectly converted into UI-owned continuation");
+  const otherClaimScope = {};
+  const forgedMonitorId = `mcp_jm_${String(monitorId).endsWith("0") ? "1" : "0"}${"0".repeat(31)}`;
+  let unissuedClaimError;
+  try {
+    await claimManagedJobMonitor(claimScope, {
+      job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: forgedMonitorId,
+    }, capabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { unissuedClaimError = error; }
+  assert(unissuedClaimError instanceof WorkerToolError && unissuedClaimError.code === "invalid_request"
+    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, forgedMonitorId, capabilityAuthority),
+  "managed-job monitor accepted an unissued render-instance ID");
+  const claimResult = await claimManagedJobMonitor(claimScope, {
+    job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(claimResult.claimed === true && hasManagedJobMonitorClaim(claimScope, capabilityJobId, monitorId, capabilityAuthority)
+    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, `mcp_jm_${"0".repeat(32)}`, capabilityAuthority)
+    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, monitorId, otherCapabilityAuthority)
+    && !hasManagedJobMonitorClaim(otherClaimScope, capabilityJobId, monitorId, capabilityAuthority),
+  "managed-job monitor claim lost render-instance, principal, or Worker-room scope binding");
+  let invalidClaimError;
+  try {
+    await claimManagedJobMonitor(claimScope, {
+      job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+    }, otherCapabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { invalidClaimError = error; }
+  assert(invalidClaimError instanceof WorkerToolError && invalidClaimError.code === "authorization_denied",
+    "managed-job monitor accepted a claim with the wrong principal");
+  const boundedClaims = new ManagedJobMonitorClaims();
+  const boundedMonitorId = boundedClaims.issue(capabilityJobId, capabilityAuthority, 1000);
+  boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001);
+  assert(boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001)
+    && !boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001 + 5 * 60 * 1000),
+  "managed-job monitor claim did not expire at its bounded lifetime");
+  assert(supportsManagedJobMonitor(uiClientCapabilities)
+    && !supportsManagedJobMonitor({ extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: ["text/plain"] } } })
+    && !supportsManagedJobMonitor({}),
+  "MCP Apps support detection did not require the negotiated extension MIME type");
+  const monitorList = managedJobMonitorResources({ name: "machine-bridge-mcp", version: "test" });
+  const monitorRead = managedJobMonitorResource(JOB_MONITOR_RESOURCE_URI, { name: "machine-bridge-mcp", version: "test" });
+  const monitorHtml = monitorRead.contents?.[0]?.text || "";
+  assert(monitorList.resultType === "complete" && monitorList.ttlMs === 0 && monitorList.cacheScope === "public"
+    && monitorList.resources?.[0]?.uri === JOB_MONITOR_RESOURCE_URI
+    && monitorList.resources?.[0]?.mimeType === MCP_APP_MIME_TYPE
+    && monitorRead.contents?.[0]?.mimeType === MCP_APP_MIME_TYPE
+    && monitorRead.contents?.[0]?._meta?.ui?.csp?.connectDomains?.length === 0
+    && monitorRead.contents?.[0]?._meta?.["openai/widgetCSP"]?.connect_domains?.length === 0
+    && monitorRead.contents?.[0]?._meta?.["openai/widgetPrefersBorder"] === true
+    && monitorHtml.includes('name:"read_job"') && monitorHtml.includes("wait_ms:40000")
+    && monitorHtml.includes(`name:"${JOB_MONITOR_CLAIM_TOOL}"`)
+    && monitorHtml.includes("ui_monitor_id:monitorId")
+    && monitorHtml.includes('method==="ui/notifications/tool-input"')
+    && monitorHtml.includes("hostCapabilities?.serverTools")
+    && monitorHtml.includes('request("ui/initialize"')
+    && monitorHtml.includes('method:"ui/notifications/initialized"')
+    && monitorHtml.includes('method==="ui/resource-teardown"')
+    && monitorHtml.includes('protocolVersion:"2026-01-26"')
+    && !/https?:\/\//.test(monitorHtml) && !monitorHtml.includes("sendFollowUpMessage"),
+  "managed-job monitor resource lost MCP Apps handshake, static/no-network, or server-paced continuation boundaries");
   const aggregateInventory = await projectHostedManagedJobResult("list_jobs", {
     jobs: [{ job_id: capabilityJobId, name: "must-not-cross-hosted-boundary", status: "running" }],
     recent_process_recovery: [{ job_id: capabilityJobId }], retained: 1, maximum: 512,

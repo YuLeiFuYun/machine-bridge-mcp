@@ -13,6 +13,8 @@ import {
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { applyHostedManagedJobToolContract } from "./managed-job-hosted-schema.ts";
 import { applyHostedBrowserTargetContract } from "./hosted-browser-target-schema.ts";
+import { attachManagedJobMonitorMetadata } from "./mcp-job-monitor-ui.ts";
+import { managedJobMonitorClaimToolDefinition, managedJobMonitorRenderToolDefinition } from "./mcp-job-monitor-tools.ts";
 
 export type WorkerToolDefinition = Record<string, unknown> & { name: string; description: string; availability?: string };
 type JsonSchema = Record<string, unknown> & { properties: Record<string, Record<string, unknown>>; required?: string[] };
@@ -21,8 +23,10 @@ const allTools = toolCatalog as WorkerToolDefinition[];
 export const workerToolSchemaGeneration = Number(serverMetadata.toolSchemaGeneration);
 const HOSTED_CONTINUATION_RULE = "Do not infer or preempt a host/tool deadline from elapsed wall-clock time. While tool calls continue to be accepted and the current task still needs the result, bounded same-response follow-up may continue. Hand progress back only after an actual host/tool boundary is observed, external input or authorization is required, or the user explicitly requested a checkpoint. If an actual host/tool boundary ends the response, preserve the durable recovery identifier and resume that same operation later instead of resubmitting its underlying side effect.";
 export const serverInfoTool = schemaTaggedTool(publicTool(allTools.find((tool) => tool.name === "server_info")!));
+export const jobMonitorRenderTool = schemaTaggedTool(managedJobMonitorRenderToolDefinition() as WorkerToolDefinition);
+export const jobMonitorClaimTool = schemaTaggedTool(managedJobMonitorClaimToolDefinition() as WorkerToolDefinition);
 export const workspaceTools = Object.freeze(allTools.filter((tool) => tool.name !== "server_info").map(remotePublicTool).map(schemaTaggedTool));
-const publicTools = [serverInfoTool, ...workspaceTools]; const workerToolArguments = compileToolArgumentValidators(publicTools);
+const publicTools = [serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, ...workspaceTools]; const workerToolArguments = compileToolArgumentValidators(publicTools);
 export const workerToolParameterHeaders = toolParameterHeaderNames(publicTools);
 
 export function validateWorkerToolArguments(name: unknown, value: unknown) {
@@ -32,6 +36,7 @@ export function validateWorkerToolArguments(name: unknown, value: unknown) {
 function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   const definition = publicTool(tool);
   const schema = definition.inputSchema as JsonSchema;
+  attachManagedJobMonitorMetadata(definition);
   if (definition.name === "start_process") {
     definition.description = `${String(definition.description)} For hosted use, reserve process sessions for interactive stdin or incremental-output work. Prefer run_process for non-interactive work. Bounded same-response read_process follow-up is allowed when the current task needs more output or terminal state; do not busy-loop, and respect the remote blocking-poll cooldown. ${HOSTED_CONTINUATION_RULE}`;
   }

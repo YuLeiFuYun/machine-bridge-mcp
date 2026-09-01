@@ -153,10 +153,38 @@ if (workerToolCatalogSource.indexOf("const HOSTED_CONTINUATION_RULE") > workerTo
 }
 const workerMcpConfigSource = readFileSync(join(root, "src", "worker", "worker-mcp-config.ts"), "utf8");
 const mcpControllerSource = readFileSync(join(root, "src", "worker", "mcp-controller.ts"), "utf8");
+const mcpJobMonitorUiSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-ui.ts"), "utf8");
+const mcpJobMonitorClaimsSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-claims.ts"), "utf8");
+const mcpJobMonitorToolsSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-tools.ts"), "utf8");
+const managedJobHostedAuthoritySource = readFileSync(join(root, "src", "worker", "managed-job-hosted-authority.ts"), "utf8");
 const mcpSubscriptionCapacitySource = readFileSync(join(root, "src", "worker", "mcp-subscription-capacity.ts"), "utf8");
 const mcpSubscriptionRegistrySource = readFileSync(join(root, "src", "worker", "mcp-subscription-registry.ts"), "utf8");
 if (!workerMcpConfigSource.includes("MCP_DISCOVERY_TTL_MS = 0") || !workerMcpConfigSource.includes("MCP_TOOL_LIST_TTL_MS = 0")) {
   throw new Error("Worker discovery/tool contracts again advertise reusable cross-release semantic caches");
+}
+for (const required of ["MCP_UI_EXTENSION_ID", "MCP_APP_MIME_TYPE", "resources: Object.freeze({})", "extensions: Object.freeze"]) {
+  if (!workerMcpConfigSource.includes(required)) throw new Error(`Worker lost MCP Apps managed-job monitor capability wiring: ${required}`);
+}
+for (const required of ["io.modelcontextprotocol/ui", "text/html;profile=mcp-app", "hostCapabilities?.serverTools", 'name:"claim_job_monitor"', 'name:"read_job"', "wait_ms:40000", "ui/initialize", "ui/notifications/initialized", "ui/resource-teardown", "projectManagedJobMonitorHandoff", "openai/widgetAccessible", "openai/widgetCSP", "openai/widgetPrefersBorder"]) {
+  if (!mcpJobMonitorUiSource.includes(required)) throw new Error(`managed-job monitor lost two-phase hosted continuation behavior: ${required}`);
+}
+for (const forbidden of ["sendFollowUpMessage", "ui/message", "http://", "https://"]) {
+  if (mcpJobMonitorUiSource.includes(forbidden)) throw new Error(`managed-job monitor regained unsupported autonomous/external delivery behavior: ${forbidden}`);
+}
+for (const required of ["JOB_MONITOR_CLAIM_TTL_MS = 5 * 60 * 1000", "JOB_MONITOR_ID_PATTERN", "MAX_JOB_MONITOR_CLAIMS = 128", "WeakMap<object, ManagedJobMonitorClaims>", "claimsFor(scope)", "issueManagedJobMonitor", "verifyManagedJobCapability", "validManagedJobMonitorId", "crypto.getRandomValues", "claimed: false", "render instance is not active", "monitorId", "managed-job monitor recovery authority is invalid", "owner_account_id", "owner_client_id", "owner_family_id"]) {
+  if (!mcpJobMonitorClaimsSource.includes(required)) throw new Error(`managed-job monitor claim lost bounded principal/capability proof: ${required}`);
+}
+for (const forbidden of ["callDaemonTool", "recovery_key: recovery", "result:"]) {
+  if (mcpJobMonitorClaimsSource.includes(forbidden)) throw new Error(`managed-job monitor claim crossed its Worker-only/no-result boundary: ${forbidden}`);
+}
+for (const required of ["render_job_monitor", "claim_job_monitor", "JOB_MONITOR_ID_PATTERN", "verifyManagedJobCapability", "issueManagedJobMonitor", "openai/outputTemplate", "openai/widgetAccessible", "ui_monitor_id", "follow_up_read_required"]) {
+  if (!mcpJobMonitorToolsSource.includes(required)) throw new Error(`managed-job monitor render/claim tool contract lost required behavior: ${required}`);
+}
+for (const required of ["ui_monitor_candidate", "ui_monitor_claim_required", "ui_monitor_render_tool", "uiMonitorClaimed", "projectManagedJobMonitorHandoff", "delete projected.ui_monitor_id"]) {
+  if (!managedJobHostedAuthoritySource.includes(required)) throw new Error(`hosted managed-job projection lost two-phase UI handoff: ${required}`);
+}
+if (managedJobHostedAuthoritySource.includes("!supportsManagedJobMonitor(options.clientCapabilities)) return projected;\n  return {\n    ...projected,\n    follow_up_read_required: false")) {
+  throw new Error("UI MIME capability can again disable model-side managed-job continuation before a monitor claim");
 }
 const managedJobPlanSource = readFileSync(join(root, "src", "local", "managed-job-plan.mjs"), "utf8");
 if (!managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 60 * 60")
@@ -1828,7 +1856,10 @@ if (relayContract.streamCancelTimeoutMs !== 2_000
     || !readFileSync(join(root, "tests", "mcp-response-proxy-test.mjs"), "utf8").includes("stalled private cancellation kept the public response stream open indefinitely")) {
   throw new Error("public MCP stream cancellation lost its bounded private-control settlement deadline");
 }
-if (!workerMcpConfigSource.includes("MCP_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: true }) })")
+if (!workerMcpConfigSource.includes("tools: Object.freeze({ listChanged: true })")
+    || !workerMcpConfigSource.includes("resources: Object.freeze({})")
+    || !workerMcpConfigSource.includes("[MCP_UI_EXTENSION_ID]")
+    || !workerMcpConfigSource.includes("MCP_APP_MIME_TYPE")
     || !workerMcpConfigSource.includes("MCP_LEGACY_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) })")
     || !mcpSubscriptionCapacitySource.includes("MAX_ACTIVE_MCP_SUBSCRIPTIONS = 32")
     || !mcpSubscriptionCapacitySource.includes("MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT = 8")
@@ -2120,7 +2151,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 21"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 22"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],

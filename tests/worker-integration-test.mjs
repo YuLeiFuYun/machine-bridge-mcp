@@ -9,8 +9,7 @@ import WebSocket from "ws";
 import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
 import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
-import { accountRoleToolNames } from "../src/worker/access.ts";
-import { workspaceTools } from "../src/worker/tool-catalog.ts";
+import { workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../src/worker/mcp-subscription-contract.ts";
 import { runOfficialMcpConformance } from "../scripts/official-mcp-conformance.mjs";
@@ -784,7 +783,7 @@ try {
     "unsupported protocol response advertised anything except the current version");
 
   const toolsWithoutDaemon = await callToolsList(base, ownerAccessToken, 3);
-  const stableOwnerToolNames = ["server_info", ...accountRoleToolNames("owner", workspaceTools.map((tool) => tool.name))].sort();
+  const stableOwnerToolNames = workerToolsForRole("owner").map((tool) => tool.name).sort();
   assert(JSON.stringify(toolsWithoutDaemon.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
     "transient daemon absence changed the authenticated account tool catalog");
   const unavailableWithoutDaemon = await callTool(base, ownerAccessToken, 31, "list_dir", { path: "." });
@@ -1728,6 +1727,23 @@ try {
     && /^mcp_jr_[A-Za-z0-9_-]{43}$/.test(String(durableAcceptanceResult.body.result?.structuredContent?.recovery_key || ""))
     && /^mcp_jc_[A-Za-z0-9_-]{43}$/.test(String(durableAcceptanceResult.body.result?.structuredContent?.control_key || "")),
   "durable process acceptance did not settle independently of the detached one-second step lifetime or return hosted recovery capabilities");
+
+  const durableRecoveryKey = durableAcceptanceResult.body.result?.structuredContent?.recovery_key;
+  const monitorRenderResult = await currentMcpCall(base, ownerAccessToken, 752, "tools/call", {
+    name: "render_job_monitor",
+    arguments: { job_id: durableJobId, recovery_key: durableRecoveryKey },
+  });
+  const monitorRenderStructured = monitorRenderResult.body.result?.structuredContent;
+  assert(monitorRenderResult.response.status === 200
+    && monitorRenderResult.body.result?.isError === false
+    && monitorRenderStructured?.job_id === durableJobId
+    && /^mcp_jm_[a-f0-9]{32}$/.test(String(monitorRenderStructured?.ui_monitor_id || ""))
+    && monitorRenderStructured?.ui_monitor_claim_required === true
+    && monitorRenderStructured?.follow_up_read_required === true
+    && !("recovery_key" in monitorRenderStructured)
+    && !("control_key" in monitorRenderStructured)
+    && String(monitorRenderResult.body.result?.content?.[0]?.text || "").includes("Read the same job once"),
+  "render_job_monitor did not expose a standard non-secret structuredContent render-instance result");
 
   const ambiguousAcceptanceKey = "worker-ambiguous-durable-acceptance";
   const ambiguousRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");

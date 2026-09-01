@@ -18,7 +18,7 @@ import {
   rpcError, rpcResult, textToolResult, type JsonRpcRequest,
 } from "./mcp-jsonrpc.ts";
 import { staleSchemaCompatibilityResult } from "./mcp-stale-schema-compat.ts";
-
+import { dispatchManagedJobMonitorResource, managedJobMonitorClientCapabilities } from "./mcp-job-monitor-ui.ts";
 type McpConfig = Readonly<{
   capabilities: Record<string, unknown>;
   serverInfo: Record<string, unknown>;
@@ -36,19 +36,17 @@ type McpConfig = Readonly<{
     authorized: AuthorizedToken;
     signal: AbortSignal;
     requestKey?: string;
+    clientCapabilities?: Record<string, unknown>;
   }) => Promise<unknown>;
 }>;
-
 type McpDispatchResult = Readonly<{
   message: Record<string, unknown>;
   status: number;
 }>;
-
 export class McpController {
   private readonly config: McpConfig;
   private readonly subscriptions = new McpSubscriptionRegistry();
   private readonly requestCancellations: McpRequestCancellationRegistry;
-
   constructor(config: McpConfig) {
     this.config = config;
     this.requestCancellations = new McpRequestCancellationRegistry({ onFailClosed: () => config.recordError("mcp_request_cancellation_fail_closed") });
@@ -152,6 +150,7 @@ export class McpController {
   ): Promise<McpDispatchResult> {
     if (request.method === "server/discover") return this.discover(request);
     if (request.method === "tools/list") return this.listTools(request, authorized);
+    const resource = dispatchManagedJobMonitorResource(request, this.config.serverInfo); if (resource) return resource;
     if (request.method === "tools/call") return this.callTool(request, base, authorized, signal, requestKey);
     return { status: 404, message: rpcError(request.id, -32601, "Method not found") };
   }
@@ -202,6 +201,7 @@ export class McpController {
     try {
       const result = await this.config.callTool({
         name, args: rawArgs as Record<string, unknown>, base, authorized, signal, requestKey,
+        clientCapabilities: managedJobMonitorClientCapabilities(request),
       });
       return {
         status: 200,
