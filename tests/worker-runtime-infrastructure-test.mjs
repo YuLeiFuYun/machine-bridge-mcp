@@ -1572,8 +1572,11 @@ async function testRelayTimeoutContract() {
   const monitorId = renderResult.ui_monitor_id;
   assert(renderResult.job_id === capabilityJobId && /^mcp_jm_[a-f0-9]{32}$/.test(String(monitorId))
     && renderResult.ui_monitor_claim_required === true && renderResult.follow_up_read_required === true
+    && String(renderResult.$mcpText || "").includes(`ui_monitor_id=${monitorId}`)
+    && !String(renderResult.$mcpText || "").includes("mcp_jr_")
+    && !String(renderResult.$mcpText || "").includes("mcp_jc_")
     && jobMonitorRenderTool.name === JOB_MONITOR_RENDER_TOOL,
-  "managed-job render tool did not verify read authority or issue a bounded render-instance ID");
+  "managed-job render tool did not issue the same non-secret render-instance ID to structured and text projections");
   const projectedReadArgs = await hostedManagedJobDaemonArguments("read_job", {
     job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId, wait_ms: 0,
   }, capabilityAuthority, capabilityKeyMaterial);

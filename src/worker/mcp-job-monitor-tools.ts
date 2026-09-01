@@ -46,10 +46,11 @@ export async function renderManagedJobMonitor(
   if (!jobId || !await verifyManagedJobCapability(keyMaterial, authorized, jobId, "read", args.recovery_key)) {
     throw new WorkerToolError("authorization_denied", "managed-job monitor recovery authority is invalid", false, { side_effects_started: false });
   }
+  const monitorId = issueManagedJobMonitor(scope, jobId, authorized);
   return {
-    $mcpText: "Durable job monitor mounted. Read the same job once with the returned ui_monitor_id to confirm whether the View claimed continuation.",
+    $mcpText: `Durable job monitor mounted. Use ui_monitor_id=${monitorId} on the next read_job for this job to confirm whether the View claimed continuation. This monitor ID is correlation only; the recovery_key remains the read authority.`,
     job_id: jobId,
-    ui_monitor_id: issueManagedJobMonitor(scope, jobId, authorized),
+    ui_monitor_id: monitorId,
     ui_monitor_claim_required: true,
     follow_up_read_required: true,
   };

@@ -1734,16 +1734,19 @@ try {
     arguments: { job_id: durableJobId, recovery_key: durableRecoveryKey },
   });
   const monitorRenderStructured = monitorRenderResult.body.result?.structuredContent;
+  const monitorRenderText = String(monitorRenderResult.body.result?.content?.[0]?.text || "");
+  const monitorRenderId = String(monitorRenderStructured?.ui_monitor_id || "");
   assert(monitorRenderResult.response.status === 200
     && monitorRenderResult.body.result?.isError === false
     && monitorRenderStructured?.job_id === durableJobId
-    && /^mcp_jm_[a-f0-9]{32}$/.test(String(monitorRenderStructured?.ui_monitor_id || ""))
+    && /^mcp_jm_[a-f0-9]{32}$/.test(monitorRenderId)
     && monitorRenderStructured?.ui_monitor_claim_required === true
     && monitorRenderStructured?.follow_up_read_required === true
     && !("recovery_key" in monitorRenderStructured)
     && !("control_key" in monitorRenderStructured)
-    && String(monitorRenderResult.body.result?.content?.[0]?.text || "").includes("Read the same job once"),
-  "render_job_monitor did not expose a standard non-secret structuredContent render-instance result");
+    && monitorRenderText.includes(`ui_monitor_id=${monitorRenderId}`)
+    && !monitorRenderText.includes("mcp_jr_") && !monitorRenderText.includes("mcp_jc_"),
+  "render_job_monitor did not mirror only its non-secret render-instance ID into model-visible text");
 
   const ambiguousAcceptanceKey = "worker-ambiguous-durable-acceptance";
   const ambiguousRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
