@@ -1636,7 +1636,6 @@ try {
     && ownerPhaseRefresh.body.refresh_token !== ownerRefreshToken,
   "owner phase-boundary refresh did not rotate the integration credentials");
   ownerAccessToken = ownerPhaseRefresh.body.access_token;
-  ownerRefreshToken = ownerPhaseRefresh.body.refresh_token;
 
   const activeTools = await callToolsList(base, ownerAccessToken, 26);
   assert(JSON.stringify(activeTools.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
