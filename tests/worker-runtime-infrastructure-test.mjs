@@ -1567,16 +1567,37 @@ async function testRelayTimeoutContract() {
     && !await verifyManagedJobCapability(capabilityKeyMaterial, otherCapabilityAuthority, capabilityJobId, "read", recoveryKey),
   "managed-job capabilities lost purpose/principal binding");
   const claimScope = {};
-  const renderResult = await renderManagedJobMonitor(claimScope, { job_id: capabilityJobId, recovery_key: recoveryKey },
+  const uiClientCapabilities = { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } } };
+  const activeWithUi = await projectHostedManagedJobResult("start_job", {
+    accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities, uiMonitorScope: claimScope });
+  const monitorId = activeWithUi.ui_monitor_id;
+  assert(/^mcp_jm_[a-f0-9]{32}$/.test(String(monitorId))
+    && activeWithUi.ui_monitor_candidate === true && activeWithUi.ui_monitor_claim_required === true,
+  "active MCP Apps start_job did not pre-issue a bounded monitor correlation ID");
+  let preRenderClaimError;
+  try {
+    await claimManagedJobMonitor(claimScope, {
+      job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+    }, capabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { preRenderClaimError = error; }
+  assert(preRenderClaimError instanceof WorkerToolError && preRenderClaimError.code === "invalid_request"
+    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, monitorId, capabilityAuthority),
+  "pre-issued managed-job monitor ID became claimable before render activation");
+  const renderResult = await renderManagedJobMonitor(claimScope, {
+    job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+  },
     capabilityAuthority, capabilityKeyMaterial);
-  const monitorId = renderResult.ui_monitor_id;
-  assert(renderResult.job_id === capabilityJobId && /^mcp_jm_[a-f0-9]{32}$/.test(String(monitorId))
+  assert(renderResult.job_id === capabilityJobId && renderResult.ui_monitor_id === monitorId
     && renderResult.ui_monitor_claim_required === true && renderResult.follow_up_read_required === true
-    && String(renderResult.$mcpText || "").includes(`ui_monitor_id=${monitorId}`)
+    && String(renderResult.$mcpText || "").includes("same ui_monitor_id already returned by start_job")
     && !String(renderResult.$mcpText || "").includes("mcp_jr_")
     && !String(renderResult.$mcpText || "").includes("mcp_jc_")
-    && jobMonitorRenderTool.name === JOB_MONITOR_RENDER_TOOL,
-  "managed-job render tool did not issue the same non-secret render-instance ID to structured and text projections");
+    && jobMonitorRenderTool.name === JOB_MONITOR_RENDER_TOOL
+    && jobMonitorRenderTool.inputSchema?.required?.includes("ui_monitor_id")
+    && jobMonitorRenderTool.inputSchema?.properties?.ui_monitor_id?.pattern === "^mcp_jm_[a-f0-9]{32}$",
+  "managed-job render tool did not activate the exact monitor ID pre-issued by start_job");
   const projectedReadArgs = await hostedManagedJobDaemonArguments("read_job", {
     job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId, wait_ms: 0,
   }, capabilityAuthority, capabilityKeyMaterial);
@@ -1605,17 +1626,13 @@ async function testRelayTimeoutContract() {
     && acceptedWithCapabilities.recovery?.recovery_key === recoveryKey
     && acceptedWithCapabilities.recovery?.control_key === controlKey,
   "hosted managed-job acceptance did not return deterministic recovery/control capabilities");
-  const uiClientCapabilities = { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } } };
   const activeWithoutUi = await projectHostedManagedJobResult("start_job", {
     accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
     host_turn_handoff_recommended: false, same_response_followup_supported: true,
   }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: {} });
-  const activeWithUi = await projectHostedManagedJobResult("start_job", {
-    accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
-    host_turn_handoff_recommended: false, same_response_followup_supported: true,
-  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities });
   assert(activeWithoutUi.follow_up_read_required === true && activeWithoutUi.status_polling_mode !== "ui_monitor"
     && activeWithUi.follow_up_read_required === true && activeWithUi.ui_monitor_candidate === true
+    && activeWithUi.ui_monitor_id === monitorId
     && activeWithUi.ui_monitor_claim_required === true && activeWithUi.status_polling_mode !== "ui_monitor"
     && activeWithUi.host_turn_handoff_recommended === false
     && activeWithUi.completion_delivery === "mcp_app_job_monitor_pending_claim"
@@ -1665,6 +1682,12 @@ async function testRelayTimeoutContract() {
     "managed-job monitor accepted a claim with the wrong principal");
   const boundedClaims = new ManagedJobMonitorClaims();
   const boundedMonitorId = boundedClaims.issue(capabilityJobId, capabilityAuthority, 1000);
+  assert(boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001) === null,
+    "freshly issued monitor ID became claimable without render activation");
+  assert(boundedClaims.activate(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001),
+    "issued monitor ID could not be activated by the render phase");
+  assert(!boundedClaims.activate(capabilityJobId, boundedMonitorId, capabilityAuthority, 1002),
+    "one monitor ID was reusable across multiple render instances");
   boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001);
   assert(boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001)
     && !boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001 + 5 * 60 * 1000),
@@ -1686,6 +1709,7 @@ async function testRelayTimeoutContract() {
     && monitorHtml.includes('name:"read_job"') && monitorHtml.includes("wait_ms:40000")
     && monitorHtml.includes(`name:"${JOB_MONITOR_CLAIM_TOOL}"`)
     && monitorHtml.includes("ui_monitor_id:monitorId")
+    && monitorHtml.includes('typeof input.ui_monitor_id==="string"')
     && monitorHtml.includes('method==="ui/notifications/tool-input"')
     && monitorHtml.includes("hostCapabilities?.serverTools")
     && monitorHtml.includes('request("ui/initialize"')

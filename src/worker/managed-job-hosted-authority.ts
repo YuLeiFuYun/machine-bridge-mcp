@@ -4,6 +4,7 @@ import { isRemoteDurableProcessTool } from "./tool-timeout.ts";
 import { issueManagedJobCapability, verifyManagedJobCapability } from "./managed-job-capability.ts";
 import { projectManagedJobMonitorHandoff, supportsManagedJobMonitor } from "./mcp-job-monitor-ui.ts";
 import { JOB_MONITOR_RENDER_TOOL } from "./mcp-job-monitor-tools.ts";
+import { issueManagedJobMonitor } from "./mcp-job-monitor-claims.ts";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const ISSUANCE_TOOLS = new Set(["stage_job", "start_job"]);
@@ -35,7 +36,7 @@ export async function projectHostedManagedJobResult(
   value: unknown,
   authorized: AuthorizedToken,
   keyMaterial: string,
-  options: { clientCapabilities?: unknown; uiMonitorClaimed?: boolean } = {},
+  options: { clientCapabilities?: unknown; uiMonitorClaimed?: boolean; uiMonitorScope?: object } = {},
 ): Promise<unknown> {
   if (name === "list_jobs") return aggregateHostedManagedJobInventory(value);
   if (name === "read_job") return projectManagedJobMonitorHandoff(value, options.uiMonitorClaimed === true);
@@ -57,9 +58,12 @@ export async function projectHostedManagedJobResult(
     control_key: controlKey,
     recovery: { ...recovery, recovery_key: recoveryKey, control_key: controlKey },
   };
-  if (name !== "start_job" || result.follow_up_read_required !== true || !supportsManagedJobMonitor(options.clientCapabilities)) return projected;
+  if (name !== "start_job" || result.follow_up_read_required !== true || !supportsManagedJobMonitor(options.clientCapabilities)
+    || !options.uiMonitorScope) return projected;
+  const monitorId = issueManagedJobMonitor(options.uiMonitorScope, jobId, authorized);
   return {
     ...projected,
+    ui_monitor_id: monitorId,
     ui_monitor_candidate: true,
     ui_monitor_claim_required: true,
     completion_delivery: "mcp_app_job_monitor_pending_claim",

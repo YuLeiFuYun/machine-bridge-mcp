@@ -171,17 +171,17 @@ for (const required of ["io.modelcontextprotocol/ui", "text/html;profile=mcp-app
 for (const forbidden of ["sendFollowUpMessage", "ui/message", "http://", "https://"]) {
   if (mcpJobMonitorUiSource.includes(forbidden)) throw new Error(`managed-job monitor regained unsupported autonomous/external delivery behavior: ${forbidden}`);
 }
-for (const required of ["JOB_MONITOR_CLAIM_TTL_MS = 5 * 60 * 1000", "JOB_MONITOR_ID_PATTERN", "MAX_JOB_MONITOR_CLAIMS = 128", "WeakMap<object, ManagedJobMonitorClaims>", "claimsFor(scope)", "issueManagedJobMonitor", "verifyManagedJobCapability", "validManagedJobMonitorId", "crypto.getRandomValues", "claimed: false", "render instance is not active", "monitorId", "managed-job monitor recovery authority is invalid", "owner_account_id", "owner_client_id", "owner_family_id"]) {
+for (const required of ["JOB_MONITOR_CLAIM_TTL_MS = 5 * 60 * 1000", "JOB_MONITOR_ID_PATTERN", "MAX_JOB_MONITOR_CLAIMS = 128", "WeakMap<object, ManagedJobMonitorClaims>", "claimsFor(scope)", "issueManagedJobMonitor", "activateManagedJobMonitor", "verifyManagedJobCapability", "validManagedJobMonitorId", "crypto.getRandomValues", 'state: "issued" | "active" | "claimed"', 'issued.state !== "issued"', 'state: "active"', 'state: "claimed"', "render instance is not active", "monitorId", "managed-job monitor recovery authority is invalid", "owner_account_id", "owner_client_id", "owner_family_id"]) {
   if (!mcpJobMonitorClaimsSource.includes(required)) throw new Error(`managed-job monitor claim lost bounded principal/capability proof: ${required}`);
 }
 for (const forbidden of ["callDaemonTool", "recovery_key: recovery", "result:"]) {
   if (mcpJobMonitorClaimsSource.includes(forbidden)) throw new Error(`managed-job monitor claim crossed its Worker-only/no-result boundary: ${forbidden}`);
 }
-for (const required of ["render_job_monitor", "claim_job_monitor", "JOB_MONITOR_ID_PATTERN", "verifyManagedJobCapability", "issueManagedJobMonitor", "openai/outputTemplate", "openai/widgetAccessible", "ui_monitor_id", "follow_up_read_required"]) {
+for (const required of ["render_job_monitor", "claim_job_monitor", "JOB_MONITOR_ID_PATTERN", "verifyManagedJobCapability", "activateManagedJobMonitor", "validManagedJobMonitorId", "openai/outputTemplate", "openai/widgetAccessible", "ui_monitor_id", "follow_up_read_required"]) {
   if (!mcpJobMonitorToolsSource.includes(required)) throw new Error(`managed-job monitor render/claim tool contract lost required behavior: ${required}`);
 }
-for (const required of ["ui_monitor_candidate", "ui_monitor_claim_required", "ui_monitor_render_tool", "uiMonitorClaimed", "projectManagedJobMonitorHandoff", "delete projected.ui_monitor_id"]) {
-  if (!managedJobHostedAuthoritySource.includes(required)) throw new Error(`hosted managed-job projection lost two-phase UI handoff: ${required}`);
+for (const required of ["ui_monitor_candidate", "ui_monitor_claim_required", "ui_monitor_render_tool", "ui_monitor_id: monitorId", "issueManagedJobMonitor", "uiMonitorScope", "uiMonitorClaimed", "projectManagedJobMonitorHandoff", "delete projected.ui_monitor_id"]) {
+  if (!managedJobHostedAuthoritySource.includes(required)) throw new Error(`hosted managed-job projection lost pre-issued two-phase UI handoff: ${required}`);
 }
 if (managedJobHostedAuthoritySource.includes("!supportsManagedJobMonitor(options.clientCapabilities)) return projected;\n  return {\n    ...projected,\n    follow_up_read_required: false")) {
   throw new Error("UI MIME capability can again disable model-side managed-job continuation before a monitor claim");
@@ -2151,7 +2151,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 22"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 23"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],

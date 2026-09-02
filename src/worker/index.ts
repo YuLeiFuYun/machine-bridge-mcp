@@ -55,7 +55,7 @@ import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "
 import { cancelManagedJobMonitorClaims, claimManagedJobMonitor, hasManagedJobMonitorClaim } from "./mcp-job-monitor-claims.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_RENDER_TOOL, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.160";
+const SERVER_VERSION = "3.0.0-beta.161";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -516,7 +516,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       const monitorJobId = name === "read_job" ? args.job_id : asObject(result).job_id;
       return projectHostedManagedJobResult(name, result, authorized, this.oauth.identityKey(), {
-        clientCapabilities, uiMonitorClaimed: hasManagedJobMonitorClaim(this, monitorJobId, args.ui_monitor_id, authorized),
+        clientCapabilities, uiMonitorScope: this, uiMonitorClaimed: hasManagedJobMonitorClaim(this, monitorJobId, args.ui_monitor_id, authorized),
       });
     }
     throw new Error("unknown tool");

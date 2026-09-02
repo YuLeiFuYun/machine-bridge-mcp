@@ -1,7 +1,7 @@
 import type { AuthorizedToken } from "./access.ts";
 import { WorkerToolError } from "./errors.ts";
 import { verifyManagedJobCapability } from "./managed-job-capability.ts";
-import { issueManagedJobMonitor, JOB_MONITOR_ID_PATTERN } from "./mcp-job-monitor-claims.ts";
+import { activateManagedJobMonitor, JOB_MONITOR_ID_PATTERN, validManagedJobMonitorId } from "./mcp-job-monitor-claims.ts";
 import { JOB_MONITOR_RESOURCE_URI } from "./mcp-job-monitor-ui.ts";
 
 export const JOB_MONITOR_RENDER_TOOL = "render_job_monitor";
@@ -14,9 +14,9 @@ export function managedJobMonitorRenderToolDefinition(): Record<string, unknown>
   return {
     name: JOB_MONITOR_RENDER_TOOL,
     title: "Render managed job monitor",
-    description: "Render the durable-job monitor after an active start_job reports ui_monitor_candidate=true. Pass that exact job_id and recovery_key. This tool only verifies existing read authority and mounts UI; it does not execute, cancel, or mutate the job. After it returns, call read_job once with the returned ui_monitor_id. Stop model-side reads only if that read reports ui_monitor_claimed=true and host_turn_handoff_recommended=true.",
+    description: "Render the durable-job monitor after an active start_job reports ui_monitor_candidate=true. Pass the exact job_id, recovery_key, and ui_monitor_id already returned by that start_job. This tool verifies existing read authority, activates that pre-issued monitor ID, and mounts UI; it does not execute, cancel, or mutate the job. Do not depend on this render tool's result being visible to the planner. Immediately call read_job once with the same pre-issued ui_monitor_id. Stop model-side reads only if that read reports ui_monitor_claimed=true and host_turn_handoff_recommended=true.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    inputSchema: { type: "object", properties: { job_id: JOB_ID_SCHEMA, recovery_key: RECOVERY_KEY }, required: ["job_id", "recovery_key"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { job_id: JOB_ID_SCHEMA, recovery_key: RECOVERY_KEY, ui_monitor_id: { type: "string", pattern: JOB_MONITOR_ID_PATTERN } }, required: ["job_id", "recovery_key", "ui_monitor_id"], additionalProperties: false },
     outputSchema: { type: "object", properties: { job_id: JOB_ID_SCHEMA, ui_monitor_id: { type: "string", pattern: JOB_MONITOR_ID_PATTERN }, ui_monitor_claim_required: { type: "boolean" }, follow_up_read_required: { type: "boolean" } }, required: ["job_id", "ui_monitor_id", "ui_monitor_claim_required", "follow_up_read_required"], additionalProperties: true },
     _meta: {
       ui: { resourceUri: JOB_MONITOR_RESOURCE_URI, visibility: ["model"] },
@@ -46,9 +46,12 @@ export async function renderManagedJobMonitor(
   if (!jobId || !await verifyManagedJobCapability(keyMaterial, authorized, jobId, "read", args.recovery_key)) {
     throw new WorkerToolError("authorization_denied", "managed-job monitor recovery authority is invalid", false, { side_effects_started: false });
   }
-  const monitorId = issueManagedJobMonitor(scope, jobId, authorized);
+  const monitorId = validManagedJobMonitorId(args.ui_monitor_id) ? args.ui_monitor_id : "";
+  if (!monitorId || !activateManagedJobMonitor(scope, jobId, monitorId, authorized)) {
+    throw new WorkerToolError("invalid_request", "managed-job monitor ID was not issued for this active start_job", false, { side_effects_started: false });
+  }
   return {
-    $mcpText: `Durable job monitor mounted. Use ui_monitor_id=${monitorId} on the next read_job for this job to confirm whether the View claimed continuation. This monitor ID is correlation only; the recovery_key remains the read authority.`,
+    $mcpText: "Durable job monitor mounted. Use the same ui_monitor_id already returned by start_job on the next read_job to confirm whether the View claimed continuation. The monitor ID is correlation only; the recovery_key remains the read authority.",
     job_id: jobId,
     ui_monitor_id: monitorId,
     ui_monitor_claim_required: true,
