@@ -6,6 +6,8 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { loadState } from "../src/local/state.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { ResourceCoordinator } from "../src/local/resource-admission.mjs";
+import { resourceProjectHash } from "../src/local/resource-project-key.mjs";
 import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
@@ -17,6 +19,19 @@ const temp = await mkdtemp(join(tmpdir(), "mbm-stdio-test-"));
 const workspace = join(temp, "workspace");
 const stateDir = join(temp, "state");
 const home = join(temp, "home");
+const inheritedResourceCoordinatorRoot = join(temp, "inherited-resource-coordinator");
+const resourceCoordinatorRoot = join(temp, "resource-coordinator");
+const inheritedEnvironment = { ...process.env, AGENT_RESOURCE_COORDINATOR_ROOT: inheritedResourceCoordinatorRoot };
+const childEnvironment = {
+  ...inheritedEnvironment,
+  HOME: home,
+  USERPROFILE: home,
+  MBM_STDIO_FULL_ENV_TEST: "visible-through-full-env",
+  AGENT_RESOURCE_COORDINATOR_ROOT: resourceCoordinatorRoot,
+};
+assert(childEnvironment.AGENT_RESOURCE_COORDINATOR_ROOT === resourceCoordinatorRoot
+    && childEnvironment.AGENT_RESOURCE_COORDINATOR_ROOT !== inheritedResourceCoordinatorRoot,
+  "stdio integration child inherited the parent resource coordinator root");
 await mkdir(workspace, { recursive: true });
 await mkdir(join(home, ".config", "machine-bridge-mcp"), { recursive: true });
 await writeFile(join(home, "MODEL.md"), "stdio global model instructions\n", "utf8");
@@ -30,6 +45,35 @@ await writeFile(join(workspace, "sample.txt"), "one\ntwo\nthree\n", "utf8");
 await writeFile(join(workspace, "pixel.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=", "base64"));
 await writeFile(join(temp, "passwords.txt"), "stdio-sensitive-name-visible", "utf8");
 const canonicalWorkspace = await realpath(workspace);
+const testResourceCoordinator = new ResourceCoordinator({ root: resourceCoordinatorRoot });
+testResourceCoordinator.ensureRoot();
+const resourceSampleScope = resourceProjectHash(canonicalWorkspace);
+const refreshResourceHostSample = () => {
+  const sampledAt = Date.now();
+  testResourceCoordinator.writeJson(testResourceCoordinator.hostSampleFile, {
+    sampled_at_ms: sampledAt,
+    sample_scope: resourceSampleScope,
+    cpu_cores: 8,
+    total_memory_mb: 16 * 1024,
+    cpu_busy_cores: 0,
+    load1: 0,
+    memory_free_percent: 80,
+    pageouts_total: 0,
+    swapouts_total: 0,
+    pageouts_per_s: 0,
+    swapouts_per_s: 0,
+    disk_mb_per_s: 0,
+    disk_iops: 0,
+    io_sampled: true,
+    io_sampled_at_ms: sampledAt,
+    disk_free_bytes: 125 * 1024 ** 3,
+    disk_total_bytes: 460 * 1024 ** 3,
+    thermal_warning: false,
+  });
+};
+refreshResourceHostSample();
+const resourceHostSampleTimer = setInterval(refreshResourceHostSample, 200);
+resourceHostSampleTimer.unref?.();
 const currentMeta = Object.freeze({
   "io.modelcontextprotocol/protocolVersion": "2026-07-28",
   "io.modelcontextprotocol/clientCapabilities": {},
@@ -45,7 +89,7 @@ const child = spawn(process.execPath, [
   cwd: root,
   stdio: ["pipe", "pipe", "pipe"],
   windowsHide: true,
-  env: { ...process.env, HOME: home, USERPROFILE: home, MBM_STDIO_FULL_ENV_TEST: "visible-through-full-env" },
+  env: childEnvironment,
 });
 
 let stderr = "";
@@ -336,7 +380,9 @@ try {
 
   send({ jsonrpc: "2.0", id: 601, method: "tools/call", params: { name: "exec_command", arguments: { command: "printf shell-ok", timeout_seconds: 5 } } });
   const shellResult = await responseFor(601, PROCESS_TOOL_RESPONSE_WAIT_MS);
-  assert(shellResult.result?.structuredContent?.stdout === "shell-ok", "default full profile shell execution failed");
+  const shellError = shellResult.result?.structuredContent?.error;
+  assert(shellResult.result?.structuredContent?.stdout === "shell-ok",
+    `default full profile shell execution failed: code=${shellError?.code || "none"} reason=${shellError?.details?.reason || "none"}`);
 
   const sessionScript = "process.stdin.setEncoding('utf8'); console.log('ready'); process.stdin.on('data', d => { console.log('echo:' + d.trim()); if (d.includes('quit')) process.exit(0); });";
   send({ jsonrpc: "2.0", id: 61, method: "tools/call", params: { name: "start_process", arguments: { argv: [process.execPath, "-e", sessionScript] } } });
@@ -456,6 +502,7 @@ try {
   assert(["succeeded", "recovered"].includes(detachedResult.status), `detached managed job ended as ${detachedResult.status}`);
   console.log("stdio MCP integration test ok");
 } finally {
+  clearInterval(resourceHostSampleTimer);
   if (child.exitCode === null) child.kill("SIGKILL");
   rl.close();
   await rm(temp, { recursive: true, force: true }).catch(() => {});
