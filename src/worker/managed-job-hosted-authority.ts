@@ -2,6 +2,9 @@ import type { AuthorizedToken } from "./access.ts";
 import { WorkerToolError } from "./errors.ts";
 import { isRemoteDurableProcessTool } from "./tool-timeout.ts";
 import { issueManagedJobCapability, verifyManagedJobCapability } from "./managed-job-capability.ts";
+import { projectManagedJobMonitorHandoff, supportsManagedJobMonitor } from "./mcp-job-monitor-ui.ts";
+import { JOB_MONITOR_RENDER_TOOL } from "./mcp-job-monitor-tools.ts";
+import { issueManagedJobMonitor } from "./mcp-job-monitor-claims.ts";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const ISSUANCE_TOOLS = new Set(["stage_job", "start_job"]);
@@ -16,6 +19,7 @@ export async function hostedManagedJobDaemonArguments(
   if (name === "read_job") {
     await requireCapability(projected.job_id, projected.recovery_key, "read", authorized, keyMaterial);
     delete projected.recovery_key;
+    delete projected.ui_monitor_id;
   } else if (name === "cancel_job") {
     await requireCapability(projected.job_id, projected.control_key, "control", authorized, keyMaterial);
     delete projected.control_key;
@@ -32,8 +36,10 @@ export async function projectHostedManagedJobResult(
   value: unknown,
   authorized: AuthorizedToken,
   keyMaterial: string,
+  options: { clientCapabilities?: unknown; uiMonitorClaimed?: boolean; uiMonitorScope?: object } = {},
 ): Promise<unknown> {
   if (name === "list_jobs") return aggregateHostedManagedJobInventory(value);
+  if (name === "read_job") return projectManagedJobMonitorHandoff(value, options.uiMonitorClaimed === true);
   if (!ISSUANCE_TOOLS.has(name) && !isRemoteDurableProcessTool(name)) return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const result = value as Record<string, unknown>;
@@ -46,11 +52,22 @@ export async function projectHostedManagedJobResult(
   const recovery = result.recovery && typeof result.recovery === "object" && !Array.isArray(result.recovery)
     ? result.recovery as Record<string, unknown>
     : { tool: "read_job", job_id: jobId };
-  return {
+  const projected = {
     ...result,
     recovery_key: recoveryKey,
     control_key: controlKey,
     recovery: { ...recovery, recovery_key: recoveryKey, control_key: controlKey },
+  };
+  if (name !== "start_job" || result.follow_up_read_required !== true || !supportsManagedJobMonitor(options.clientCapabilities)
+    || !options.uiMonitorScope) return projected;
+  const monitorId = issueManagedJobMonitor(options.uiMonitorScope, jobId, authorized);
+  return {
+    ...projected,
+    ui_monitor_id: monitorId,
+    ui_monitor_candidate: true,
+    ui_monitor_claim_required: true,
+    completion_delivery: "mcp_app_job_monitor_pending_claim",
+    ui_monitor_render_tool: JOB_MONITOR_RENDER_TOOL,
   };
 }
 

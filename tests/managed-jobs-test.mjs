@@ -1409,14 +1409,19 @@ function spawnManagedJobTestRunner(command, args, options) {
   return spawn(command, ["--import", runnerResourceHook, ...args], options);
 }
 
+function spawnManagedJobTestRunnerWithoutCoverage(command, args, options = {}) {
+  return spawnManagedJobTestRunner(command, args, {
+    ...options,
+    env: { ...(options.env || {}), NODE_V8_COVERAGE: "" },
+  });
+}
+
 function managedJobTestRunnerForCoordinatorRoot(coordinatorRoot) {
-  return (command, args, options = {}) => spawnManagedJobTestRunner(command, args, {
+  return (command, args, options = {}) => spawnManagedJobTestRunnerWithoutCoverage(command, args, {
     ...options,
     env: {
       ...(options.env || {}),
       AGENT_RESOURCE_COORDINATOR_ROOT: coordinatorRoot,
-      // This recovery fixture measures resource replacement/reconstruction, not nested V8 instrumentation latency.
-      NODE_V8_COVERAGE: "",
     },
   });
 }
@@ -2321,7 +2326,17 @@ try {
 
   const descendantPidFile = join(workspace, "managed-descendant.pid");
   const treeOrderFile = join(workspace, "managed-tree-order.txt");
-  const treeTimeout = manager.start({
+  const treeJobRoot = join(root, "tree-timeout-jobs");
+  const treeManager = createManagedJobTestManager({
+    jobRoot: treeJobRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: false, unrestrictedPaths: true },
+    resources: {},
+    recover: false,
+    // This fixture measures real process-tree timeout/escalation, not nested V8 instrumentation latency.
+    runnerSpawnProcess: spawnManagedJobTestRunnerWithoutCoverage,
+  });
+  const treeTimeout = treeManager.start({
     name: "timeout terminates descendants",
     steps: [{
       argv: [process.execPath, "-e", `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`, descendantPidFile],
@@ -2332,15 +2347,15 @@ try {
       timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
     }],
   });
-  await waitForRunning(manager, treeTimeout.job_id);
-  const treeRunnerClaim = JSON.parse(await readFile(join(jobRoot, treeTimeout.job_id, "runner.pid"), "utf8"));
+  await waitForRunning(treeManager, treeTimeout.job_id);
+  const treeRunnerClaim = JSON.parse(await readFile(join(treeJobRoot, treeTimeout.job_id, "runner.pid"), "utf8"));
   const treeRunnerPid = Number(treeRunnerClaim.pid);
   assert(Number.isInteger(treeRunnerPid) && treeRunnerPid > 0, "managed job private runner claim omitted the runner pid");
   assert(typeof treeRunnerClaim.processStartedAt === "string" && !("launchToken" in treeRunnerClaim),
     "runner did not atomically upgrade its provisional claim to an exact token-free identity");
-  const descendantPid = Number(await waitForManagedJobFixtureFileText(manager, treeTimeout.job_id, descendantPidFile, MANAGED_JOB_TREE_READY_MS));
+  const descendantPid = Number(await waitForManagedJobFixtureFileText(treeManager, treeTimeout.job_id, descendantPidFile, MANAGED_JOB_TREE_READY_MS));
   assert(Number.isInteger(descendantPid) && descendantPid > 0, "managed job process-tree fixture published an invalid descendant pid");
-  const treeTimeoutResult = await waitForJob(manager, treeTimeout.job_id, null, MANAGED_JOB_TEST_WAIT_MS);
+  const treeTimeoutResult = await waitForJob(treeManager, treeTimeout.job_id, null, MANAGED_JOB_TEST_WAIT_MS);
   assert(treeTimeoutResult.result.steps[0].timed_out === true, "managed job process-tree fixture did not time out");
   await waitForPidExit(descendantPid, MANAGED_JOB_TEST_WAIT_MS);
   await waitForPidExit(treeRunnerPid, MANAGED_JOB_TEST_WAIT_MS);
@@ -2762,17 +2777,17 @@ async function waitForManagedJobFixtureFileText(manager, jobId, file, timeoutMs)
     }
     const value = manager.read({ job_id: jobId });
     if (!["queued", "running", "cleaning"].includes(value.status)) {
-      throw new Error(`managed job fixture ended before publishing ${file}: ${await managedJobFixtureDiagnostics(jobId, value)}`);
+      throw new Error(`managed job fixture ended before publishing ${file}: ${await managedJobFixtureDiagnostics(jobId, value, manager.jobRoot)}`);
     }
     await delay(50);
   }
   const value = manager.read({ job_id: jobId });
-  throw new Error(`timed out waiting for managed job fixture file ${file}: ${await managedJobFixtureDiagnostics(jobId, value)}`);
+  throw new Error(`timed out waiting for managed job fixture file ${file}: ${await managedJobFixtureDiagnostics(jobId, value, manager.jobRoot)}`);
 }
 
-async function managedJobFixtureDiagnostics(jobId, value) {
+async function managedJobFixtureDiagnostics(jobId, value, diagnosticsJobRoot = jobRoot) {
   let runnerStderr = "";
-  try { runnerStderr = (await readFile(join(jobRoot, jobId, "runner.err.log"), "utf8")).slice(-2048); } catch {}
+  try { runnerStderr = (await readFile(join(diagnosticsJobRoot, jobId, "runner.err.log"), "utf8")).slice(-2048); } catch {}
   return `status=${value.status}; phase=${value.current_phase || "none"}; result=${JSON.stringify(value.result || null)}; runner_stderr=${runnerStderr}`;
 }
 

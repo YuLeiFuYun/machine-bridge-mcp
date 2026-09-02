@@ -12,6 +12,7 @@ import {
 } from "../src/worker/mcp-initialization-compat.ts";
 import { MCP_PROTOCOL_VERSION, serverImplementation } from "../src/shared/mcp-protocol.mjs";
 import { MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER } from "../src/worker/mcp-stream-proxy-contract.ts";
+import { JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID } from "../src/worker/mcp-job-monitor-ui.ts";
 import { serverInfoTool, workspaceTools } from "../src/worker/tool-catalog.ts";
 import { WorkerToolError } from "../src/worker/errors.ts";
 
@@ -199,6 +200,16 @@ assert.equal(discover.result.cacheScope, "public");
 const listed = await jsonResult(await handle(request("tools/list", {})));
 assert.equal(listed.result.cacheScope, "private");
 assert(listed.result.tools.some((tool) => tool.name === "list_dir"));
+const resources = await jsonResult(await handle(request("resources/list", {})));
+assert.equal(resources.result.cacheScope, "public");
+assert.equal(resources.result.resources[0].uri, JOB_MONITOR_RESOURCE_URI);
+assert.equal(resources.result.resources[0].mimeType, MCP_APP_MIME_TYPE);
+const monitorResource = await jsonResult(await handle(request("resources/read", { uri: JOB_MONITOR_RESOURCE_URI })));
+assert.equal(monitorResource.result.contents[0].uri, JOB_MONITOR_RESOURCE_URI);
+assert.equal(monitorResource.result.contents[0].mimeType, MCP_APP_MIME_TYPE);
+const missingResource = await handle(request("resources/read", { uri: "ui://machine-bridge/not-found" }));
+assert.equal(missingResource.status, 400);
+assert.equal((await missingResource.json()).error.code, -32602);
 const removed = await handle(request("initialize", {}));
 assert.equal(removed.status, 404);
 assert.equal((await removed.json()).error.code, -32601);
@@ -309,6 +320,11 @@ const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
 assert.equal(malformedReadPoll.error.code, -32602);
 assert.equal(malformedReadPoll.error.data.validation_issues[0].keyword, "type");
 assert.equal(calls.length, 0);
+const uiCapabilities = { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } } };
+await jsonResult(await handle(request("tools/call", {
+  name: "list_dir", arguments: {}, _meta: { "io.modelcontextprotocol/clientCapabilities": uiCapabilities },
+}), { accept: "application/json" }));
+assert.deepEqual(calls.at(-1).clientCapabilities, uiCapabilities);
 
 const legacyMirrorsMatch = await initializationCompatibilityResponse(compatInput(
   legacyRequest("tools/call", { name: "list_dir", arguments: { path: "." } }),

@@ -9,8 +9,7 @@ import WebSocket from "ws";
 import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
 import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
-import { accountRoleToolNames } from "../src/worker/access.ts";
-import { workspaceTools } from "../src/worker/tool-catalog.ts";
+import { workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../src/worker/mcp-subscription-contract.ts";
 import { runOfficialMcpConformance } from "../scripts/official-mcp-conformance.mjs";
@@ -784,7 +783,7 @@ try {
     "unsupported protocol response advertised anything except the current version");
 
   const toolsWithoutDaemon = await callToolsList(base, ownerAccessToken, 3);
-  const stableOwnerToolNames = ["server_info", ...accountRoleToolNames("owner", workspaceTools.map((tool) => tool.name))].sort();
+  const stableOwnerToolNames = workerToolsForRole("owner").map((tool) => tool.name).sort();
   assert(JSON.stringify(toolsWithoutDaemon.map((tool) => tool.name).sort()) === JSON.stringify(stableOwnerToolNames),
     "transient daemon absence changed the authenticated account tool catalog");
   const unavailableWithoutDaemon = await callTool(base, ownerAccessToken, 31, "list_dir", { path: "." });
@@ -1729,6 +1728,65 @@ try {
     && /^mcp_jc_[A-Za-z0-9_-]{43}$/.test(String(durableAcceptanceResult.body.result?.structuredContent?.control_key || "")),
   "durable process acceptance did not settle independently of the detached one-second step lifetime or return hosted recovery capabilities");
 
+  const monitorClientCapabilities = {
+    extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } },
+  };
+  const monitorAcceptanceRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const monitorAcceptanceCall = currentMcpCall(base, ownerAccessToken, 752, "tools/call", {
+    name: "start_job",
+    arguments: { idempotency_key: "worker-monitor-preissued-id", steps: [{ argv: ["durable-monitor-step"] }] },
+  }, monitorClientCapabilities);
+  const monitorAcceptanceRelay = await monitorAcceptanceRelayPromise;
+  assert(monitorAcceptanceRelay.tool === "start_job"
+    && monitorAcceptanceRelay.arguments?.idempotency_key === "worker-monitor-preissued-id",
+  "MCP Apps monitor start_job fixture did not reach the daemon with its hosted idempotency contract");
+  const monitorJobId = `job_${"m".repeat(24)}`;
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result",
+    id: monitorAcceptanceRelay.id,
+    ok: true,
+    result: {
+      accepted: true,
+      job_id: monitorJobId,
+      status: "running",
+      follow_up_read_required: true,
+      same_response_followup_supported: true,
+      host_turn_handoff_recommended: false,
+      recovery: { tool: "read_job", job_id: monitorJobId },
+    },
+  }));
+  const monitorAcceptanceResult = await monitorAcceptanceCall;
+  const monitorAcceptanceStructured = monitorAcceptanceResult.body.result?.structuredContent;
+  const monitorRecoveryKey = monitorAcceptanceStructured?.recovery_key;
+  const monitorPreissuedId = String(monitorAcceptanceStructured?.ui_monitor_id || "");
+  assert(monitorAcceptanceResult.response.status === 200
+    && monitorAcceptanceResult.body.result?.isError === false
+    && monitorAcceptanceStructured?.job_id === monitorJobId
+    && monitorAcceptanceStructured?.ui_monitor_candidate === true
+    && monitorAcceptanceStructured?.ui_monitor_render_tool === "render_job_monitor"
+    && /^mcp_jr_[A-Za-z0-9_-]{43}$/.test(String(monitorRecoveryKey || ""))
+    && /^mcp_jm_[a-f0-9]{32}$/.test(monitorPreissuedId),
+  "active MCP Apps start_job did not expose the pre-issued monitor ID before render");
+
+  const monitorRenderResult = await currentMcpCall(base, ownerAccessToken, 752, "tools/call", {
+    name: "render_job_monitor",
+    arguments: { job_id: monitorJobId, recovery_key: monitorRecoveryKey, ui_monitor_id: monitorPreissuedId },
+  });
+  const monitorRenderStructured = monitorRenderResult.body.result?.structuredContent;
+  const monitorRenderText = String(monitorRenderResult.body.result?.content?.[0]?.text || "");
+  const monitorRenderId = String(monitorRenderStructured?.ui_monitor_id || "");
+  assert(monitorRenderResult.response.status === 200
+    && monitorRenderResult.body.result?.isError === false
+    && monitorRenderStructured?.job_id === monitorJobId
+    && monitorRenderId === monitorPreissuedId
+    && monitorRenderStructured?.ui_monitor_claim_required === true
+    && monitorRenderStructured?.follow_up_read_required === true
+    && !("recovery_key" in monitorRenderStructured)
+    && !("control_key" in monitorRenderStructured)
+    && monitorRenderText.includes("same ui_monitor_id already returned by start_job")
+    && !monitorRenderText.includes("mcp_jr_") && !monitorRenderText.includes("mcp_jc_"),
+  "render_job_monitor did not activate and preserve the exact start_job monitor ID");
+
   const ambiguousAcceptanceKey = "worker-ambiguous-durable-acceptance";
   const ambiguousRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const ambiguousAcceptanceCall = currentMcpCall(base, ownerAccessToken, 751, "tools/call", {
@@ -2282,7 +2340,7 @@ function currentMcpHeaders(accessToken, method, name = "", version = "2026-07-28
   };
 }
 
-function currentMcpRequest(id, method, params, version = "2026-07-28") {
+function currentMcpRequest(id, method, params, version = "2026-07-28", clientCapabilities = {}) {
   return {
     jsonrpc: "2.0",
     id,
@@ -2291,19 +2349,19 @@ function currentMcpRequest(id, method, params, version = "2026-07-28") {
       ...params,
       _meta: {
         "io.modelcontextprotocol/protocolVersion": version,
-        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientCapabilities": clientCapabilities,
         "io.modelcontextprotocol/clientInfo": { name: "worker-current-integration", version: "1" },
       },
     },
   };
 }
 
-async function currentMcpCall(origin, accessToken, id, method, params) {
+async function currentMcpCall(origin, accessToken, id, method, params, clientCapabilities = {}) {
   const name = method === "tools/call" ? String(params.name || "") : "";
   const response = await stableFetch(`${origin}/mcp`, {
     method: "POST",
     headers: currentMcpHeaders(accessToken, method, name),
-    body: JSON.stringify(currentMcpRequest(id, method, params)),
+    body: JSON.stringify(currentMcpRequest(id, method, params, "2026-07-28", clientCapabilities)),
   });
   const text = await response.text();
   if (response.headers.get("content-type")?.startsWith("text/event-stream")) {

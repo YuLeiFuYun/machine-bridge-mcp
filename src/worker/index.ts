@@ -30,12 +30,9 @@ import { WorkerObservability } from "./observability.ts";
 import { readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerSocketDisconnect } from "./worker-continuity-evidence.ts";
 import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
-import { accountRoleAllowsTool } from "./access.ts";
-import type { AuthorizedToken } from "./access.ts";
+import { accountRoleAllowsTool, type AuthorizedToken } from "./access.ts";
 import { OAuthController } from "./oauth-controller.ts";
-import {
-  authorityRevocations, authorityRevocationWireMessage,
-} from "./authority-revocations.ts";
+import { authorityRevocations, authorityRevocationWireMessage } from "./authority-revocations.ts";
 import { decorateProjectOverview } from "./authority.ts";
 import { validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
 import { workerAuthorityContext, workerToolsForRole } from "./worker-tool-authority.ts";
@@ -49,19 +46,16 @@ import { authorizationServerMetadata } from "./worker-metadata.ts";
 import { workerBodyLimitBytes, type BridgeEnv } from "./worker-runtime-config.ts";
 import { retainWorkerTask } from "./worker-task-lifetime.ts";
 import { statefulRouteClass } from "./worker-rate-limit-key.ts";
-import {
-  MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
-  MCP_LEGACY_SERVER_CAPABILITIES, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
-} from "./worker-mcp-config.ts";
+import { MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS, MCP_LEGACY_SERVER_CAPABILITIES,
+  MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo } from "./worker-mcp-config.ts";
 import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./managed-job-read-timeout.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./managed-job-hosted-authority.ts";
-import {
-  closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage,
-  sendWebSocketQuietly, trySendWebSocket,
-} from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.158";
+import { cancelManagedJobMonitorClaims, claimManagedJobMonitor, hasManagedJobMonitorClaim } from "./mcp-job-monitor-claims.ts";
+import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_RENDER_TOOL, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
+import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
+const SERVER_VERSION = "3.0.0-beta.161";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -71,7 +65,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonRegistry;
   private readonly mcp: McpController;
-
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env);
     this.oauth = new OAuthController(
@@ -89,8 +82,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       tools: (authorized) => workerToolsForRole(authorized.role),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
-      callTool: ({ name, args, base, authorized, signal, requestKey }) => this.callTool(
-        name, args, base, authorized, requestKey, signal,
+      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities }) => this.callTool(
+        name, args, base, authorized, requestKey, signal, clientCapabilities,
       ),
     });
   }
@@ -166,6 +159,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       cancelledWaiters += cancelReadyDaemonAuthority(this.daemonRegistry, revocation);
       cancelledPending += await this.pending.cancelAuthority(revocation, () => revokedDaemonAuthorityError());
       cancelledSubscriptions += this.mcp.cancelAuthority(revocation);
+      cancelManagedJobMonitorClaims(this, revocation);
     }
     if (cancelledWaiters > 0) {
       this.observability.event("info", "authority.revocation.pre_dispatch_waiters_cancelled", { waiters: cancelledWaiters });
@@ -496,7 +490,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       );
     }
   }
-
   private async callTool(
     name: string,
     args: Record<string, unknown>,
@@ -504,9 +497,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     authorized: AuthorizedToken,
     requestKey?: string,
     signal?: AbortSignal,
+    clientCapabilities?: Record<string, unknown>,
   ): Promise<unknown> {
     this.assertWorkerToolArguments(name, args);
     if (name === "server_info") return this.serverInfoResult(base, authorized, args);
+    if ((name === JOB_MONITOR_RENDER_TOOL || name === JOB_MONITOR_CLAIM_TOOL) && !accountRoleAllowsTool(authorized.role, "start_job")) throw new WorkerToolError("authorization_denied", "managed-job monitor is not allowed for this account role");
+    if (name === JOB_MONITOR_RENDER_TOOL) return renderManagedJobMonitor(this, args, authorized, this.oauth.identityKey());
+    if (name === JOB_MONITOR_CLAIM_TOOL) return claimManagedJobMonitor(this, args, authorized, this.oauth.identityKey());
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
       const overviewDetail = name === "project_overview" ? projectOverviewDetail(args) : "full";
@@ -517,7 +514,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return projectProjectOverview(decorateProjectOverview(result, { accountId: authorized.accountId,
           accountVersion: authorized.accountVersion, role: authorized.role }), overviewDetail);
       }
-      return projectHostedManagedJobResult(name, result, authorized, this.oauth.identityKey());
+      const monitorJobId = name === "read_job" ? args.job_id : asObject(result).job_id;
+      return projectHostedManagedJobResult(name, result, authorized, this.oauth.identityKey(), {
+        clientCapabilities, uiMonitorScope: this, uiMonitorClaimed: hasManagedJobMonitorClaim(this, monitorJobId, args.ui_monitor_id, authorized),
+      });
     }
     throw new Error("unknown tool");
   }

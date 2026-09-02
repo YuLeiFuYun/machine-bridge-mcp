@@ -13,6 +13,7 @@ type RelayContract = {
 
 const READ_KEY_SCHEMA = { type: "string", pattern: "^mcp_jr_[A-Za-z0-9_-]{43}$" };
 const CONTROL_KEY_SCHEMA = { type: "string", pattern: "^mcp_jc_[A-Za-z0-9_-]{43}$" };
+const MONITOR_ID_SCHEMA = { type: "string", pattern: "^mcp_jm_[a-f0-9]{32}$" };
 const DEPENDENCY_RECOVERY_SCHEMA = {
   type: "object",
   maxProperties: 16,
@@ -33,7 +34,7 @@ export function applyHostedManagedJobToolContract(
     }];
     if (definition.name === "start_job") {
       schema.required = [...new Set([...(schema.required ?? []), "idempotency_key"])];
-      definition.description = `${definition.description} Hosted calls require an idempotency_key known before dispatch. Accepted hosted jobs return principal-bound recovery_key and control_key capabilities; use recovery_key for read_job and dependency references, and control_key for cancel_job. Dependency references require dependency_recovery entries for every depends_on job. ${continuationRule}`;
+      definition.description = `${definition.description} Hosted calls require an idempotency_key known before dispatch. Accepted hosted jobs return principal-bound recovery_key and control_key capabilities; use recovery_key for read_job and dependency references, and control_key for cancel_job. Dependency references require dependency_recovery entries for every depends_on job. On an MCP Apps-capable host, an active result may report ui_monitor_candidate=true plus ui_monitor_render_tool=render_job_monitor and a fresh non-secret ui_monitor_id. That is not yet a handoff: preserve that ID, call render_job_monitor once with the exact job_id, recovery_key, and ui_monitor_id, then call read_job with the same pre-issued ui_monitor_id without depending on the render tool result being planner-visible. Only a later active read with the matching current View claim reports ui_monitor_claimed=true, status_polling_mode=ui_monitor, host_turn_handoff_recommended=true, and follow_up_read_required=false; then end model-side polling. ${continuationRule}`;
     } else {
       definition.description = `${definition.description} Hosted staged jobs return principal-bound recovery_key and control_key capabilities. Dependency references require dependency_recovery entries for every depends_on job. Local CLI/stdio administration remains the global inventory surface.`;
     }
@@ -45,11 +46,12 @@ export function applyHostedManagedJobToolContract(
   }
   if (definition.name === "read_job") {
     schema.properties.recovery_key = READ_KEY_SCHEMA;
+    schema.properties.ui_monitor_id = MONITOR_ID_SCHEMA;
     schema.required = [...new Set([...(schema.required ?? []), "recovery_key"])];
     const wait = schema.properties.wait_ms;
     wait.maximum = relay.maximumManagedJobReadWaitMs;
     wait.default = relay.defaultManagedJobReadWaitMs;
-    definition.description = `${definition.description} Hosted reads require the principal-bound recovery_key returned when the job was accepted; a job_id alone is not remote read authority. Hosted active reads use a server-side long-poll by default: wait up to ${relay.defaultManagedJobReadWaitMs / 1000} seconds, with a public wait_ms maximum of ${relay.maximumManagedJobReadWaitMs / 1000} seconds. Nonterminal progress is coalesced for at least ${relay.managedJobReadNonterminalProgressMinimumMs / 1000} seconds. A caller may read an active job again in the same assistant response when terminal state or further progress is required; do not busy-loop. ${continuationRule}`;
+    definition.description = `${definition.description} Hosted reads require the principal-bound recovery_key returned when the job was accepted; a job_id alone is not remote read authority. Hosted active reads use a server-side long-poll by default: wait up to ${relay.defaultManagedJobReadWaitMs / 1000} seconds, with a public wait_ms maximum of ${relay.maximumManagedJobReadWaitMs / 1000} seconds. Nonterminal progress is coalesced for at least ${relay.managedJobReadNonterminalProgressMinimumMs / 1000} seconds. A caller may read an active job again in the same assistant response when terminal state or further progress is required; do not busy-loop. After render_job_monitor, pass the same ui_monitor_id that the preceding active start_job already returned; do not wait for or infer an ID from the render result. If that exact read reports ui_monitor_claimed=true together with status_polling_mode=ui_monitor and host_turn_handoff_recommended=true, the current mounted View has proven app-origin server-tool access; stop model-side reads and finish the response while that UI owns continuation. ${continuationRule}`;
     return true;
   }
   if (definition.name === "cancel_job") {
