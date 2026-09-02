@@ -36,6 +36,7 @@ export class DaemonHttpRelayConnection {
     this.failureBackoffBaseMs = positiveInteger(options.failureBackoffBaseMs, relayContract.httpFallbackFailureBackoffBaseMs);
     this.failureBackoffMaximumMs = positiveInteger(options.failureBackoffMaximumMs, relayContract.httpFallbackFailureBackoffMaximumMs);
     this.requestTimeoutMs = positiveInteger(options.requestTimeoutMs, relayContract.httpFallbackRequestTimeoutMs);
+    this.takeoverRequestTimeoutMs = positiveInteger(options.takeoverRequestTimeoutMs, relayContract.httpFallbackTakeoverRequestTimeoutMs);
     this.livenessTimeoutMs = positiveInteger(options.livenessTimeoutMs, relayContract.httpFallbackLivenessTimeoutMs);
     this.sessionIdBase = positiveInteger(options.sessionIdBase, 1_000_000_000);
     this.outbound = new RelayOutboundSequence();
@@ -198,7 +199,8 @@ export class DaemonHttpRelayConnection {
         this.deviceIdentity, this.workerUrl, this.expectedServer, this.expectedVersion, body, this.wallNow(),
       );
       const response = await this.postRequest({
-        url: this.endpoint, headers, body, timeoutMs: this.requestTimeoutMs,
+        url: this.endpoint, headers, body,
+        timeoutMs: this.takeoverWebSocket && !this.ready ? this.takeoverRequestTimeoutMs : this.requestTimeoutMs,
         maximumResponseBytes: relayContract.httpFallbackMaximumEnvelopeBytes, signal: controller.signal,
       });
       if (this.inFlight !== controller || this.closed) return;

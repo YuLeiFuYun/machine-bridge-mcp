@@ -14,6 +14,7 @@
   "httpFallbackFailureBackoffMaximumMs": 5000,
   "httpFallbackActivationDelayMs": 1500,
   "httpFallbackRequestTimeoutMs": 7000,
+  "httpFallbackTakeoverRequestTimeoutMs": 3000,
   "httpFallbackLivenessTimeoutMs": 12000,
   "httpFallbackMaximumQueuedMessages": 64,
   "httpFallbackMaximumQueuedBytes": 16777216,

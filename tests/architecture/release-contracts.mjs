@@ -1909,6 +1909,9 @@ if (relayContract.newCallReconnectGraceMs !== 15_000
     || relayContract.httpFallbackRequestTimeoutMs !== 7_000
     || relayContract.httpFallbackLivenessTimeoutMs !== 12_000
     || relayContract.httpFallbackRequestTimeoutMs * 2 > relayContract.newCallReconnectGraceMs
+    || relayContract.httpFallbackTakeoverRequestTimeoutMs !== 3_000
+    || relayContract.httpFallbackTakeoverRequestTimeoutMs * 3 + relayContract.httpFallbackFailureBackoffBaseMs
+      >= relayContract.newCallReconnectGraceMs
     || 60_000 / relayContract.httpFallbackMinimumRequestIntervalMs > 80
     || relayContract.defaultRemoteToolExecutionTimeoutMs !== 20_000
     || relayContract.processSessionStartExecutionTimeoutMs !== 10_000
