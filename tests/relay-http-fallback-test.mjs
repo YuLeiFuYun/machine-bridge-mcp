@@ -408,6 +408,72 @@ async function testStandbyAndFailureBackoff() {
   connection.stop();
 }
 
+async function testTakeoverTimeoutFitsNewCallRecoveryWindow() {
+  const root = createDeviceIdentity();
+  const session = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW);
+  const scheduler = new ManualScheduler();
+  const activation = `activate_${"t".repeat(43)}`;
+  const connectionId = `connection_${"u".repeat(43)}`;
+  const requestTimeouts = [];
+  let requestNumber = 0;
+  let readyAt = null;
+  let connection;
+  connection = new DaemonHttpRelayConnection({
+    workerUrl: ORIGIN, deviceIdentity: session, expectedServer: SERVER, expectedVersion: VERSION,
+    instanceId: "instance_takeover_budget", scheduler, now: () => scheduler.now, wallNow: () => NOW + scheduler.now,
+    minimumRequestIntervalMs: 750, pollIntervalMs: 1000, failureBackoffBaseMs: 1000,
+    requestTimeoutMs: 7000, takeoverRequestTimeoutMs: 3000, livenessTimeoutMs: 12000,
+    descriptor: () => ({ tools: ["list_dir"], policy: { profile: "full" }, relayDiagnostics: {} }),
+    ownedCallIds: () => [],
+    postRequest: ({ body, timeoutMs }) => {
+      requestNumber += 1;
+      requestTimeouts.push(timeoutMs);
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.takeover_websocket, true,
+        "recovery-budget fixture lost exact-generation takeover while retrying");
+      assert.equal(parsed.takeover_websocket_connection_id, connectionId,
+        "recovery-budget fixture changed takeover generation while retrying");
+      if (requestNumber === 1) {
+        return new Promise((_resolve, reject) => {
+          scheduler.setTimeout(() => reject(Object.assign(new Error("synthetic stale network epoch"), { code: "ETIMEDOUT" })), timeoutMs);
+        });
+      }
+      if (requestNumber === 2) {
+        return Promise.resolve(response({
+          protocol: 1, phase: "probing", activation_token: activation, ack_daemon_seq: 0,
+          messages: [
+            { seq: 1, payload: { type: "resume_calls", ids: [] } },
+            { seq: 2, payload: { type: "ready_ack", server: SERVER, version: VERSION } },
+          ],
+        }));
+      }
+      return Promise.resolve(response({
+        protocol: 1, phase: "ready", activation_token: activation, ack_daemon_seq: 2, messages: [],
+      }));
+    },
+    onMessage: (raw, context) => {
+      const message = JSON.parse(raw);
+      if (message.type !== "ready_ack") return;
+      assert.equal(connection.confirmReady(message), true,
+        "takeover recovery-budget fixture rejected Worker readiness acknowledgement");
+      assert.equal(connection.sendForSession({ type: "resume_calls_ack", missing_ids: [] }, context.sessionId).ok, true,
+        "takeover recovery-budget fixture could not queue resume acknowledgement");
+    },
+    onReady: () => { readyAt = scheduler.now; },
+  });
+
+  connection.start({ takeoverWebSocket: true, takeoverWebSocketConnectionId: connectionId });
+  await runNext(scheduler); // dispatch first takeover request; it remains stuck on the stale network epoch
+  await runNext(scheduler); // bounded takeover deadline rejects the stale request
+  await runNext(scheduler); // first failure backoff expires; replacement probing request succeeds
+  await runNext(scheduler); // verified-ready proof completes after the hard request-start interval
+  assert.deepEqual(requestTimeouts, [3000, 3000, 3000],
+    "takeover handshake used the ordinary seven-second request budget instead of the recovery-bounded deadline");
+  assert(readyAt !== null && readyAt < 15000,
+    `takeover did not recover inside the new-call recovery window: ready_at_ms=${readyAt}`);
+  connection.stop();
+}
+
 async function testPrimaryFallbackHandover() {
   const scheduler = new ManualScheduler();
   const ready = [];
@@ -585,5 +651,6 @@ await testLocalLostResponseDoesNotReplayToolCall();
 await testSessionResetDoesNotCommitPriorInboundSequence();
 await testTakeoverPreemptsStandbyRequest();
 await testStandbyAndFailureBackoff();
+await testTakeoverTimeoutFitsNewCallRecoveryWindow();
 await testPrimaryFallbackHandover();
 console.log("relay HTTP fallback reliability test ok");
