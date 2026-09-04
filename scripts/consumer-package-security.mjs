@@ -9,7 +9,7 @@ import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_CONSUMER_TARBALL_BYTES = 64 * 1024 * 1024;
 const FORBIDDEN_CONTROL_PACKAGES = new Set(["wrangler", "miniflare"]);
 
