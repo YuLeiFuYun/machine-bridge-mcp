@@ -4,7 +4,7 @@ import { createBrowserPairingGrant } from "./browser-pairing-grant.mjs";
 
 const LAUNCH_TTL_MS = 30_000;
 
-export async function startBrowserPairingLaunch({ brokerPort, extensionToken, timeoutMs = LAUNCH_TTL_MS } = {}) {
+export async function startBrowserPairingLaunch({ brokerPort, extensionToken, timeoutMs = LAUNCH_TTL_MS, serverFactory = createServer } = {}) {
   const targetPort = Number(brokerPort);
   if (!Number.isInteger(targetPort) || targetPort < 1024 || targetPort > 65535) throw new Error("browser pairing broker port is invalid");
   const grant = createBrowserPairingGrant(extensionToken, targetPort);
@@ -16,7 +16,7 @@ export async function startBrowserPairingLaunch({ brokerPort, extensionToken, ti
   let timer;
   let resolveClosed;
   const closedPromise = new Promise((resolvePromise) => { resolveClosed = resolvePromise; });
-  const server = createServer((request, response) => {
+  const server = serverFactory((request, response) => {
     const host = String(request.headers.host || "");
     if (!listenerPort || host.toLowerCase() !== `127.0.0.1:${listenerPort}`) {
       response.writeHead(403, securityHeaders("text/plain; charset=utf-8")).end("forbidden\n");

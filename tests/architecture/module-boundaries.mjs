@@ -123,6 +123,7 @@ const boundaryModules = new Set([
   "cli-local-admin.mjs",
   "capability-ranking.mjs",
   "execution-routing.mjs",
+  "resource-legacy-staging-recovery.mjs",
   "resource-staging-recovery.mjs",
   "resource-wait.mjs",
   "managed-job-plan.mjs",
@@ -222,6 +223,7 @@ const lineLimits = Object.freeze({
   "src/local/runtime-info-projection.mjs": 70,
   "src/local/runtime-resource-service.mjs": 100,
   "src/local/resource-operations.mjs": 110,
+  "src/local/resource-legacy-staging-recovery.mjs": 90,
   "src/local/resource-staging-recovery.mjs": 100,
   "src/local/resource-wait.mjs": 50,
   "src/local/secure-file.mjs": 180,
@@ -477,6 +479,8 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-controller.ts": 220,
   "src/worker/mcp-job-monitor-ui.ts": 130,
   "src/worker/mcp-job-monitor-claims.ts": 130,
+  "src/worker/mcp-job-monitor-store.ts": 150,
+  "src/worker/mcp-job-monitor-status.ts": 60,
   "src/worker/mcp-job-monitor-tools.ts": 90,
   "src/worker/mcp-initialization-compat.ts": 170,
   "src/worker/mcp-removed-protocol.ts": 40,
@@ -624,6 +628,10 @@ for (const forbidden of ["OWNER_NAME", "validDirectoryOwner", "removeDirectoryGe
 const resourceStagingRecoverySource = readFileSync(join(localRoot, "resource-staging-recovery.mjs"), "utf8");
 for (const required of ["STAGING", "recoverResourceDirectoryStaging", "stagingPublisherMayBeCurrent", "processStartTimeFromSnapshot"]) {
   if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource lease/waiter staging recovery regressed: ${required}`);
+}
+const resourceLegacyStagingRecoverySource = readFileSync(join(localRoot, "resource-legacy-staging-recovery.mjs"), "utf8");
+for (const required of ["LEGACY_WORKFLOW_BUNDLE_LEASE_STAGING", "recoverLegacyWorkflowBundleLeaseStaging", "readBoundedRegularFileSync", "owner?.kind !== \"provisional\""]) {
+  if (!resourceLegacyStagingRecoverySource.includes(required)) throw new Error(`legacy Workflow Bundle staging recovery regressed: ${required}`);
 }
 for (const forbidden of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrentAsync", "inspectProcessInstanceAsync", "owner-publication state"]) {
   if (resourceStagingRecoverySource.includes(forbidden)) throw new Error(`resource staging recovery retained expired transaction-owner compatibility: ${forbidden}`);

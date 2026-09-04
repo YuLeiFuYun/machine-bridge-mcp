@@ -5,14 +5,18 @@ import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
 import { createBrokerAuthRegistry } from "./browser-broker-auth.mjs";
 import { createBrowserBrokerAuthHttpHandler } from "./browser-broker-auth-http.mjs";
 
-export async function startBrowserBrokerServer({ port, extensionToken, runtimeToken, maxPayload, onHttp, onSocket }) {
+export async function startBrowserBrokerServer({
+  port, extensionToken, runtimeToken, maxPayload, onHttp, onSocket,
+  serverFactory = createServer,
+  WebSocketServerClass = WebSocketServer,
+}) {
   const runtimeAuth = createBrokerAuthRegistry(runtimeToken, "runtime");
   const extensionAuth = createBrokerAuthRegistry(extensionToken, "extension");
   const handleAuthHttp = createBrowserBrokerAuthHttpHandler({ port, extensionToken, runtimeAuth, extensionAuth });
-  const server = createServer((request, response) => {
+  const server = serverFactory((request, response) => {
     if (!handleAuthHttp(request, response)) onHttp(request, response);
   });
-  const wss = new WebSocketServer({ noServer: true, maxPayload });
+  const wss = new WebSocketServerClass({ noServer: true, maxPayload });
   server.on("upgrade", (request, socket, head) => {
     try {
       const host = String(request.headers.host || "");

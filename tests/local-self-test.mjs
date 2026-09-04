@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, win32 as winPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
+import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
 import { acquireRuntimeStartServiceLock, assertNoActiveJobsForUninstall, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
@@ -25,6 +26,7 @@ const MANAGED_JOB_MARKER_SCRIPT = "if (process.env.NODE_V8_COVERAGE) process.exi
 const SHELL_TREE_TIMEOUT_MS = 10_000;
 const SHELL_TREE_READY_MS = 8_000;
 const SHELL_TREE_EXIT_WAIT_MS = 10_000;
+let daemonFixtureArgv = [];
 
 await runSelfTestPhase("runtime", runtimeSelfTest);
 await runSelfTestPhase("state", stateSelfTest);
@@ -398,12 +400,21 @@ setInterval(() => {}, 2 ** 31 - 1);
   let child = null;
   try {
     const state = loadState(workspace, { stateDir: stateRoot });
+    const daemonIdentityOptions = {
+      processArgv: () => daemonFixtureArgv,
+      inspectProcess(owner) {
+        const pid = Number(owner?.pid);
+        const alive = Boolean(child && pid === child.pid && isProcessAlive(pid));
+        return { current: alive, alive, reason: alive ? "current_process" : "not_running" };
+      },
+    };
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only"]);
-    const serviceDaemon = inspectWorkspaceDaemon(state);
+    const serviceDaemon = inspectWorkspaceDaemon(state, daemonIdentityOptions);
     if (!serviceDaemon.alive || !serviceDaemon.verified_service_daemon || serviceDaemon.mode !== "service") {
       throw new Error("service daemon was not identified from current lock metadata");
     }
     const exactRuntimeDaemon = inspectWorkspaceDaemon(state, {
+      ...daemonIdentityOptions,
       expectedVersion: "0.18.0",
       expectedEntryScript: fixture,
       expectedNodeExecutable: process.execPath,
@@ -412,19 +423,19 @@ setInterval(() => {}, 2 ** 31 - 1);
     if (!exactRuntimeDaemon.verified_service_daemon) {
       throw new Error("service daemon rejected its exact version, entrypoint, or Node executable identity");
     }
-    const wrongNodeDaemon = inspectWorkspaceDaemon(state, { expectedNodeExecutable: fixture });
+    const wrongNodeDaemon = inspectWorkspaceDaemon(state, { ...daemonIdentityOptions, expectedNodeExecutable: fixture });
     if (wrongNodeDaemon.verified_service_daemon || wrongNodeDaemon.identity_reason !== "node_executable_mismatch") {
       throw new Error("service daemon accepted a mismatched Node executable identity");
     }
-    const wrongNodeVersionDaemon = inspectWorkspaceDaemon(state, { expectedNodeVersion: `${process.versions.node}-mismatch` });
+    const wrongNodeVersionDaemon = inspectWorkspaceDaemon(state, { ...daemonIdentityOptions, expectedNodeVersion: `${process.versions.node}-mismatch` });
     if (wrongNodeVersionDaemon.verified_service_daemon || wrongNodeVersionDaemon.identity_reason !== "node_version_mismatch") {
       throw new Error("service daemon accepted a mismatched Node runtime version");
     }
-    const wrongVersionDaemon = inspectWorkspaceDaemon(state, { expectedVersion: "0.18.1" });
+    const wrongVersionDaemon = inspectWorkspaceDaemon(state, { ...daemonIdentityOptions, expectedVersion: "0.18.1" });
     if (wrongVersionDaemon.verified_service_daemon || wrongVersionDaemon.identity_reason !== "version_mismatch") {
       throw new Error("service daemon accepted a mismatched expected version");
     }
-    const wrongEntryDaemon = inspectWorkspaceDaemon(state, { expectedEntryScript: process.execPath });
+    const wrongEntryDaemon = inspectWorkspaceDaemon(state, { ...daemonIdentityOptions, expectedEntryScript: process.execPath });
     if (wrongEntryDaemon.verified_service_daemon || wrongEntryDaemon.identity_reason !== "entrypoint_mismatch") {
       throw new Error("service daemon accepted a mismatched expected entrypoint");
     }
@@ -440,6 +451,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     const immediate = await acquireDaemonLockWithTakeover(state, {
       takeOverServiceOwner: false,
       ownerMetadata: { mode: "foreground", version: "0.11.1" },
+      identityOptions: daemonIdentityOptions,
     });
     if (immediate.acquired) throw new Error("non-takeover lock attempt replaced a live service daemon");
 
@@ -450,6 +462,7 @@ setInterval(() => {}, 2 ** 31 - 1);
       pollMs: 10,
       ownerMetadata: { mode: "foreground", version: "0.11.1" },
       logger: { info(message) { messages.push(message); }, warn(message) { messages.push(message); } },
+      identityOptions: daemonIdentityOptions,
     });
     await waitForChildExit(child);
     child = null;
@@ -468,14 +481,18 @@ setInterval(() => {}, 2 ** 31 - 1);
     foregroundLock.release();
 
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only"], { implicitIdentity: true });
-    const implicitService = inspectWorkspaceDaemon(state);
+    const implicitService = inspectWorkspaceDaemon(state, daemonIdentityOptions);
     if (!implicitService.alive || !implicitService.verified_service_daemon || implicitService.identity_reason !== "implicit_service_command") {
       throw new Error("implicit daemon-only recovery process could not be verified for safe takeover");
     }
     if (!workspaceDaemonOwnsPlatformAutostart(implicitService)) {
       throw new Error("verified implicit workspace service was not authorized for platform takeover");
     }
-    const implicitStop = await stopWorkspaceServiceDaemon(state, { timeoutMs: DAEMON_FIXTURE_TIMEOUT_MS, pollMs: 10 });
+    const implicitStop = await stopWorkspaceServiceDaemon(state, {
+      timeoutMs: DAEMON_FIXTURE_TIMEOUT_MS,
+      pollMs: 10,
+      identityOptions: daemonIdentityOptions,
+    });
     if (!implicitStop.ok || implicitStop.reason !== "stopped" || !implicitStop.verified_service_daemon) {
       throw new Error("implicit daemon-only recovery process could not be stopped safely");
     }
@@ -483,7 +500,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     child = null;
 
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--daemon-only", "--workspace", workspace], { implicitIdentity: true });
-    const partialIdentity = inspectWorkspaceDaemon(state);
+    const partialIdentity = inspectWorkspaceDaemon(state, daemonIdentityOptions);
     if (!partialIdentity.alive || partialIdentity.verified_service_daemon || partialIdentity.identity_reason !== "command_mismatch") {
       throw new Error("daemon with only one explicit identity argument was accepted for takeover");
     }
@@ -495,7 +512,7 @@ setInterval(() => {}, 2 ** 31 - 1);
     child = null;
 
     child = await startDaemonFixture(fixture, workspace, stateRoot, ["--foreground-lock"]);
-    const foreground = inspectWorkspaceDaemon(state);
+    const foreground = inspectWorkspaceDaemon(state, daemonIdentityOptions);
     if (!foreground.alive || foreground.verified_service_daemon || foreground.identity_reason !== "foreground_daemon") {
       throw new Error("foreground daemon was misclassified as a service daemon");
     }
@@ -504,6 +521,7 @@ setInterval(() => {}, 2 ** 31 - 1);
       timeoutMs: 100,
       pollMs: 5,
       ownerMetadata: { mode: "foreground", version: "0.11.1" },
+      identityOptions: daemonIdentityOptions,
     });
     if (protectedLock.acquired || !isProcessAlive(child.pid)) throw new Error("foreground daemon was terminated during service takeover");
     child.kill("SIGTERM");
@@ -517,6 +535,7 @@ setInterval(() => {}, 2 ** 31 - 1);
       forceAfterMs: 20,
       pollMs: 5,
       logger: { info(message) { stopMessages.push(message); }, warn(message) { stopMessages.push(message); } },
+      identityOptions: daemonIdentityOptions,
     });
     if (!stopResult.ok || stopResult.reason !== "stopped" || !stopResult.verified_service_daemon || isProcessAlive(child.pid)) {
       throw new Error("verified unresponsive service daemon was not forcibly reclaimed after identity revalidation");
@@ -546,12 +565,14 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [],
     fixtureEnv.MBM_FIXTURE_WORKSPACE = workspace;
     fixtureEnv.MBM_FIXTURE_STATE_ROOT = stateRoot;
   }
-  const child = spawn(process.execPath, [
+  const childArgs = [
     fixture,
     "start",
     ...extraArgs,
     ...(options.implicitIdentity ? [] : ["--workspace", workspace, "--state-dir", stateRoot]),
-  ], {
+  ];
+  daemonFixtureArgv = [process.execPath, ...childArgs];
+  const child = spawn(process.execPath, childArgs, {
     cwd: workspace,
     env: fixtureEnv,
     stdio: ["ignore", "pipe", "pipe"],
@@ -1434,8 +1455,8 @@ async function ciBootstrapSelfTest() {
     throw new Error("CI package audit must verify the final installed consumer dependency tree exactly once");
   }
   const installSmoke = await readFile(new URL("./install-smoke-test.mjs", import.meta.url), "utf8");
-  for (const required of ["prepareHardenedNpm", "verifyConsumerTarball", "ensureWranglerToolchain", '"wrangler", "miniflare"']) {
-    if (!installSmoke.includes(required)) throw new Error(`global install smoke lost consumer/toolchain proof: ${required}`);
+  for (const required of ["process.env.npm_execpath", "packOfflineProductionClosure", '"--offline"', '"--global"', "assertInstalledDefaultStartup", "ensureWorkerDeployment", "startup-probe-worker-deployment"]) {
+    if (!installSmoke.includes(required)) throw new Error(`global install smoke lost its hermetic install/startup proof: ${required}`);
   }
   const packageTest = await readFile(new URL("./package-test.mjs", import.meta.url), "utf8");
   if (!packageTest.includes("process.env.npm_execpath") || packageTest.includes('spawnSync(npm')) {
@@ -1458,29 +1479,32 @@ async function shellSelfTest() {
   });
   if (timedOut.code !== 124 || !timedOut.stderr.includes("timed out")) throw new Error("shell timeout handling failed");
 
-  const treeRoot = await mkdtemp(join(tmpdir(), "mbm-shell-tree-test-"));
-  try {
-    const childPidFile = join(treeRoot, "child.pid");
-    const treeScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);`;
-    const treeExecution = runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
-      capture: true,
-      allowFailure: true,
-      timeoutMs: SHELL_TREE_TIMEOUT_MS,
-    });
-    let treeResult;
-    let descendantPid;
+  const processTreeOwnershipObservable = process.platform === "win32" || Boolean(await sampleProcessStartTimesAsync());
+  if (processTreeOwnershipObservable) {
+    const treeRoot = await mkdtemp(join(tmpdir(), "mbm-shell-tree-test-"));
     try {
-      descendantPid = await waitForPidFile(childPidFile, SHELL_TREE_READY_MS);
-      treeResult = await treeExecution;
-    } catch (error) {
-      await treeExecution.catch(() => {});
-      throw error;
+      const childPidFile = join(treeRoot, "child.pid");
+      const treeScript = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);`;
+      const treeExecution = runExecutable(process.execPath, ["-e", treeScript, childPidFile], {
+        capture: true,
+        allowFailure: true,
+        timeoutMs: SHELL_TREE_TIMEOUT_MS,
+      });
+      let treeResult;
+      let descendantPid;
+      try {
+        descendantPid = await waitForPidFile(childPidFile, SHELL_TREE_READY_MS);
+        treeResult = await treeExecution;
+      } catch (error) {
+        await treeExecution.catch(() => {});
+        throw error;
+      }
+      if (treeResult.code !== 124) throw new Error("shell process-tree timeout did not report timeout");
+      const exited = await waitForPidExit(descendantPid, SHELL_TREE_EXIT_WAIT_MS);
+      if (!exited) throw new Error("shell timeout left a descendant process running");
+    } finally {
+      await rm(treeRoot, { recursive: true, force: true });
     }
-    if (treeResult.code !== 124) throw new Error("shell process-tree timeout did not report timeout");
-    const exited = await waitForPidExit(descendantPid, SHELL_TREE_EXIT_WAIT_MS);
-    if (!exited) throw new Error("shell timeout left a descendant process running");
-  } finally {
-    await rm(treeRoot, { recursive: true, force: true });
   }
 }
 

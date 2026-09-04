@@ -323,6 +323,10 @@ try { loadState(workspace, { stateDir: stateRoot }); process.exit(0); } catch (e
     runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
     readResourceText: async () => "",
     readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
+    startBrokerServer: async () => ({
+      server: { close() {} },
+      wss: { close() {} },
+    }),
   });
   const holder = join(workspace, "hold-maintenance.mjs");
   await writeFile(holder, `import { acquireMaintenanceLock, loadState } from ${JSON.stringify(stateUrl)};

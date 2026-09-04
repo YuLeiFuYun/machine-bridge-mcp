@@ -16,11 +16,9 @@ export function publishManagedJobActiveChild(file, child, options = {}) {
   const pid = positivePid(child?.pid);
   if (!pid) throw new Error("managed job child process did not receive a valid pid");
   const observedStart = (options.processStartTime || processStartTimeMs)(pid);
-  if (!Number.isFinite(observedStart) || observedStart <= 0) {
-    if (childExited(child) || !(options.isAlive || isPidAlive)(pid)
-        || (options.processState || processState)(pid) === "zombie") return null;
-    throw new Error("managed job child process identity could not be established");
-  }
+  const processIdentityVerified = Number.isFinite(observedStart) && observedStart > 0;
+  if (!processIdentityVerified && (childExited(child) || !(options.isAlive || isPidAlive)(pid)
+      || (options.processState || processState)(pid) === "zombie")) return null;
   const existing = readActiveChildClaim(file, options);
   if (existing) {
     if (activeChildState(existing, options) !== "stopped") throw new Error("managed job active child claim already exists");
@@ -31,7 +29,8 @@ export function publishManagedJobActiveChild(file, child, options = {}) {
     pid,
     token: (options.randomBytes || randomBytes)(16).toString("hex"),
     startedAt: new Date(options.now?.() ?? Date.now()).toISOString(),
-    processStartedAt: new Date(observedStart).toISOString(),
+    processStartedAt: new Date(processIdentityVerified ? observedStart : (options.now?.() ?? Date.now())).toISOString(),
+    processIdentityVerified,
     processGroupIsolated: (options.platform || process.platform) !== "win32",
   };
   (options.writeJson || atomicWriteJson)(file, claim, MAX_ACTIVE_CHILD_BYTES);
@@ -106,6 +105,7 @@ function readActiveChildClaim(file, options) {
   if (value.schema_version !== ACTIVE_CHILD_SCHEMA || !positivePid(value.pid)
       || !/^[a-f0-9]{32}$/.test(String(value.token || ""))
       || !validTime(value.startedAt) || !validTime(value.processStartedAt)
+      || (value.processIdentityVerified !== undefined && typeof value.processIdentityVerified !== "boolean")
       || typeof value.processGroupIsolated !== "boolean"
       || value.processGroupIsolated !== (platform !== "win32")) {
     throw new Error("managed job active child claim is invalid");
@@ -118,8 +118,9 @@ function activeChildState(claim, options) {
   const state = (options.processState || processState)(claim.pid);
   if (state === "zombie") return "stopped";
   const observed = inspect(claim, options.inspectOptions || {});
-  if (observed?.current === true && observed?.alive === true) return "current";
   if (observed?.alive === false || observed?.reason === "pid_reused") return "stopped";
+  if (claim.processIdentityVerified === false) return "ambiguous";
+  if (observed?.current === true && observed?.alive === true) return "current";
   return "ambiguous";
 }
 

@@ -12,7 +12,12 @@ const FULL_ACCESS_RESOURCE_WAIT_MS = 10_000;
 const FULL_ACCESS_JOB_WAIT_MS = 5 * 60_000;
 const FULL_ACCESS_JOB_CLEANUP_WAIT_MS = 30_000;
 
-export async function runFullAccessTest({ workspace, policy = policyProfile("full", "explicit"), resourceCoordinatorOptions = null } = {}) {
+export async function runFullAccessTest({
+  workspace,
+  policy = policyProfile("full", "explicit"),
+  resourceCoordinatorOptions = null,
+  runCommand = runExecutable,
+} = {}) {
   const canonicalPolicy = assertCanonicalFullPolicy(policy);
   const root = await mkdtemp(join(tmpdir(), "machine-mcp-full-test-"));
   const jobRoot = join(root, "jobs");
@@ -94,7 +99,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
     }));
 
     const nullConfig = process.platform === "win32" ? "NUL" : "/dev/null";
-    const sshConfig = await runExecutable("ssh", ["-F", nullConfig, "-G", "localhost"], {
+    const sshConfig = await runCommand("ssh", ["-F", nullConfig, "-G", "localhost"], {
       capture: true,
       allowFailure: true,
       timeoutMs: 15_000,
@@ -102,14 +107,14 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
     });
     checks.push(check("ssh-client", sshConfig.code === 0));
 
-    const gcloud = await runExecutable("gcloud", ["--version"], {
+    const gcloud = await runCommand("gcloud", ["--version"], {
       capture: true,
       allowFailure: true,
       timeoutMs: 30_000,
       maxOutputBytes: 64 * 1024,
     });
     const osLoginHelp = gcloud.code === 0
-      ? await runExecutable("gcloud", ["help", "compute", "os-login", "ssh-keys", "add"], {
+      ? await runCommand("gcloud", ["help", "compute", "os-login", "ssh-keys", "add"], {
           capture: true,
           allowFailure: true,
           timeoutMs: 30_000,
@@ -123,7 +128,7 @@ export async function runFullAccessTest({ workspace, policy = policyProfile("ful
 
     const sudo = process.platform === "win32"
       ? { code: 0, skipped: true }
-      : await runExecutable("sudo", ["-n", "true"], {
+      : await runCommand("sudo", ["-n", "true"], {
           capture: true,
           allowFailure: true,
           timeoutMs: 10_000,

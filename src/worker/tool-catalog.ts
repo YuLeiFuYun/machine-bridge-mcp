@@ -14,7 +14,7 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { applyHostedManagedJobToolContract } from "./managed-job-hosted-schema.ts";
 import { applyHostedBrowserTargetContract } from "./hosted-browser-target-schema.ts";
 import { attachManagedJobMonitorMetadata } from "./mcp-job-monitor-ui.ts";
-import { managedJobMonitorClaimToolDefinition, managedJobMonitorRenderToolDefinition } from "./mcp-job-monitor-tools.ts";
+import { managedJobMonitorClaimToolDefinition, managedJobMonitorReadToolDefinition, managedJobMonitorRenderToolDefinition } from "./mcp-job-monitor-tools.ts";
 
 export type WorkerToolDefinition = Record<string, unknown> & { name: string; description: string; availability?: string };
 type JsonSchema = Record<string, unknown> & { properties: Record<string, Record<string, unknown>>; required?: string[] };
@@ -25,8 +25,9 @@ const HOSTED_CONTINUATION_RULE = "Do not infer or preempt a host/tool deadline f
 export const serverInfoTool = schemaTaggedTool(publicTool(allTools.find((tool) => tool.name === "server_info")!));
 export const jobMonitorRenderTool = schemaTaggedTool(managedJobMonitorRenderToolDefinition() as WorkerToolDefinition);
 export const jobMonitorClaimTool = schemaTaggedTool(managedJobMonitorClaimToolDefinition() as WorkerToolDefinition);
+export const jobMonitorReadTool = schemaTaggedTool(managedJobMonitorReadToolDefinition() as WorkerToolDefinition);
 export const workspaceTools = Object.freeze(allTools.filter((tool) => tool.name !== "server_info").map(remotePublicTool).map(schemaTaggedTool));
-const publicTools = [serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, ...workspaceTools]; const workerToolArguments = compileToolArgumentValidators(publicTools);
+const publicTools = [serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool, ...workspaceTools]; const workerToolArguments = compileToolArgumentValidators(publicTools);
 export const workerToolParameterHeaders = toolParameterHeaderNames(publicTools);
 
 export function validateWorkerToolArguments(name: unknown, value: unknown) {

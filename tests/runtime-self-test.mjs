@@ -5,6 +5,7 @@ import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src
 import { policyProfile } from "../src/local/policy.mjs";
 import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-sandbox.mjs";
 import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
+import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 
@@ -607,28 +608,31 @@ export async function runtimeSelfTest() {
       if (!String(interruption.error?.message || "").includes("exited")) throw new Error("terminated process did not reject with an exit failure");
       if (restricted.processTracker.snapshot().active_processes !== 0) throw new Error("terminated process remained tracked");
 
-      const descendantPidFile = join(workspace, "timeout-descendant.pid");
-      const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
-      await expectReject(() => restricted.execCommand({ command: descendantCommand, timeout_seconds: 1 }), "command timed out");
-      const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
-      if (!await waitForProcessExit(descendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
-        try { process.kill(descendantPid, "SIGKILL"); } catch {}
-        throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
-      }
+      const processTreeOwnershipObservable = await sampleProcessStartTimesAsync();
+      if (processTreeOwnershipObservable) {
+        const descendantPidFile = join(workspace, "timeout-descendant.pid");
+        const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
+        await expectReject(() => restricted.execCommand({ command: descendantCommand, timeout_seconds: 1 }), "command timed out");
+        const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+        if (!await waitForProcessExit(descendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
+          try { process.kill(descendantPid, "SIGKILL"); } catch {}
+          throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
+        }
 
-      const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
-      const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
-      // Coverage instrumentation can delay a fresh Node process enough that a 200 ms
-      // deadline expires before the fixture writes its descendant PID. Keep the
-      // deadline bounded, but long enough to exercise post-start tree cleanup.
-      await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
-      const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
-      // Capture/refresh and the final current-ownership check have separate bounded
-      // budgets around the graceful-termination window. Poll the real descendant until
-      // that complete production bound settles instead of sampling at one wall-clock instant.
-      if (!await waitForProcessExit(detachedDescendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
-        try { process.kill(detachedDescendantPid, "SIGKILL"); } catch {}
-        throw new Error("one-shot process timeout cancelled forced escalation after the direct child exited");
+        const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
+        const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
+        // Coverage instrumentation can delay a fresh Node process enough that a 200 ms
+        // deadline expires before the fixture writes its descendant PID. Keep the
+        // deadline bounded, but long enough to exercise post-start tree cleanup.
+        await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
+        const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
+        // Capture/refresh and the final current-ownership check have separate bounded
+        // budgets around the graceful-termination window. Poll the real descendant until
+        // that complete production bound settles instead of sampling at one wall-clock instant.
+        if (!await waitForProcessExit(detachedDescendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
+          try { process.kill(detachedDescendantPid, "SIGKILL"); } catch {}
+          throw new Error("one-shot process timeout cancelled forced escalation after the direct child exited");
+        }
       }
     }
 

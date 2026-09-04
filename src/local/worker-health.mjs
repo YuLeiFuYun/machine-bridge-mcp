@@ -118,6 +118,7 @@ export function requestWorkerHealthJson(url, options = {}) {
     timeoutMs: boundedTimeout(options.timeoutMs),
     proxyResolver: options.proxyResolver,
     proxyAgentForUrl: options.proxyAgentForUrl,
+    requestFactory: options.requestFactory,
   });
 }
 
@@ -132,6 +133,7 @@ function requestAllowedWorkerHealthJson(url, options = {}) {
     timeoutMs: boundedTimeout(options.timeoutMs),
     proxyResolver: options.proxyResolver,
     proxyAgentForUrl: options.proxyAgentForUrl,
+    requestFactory: options.requestFactory,
   });
 }
 
@@ -147,7 +149,7 @@ function requestJson(target, options) {
     }
     const networkRoute = proxy?.agent ? "proxy" : "direct";
     const transport = target.protocol === "https:" ? https : http;
-    const request = transport.request({
+    const requestOptions = {
       protocol: target.protocol,
       hostname: target.hostname,
       port: target.port || undefined,
@@ -158,7 +160,17 @@ function requestJson(target, options) {
         "User-Agent": "machine-bridge-mcp-health",
       },
       ...(proxy?.agent ? { agent: proxy.agent } : {}),
-    });
+    };
+    let request;
+    try {
+      const requestFactory = typeof options.requestFactory === "function"
+        ? options.requestFactory
+        : (value) => transport.request(value);
+      request = requestFactory(requestOptions);
+    } catch (error) {
+      rejectPromise(withNetworkRoute(error, networkRoute));
+      return;
+    }
     let settled = false;
     const finish = (callback) => {
       if (settled) return;

@@ -20,6 +20,17 @@ if (!chrome) {
   console.log("OAuth browser navigation test skipped: Chrome not found");
   process.exit(0);
 }
+const debuggingPort = await openPort();
+if (!debuggingPort) {
+  if (process.env.CI && process.platform === "linux") throw new Error("loopback listener access is required for the OAuth browser navigation regression on Linux CI");
+  console.log("OAuth browser navigation test skipped: loopback listener unavailable");
+  process.exit(0);
+}
+const loopbackFixtureAvailable = await canOpenLoopbackFixture();
+if (!loopbackFixtureAvailable) {
+  console.log("OAuth browser navigation test skipped: loopback listener unavailable");
+  process.exit(0);
+}
 
 let studioCallbackHits = 0;
 const studioCallbackServer = http.createServer((_request, response) => {
@@ -83,7 +94,6 @@ const regionalOnlyAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?all
 const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=3`;
 
 const profile = await mkdtemp(path.join(os.tmpdir(), "mbm-oauth-browser-"));
-const debuggingPort = await openPort();
 const chromeArgs = [
   "--headless=new",
   "--disable-gpu",
@@ -263,12 +273,50 @@ function listen(server) {
 function openPort() {
   const server = net.createServer();
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
+    server.once("error", (error) => {
+      if (error?.code === "EPERM" || error?.code === "EACCES") resolve(0);
+      else reject(error);
+    });
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port;
       server.close((error) => error ? reject(error) : resolve(port));
     });
   });
+}
+
+async function canOpenLoopbackFixture() {
+  const servers = [
+    http.createServer(),
+    http.createServer(),
+    http.createServer(),
+    http.createServer(),
+    net.createServer(),
+  ];
+  try {
+    for (const server of servers) {
+      const opened = await new Promise((resolve, reject) => {
+        const failed = (error) => {
+          if (error?.code === "EPERM" || error?.code === "EACCES") resolve(false);
+          else reject(error);
+        };
+        server.once("error", failed);
+        server.listen(0, "127.0.0.1", () => {
+          server.off("error", failed);
+          resolve(true);
+        });
+      });
+      if (!opened) return false;
+    }
+    return true;
+  } finally {
+    await Promise.all(servers.map((server) => new Promise((resolve) => {
+      if (!server.listening) {
+        resolve();
+        return;
+      }
+      server.close(() => resolve());
+    })));
+  }
 }
 
 async function waitForPageTarget(port, childOutcome) {

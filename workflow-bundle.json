@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0.0",
+  "lifecycle": [
+    {
+      "id": "project-native:npm:check:fast",
+      "phase": "verify",
+      "source": "package.json#scripts.check:fast",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "project_native",
+      "independence": "same_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:npm:check:fast",
+        "argv": [
+          "npm",
+          "run",
+          "check:fast"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 600,
+        "env": {},
+        "sandbox": "required"
+      }
+    },
+    {
+      "id": "project-native:npm:check:full",
+      "phase": "verify",
+      "source": "package.json#scripts.check:full",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "project_native",
+      "independence": "independent_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:npm:check:full",
+        "argv": [
+          "npm",
+          "run",
+          "check:full"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 1800,
+        "env": {},
+        "sandbox": "required"
+      }
+    }
+  ]
+}

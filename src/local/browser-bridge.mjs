@@ -24,7 +24,7 @@ const MAX_PENDING = 32;
 const EXTENSION_HANDSHAKE_MS = 3_000;
 
 export class BrowserBridgeManager {
-  constructor({ policy, authorizeTool = null, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {}, logger = null }) {
+  constructor({ policy, authorizeTool = null, stateRoot = "", runProcess, readResourceText, readResourceBinary, throwIfCancelled = () => {}, logger = null, startBrokerServer = startBrowserBrokerServer }) {
     this.policy = policy || {};
     this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
     this.stateRoot = stateRoot ? resolve(stateRoot) : "";
@@ -33,6 +33,7 @@ export class BrowserBridgeManager {
     this.readResourceBinary = readResourceBinary;
     this.throwIfCancelled = throwIfCancelled;
     this.logger = logger || { event() {} };
+    this.startBrokerServer = startBrokerServer;
     this.server = null;
     this.wss = null;
     this.socket = null;
@@ -209,7 +210,7 @@ export class BrowserBridgeManager {
 
   async listen(port) {
     this.port = port;
-    const { server, wss } = await startBrowserBrokerServer({
+    const { server, wss } = await this.startBrokerServer({
       port,
       extensionToken: this.extensionToken,
       runtimeToken: this.runtimeToken,

@@ -9,10 +9,18 @@ const workspace = await mkdtemp(join(tmpdir(), "mbm-full-access-workspace-"));
 try {
   const repetitions = process.platform === "win32" ? 3 : 1;
   for (let iteration = 1; iteration <= repetitions; iteration += 1) {
+    const externalProbes = [];
     const result = await runFullAccessTest({
       workspace,
       policy: policyProfile("full", "explicit"),
       resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
+      runCommand: async (command, args) => {
+        externalProbes.push({ command, args });
+        if (command === "ssh") return { code: 0, stdout: "host localhost\n", stderr: "" };
+        if (command === "gcloud") return { code: 127, stdout: "", stderr: "not installed" };
+        if (command === "sudo") return { code: 127, stdout: "", stderr: "not available" };
+        throw new Error(`unexpected external full-access probe: ${command}`);
+      },
     });
     if (!result.ok) throw new Error(`full access test iteration ${iteration} failed: ${JSON.stringify(result)}`);
     for (const required of [
@@ -24,6 +32,9 @@ try {
     }
     if (result.guarantees.external_cloud_or_remote_state_changed !== false) throw new Error("full access test changed external state");
     if (result.guarantees.host_or_connector_policy_overridden !== false) throw new Error("full access test claimed to override host policy");
+    if (!externalProbes.some(({ command, args }) => command === "ssh" && args.join(" ").includes("-G localhost"))) {
+      throw new Error("full access test lost the bounded SSH client configuration probe");
+    }
   }
   console.log(`full profile real-machine sandbox test ok (${repetitions} iteration${repetitions === 1 ? "" : "s"})`);
 } finally {

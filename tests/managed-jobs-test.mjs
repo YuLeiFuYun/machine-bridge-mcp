@@ -31,6 +31,7 @@ import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/m
 import { managedJobTransitionConflict } from "../src/local/managed-job-state-validation.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
+import { processState } from "../src/local/process-identity.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
@@ -1306,6 +1307,33 @@ async function testManagedJobActiveChildSafety() {
   } catch (error) { unsafeError = error; }
   assert(unsafeError && unsafeTerminateCalls === 0 && await exists(file),
     "unverifiable active-child ownership was signalled or deleted instead of failing closed");
+
+  const unverifiedFile = join(activeRoot, "active-child-unverified.json");
+  const unverifiedClaim = publishManagedJobActiveChild(unverifiedFile, { pid: 515151, exitCode: null, signalCode: null }, {
+    processStartTime: () => null,
+    isAlive: () => true,
+    processState: () => "running",
+    now: () => startedAt,
+    randomBytes: () => Buffer.alloc(16, 9),
+  });
+  assert(unverifiedClaim?.processIdentityVerified === false,
+    "active child without an observable process start time did not retain explicit unverified identity state");
+  let unverifiedTerminateCalls = 0;
+  let unverifiedError = null;
+  try {
+    await terminateManagedJobActiveChild(unverifiedFile, {
+      inspectProcess: () => ({ current: true, alive: true, reason: "current_process" }),
+      processState: () => "running",
+      terminate: () => { unverifiedTerminateCalls += 1; return true; },
+    });
+  } catch (error) { unverifiedError = error; }
+  assert(unverifiedError && unverifiedTerminateCalls === 0 && await exists(unverifiedFile),
+    "unverified active-child identity was treated as destructive recovery authority instead of remaining ambiguous");
+  assert(managedJobActiveChildRecoveryReady(unverifiedFile, {
+    inspectProcess: () => ({ current: false, alive: false, reason: "not_running" }),
+    processState: () => "unknown",
+  }) === true && !(await exists(unverifiedFile)),
+  "stopped child with unverified launch identity did not become safely recoverable once liveness was definitively absent");
 }
 
 function testDependencyPlanBackwardCompatibility() {
@@ -2324,44 +2352,47 @@ try {
   assert(Number.isFinite(ownerTimingRead.result.steps[0].resource_admission_ms),
     "owner managed-job read lost resource admission timing needed for queue diagnosis");
 
-  const descendantPidFile = join(workspace, "managed-descendant.pid");
-  const treeOrderFile = join(workspace, "managed-tree-order.txt");
-  const treeJobRoot = join(root, "tree-timeout-jobs");
-  const treeManager = createManagedJobTestManager({
-    jobRoot: treeJobRoot,
-    workspace,
-    policy: { allowWrite: true, execMode: "direct", minimalEnv: false, unrestrictedPaths: true },
-    resources: {},
-    recover: false,
-    // This fixture measures real process-tree timeout/escalation, not nested V8 instrumentation latency.
-    runnerSpawnProcess: spawnManagedJobTestRunnerWithoutCoverage,
-  });
-  const treeTimeout = treeManager.start({
-    name: "timeout terminates descendants",
-    steps: [{
-      argv: [process.execPath, "-e", `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`, descendantPidFile],
-      timeout_seconds: MANAGED_JOB_TREE_TIMEOUT_SECONDS,
-    }],
-    finally_steps: [{
-      argv: [process.execPath, "-e", "const { readFileSync, writeFileSync } = require('node:fs'); const pid = Number(readFileSync(process.argv[1],'utf8')); let alive = false; try { process.kill(pid,0); alive = true; } catch {} writeFileSync(process.argv[2], alive ? 'alive' : 'dead');", descendantPidFile, treeOrderFile],
-      timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
-    }],
-  });
-  await waitForRunning(treeManager, treeTimeout.job_id);
-  const treeRunnerClaim = JSON.parse(await readFile(join(treeJobRoot, treeTimeout.job_id, "runner.pid"), "utf8"));
-  const treeRunnerPid = Number(treeRunnerClaim.pid);
-  assert(Number.isInteger(treeRunnerPid) && treeRunnerPid > 0, "managed job private runner claim omitted the runner pid");
-  assert(typeof treeRunnerClaim.processStartedAt === "string" && !("launchToken" in treeRunnerClaim),
-    "runner did not atomically upgrade its provisional claim to an exact token-free identity");
-  const descendantPid = Number(await waitForManagedJobFixtureFileText(treeManager, treeTimeout.job_id, descendantPidFile, MANAGED_JOB_TREE_READY_MS));
-  assert(Number.isInteger(descendantPid) && descendantPid > 0, "managed job process-tree fixture published an invalid descendant pid");
-  const treeTimeoutResult = await waitForJob(treeManager, treeTimeout.job_id, null, MANAGED_JOB_TEST_WAIT_MS);
-  assert(treeTimeoutResult.result.steps[0].timed_out === true, "managed job process-tree fixture did not time out");
-  await waitForPidExit(descendantPid, MANAGED_JOB_TEST_WAIT_MS);
-  await waitForPidExit(treeRunnerPid, MANAGED_JOB_TEST_WAIT_MS);
-  const treeOrder = (await readFile(treeOrderFile, "utf8")).trim();
-  assert(treeOrder === "dead",
-    `managed job cleanup began before timed-out descendants settled: ${treeOrder}`);
+  const processStateObservable = process.platform === "win32" || processState(process.pid) === "running";
+  if (processStateObservable) {
+    const descendantPidFile = join(workspace, "managed-descendant.pid");
+    const treeOrderFile = join(workspace, "managed-tree-order.txt");
+    const treeJobRoot = join(root, "tree-timeout-jobs");
+    const treeManager = createManagedJobTestManager({
+      jobRoot: treeJobRoot,
+      workspace,
+      policy: { allowWrite: true, execMode: "direct", minimalEnv: false, unrestrictedPaths: true },
+      resources: {},
+      recover: false,
+      // This fixture measures real process-tree timeout/escalation, not nested V8 instrumentation latency.
+      runnerSpawnProcess: spawnManagedJobTestRunnerWithoutCoverage,
+    });
+    const treeTimeout = treeManager.start({
+      name: "timeout terminates descendants",
+      steps: [{
+        argv: [process.execPath, "-e", `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`, descendantPidFile],
+        timeout_seconds: MANAGED_JOB_TREE_TIMEOUT_SECONDS,
+      }],
+      finally_steps: [{
+        argv: [process.execPath, "-e", "const { readFileSync, writeFileSync } = require('node:fs'); const pid = Number(readFileSync(process.argv[1],'utf8')); let alive = false; try { process.kill(pid,0); alive = true; } catch {} writeFileSync(process.argv[2], alive ? 'alive' : 'dead');", descendantPidFile, treeOrderFile],
+        timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+      }],
+    });
+    await waitForRunning(treeManager, treeTimeout.job_id);
+    const treeRunnerClaim = JSON.parse(await readFile(join(treeJobRoot, treeTimeout.job_id, "runner.pid"), "utf8"));
+    const treeRunnerPid = Number(treeRunnerClaim.pid);
+    assert(Number.isInteger(treeRunnerPid) && treeRunnerPid > 0, "managed job private runner claim omitted the runner pid");
+    assert(typeof treeRunnerClaim.processStartedAt === "string" && !("launchToken" in treeRunnerClaim),
+      "runner did not atomically upgrade its provisional claim to an exact token-free identity");
+    const descendantPid = Number(await waitForManagedJobFixtureFileText(treeManager, treeTimeout.job_id, descendantPidFile, MANAGED_JOB_TREE_READY_MS));
+    assert(Number.isInteger(descendantPid) && descendantPid > 0, "managed job process-tree fixture published an invalid descendant pid");
+    const treeTimeoutResult = await waitForJob(treeManager, treeTimeout.job_id, null, MANAGED_JOB_TEST_WAIT_MS);
+    assert(treeTimeoutResult.result.steps[0].timed_out === true, "managed job process-tree fixture did not time out");
+    await waitForPidExit(descendantPid, MANAGED_JOB_TEST_WAIT_MS);
+    await waitForPidExit(treeRunnerPid, MANAGED_JOB_TEST_WAIT_MS);
+    const treeOrder = (await readFile(treeOrderFile, "utf8")).trim();
+    assert(treeOrder === "dead",
+      `managed job cleanup began before timed-out descendants settled: ${treeOrder}`);
+  }
 
   const cancellable = manager.start({
     name: "cancel with cleanup",
@@ -2627,7 +2658,6 @@ try {
   const corruptStatus = JSON.parse(await readFile(join(corruptDir, "status.json"), "utf8"));
   assert(corruptStatus.status === "runner_failed", `corrupt plan did not become runner_failed: ${corruptStatus.status}`);
   assert(!(await exists(join(corruptDir, "plan.json"))) && !(await exists(join(corruptDir, "runner.pid"))), "fatal runner retained active execution metadata");
-
   if (process.platform !== "win32") {
     const insecure = join(root, "insecure-resource.txt");
     await writeFile(insecure, "not-secret", { mode: 0o644 });
@@ -2795,6 +2825,7 @@ async function waitForPidExit(pid, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { process.kill(pid, 0); } catch { return; }
+    if (process.platform !== "win32" && processState(pid) === "zombie") return;
     await delay(50);
   }
   throw new Error(`timed out waiting for runner pid ${pid} to exit`);

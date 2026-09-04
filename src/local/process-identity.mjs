@@ -40,7 +40,7 @@ export async function processStartTimeMsAsync(pid) {
 }
 
 export async function sampleProcessStartTimesAsync(options = {}) {
-  const run = typeof options.run === "function" ? options.run : runBoundedAsync;
+  const run = typeof options.run === "function" ? options.run : ((command, args) => runBoundedAsync(command, args, options));
   const [command, args] = processStartSnapshotCommand(options.platform || process.platform);
   const result = await run(command, args);
   if (!result?.ok) return null;
@@ -206,13 +206,18 @@ function runBounded(command, args) {
   return { ok: !result.error && result.status === 0, stdout: String(result.stdout || "") };
 }
 
-function runBoundedAsync(command, args) {
+function runBoundedAsync(command, args, options = {}) {
+  const execute = typeof options.execFile === "function" ? options.execFile : execFile;
   return new Promise((resolvePromise) => {
-    execFile(command, args, {
-      encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL",
-      maxBuffer: COMMAND_OUTPUT_BYTES, windowsHide: true,
-      env: process.platform === "win32" ? process.env : { ...process.env, LC_ALL: "C", LANG: "C" },
-    }, (error, stdout) => resolvePromise({ ok: !error, stdout: String(stdout || "") }));
+    try {
+      execute(command, args, {
+        encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL",
+        maxBuffer: COMMAND_OUTPUT_BYTES, windowsHide: true,
+        env: process.platform === "win32" ? process.env : { ...process.env, LC_ALL: "C", LANG: "C" },
+      }, (error, stdout) => resolvePromise({ ok: !error, stdout: String(stdout || "") }));
+    } catch {
+      resolvePromise({ ok: false, stdout: "" });
+    }
   });
 }
 

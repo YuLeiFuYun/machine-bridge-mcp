@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../scripts/check-plan.mjs";
@@ -49,6 +50,25 @@ if ((cliActivateSource.match(/provisionInitialOwner: false/g) || []).length !== 
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+const workflowBundleLifecycle = JSON.parse(readFileSync(join(root, "workflow-bundle.json"), "utf8"));
+const trackedRepositoryFiles = new Set(
+  execFileSync("git", ["-c", "core.fsmonitor=false", "ls-files", "-z", "--cached"], {
+    cwd: root,
+    encoding: "utf8",
+  }).split("\0").filter(Boolean),
+);
+if (!trackedRepositoryFiles.has("workflow-bundle.json")) {
+  throw new Error("repository-native verification authority must be tracked in workflow-bundle.json");
+}
+const lifecycleById = new Map(
+  (workflowBundleLifecycle.lifecycle || []).map((stage) => [String(stage.id), stage]),
+);
+for (const id of ["project-native:npm:check:fast", "project-native:npm:check:full"]) {
+  const stage = lifecycleById.get(id);
+  if (!stage || stage.command?.sandbox !== "required" || !(stage.required_for || []).includes("local_ready")) {
+    throw new Error(`${id} must remain a tracked local_ready gate with required Seatbelt containment`);
+  }
+}
 if ((packageJson.files || []).some((entry) => {
   const normalized = String(entry).replace(/^\.\//, "").replace(/\/$/, "");
   return normalized === "tests" || normalized.startsWith("tests/");
@@ -155,6 +175,8 @@ const workerMcpConfigSource = readFileSync(join(root, "src", "worker", "worker-m
 const mcpControllerSource = readFileSync(join(root, "src", "worker", "mcp-controller.ts"), "utf8");
 const mcpJobMonitorUiSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-ui.ts"), "utf8");
 const mcpJobMonitorClaimsSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-claims.ts"), "utf8");
+const mcpJobMonitorStoreSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-store.ts"), "utf8");
+const mcpJobMonitorStatusSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-status.ts"), "utf8");
 const mcpJobMonitorToolsSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-tools.ts"), "utf8");
 const managedJobHostedAuthoritySource = readFileSync(join(root, "src", "worker", "managed-job-hosted-authority.ts"), "utf8");
 const mcpSubscriptionCapacitySource = readFileSync(join(root, "src", "worker", "mcp-subscription-capacity.ts"), "utf8");
@@ -165,22 +187,37 @@ if (!workerMcpConfigSource.includes("MCP_DISCOVERY_TTL_MS = 0") || !workerMcpCon
 for (const required of ["MCP_UI_EXTENSION_ID", "MCP_APP_MIME_TYPE", "resources: Object.freeze({})", "extensions: Object.freeze"]) {
   if (!workerMcpConfigSource.includes(required)) throw new Error(`Worker lost MCP Apps managed-job monitor capability wiring: ${required}`);
 }
-for (const required of ["io.modelcontextprotocol/ui", "text/html;profile=mcp-app", "hostCapabilities?.serverTools", 'name:"claim_job_monitor"', 'name:"read_job"', "wait_ms:40000", "ui/initialize", "ui/notifications/initialized", "ui/resource-teardown", "projectManagedJobMonitorHandoff", "openai/widgetAccessible", "openai/widgetCSP", "openai/widgetPrefersBorder"]) {
+for (const required of ["io.modelcontextprotocol/ui", "text/html;profile=mcp-app", "hostCapabilities?.serverTools", 'name:"claim_job_monitor"', 'name:"read_job_monitor"', "retryDelays=[1000,2000,4000,8000,15000,30000]", "claimRetryDelays=[1000,2000,4000,8000,15000]", "initResponseTimeoutMs=30000", "readResponseTimeoutMs=60000", "claimResponseTimeoutMs=30000", "host tool response timeout", "retryAttempt>=retryDelays.length", "claimRetryAttempt>=claimRetryDelays.length", "scheduleReadRetry", "scheduleClaimRetry", 'if(error?.retryable===true){scheduleClaimRetry();return;}', "error?.retryable===true", "inputBound", "displayStatus", "clearPending", "ui/initialize", "ui/notifications/initialized", "ui/resource-teardown", "projectManagedJobMonitorHandoff", "openai/widgetAccessible", "openai/widgetCSP", "openai/widgetPrefersBorder"]) {
   if (!mcpJobMonitorUiSource.includes(required)) throw new Error(`managed-job monitor lost two-phase hosted continuation behavior: ${required}`);
 }
-for (const forbidden of ["sendFollowUpMessage", "ui/message", "http://", "https://"]) {
+for (const forbidden of ['name:"read_job"', 'method==="ui/notifications/tool-result"', "cleanForDisplay", "Monitor initialization failed:", "String(error?.message", "sendFollowUpMessage", "ui/message", "http://", "https://"]) {
   if (mcpJobMonitorUiSource.includes(forbidden)) throw new Error(`managed-job monitor regained unsupported autonomous/external delivery behavior: ${forbidden}`);
 }
-for (const required of ["JOB_MONITOR_CLAIM_TTL_MS = 5 * 60 * 1000", "JOB_MONITOR_ID_PATTERN", "MAX_JOB_MONITOR_CLAIMS = 128", "WeakMap<object, ManagedJobMonitorClaims>", "claimsFor(scope)", "issueManagedJobMonitor", "activateManagedJobMonitor", "verifyManagedJobCapability", "validManagedJobMonitorId", "crypto.getRandomValues", 'state: "issued" | "active" | "claimed"', 'issued.state !== "issued"', 'state: "active"', 'state: "claimed"', "render instance is not active", "monitorId", "managed-job monitor recovery authority is invalid", "owner_account_id", "owner_client_id", "owner_family_id"]) {
+for (const required of ["JOB_MONITOR_ID_PATTERN", "ManagedJobMonitorClaimStore", "issueManagedJobMonitorIfAvailable", "hasManagedJobMonitorClaimIfAvailable", "cancelManagedJobMonitorClaimsIfAvailable", "observeCoordinationFailure", "activateManagedJobMonitor", "refreshManagedJobMonitorClaim", "verifyManagedJobCapability", "validManagedJobMonitorId", "render instance is not active", "managed-job monitor recovery authority is invalid"]) {
   if (!mcpJobMonitorClaimsSource.includes(required)) throw new Error(`managed-job monitor claim lost bounded principal/capability proof: ${required}`);
 }
 for (const forbidden of ["callDaemonTool", "recovery_key: recovery", "result:"]) {
   if (mcpJobMonitorClaimsSource.includes(forbidden)) throw new Error(`managed-job monitor claim crossed its Worker-only/no-result boundary: ${forbidden}`);
 }
-for (const required of ["render_job_monitor", "claim_job_monitor", "JOB_MONITOR_ID_PATTERN", "verifyManagedJobCapability", "activateManagedJobMonitor", "validManagedJobMonitorId", "openai/outputTemplate", "openai/widgetAccessible", "ui_monitor_id", "follow_up_read_required"]) {
-  if (!mcpJobMonitorToolsSource.includes(required)) throw new Error(`managed-job monitor render/claim tool contract lost required behavior: ${required}`);
+for (const required of ["JOB_MONITOR_CLAIM_TTL_MS = 5 * 60 * 1000", "MAX_JOB_MONITOR_CLAIMS = 128", 'STORE_KEY = "managed-job-monitor-claims-v1"', "storage.transaction", "recordMatchesAuthorityRevocation", "managed-job monitor durable state is invalid", "validClaimSet", "monitorIds.size", "sequences.size", "claim.sequence <= sequence", "crypto.getRandomValues", 'state: "issued" | "active" | "claimed"', 'state: "claimed"', "owner_account_id", "owner_client_id", "owner_family_id", "matchesAuthorized", "prune(state, now)"]) {
+  if (!mcpJobMonitorStoreSource.includes(required)) throw new Error(`managed-job monitor durable store lost bounded/principal/isolate-continuity behavior: ${required}`);
 }
-for (const required of ["ui_monitor_candidate", "ui_monitor_claim_required", "ui_monitor_render_tool", "ui_monitor_id: monitorId", "issueManagedJobMonitor", "uiMonitorScope", "uiMonitorClaimed", "projectManagedJobMonitorHandoff", "delete projected.ui_monitor_id"]) {
+for (const forbidden of ["WeakMap", "recovery_key", "callDaemonTool"]) {
+  if (mcpJobMonitorStoreSource.includes(forbidden)) throw new Error(`managed-job monitor durable store crossed its metadata-only persistence boundary: ${forbidden}`);
+}
+for (const required of ["projectManagedJobMonitorStatus", "expectedJobId", "current_phase", "dependency_pending_count", "finished_at", "error_class", "managed-job monitor status is unavailable", "WorkerToolError"]) {
+  if (!mcpJobMonitorStatusSource.includes(required)) throw new Error(`managed-job monitor status projection lost bounded output behavior: ${required}`);
+}
+for (const forbidden of ["stdout", "stderr", "command", "recovery_key", "control_key", "private_path"]) {
+  if (mcpJobMonitorStatusSource.includes(forbidden)) throw new Error(`managed-job monitor status projection can expose job payload material: ${forbidden}`);
+}
+for (const required of ["render_job_monitor", "claim_job_monitor", "read_job_monitor", "privacy-bounded status projection", "outputSchema", "additionalProperties: false", "JOB_MONITOR_ID_PATTERN", "verifyManagedJobCapability", "activateManagedJobMonitor", "refreshManagedJobMonitorClaim", "managed-job monitor claim is not current", "validManagedJobMonitorId", "openai/outputTemplate", "openai/widgetAccessible", "ui_monitor_id", "follow_up_read_required", "defaultManagedJobReadWaitMs", '$mcpText: ""']) {
+  if (!mcpJobMonitorToolsSource.includes(required)) throw new Error(`managed-job monitor render/claim/read tool contract lost required behavior: ${required}`);
+}
+for (const forbidden of ["openai/toolInvocation/invoking", "openai/toolInvocation/invoked", "Durable job monitor opened."]) {
+  if (mcpJobMonitorToolsSource.includes(forbidden)) throw new Error(`managed-job monitor reintroduced host task-status prose: ${forbidden}`);
+}
+for (const required of ["ui_monitor_candidate", "ui_monitor_claim_required", "ui_monitor_render_tool", "ui_monitor_id: monitorId", "issueManagedJobMonitorIfAvailable", "onMonitorCoordinationFailure", "if (!monitorId) return projected", "uiMonitorStore", "uiMonitorClaimed", "projectManagedJobMonitorHandoff", "delete projected.ui_monitor_id"]) {
   if (!managedJobHostedAuthoritySource.includes(required)) throw new Error(`hosted managed-job projection lost pre-issued two-phase UI handoff: ${required}`);
 }
 if (managedJobHostedAuthoritySource.includes("!supportsManagedJobMonitor(options.clientCapabilities)) return projected;\n  return {\n    ...projected,\n    follow_up_read_required: false")) {
@@ -983,6 +1020,12 @@ if ([candidateWorkerAuthPreflight, candidateReleaseRuntimeLock, candidatePersist
     || candidateInstallCall > candidatePersistentActivationCall) {
   throw new Error("persistent candidate activation lost pre-handoff Wrangler authentication or escaped the global release-runtime lock");
 }
+const candidateWorkerAuthPreflightEnd = candidateStartSource.indexOf("    });", candidateWorkerAuthPreflight);
+const candidateWorkerAuthPreflightSource = candidateStartSource.slice(candidateWorkerAuthPreflight, candidateWorkerAuthPreflightEnd + 7);
+if (candidateWorkerAuthPreflightEnd < 0
+    || candidateWorkerAuthPreflightSource.includes("npmCli")) {
+  throw new Error("persistent candidate Wrangler authentication must use the toolchain-owned hardened npm rather than the ephemeral release npm session");
+}
 const persistentActivationAuthSource = readFileSync(join(root, "scripts", "persistent-activation-process.mjs"), "utf8");
 for (const required of ["preflightPersistentActivationWorkerAuth", "EXECUTION_SURFACE.managedJob", '["whoami"]', '["login"]', "worker_authentication_required", "sideEffectsStarted = false"]) {
   if (!persistentActivationAuthSource.includes(required)) throw new Error(`persistent activation Wrangler-auth preflight drifted: ${required}`);
@@ -1747,8 +1790,11 @@ const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.
 if (!installSmokeSource.includes("package-free-cwd") || !installSmokeSource.includes('pkg.engines?.npm !== ">=12.0.0"')) {
   throw new Error("global install test no longer validates package-free npm 12 installation metadata");
 }
-for (const required of ["assertInstalledDefaultStartup", "node_modules", "wrangler", "bin", "wrangler.js", "startup-probe-wrangler", "installed zero-argument startup", "ReferenceError", "is not defined"]) {
+for (const required of ["process.env.npm_execpath", "packOfflineProductionClosure", '"--offline"', '"--global"', "assertInstalledDefaultStartup", "ensureWorkerDeployment", "startup-probe-worker-deployment", "installed zero-argument startup", "ReferenceError", "is not defined"]) {
   if (!installSmokeSource.includes(required)) throw new Error(`global install test lost default-startup assertion: ${required}`);
+}
+if (installSmokeSource.includes("prepareHardenedNpm") || installSmokeSource.includes("verifyConsumerTarball")) {
+  throw new Error("global install smoke regained online hardened-npm or consumer-audit work already owned by dedicated release/security gates");
 }
 for (const file of [join(root, "README.md"), join(root, "docs", "OPERATIONS.md")]) {
   const guidance = readFileSync(file, "utf8").replace(/\s+/g, " ");
@@ -2154,7 +2200,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 23"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 25"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],
@@ -2430,6 +2476,13 @@ for (const forbidden of ["prerelease:release -- --owner-confirm", "npm run relea
   if (agentContract.includes(forbidden)) throw new Error(`repository automation contract retained obsolete non-npm authorization gate: ${forbidden}`);
 }
 for (const [label, contract] of [["project standards", projectStandards], ["repository automation contract", agentContract]]) {
+  for (const required of [
+    "Job polling ownership is not task ownership",
+    "must not render the monitor merely to shorten",
+    "terminal result",
+  ]) {
+    if (!contract.includes(required)) throw new Error(`${label} omitted task-level continuity rule: ${required}`);
+  }
   for (const forbidden of [
     "read an active job at most once",
     "stop polling until a later user turn",
