@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import process from "node:process";
@@ -118,17 +118,17 @@ export function parseWorkerTypesArguments(args = []) {
 
 function seedRuntimeCacheIfNeeded(targetPath, trustedSeed) {
   if (!existsSync(targetPath)) {
-    writeFileSync(targetPath, trustedSeed.payload, { mode: 0o600 });
+    atomicWriteText(targetPath, trustedSeed.payload, 0o600);
     return;
   }
   let current;
   try {
     current = extractRuntimePayload(strictUtf8(readFileSync(targetPath), "existing Worker types"));
   } catch {
-    writeFileSync(targetPath, trustedSeed.payload, { mode: 0o600 });
+    atomicWriteText(targetPath, trustedSeed.payload, 0o600);
     return;
   }
-  if (current.payload !== trustedSeed.payload) writeFileSync(targetPath, trustedSeed.payload, { mode: 0o600 });
+  if (current.payload !== trustedSeed.payload) atomicWriteText(targetPath, trustedSeed.payload, 0o600);
 }
 
 function decodeRuntimeSeed(seedPath, expectedHeader) {
@@ -185,11 +185,21 @@ function expectedRuntimeHeader({ configPath, workerdPackagePath }) {
   return `// Runtime types generated with workerd@${workerd.version} ${date}${flags.length ? ` ${flags.join(",")}` : ""}`;
 }
 
-function snapshotFile(path) {
-  if (!existsSync(path)) return { exists: false, bytes: null, mode: null };
-  const status = statSync(path);
-  if (!status.isFile()) throw new Error("Worker types state target must be a regular file");
-  return { exists: true, bytes: readFileSync(path), mode: status.mode & 0o777 };
+function snapshotFile(filePath) {
+  let descriptor;
+  try {
+    descriptor = openSync(filePath, "r");
+  } catch (error) {
+    if (error?.code === "ENOENT") return { exists: false, bytes: null, mode: null };
+    throw error;
+  }
+  try {
+    const status = fstatSync(descriptor);
+    if (!status.isFile()) throw new Error("Worker types state target must be a regular file");
+    return { exists: true, bytes: readFileSync(descriptor), mode: status.mode & 0o777 };
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function restoreFile(path, snapshot) {

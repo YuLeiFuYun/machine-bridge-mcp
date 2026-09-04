@@ -2232,18 +2232,30 @@ async function testProcessTreeSupervisor() {
   assert(groupSignals[0].pid === -child.pid && groupSignals[0].signal === "SIGTERM", "POSIX termination did not target the child process group");
 
   const forceKiller = new EventEmitter();
+  const forceDescendantSweep = new EventEmitter();
   let forceKillSettled = false;
+  let forceSpawnCount = 0;
   const windowsForceBarrier = terminateProcessTreeAndWait(child, "SIGKILL", {
     platform: "win32",
     spawnProcess(command, args, options) {
-      assert(command === "taskkill.exe" && args.includes("/T") && args.includes("/F") && options.shell === false,
-        "Windows hard tree barrier did not use forced taskkill tree semantics");
-      return forceKiller;
+      forceSpawnCount += 1;
+      if (forceSpawnCount === 1) {
+        assert(command === "taskkill.exe" && args.includes("/T") && args.includes("/F") && options.shell === false,
+          "Windows hard tree barrier did not use forced taskkill tree semantics");
+        return forceKiller;
+      }
+      assert(forceSpawnCount === 2 && command === "powershell.exe" && args.includes("-NonInteractive")
+        && args.some((entry) => entry.includes("Get-CimInstance Win32_Process")) && options.shell === false,
+      "Windows hard tree barrier did not verify and force surviving descendants after taskkill");
+      return forceDescendantSweep;
     },
   }).then((value) => { forceKillSettled = value; return value; });
   await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
   assert(forceKillSettled === false, "Windows hard tree barrier settled before taskkill helper completion");
   forceKiller.emit("close", 0);
+  await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+  assert(forceKillSettled === false, "Windows hard tree barrier settled before descendant sweep completion");
+  forceDescendantSweep.emit("close", 0);
   assert(await windowsForceBarrier, "Windows hard tree barrier did not accept successful taskkill completion");
 }
 
