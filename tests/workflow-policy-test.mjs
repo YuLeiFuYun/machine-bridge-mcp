@@ -18,7 +18,7 @@ assert.deepEqual(verified.files, [
 ]);
 assert(verified.actions >= 20, "workflow policy action inventory unexpectedly shrank");
 
-verifyWorkflowCheckoutAttributes();
+verifyCheckoutAttributes();
 
 withFixture((fixture) => {
   replace(
@@ -164,10 +164,11 @@ withFixture((fixture) => {
 
 console.log(`workflow policy test ok (${verified.files.length} workflows, ${verified.actions} pinned action references)`);
 
-function verifyWorkflowCheckoutAttributes() {
+function verifyCheckoutAttributes() {
   const paths = [
     ".github/workflows/ci.yml",
     ".github/workflows/example.yaml",
+    "toolchain/worker-runtime-types-seed.b64",
   ];
   const result = spawnSync("git", ["check-attr", "text", "eol", "--", ...paths], {
     cwd: root,
