@@ -10,6 +10,7 @@ import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } 
 import { applyResourceProfileEnv, resourceCommandEffectiveCwd, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
 import { freshResourceHostSnapshot } from "../src/local/resource-host-cache.mjs";
 import { readResourceHostSample } from "../src/local/resource-host-sample-file.mjs";
+import { readResourceStateJson } from "../src/local/resource-state-file.mjs";
 import { sampleDarwinHostAsync } from "../src/local/resource-host-darwin.mjs";
 import { sampleLinuxHost } from "../src/local/resource-host-linux.mjs";
 import { aggregateResourceLeases, resourceLeaseAccountingContext, resourceRequestIncrement } from "../src/local/resource-lease-accounting.mjs";
@@ -19,6 +20,7 @@ import { fitElasticRequestToPressure, isElasticCompilerRequest, markElasticCompi
 import { mavenCoreMultiplierPlan } from "../src/local/resource-maven-concurrency.mjs";
 import { ninjaJobserverPlan } from "../src/local/resource-ninja-concurrency.mjs";
 import { cachedResourceProcessParentSamplerAsync, cachedResourceProcessSnapshotSamplerAsync } from "../src/local/resource-process-ancestry-cache.mjs";
+import { runResourceProbeAsync } from "../src/local/resource-probe-command.mjs";
 import { parseResourceProcessParents, sampleResourceProcessParentsAsync } from "../src/local/resource-process-ancestry.mjs";
 import { normalizeResourceProjectIdentity, resourceProjectContentionKey, resourceProjectHash, resourceProjectIdentityHash, resourceRequestForProject } from "../src/local/resource-project-key.mjs";
 import { sampleResourceHostAsync } from "../src/local/resource-host-snapshot.mjs";
@@ -63,6 +65,22 @@ assert.equal(readResourceHostSample("/synthetic/missing-host-sample.json", {
 assert.throws(() => readResourceHostSample("/synthetic/malformed-host-sample.json", {
   readFile: () => Buffer.from("not-json"),
 }), SyntaxError, "resource host sample retry masked malformed cache content");
+let resourceStateSecurityReads = 0;
+assert.throws(() => readResourceStateJson("/synthetic/denied.json", 4096, "resource state", {
+  readFile: () => {
+    resourceStateSecurityReads += 1;
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  },
+}), /denied/, "resource state reader retried a permission failure");
+assert.equal(resourceStateSecurityReads, 1, "resource state reader retried a non-generation security failure");
+let resourceStateLinkReads = 0;
+assert.throws(() => readResourceStateJson("/synthetic/linked.json", 4096, "resource state", {
+  readFile: () => {
+    resourceStateLinkReads += 1;
+    throw Object.assign(new Error("multiple hard links"), { code: "MBM_MULTIPLE_HARD_LINKS" });
+  },
+}), /multiple hard links/, "resource state reader retried an insecure hard-link state");
+assert.equal(resourceStateLinkReads, 1, "resource state reader retried a non-generation link failure");
 assert.equal(foregroundResourceWaitMs(60_000), 10_000, "default 60-second foreground work retained the interruption-prone two-second admission window");
 assert.equal(foregroundResourceWaitMs(30_000), 6_000, "foreground admission budget did not scale with the execution deadline");
 assert.equal(foregroundResourceWaitMs(10_000), 2_000, "short foreground work gained an excessive resource-admission delay");
@@ -813,6 +831,12 @@ assert.deepEqual(observedProcessParentProbe, process.platform === "win32"
 assert.equal(await sampleResourceProcessParentsAsync({
   run: async () => ({ ok: false, stdout: "" }),
 }), null, "failed async process-parent sampling did not retain the conservative no-graph fallback");
+assert.equal(await sampleProcessStartTimesAsync({
+  execFile: () => { throw Object.assign(new Error("synthetic sandbox denial"), { code: "EPERM" }); },
+}), null, "synchronous process start-time probe denial did not retain the conservative no-snapshot fallback");
+assert.deepEqual(await runResourceProbeAsync("ps", ["-axo", "pid=,ppid="], {
+  execFile: () => { throw Object.assign(new Error("synthetic sandbox denial"), { code: "EPERM" }); },
+}), { ok: false, stdout: "" }, "synchronous resource probe spawn denial did not degrade to a conservative failed probe");
 let asyncAncestryClock = 20_000;
 let asyncAncestrySamples = 0;
 let finishAsyncAncestry;
@@ -1518,29 +1542,32 @@ try {
     snapshot = await coordinator.snapshot({ cwd: root });
     assert.equal(snapshot.active_leases, 0, "dead released process group lease was not pruned");
 
-    const reusedGroupLease = await coordinator.acquire(resourceCommandProfile(process.execPath, ["-e", "setTimeout(() => {}, 10_000)"]), { cwd: root });
-    const reusedGroupChild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10_000)"], { detached: true, stdio: "ignore" });
-    await new Promise((resolvePromise, rejectPromise) => {
-      reusedGroupChild.once("spawn", resolvePromise);
-      reusedGroupChild.once("error", rejectPromise);
-    });
-    let reusedGroupCleanupError = null;
-    try {
-      await reusedGroupLease.bindProcess(reusedGroupChild, { processGroupIsolated: true });
-      const reusedGroupPath = join(root, "leases", `lease_${reusedGroupLease.id}.json`);
-      const reusedGroupRecord = JSON.parse(readFileSync(reusedGroupPath, "utf8"));
-      reusedGroupRecord.owner.process_started_at = new Date(Date.parse(reusedGroupRecord.owner.process_started_at) - 60_000).toISOString();
-      writeFileSync(reusedGroupPath, `${JSON.stringify(reusedGroupRecord)}\n`, { mode: 0o600 });
-      assert.equal(await reusedGroupLease.release(), true,
-        "PID-generation mismatch prevented release of an isolated lease whose numeric process group was reused");
-      snapshot = await coordinator.snapshot({ cwd: root });
-      assert.equal(snapshot.active_leases, 0,
-        "a live numeric process group overrode process-generation evidence and kept a stale lease alive");
-    } finally {
-      try { process.kill(-reusedGroupChild.pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") reusedGroupCleanupError = error; }
-      if (reusedGroupChild.exitCode === null) await new Promise((resolvePromise) => { reusedGroupChild.once("close", resolvePromise); });
+    const processStartSnapshotObservable = await sampleProcessStartTimesAsync();
+    if (processStartSnapshotObservable) {
+      const reusedGroupLease = await coordinator.acquire(resourceCommandProfile(process.execPath, ["-e", "setTimeout(() => {}, 10_000)"]), { cwd: root });
+      const reusedGroupChild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10_000)"], { detached: true, stdio: "ignore" });
+      await new Promise((resolvePromise, rejectPromise) => {
+        reusedGroupChild.once("spawn", resolvePromise);
+        reusedGroupChild.once("error", rejectPromise);
+      });
+      let reusedGroupCleanupError = null;
+      try {
+        await reusedGroupLease.bindProcess(reusedGroupChild, { processGroupIsolated: true });
+        const reusedGroupPath = join(root, "leases", `lease_${reusedGroupLease.id}.json`);
+        const reusedGroupRecord = JSON.parse(readFileSync(reusedGroupPath, "utf8"));
+        reusedGroupRecord.owner.process_started_at = new Date(Date.parse(reusedGroupRecord.owner.process_started_at) - 60_000).toISOString();
+        writeFileSync(reusedGroupPath, `${JSON.stringify(reusedGroupRecord)}\n`, { mode: 0o600 });
+        assert.equal(await reusedGroupLease.release(), true,
+          "PID-generation mismatch prevented release of an isolated lease whose numeric process group was reused");
+        snapshot = await coordinator.snapshot({ cwd: root });
+        assert.equal(snapshot.active_leases, 0,
+          "a live numeric process group overrode process-generation evidence and kept a stale lease alive");
+      } finally {
+        try { process.kill(-reusedGroupChild.pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") reusedGroupCleanupError = error; }
+        if (reusedGroupChild.exitCode === null) await new Promise((resolvePromise) => { reusedGroupChild.once("close", resolvePromise); });
+      }
+      if (reusedGroupCleanupError) throw reusedGroupCleanupError;
     }
-    if (reusedGroupCleanupError) throw reusedGroupCleanupError;
   }
 
   const committedId = "a".repeat(32);
@@ -1574,6 +1601,34 @@ try {
   assert.equal(readFileSync(replacement, "utf8"), replacementBefore, "staging recovery modified the published target");
   assert.equal(await import("node:fs").then((fs) => fs.existsSync(replacementStaging)), false, "dead replacement staging file was not recovered");
   await replacementLease.release();
+
+  const legacyLease = await coordinator.acquire(cargo, { cwd: root });
+  const legacyTarget = join(root, "leases", `lease_${legacyLease.id}.json`);
+  const legacyValue = JSON.parse(readFileSync(legacyTarget, "utf8"));
+  legacyValue.owner = {
+    kind: "provisional",
+    pid: 99999999,
+    process_started_at: new Date(now - 60_000).toISOString(),
+  };
+  legacyValue.acquired_at = new Date(now - 60_000).toISOString();
+  writeFileSync(legacyTarget, `${JSON.stringify(legacyValue)}\n`, { mode: 0o600 });
+  const legacyStaging = join(root, "leases", `.lease_${legacyLease.id}.json.skt8wwdl.tmp`);
+  writeFileSync(legacyStaging, "", { mode: 0o600 });
+  snapshot = await coordinator.snapshot({ cwd: root });
+  assert.equal(snapshot.active_leases, 0, "stale legacy Workflow Bundle lease survived migration recovery");
+  assert.equal(await import("node:fs").then((fs) => fs.existsSync(legacyStaging)), false,
+    "legacy Workflow Bundle staging artifact was not recovered");
+
+  const liveLegacyLease = await coordinator.acquire(cargo, { cwd: root });
+  const liveLegacyStaging = join(root, "leases", `.lease_${liveLegacyLease.id}.json.abcdefgh.tmp`);
+  writeFileSync(liveLegacyStaging, "", { mode: 0o600 });
+  await assert.rejects(
+    () => coordinator.snapshot({ cwd: root }),
+    (error) => error?.code === RESOURCE_STAGING_BUSY_CODE && /legacy resource coordinator staging file is still owned by a live publisher/.test(error.message),
+    "live legacy Workflow Bundle publisher staging was reclaimed",
+  );
+  rmSync(liveLegacyStaging, { force: true });
+  await liveLegacyLease.release();
 
   const orphanId = "e".repeat(32);
   const orphanStaging = join(root, "leases", `.lease_${orphanId}.json.99999999.${"f".repeat(16)}.tmp`);

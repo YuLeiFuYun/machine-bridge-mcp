@@ -9,7 +9,7 @@ import {
 } from "./state.mjs";
 import { ensureWorkerDeployment } from "./worker-deployment.mjs";
 
-export async function convergeRemoteConfiguration({ args, state }) {
+export async function convergeRemoteConfiguration({ args, state, ensureWorkerDeployment: ensureWorkerDeploymentImpl = ensureWorkerDeployment }) {
   const workerName = validateWorkerName(args.workerName);
   ensureWorkerSecrets(state, {
     rotateSecrets: Boolean(args.rotateSecrets),
@@ -34,7 +34,7 @@ export async function convergeRemoteConfiguration({ args, state }) {
     format: effectiveLogFormat(args),
     component: "worker",
   });
-  await ensureWorkerDeployment(state, args, { logger });
+  await ensureWorkerDeploymentImpl(state, args, { logger });
   if (promotePendingDeviceIdentity(state)) saveState(state);
 }
 

@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { executionEnv, wranglerCommand } from "../src/local/shell.mjs";
+import { executionEnv, runExecutable, wranglerCommand } from "../src/local/shell.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-wrangler-command-"));
 try {
@@ -40,6 +40,17 @@ try {
     else process.env.MBM_PASS_ENV = previousPassEnv;
     if (previousPrivateValue === undefined) delete process.env.MBM_SHELL_TEST_PRIVATE;
     else process.env.MBM_SHELL_TEST_PRIVATE = previousPrivateValue;
+  }
+  const deniedSpawn = await runExecutable("synthetic-command", [], {
+    capture: true,
+    allowFailure: true,
+    spawnProcess() {
+      throw Object.assign(new Error("synthetic spawn denied"), { code: "EPERM" });
+    },
+  });
+  if (deniedSpawn.code !== 127 || deniedSpawn.timed_out || deniedSpawn.termination_settled !== true
+      || !deniedSpawn.stderr.includes("synthetic spawn denied")) {
+    throw new Error("allowFailure did not convert a synchronous spawn denial into a bounded command result");
   }
   if (process.platform !== "win32") {
     const target = join(root, "real-wrangler.js");

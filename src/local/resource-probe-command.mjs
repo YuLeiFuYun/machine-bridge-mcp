@@ -1,15 +1,20 @@
 import { execFile } from "node:child_process";
 
 export function runResourceProbeAsync(command, args, options = {}) {
+  const execute = typeof options.execFile === "function" ? options.execFile : execFile;
   return new Promise((resolvePromise) => {
-    execFile(command, args, {
+    try {
+      execute(command, args, {
       encoding: "utf8",
       timeout: positive(options.timeoutMs, 2_500),
       killSignal: "SIGKILL",
       maxBuffer: positive(options.maxOutputBytes, 256 * 1024),
       windowsHide: true,
       env: probeEnvironment(),
-    }, (error, stdout) => resolvePromise({ ok: !error, stdout: String(stdout || "") }));
+      }, (error, stdout) => resolvePromise({ ok: !error, stdout: String(stdout || "") }));
+    } catch {
+      resolvePromise({ ok: false, stdout: "" });
+    }
   });
 }
 

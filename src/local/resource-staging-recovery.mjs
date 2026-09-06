@@ -2,6 +2,7 @@ import { lstatSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
+import { recoverLegacyWorkflowBundleLeaseStaging } from "./resource-legacy-staging-recovery.mjs";
 
 const STAGING = /^\.(?<target>(?<kind>lease|wait)_[a-f0-9]{32}\.json)\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
 const FINAL = Object.freeze({ lease: /^lease_[a-f0-9]{32}\.json$/, wait: /^wait_[a-f0-9]{32}\.json$/ });
@@ -14,9 +15,16 @@ export function recoverResourceDirectoryStaging(dir, entries, kind, processStart
   for (const entry of entries) {
     if (entry.isFile() && expected.test(entry.name)) continue;
     const match = entry.isFile() ? STAGING.exec(entry.name) : null;
-    if (!match || match.groups?.kind !== kind) throw new Error(`resource coordinator ${kind} directory contains an unexpected entry`);
-    recoverStagingAlias(dir, entry.name, match.groups.target, Number(match.groups.pid), processStarts);
-    recovered = true;
+    if (match?.groups?.kind === kind) {
+      recoverStagingAlias(dir, entry.name, match.groups.target, Number(match.groups.pid), processStarts);
+      recovered = true;
+      continue;
+    }
+    if (recoverLegacyWorkflowBundleLeaseStaging(dir, entry, kind, processStarts)) {
+      recovered = true;
+      continue;
+    }
+    throw new Error(`resource coordinator ${kind} directory contains an unexpected entry`);
   }
   return recovered;
 }

@@ -2284,11 +2284,48 @@ async function testChildProcessSettlement() {
   assert(refreshed.length === 1 && refreshed[0][0] === 0 && refreshed[0][2] === "exit_fallback",
     "child exit fallback did not refresh a delayed terminal code");
 
+  const defaultScheduled = [];
+  const defaultScheduleGuard = createChildProcessSettlement({
+    fallbackMs: 0,
+    readExitState() { throw new Error("synthetic exit-state read failure"); },
+    onSettle: (...args) => defaultScheduled.push(args),
+  });
+  assert(defaultScheduleGuard.onExit(9, "SIGKILL"), "default child fallback was not scheduled");
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
+  assert(defaultScheduled.length === 1 && defaultScheduled[0][0] === 9 && defaultScheduled[0][1] === "SIGKILL",
+    "throwing exit-state reader did not retain the observed exit event");
+
+  scheduled = null;
+  cleared = null;
+  const cancelledGuard = createChildProcessSettlement({
+    schedule(callback) { scheduled = { callback }; return "cancel-timer"; },
+    clearSchedule(timer) { cleared = timer; },
+    onSettle() { throw new Error("cancelled child settlement unexpectedly settled"); },
+  });
+  assert(cancelledGuard.onExit(null, null) && cancelledGuard.cancel() && cleared === "cancel-timer",
+    "child settlement cancellation did not clear a pending fallback timer");
+  assert(!cancelledGuard.onClose(0, null) && !cancelledGuard.cancel(),
+    "cancelled child settlement accepted a later terminal event");
+
+  scheduled = null;
+  const invalidRefresh = [];
+  const invalidRefreshGuard = createChildProcessSettlement({
+    schedule(callback) { scheduled = { callback }; return "invalid-refresh"; },
+    readExitState: () => ({ code: 1.5, signal: 7 }),
+    onSettle: (...args) => invalidRefresh.push(args),
+  });
+  invalidRefreshGuard.onExit(3, "SIGTERM");
+  scheduled.callback();
+  assert(invalidRefresh[0]?.[0] === 3 && invalidRefresh[0]?.[1] === "SIGTERM",
+    "invalid refreshed terminal identity overrode the original exit event");
+
   assert(childExitedBeforeTimeout({ processState: "zombie" }), "zombie child was not recognized as already exited");
   assert(childExitedBeforeTimeout({ exitCode: 0 }), "known child exit code was not recognized before timeout");
+  assert(childExitedBeforeTimeout({ signalCode: "SIGTERM" }), "known child signal was not recognized before timeout");
   assert(!childExitedBeforeTimeout({ processState: "running" }), "running child bypassed timeout termination");
 
-  if (process.platform !== "win32") {
+  const processStateObservable = process.platform !== "win32" && processState(process.pid) === "running";
+  if (processStateObservable) {
     const marker = join(tmpdir(), `mbm-zombie-child-${process.pid}`);
     const child = spawn(process.execPath, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ok')`], {
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true,

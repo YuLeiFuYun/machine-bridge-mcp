@@ -13,16 +13,30 @@ export function runExecutable(command, args = [], options = {}) {
     const capture = Boolean(options.capture);
     const maxOutputBytes = Number.isFinite(Number(options.maxOutputBytes)) ? Math.max(1024, Number(options.maxOutputBytes)) : 2 * 1024 * 1024;
     const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
-    const child = spawnProcess(executable, argv, {
-      cwd: options.cwd || process.cwd(),
-      env: options.env || process.env,
-      stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
-      shell: false,
-      detached: process.platform !== "win32",
-      windowsHide: true,
-    });
     const stdout = new BoundedOutput(maxOutputBytes);
     const stderr = new BoundedOutput(maxOutputBytes);
+    let child;
+    try {
+      child = spawnProcess(executable, argv, {
+        cwd: options.cwd || process.cwd(),
+        env: options.env || process.env,
+        stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
+        shell: false,
+        detached: process.platform !== "win32",
+        windowsHide: true,
+      });
+    } catch (error) {
+      if (!options.allowFailure) {
+        reject(error);
+        return;
+      }
+      resolve({
+        ...capturedResult(127, stdout, stderr, error?.message || "process spawn failed"),
+        timed_out: false,
+        termination_settled: true,
+      });
+      return;
+    }
     let settled = false;
     let timedOut = false; let childError = null;
     let timer = null;

@@ -1,6 +1,7 @@
 export const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const STAGED_PLAN_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const TRANSIENT_PROCESS_RECOVERY_GRACE_MS = 30 * 60 * 1000;
+export const TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS = 24 * 60 * 60 * 1000;
 export const TRANSIENT_PROCESS_RECOVERY_SLOTS = 16;
 
 export function terminalEvictionPriority(status, protectTransientRecovery = false) {
@@ -12,13 +13,21 @@ export function transientProcessWithinRecoveryGrace(status, fallbackMtime, now =
   if (status?.retention_class !== "transient_process") return false;
   const terminalAt = terminalRetentionTime(status, fallbackMtime);
   const ageMs = now - terminalAt;
-  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= TRANSIENT_PROCESS_RECOVERY_GRACE_MS;
+  const graceMs = status?.transient_recovery_pending === true
+    ? TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS
+    : TRANSIENT_PROCESS_RECOVERY_GRACE_MS;
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= graceMs;
+}
+
+export function transientProcessUndeliveredRecoveryProtected(status, fallbackMtime, now = Date.now()) {
+  return status?.transient_recovery_pending === true
+    && transientProcessWithinRecoveryGrace(status, fallbackMtime, now);
 }
 
 export function transientProcessRecoveryIds(items, { now = Date.now(), incomingRetentionClass = "managed", reservedSlots = 0 } = {}) {
   const incomingSlots = incomingRetentionClass === "transient_process" ? Math.min(reservedSlots, TRANSIENT_PROCESS_RECOVERY_SLOTS) : 0;
   const recent = items.filter(({ status, mtime }) => transientProcessWithinRecoveryGrace(status, mtime, now));
-  const followupRequired = recent.filter(({ status }) => status?.transient_recovery_pending === true);
+  const followupRequired = recent.filter(({ status, mtime }) => transientProcessUndeliveredRecoveryProtected(status, mtime, now));
   const deliveryReserve = recent.filter(({ status }) => status?.transient_recovery_pending !== true)
     .sort((a, b) => terminalRetentionTime(b.status, b.mtime) - terminalRetentionTime(a.status, a.mtime))
     .slice(0, Math.max(0, TRANSIENT_PROCESS_RECOVERY_SLOTS - incomingSlots))

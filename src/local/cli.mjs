@@ -86,7 +86,7 @@ const COMMAND_HANDLERS = new Map([
   ["uninstall", uninstallCommand],
 ]);
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const [command, rest] = normalizeCommand(argv);
   const args = parseArgs(rest);
   if (args.help || command === "help") return usage();
@@ -95,7 +95,7 @@ export async function main(argv = process.argv.slice(2)) {
   validatePositionals(command, args);
   validateLoggingOptions(args);
   const handler = COMMAND_HANDLERS.get(command);
-  if (handler) return handler(args);
+  if (handler) return handler(args, dependencies);
   console.error(`Unknown command: ${command}`);
   usage();
   process.exitCode = 2;
@@ -183,7 +183,7 @@ async function confirm(prompt, assumeYes = false) {
   return answer === "y" || answer === "yes";
 }
 
-async function startCommand(args) {
+async function startCommand(args, dependencies = {}) {
   assertNodeVersion();
   const logger = createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "cli" });
   const workspace = await chooseWorkspace(args, { promptOnFirstRun: true, save: true, allowPositional: true });
@@ -214,7 +214,7 @@ async function startCommand(args) {
     }
     serviceLock?.release?.();
     serviceLock = null;
-    await startRemoteRuntime({ args, workspace, state, daemonLock, logger });
+    await startRemoteRuntime({ args, workspace, state, daemonLock, logger, dependencies });
   } finally {
     serviceLock?.release?.();
     startupLock?.release?.();
@@ -302,10 +302,11 @@ export function isIdempotentDaemonOnlyStart(args) {
   );
 }
 
-async function startRemoteRuntime({ args, workspace, state, daemonLock, logger }) {
+async function startRemoteRuntime({ args, workspace, state, daemonLock, logger, dependencies = {} }) {
   let runtime = null;
   try {
-    const readiness = await prepareRemoteState({ args, workspace, state, logger });
+    const readiness = await prepareRemoteState({ args, workspace, state, logger,
+      ensureWorkerDeployment: dependencies.ensureWorkerDeployment });
     runtime = createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity: readiness.deviceSessionIdentity });
     await runtime.start();
     if (typeof daemonLock.update !== "function") throw new Error("daemon lock cannot publish startup readiness");
@@ -337,9 +338,10 @@ export function cleanupRuntimeStartFailure(error, runtime, daemonLock) {
     : error;
 }
 
-async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared, provisionInitialOwner = true }) {
+async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared, provisionInitialOwner = true,
+  ensureWorkerDeployment: ensureWorkerDeploymentImpl }) {
   if (!args.daemonOnly) {
-    await convergeRemoteConfiguration({ args, state });
+    await convergeRemoteConfiguration({ args, state, ensureWorkerDeployment: ensureWorkerDeploymentImpl });
     onRemotePrepared?.();
   } else if (!state.worker.url) {
     throw new Error("--daemon-only requires an existing Worker URL; run start once without --daemon-only");

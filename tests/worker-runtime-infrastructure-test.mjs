@@ -20,7 +20,7 @@ import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDe
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../src/worker/managed-job-read-timeout.ts";
 import { issueManagedJobCapability, verifyManagedJobCapability } from "../src/worker/managed-job-capability.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../src/worker/managed-job-hosted-authority.ts";
-import { jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
 import { workerAuthorityContext, workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -42,8 +42,15 @@ import {
   JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID,
   managedJobMonitorResource, managedJobMonitorResources, supportsManagedJobMonitor,
 } from "../src/worker/mcp-job-monitor-ui.ts";
-import { ManagedJobMonitorClaims, claimManagedJobMonitor, hasManagedJobMonitorClaim } from "../src/worker/mcp-job-monitor-claims.ts";
-import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_RENDER_TOOL, renderManagedJobMonitor } from "../src/worker/mcp-job-monitor-tools.ts";
+import {
+  ManagedJobMonitorClaimStore, cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor,
+  hasManagedJobMonitorClaim, hasManagedJobMonitorClaimIfAvailable, issueManagedJobMonitorIfAvailable,
+} from "../src/worker/mcp-job-monitor-claims.ts";
+import {
+  JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL,
+  managedJobMonitorReadDaemonArguments, renderManagedJobMonitor,
+} from "../src/worker/mcp-job-monitor-tools.ts";
+import { projectManagedJobMonitorStatus } from "../src/worker/mcp-job-monitor-status.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
 import { applyCors, corsPreflight, searchParamsObject } from "../src/worker/http.ts";
@@ -96,6 +103,17 @@ class TestWebSocket {
   }
   serializeAttachment(value) { this.attachment = structuredClone(value); }
   deserializeAttachment() { return this.attachment === null ? null : structuredClone(this.attachment); }
+}
+
+function testDurableStorage() {
+  const values = new Map();
+  const storage = {
+    async get(key) { const value = values.get(key); return value === undefined ? undefined : structuredClone(value); },
+    async put(key, value) { values.set(key, structuredClone(value)); },
+    async delete(key) { return values.delete(key); },
+    async transaction(callback) { return callback(storage); },
+  };
+  return storage;
 }
 
 
@@ -1475,20 +1493,27 @@ async function testRelayTimeoutContract() {
   const remoteCancelJob = workspaceTools.find((tool) => tool.name === "cancel_job");
   const ownerJobMonitorRender = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_RENDER_TOOL);
   const ownerJobMonitorClaim = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_CLAIM_TOOL);
+  const ownerJobMonitorRead = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_READ_TOOL);
   assert(remoteStartJob?.inputSchema?.required?.includes("idempotency_key")
+    && JSON.stringify(remoteStartJob?.inputSchema?.properties?.continuation_mode?.enum) === '["task_supervisor"]'
     && remoteStartJob?.inputSchema?.properties?.dependency_recovery?.type === "object"
     && remoteStartJob?._meta?.ui?.resourceUri === undefined
     && remoteStartJob?._meta?.["ui/resourceUri"] === undefined
     && ownerJobMonitorRender?._meta?.ui?.resourceUri === JOB_MONITOR_RESOURCE_URI
     && JSON.stringify(ownerJobMonitorRender?._meta?.ui?.visibility) === '["model"]'
     && ownerJobMonitorRender?._meta?.["openai/outputTemplate"] === JOB_MONITOR_RESOURCE_URI
-    && JSON.stringify(remoteReadJob?._meta?.ui?.visibility) === '["model","app"]'
-    && remoteReadJob?._meta?.["openai/widgetAccessible"] === true
+    && ownerJobMonitorRender?._meta?.["openai/toolInvocation/invoking"] === undefined
+    && ownerJobMonitorRender?._meta?.["openai/toolInvocation/invoked"] === undefined
+    && JSON.stringify(remoteReadJob?._meta?.ui?.visibility) === '["model"]'
+    && remoteReadJob?._meta?.["openai/widgetAccessible"] === undefined
     && JSON.stringify(ownerJobMonitorClaim?._meta?.ui?.visibility) === '["app"]'
     && ownerJobMonitorClaim?._meta?.["openai/widgetAccessible"] === true
+    && JSON.stringify(ownerJobMonitorRead?._meta?.ui?.visibility) === '["app"]'
+    && ownerJobMonitorRead?._meta?.["openai/widgetAccessible"] === true
     && remoteStartJobDescription.includes("idempotency_key known before dispatch")
     && remoteStartJobDescription.includes("recovery_key and control_key")
     && remoteStartJobDescription.includes("dependency_recovery")
+    && remoteStartJobDescription.includes("continuation_mode=task_supervisor")
     && remoteStartJobDescription.includes("render_job_monitor")
     && remoteStartJobDescription.includes("status_polling_mode=ui_monitor")
     && remoteStartJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
@@ -1566,38 +1591,119 @@ async function testRelayTimeoutContract() {
     && !await verifyManagedJobCapability(capabilityKeyMaterial, capabilityAuthority, capabilityJobId, "control", recoveryKey)
     && !await verifyManagedJobCapability(capabilityKeyMaterial, otherCapabilityAuthority, capabilityJobId, "read", recoveryKey),
   "managed-job capabilities lost purpose/principal binding");
-  const claimScope = {};
+  const claimStorage = testDurableStorage();
+  const claimStore = new ManagedJobMonitorClaimStore(claimStorage);
   const uiClientCapabilities = { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } } };
   const activeWithUi = await projectHostedManagedJobResult("start_job", {
     accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
     host_turn_handoff_recommended: false, same_response_followup_supported: true,
-  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities, uiMonitorScope: claimScope });
+  }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities, uiMonitorStore: claimStore });
   const monitorId = activeWithUi.ui_monitor_id;
   assert(/^mcp_jm_[a-f0-9]{32}$/.test(String(monitorId))
     && activeWithUi.ui_monitor_candidate === true && activeWithUi.ui_monitor_claim_required === true,
   "active MCP Apps start_job did not pre-issue a bounded monitor correlation ID");
+  const brokenStorage = {
+    async get() { throw new Error("synthetic monitor storage failure"); },
+    async put() { throw new Error("synthetic monitor storage failure"); },
+    async delete() { throw new Error("synthetic monitor storage failure"); },
+    async transaction() { throw new Error("synthetic monitor storage failure"); },
+  };
+  const brokenClaimStore = new ManagedJobMonitorClaimStore(brokenStorage);
+  const coordinationFailures = [];
+  const activeWithBrokenUi = await projectHostedManagedJobResult("start_job", {
+    accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, {
+    clientCapabilities: uiClientCapabilities, uiMonitorStore: brokenClaimStore,
+    onMonitorCoordinationFailure: (operation) => coordinationFailures.push(operation),
+  });
+  assert(activeWithBrokenUi.accepted === true && activeWithBrokenUi.follow_up_read_required === true
+    && activeWithBrokenUi.ui_monitor_candidate === undefined && coordinationFailures.join(",") === "issue",
+  "optional monitor issuance failure obscured an already accepted durable job");
+  assert(await hasManagedJobMonitorClaimIfAvailable(
+    brokenClaimStore, capabilityJobId, monitorId, capabilityAuthority, (operation) => coordinationFailures.push(operation),
+  ) === false && await cancelManagedJobMonitorClaimsIfAvailable(
+    brokenClaimStore, { accountId: capabilityAuthority.accountId, accountVersion: capabilityAuthority.accountVersion },
+    (operation) => coordinationFailures.push(operation),
+  ) === 0 && coordinationFailures.slice(-2).join(",") === "claim_probe,revocation_cleanup",
+  "monitor coordination failure did not degrade to no-handoff/no-cleanup without changing core authority semantics");
+  assert(await issueManagedJobMonitorIfAvailable(
+    brokenClaimStore, capabilityJobId, capabilityAuthority, () => { throw new Error("observer failure"); },
+  ) === null, "monitor failure observer was allowed to become durable-job result authority");
   let preRenderClaimError;
   try {
-    await claimManagedJobMonitor(claimScope, {
+    await claimManagedJobMonitor(claimStore, {
       job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
     }, capabilityAuthority, capabilityKeyMaterial);
   } catch (error) { preRenderClaimError = error; }
   assert(preRenderClaimError instanceof WorkerToolError && preRenderClaimError.code === "invalid_request"
-    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, monitorId, capabilityAuthority),
+    && !await hasManagedJobMonitorClaim(claimStore, capabilityJobId, monitorId, capabilityAuthority),
   "pre-issued managed-job monitor ID became claimable before render activation");
-  const renderResult = await renderManagedJobMonitor(claimScope, {
+  const renderResult = await renderManagedJobMonitor(claimStore, {
     job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
   },
     capabilityAuthority, capabilityKeyMaterial);
   assert(renderResult.job_id === capabilityJobId && renderResult.ui_monitor_id === monitorId
     && renderResult.ui_monitor_claim_required === true && renderResult.follow_up_read_required === true
-    && String(renderResult.$mcpText || "").includes("same ui_monitor_id already returned by start_job")
-    && !String(renderResult.$mcpText || "").includes("mcp_jr_")
-    && !String(renderResult.$mcpText || "").includes("mcp_jc_")
+    && renderResult.$mcpText === ""
     && jobMonitorRenderTool.name === JOB_MONITOR_RENDER_TOOL
     && jobMonitorRenderTool.inputSchema?.required?.includes("ui_monitor_id")
-    && jobMonitorRenderTool.inputSchema?.properties?.ui_monitor_id?.pattern === "^mcp_jm_[a-f0-9]{32}$",
-  "managed-job render tool did not activate the exact monitor ID pre-issued by start_job");
+    && jobMonitorRenderTool.inputSchema?.properties?.ui_monitor_id?.pattern === "^mcp_jm_[a-f0-9]{32}$"
+    && jobMonitorReadTool.name === JOB_MONITOR_READ_TOOL
+    && jobMonitorClaimTool.name === JOB_MONITOR_CLAIM_TOOL,
+  "managed-job render tool did not activate the exact monitor ID without adding host status prose");
+  const reloadedClaimStore = new ManagedJobMonitorClaimStore(claimStorage);
+  let preClaimMonitorReadError;
+  try {
+    await managedJobMonitorReadDaemonArguments(reloadedClaimStore, {
+      job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+    }, capabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { preClaimMonitorReadError = error; }
+  assert(preClaimMonitorReadError instanceof WorkerToolError && preClaimMonitorReadError.code === "invalid_request",
+    "app-only monitor read became available before the View claimed continuation");
+  const initialClaimResult = await claimManagedJobMonitor(reloadedClaimStore, {
+    job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(initialClaimResult.claimed === true,
+    "rendered managed-job monitor claim did not survive Worker isolate/store reconstruction");
+  const monitorReadArgs = await managedJobMonitorReadDaemonArguments(claimStore, {
+    job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(monitorReadArgs.job_id === capabilityJobId && monitorReadArgs.wait_ms === 40_000
+    && !("recovery_key" in monitorReadArgs) && !("ui_monitor_id" in monitorReadArgs),
+  "app-only monitor status read did not reduce to one fixed capability-checked daemon read_job request");
+  let wrongMonitorReadAuthority;
+  try {
+    await managedJobMonitorReadDaemonArguments(claimStore, {
+      job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+    }, otherCapabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { wrongMonitorReadAuthority = error; }
+  assert(wrongMonitorReadAuthority instanceof WorkerToolError && wrongMonitorReadAuthority.code === "authorization_denied",
+    "app-only monitor status read accepted the wrong principal recovery capability");
+  const projectedMonitorStatus = projectManagedJobMonitorStatus({
+    job_id: capabilityJobId, status: "failed", current_phase: "recovery-cleanup", current_step: 2,
+    dependency_total: 3, dependency_pending_count: 1, finished_at: "2026-09-02T14:00:00.000Z",
+    error_class: "execution_failed", recovery_key: "monitor-secret-recovery", control_key: "monitor-secret-control",
+    private_path: "/private/monitor-secret-path", result: { steps: [{
+      stdout: "monitor-secret-output", stderr: "monitor-secret-error", command: "monitor-secret-command",
+    }] },
+  }, capabilityJobId);
+  const projectedMonitorStatusText = JSON.stringify(projectedMonitorStatus);
+  assert(projectedMonitorStatus.job_id === capabilityJobId && projectedMonitorStatus.status === "failed"
+    && projectedMonitorStatus.current_phase === "recovery-cleanup" && projectedMonitorStatus.current_step === 2
+    && projectedMonitorStatus.dependency_total === 3 && projectedMonitorStatus.dependency_pending_count === 1
+    && projectedMonitorStatus.finished_at === "2026-09-02T14:00:00.000Z"
+    && projectedMonitorStatus.error_class === "execution_failed"
+    && !projectedMonitorStatusText.includes("monitor-secret") && !("result" in projectedMonitorStatus)
+    && !("recovery_key" in projectedMonitorStatus) && !("control_key" in projectedMonitorStatus)
+    && !("private_path" in projectedMonitorStatus),
+  "app-only monitor status projection retained job output, command, path, or capability material");
+  let mismatchedMonitorStatusError;
+  try { projectManagedJobMonitorStatus({ job_id: `job_${"z".repeat(24)}`, status: "running" }, capabilityJobId); }
+  catch (error) { mismatchedMonitorStatusError = error; }
+  assert(mismatchedMonitorStatusError instanceof WorkerToolError
+    && mismatchedMonitorStatusError.code === "execution_failed" && mismatchedMonitorStatusError.retryable === true,
+  "app-only monitor status accepted a mismatched job identity");
   const projectedReadArgs = await hostedManagedJobDaemonArguments("read_job", {
     job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId, wait_ms: 0,
   }, capabilityAuthority, capabilityKeyMaterial);
@@ -1605,10 +1711,10 @@ async function testRelayTimeoutContract() {
     && !("recovery_key" in projectedReadArgs) && !("ui_monitor_id" in projectedReadArgs),
     "hosted read_job forwarded Worker-only recovery/monitor coordination material to the daemon");
   const projectedDependencyArgs = await hostedManagedJobDaemonArguments("start_job", {
-    idempotency_key: "capability-dependency", depends_on: [capabilityJobId],
+    idempotency_key: "capability-dependency", continuation_mode: "task_supervisor", depends_on: [capabilityJobId],
     dependency_recovery: { [capabilityJobId]: recoveryKey }, steps: [{ argv: ["true"] }],
   }, capabilityAuthority, capabilityKeyMaterial);
-  assert(Array.isArray(projectedDependencyArgs.depends_on) && !("dependency_recovery" in projectedDependencyArgs),
+  assert(Array.isArray(projectedDependencyArgs.depends_on) && projectedDependencyArgs.continuation_mode === "task_supervisor" && !("dependency_recovery" in projectedDependencyArgs),
     "hosted dependency authorization material crossed the Worker/daemon boundary");
   let wrongCapabilityError;
   try {
@@ -1645,53 +1751,113 @@ async function testRelayTimeoutContract() {
   }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: true });
   assert(activeClaimed.follow_up_read_required === false && activeClaimed.ui_follow_up_read_required === true
     && activeClaimed.ui_monitor_claimed === true && activeClaimed.status_polling_mode === "ui_monitor"
-    && activeClaimed.host_turn_handoff_recommended === true && activeClaimed.same_response_followup_supported === false
+    && activeClaimed.host_turn_handoff_recommended === false && activeClaimed.same_response_followup_supported === false
     && activeClaimed.completion_delivery === "mcp_app_job_monitor",
-  "a proven Job Monitor claim did not transfer active read_job continuation out of the model turn");
+  "a proven Job Monitor claim incorrectly recommended transferring the whole assistant turn instead of only job polling");
+  const supervisorWithoutClaim = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "running", continuation_mode: "task_supervisor", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: false });
+  assert(supervisorWithoutClaim.follow_up_read_required === true
+    && supervisorWithoutClaim.host_turn_handoff_recommended === false
+    && supervisorWithoutClaim.status_polling_mode !== "ui_monitor",
+  "unclaimed task supervisor incorrectly recommended host-turn handoff");
+  const activeSupervisorClaimed = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "running", continuation_mode: "task_supervisor", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: true });
+  assert(activeSupervisorClaimed.continuation_mode === "task_supervisor"
+    && activeSupervisorClaimed.follow_up_read_required === false && activeSupervisorClaimed.ui_follow_up_read_required === true
+    && activeSupervisorClaimed.ui_monitor_claimed === true && activeSupervisorClaimed.status_polling_mode === "ui_monitor"
+    && activeSupervisorClaimed.host_turn_handoff_recommended === true && activeSupervisorClaimed.same_response_followup_supported === false,
+  "claimed active task supervisor did not transfer host-turn continuation to its durable supervisor lifecycle");
+  const terminalSupervisorClaimed = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "succeeded", continuation_mode: "task_supervisor", follow_up_read_required: false,
+    host_turn_handoff_recommended: false, same_response_followup_supported: false,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: true });
+  assert(terminalSupervisorClaimed.host_turn_handoff_recommended === false
+    && terminalSupervisorClaimed.status_polling_mode !== "ui_monitor",
+  "terminal task supervisor incorrectly emitted a new host-turn handoff recommendation");
   const terminalWithUi = await projectHostedManagedJobResult("start_job", {
     accepted: true, job_id: capabilityJobId, status: "succeeded", follow_up_read_required: false,
   }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities, uiMonitorClaimed: true });
   assert(terminalWithUi.follow_up_read_required === false && terminalWithUi.status_polling_mode !== "ui_monitor",
     "already-terminal start_job was incorrectly converted into UI-owned continuation");
-  const otherClaimScope = {};
+  const otherClaimStore = new ManagedJobMonitorClaimStore(testDurableStorage());
   const forgedMonitorId = `mcp_jm_${String(monitorId).endsWith("0") ? "1" : "0"}${"0".repeat(31)}`;
   let unissuedClaimError;
   try {
-    await claimManagedJobMonitor(claimScope, {
+    await claimManagedJobMonitor(claimStore, {
       job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: forgedMonitorId,
     }, capabilityAuthority, capabilityKeyMaterial);
   } catch (error) { unissuedClaimError = error; }
   assert(unissuedClaimError instanceof WorkerToolError && unissuedClaimError.code === "invalid_request"
-    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, forgedMonitorId, capabilityAuthority),
+    && !await hasManagedJobMonitorClaim(claimStore, capabilityJobId, forgedMonitorId, capabilityAuthority),
   "managed-job monitor accepted an unissued render-instance ID");
-  const claimResult = await claimManagedJobMonitor(claimScope, {
+  const claimResult = await claimManagedJobMonitor(claimStore, {
     job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
   }, capabilityAuthority, capabilityKeyMaterial);
-  assert(claimResult.claimed === true && hasManagedJobMonitorClaim(claimScope, capabilityJobId, monitorId, capabilityAuthority)
-    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, `mcp_jm_${"0".repeat(32)}`, capabilityAuthority)
-    && !hasManagedJobMonitorClaim(claimScope, capabilityJobId, monitorId, otherCapabilityAuthority)
-    && !hasManagedJobMonitorClaim(otherClaimScope, capabilityJobId, monitorId, capabilityAuthority),
-  "managed-job monitor claim lost render-instance, principal, or Worker-room scope binding");
+  const replayedClaimResult = await claimManagedJobMonitor(claimStore, {
+    job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
+  }, capabilityAuthority, capabilityKeyMaterial);
+  assert(initialClaimResult.claimed === true && claimResult.claimed === true && replayedClaimResult.claimed === true
+    && await hasManagedJobMonitorClaim(claimStore, capabilityJobId, monitorId, capabilityAuthority)
+    && !await hasManagedJobMonitorClaim(claimStore, capabilityJobId, `mcp_jm_${"0".repeat(32)}`, capabilityAuthority)
+    && !await hasManagedJobMonitorClaim(claimStore, capabilityJobId, monitorId, otherCapabilityAuthority)
+    && !await hasManagedJobMonitorClaim(otherClaimStore, capabilityJobId, monitorId, capabilityAuthority),
+  "managed-job monitor claim lost replay safety, render-instance, principal, or Worker-room scope binding");
   let invalidClaimError;
   try {
-    await claimManagedJobMonitor(claimScope, {
+    await claimManagedJobMonitor(claimStore, {
       job_id: capabilityJobId, recovery_key: recoveryKey, ui_monitor_id: monitorId,
     }, otherCapabilityAuthority, capabilityKeyMaterial);
   } catch (error) { invalidClaimError = error; }
   assert(invalidClaimError instanceof WorkerToolError && invalidClaimError.code === "authorization_denied",
     "managed-job monitor accepted a claim with the wrong principal");
-  const boundedClaims = new ManagedJobMonitorClaims();
-  const boundedMonitorId = boundedClaims.issue(capabilityJobId, capabilityAuthority, 1000);
-  assert(boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001) === null,
+  const boundedClaims = new ManagedJobMonitorClaimStore(testDurableStorage());
+  const boundedMonitorId = await boundedClaims.issue(capabilityJobId, capabilityAuthority, 1000);
+  assert(!await boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001),
     "freshly issued monitor ID became claimable without render activation");
-  assert(boundedClaims.activate(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001),
+  assert(await boundedClaims.activate(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001),
     "issued monitor ID could not be activated by the render phase");
-  assert(!boundedClaims.activate(capabilityJobId, boundedMonitorId, capabilityAuthority, 1002),
+  assert(!await boundedClaims.activate(capabilityJobId, boundedMonitorId, capabilityAuthority, 1002),
     "one monitor ID was reusable across multiple render instances");
-  boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001);
-  assert(boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001)
-    && !boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001 + 5 * 60 * 1000),
-  "managed-job monitor claim did not expire at its bounded lifetime");
+  await boundedClaims.claim(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001);
+  assert(await boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001)
+    && !await boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001 + 5 * 60 * 1000),
+  "managed-job monitor handoff proof did not expire at its bounded lifetime");
+  assert(await boundedClaims.refresh(capabilityJobId, boundedMonitorId, capabilityAuthority, 1001 + 5 * 60 * 1000)
+    && await boundedClaims.has(capabilityJobId, boundedMonitorId, capabilityAuthority, 1002 + 5 * 60 * 1000),
+  "still-latest claimed monitor could not resume app continuation after handoff freshness expired");
+  const leasedClaims = new ManagedJobMonitorClaimStore(testDurableStorage());
+  const leasedMonitorId = await leasedClaims.issue(capabilityJobId, capabilityAuthority, 2000);
+  assert(await leasedClaims.activate(capabilityJobId, leasedMonitorId, capabilityAuthority, 2001)
+    && await leasedClaims.claim(capabilityJobId, leasedMonitorId, capabilityAuthority, 2001)
+    && await leasedClaims.refresh(capabilityJobId, leasedMonitorId, capabilityAuthority, 2001 + 4 * 60 * 1000)
+    && await leasedClaims.has(capabilityJobId, leasedMonitorId, capabilityAuthority, 2001 + 6 * 60 * 1000),
+  "active app-only monitor reads did not refresh the claimed monitor lease");
+  const replacementMonitorId = await leasedClaims.issue(capabilityJobId, capabilityAuthority, 2001 + 6 * 60 * 1000);
+  assert(replacementMonitorId !== leasedMonitorId
+    && !await leasedClaims.has(capabilityJobId, leasedMonitorId, capabilityAuthority, 2001 + 6 * 60 * 1000),
+  "new monitor issuance did not revoke the older View for the same job/principal");
+  const corruptValues = new Map();
+  const corruptStorage = {
+    async get(key) { const value = corruptValues.get(key); return value === undefined ? undefined : structuredClone(value); },
+    async put(key, value) { corruptValues.set(key, structuredClone(value)); },
+    async delete(key) { return corruptValues.delete(key); },
+    async transaction(callback) { return callback(corruptStorage); },
+  };
+  const corruptClaims = new ManagedJobMonitorClaimStore(corruptStorage);
+  const corruptMonitorId = await corruptClaims.issue(capabilityJobId, capabilityAuthority, 3000);
+  const corruptState = structuredClone(corruptValues.get("managed-job-monitor-claims-v1"));
+  corruptState.claims.push({ ...corruptState.claims[0] });
+  corruptValues.set("managed-job-monitor-claims-v1", corruptState);
+  let corruptMonitorStateError;
+  try { await corruptClaims.has(capabilityJobId, corruptMonitorId, capabilityAuthority, 3001); }
+  catch (error) { corruptMonitorStateError = error; }
+  assert(corruptMonitorStateError instanceof Error
+    && /managed-job monitor durable state is invalid/.test(corruptMonitorStateError.message),
+  "duplicate monitor/sequence durable state was accepted instead of failing closed");
   assert(supportsManagedJobMonitor(uiClientCapabilities)
     && !supportsManagedJobMonitor({ extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: ["text/plain"] } } })
     && !supportsManagedJobMonitor({}),
@@ -1706,15 +1872,29 @@ async function testRelayTimeoutContract() {
     && monitorRead.contents?.[0]?._meta?.ui?.csp?.connectDomains?.length === 0
     && monitorRead.contents?.[0]?._meta?.["openai/widgetCSP"]?.connect_domains?.length === 0
     && monitorRead.contents?.[0]?._meta?.["openai/widgetPrefersBorder"] === true
-    && monitorHtml.includes('name:"read_job"') && monitorHtml.includes("wait_ms:40000")
+    && monitorHtml.includes('name:"read_job_monitor"') && !monitorHtml.includes('name:"read_job"')
+    && monitorHtml.includes("inputBound") && monitorHtml.includes("displayStatus") && monitorHtml.includes("clearPending")
+    && !monitorHtml.includes("cleanForDisplay") && !monitorHtml.includes("Monitor initialization failed:")
+    && !monitorHtml.includes("String(error?.message") && !monitorHtml.includes('method==="ui/notifications/tool-result"')
+    && monitorHtml.includes("retryDelays=[1000,2000,4000,8000,15000,30000]")
+    && monitorHtml.includes("claimRetryDelays=[1000,2000,4000,8000,15000]")
+    && monitorHtml.includes("readResponseTimeoutMs=60000")
+    && monitorHtml.includes("claimResponseTimeoutMs=30000")
+    && monitorHtml.includes("host tool response timeout")
+    && monitorHtml.includes("retryAttempt>=retryDelays.length")
+    && monitorHtml.includes("claimRetryAttempt>=claimRetryDelays.length")
+    && monitorHtml.includes("scheduleClaimRetry")
+    && monitorHtml.includes('if(error?.retryable===true){scheduleClaimRetry();return;}')
+    && monitorHtml.includes("error?.retryable===true") && monitorHtml.includes("scheduleReadRetry")
     && monitorHtml.includes(`name:"${JOB_MONITOR_CLAIM_TOOL}"`)
     && monitorHtml.includes("ui_monitor_id:monitorId")
-    && monitorHtml.includes('typeof input.ui_monitor_id==="string"')
+    && monitorHtml.includes('typeof input.ui_monitor_id!=="string"')
     && monitorHtml.includes('method==="ui/notifications/tool-input"')
     && monitorHtml.includes("hostCapabilities?.serverTools")
     && monitorHtml.includes('request("ui/initialize"')
     && monitorHtml.includes('method:"ui/notifications/initialized"')
     && monitorHtml.includes('method==="ui/resource-teardown"')
+    && monitorHtml.includes('clearPending();recoveryKey="";jobId="";monitorId="";inputBound=false')
     && monitorHtml.includes('protocolVersion:"2026-01-26"')
     && !/https?:\/\//.test(monitorHtml) && !monitorHtml.includes("sendFollowUpMessage"),
   "managed-job monitor resource lost MCP Apps handshake, static/no-network, or server-paced continuation boundaries");
