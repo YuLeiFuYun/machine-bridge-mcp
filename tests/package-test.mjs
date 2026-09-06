@@ -122,6 +122,7 @@ try {
   if (!record.files.some((item) => item.path === "src/worker/observability.ts")) throw new Error("npm package omitted the worker observability module");
   if (!record.files.some((item) => item.path === "src/worker/http.ts")) throw new Error("npm package omitted the worker http module");
   if (record.files.some((item) => item.path.endsWith("worker-configuration.d.ts"))) throw new Error("npm package contains generated Worker type declarations");
+  if (record.files.some((item) => item.path === "toolchain/worker-runtime-types-seed.b64")) throw new Error("npm package contains the development-only Worker runtime type seed");
   if (!record.files.some((item) => item.path === "browser-extension/manifest.json")) throw new Error("npm package omitted the browser extension manifest");
   if (!record.files.some((item) => item.path === "browser-extension/service-worker.js")) throw new Error("npm package omitted the browser extension service worker");
   if (!record.files.some((item) => item.path === "browser-extension/broker-auth.js")) throw new Error("npm package omitted the browser extension broker authentication module");

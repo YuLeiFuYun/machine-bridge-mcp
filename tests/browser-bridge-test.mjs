@@ -1,9 +1,11 @@
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
+import { startBrowserBrokerServer } from "../src/local/browser-broker-server.mjs";
 import { BrowserBrokerRoutes } from "../src/local/browser-broker-routes.mjs";
 import { BrowserRequestRegistry } from "../src/local/browser-request-registry.mjs";
 import { browserMethodMayMutate } from "../src/local/browser-extension-protocol.mjs";
@@ -11,17 +13,30 @@ import { BridgeError, publicError } from "../src/local/errors.mjs";
 import { EXPECTED_EXTENSION_ID } from "../src/local/browser-extension-identity.mjs";
 import { BROKER_AUTH_REQUEST_HEADER, BROKER_AUTH_REQUEST_VALUE, createBrokerAuthChallenge, createBrokerClientProtocol, createBrokerInitProof, parseBrokerAuthResponse, verifyBrokerServerProof } from "../src/local/browser-broker-auth.mjs";
 import { createPairingBootstrapInitProof, createPairingBootstrapProof, parseBrowserPairingGrant } from "../src/local/browser-pairing-grant.mjs";
+import { processState } from "../src/local/process-identity.mjs";
 
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const BROWSER_FIXTURE_WAIT_MS = 30_000;
+const realBrowserTransportObservable = process.platform === "win32" || processState(process.pid) === "running";
+let holdListTabs = false;
+let heldRequestId = "";
+let cancelledRequestId = "";
 
 
 await testBrowserRequestSettlementEvidence();
 await testStopDuringStart();
 await testStartFailureCleanup();
-await testAuthenticatedProxyHandshakeFailure();
-await testRuntimeProxyRejectsForgedServerProof();
-await testPreviousPairingMigrationRefusesSecondOwner();
+if (realBrowserTransportObservable) {
+  await testAuthenticatedProxyHandshakeFailure();
+  await testRuntimeProxyRejectsForgedServerProof();
+  await testPreviousPairingMigrationRefusesSecondOwner();
+}
+
+browserIntegration: {
+if (!realBrowserTransportObservable) {
+  console.log("browser bridge deterministic tests ok (loopback listener unavailable)");
+  break browserIntegration;
+}
 
 const root = await mkdtemp(join(tmpdir(), "mbm-browser-bridge-"));
 if (process.platform !== "win32") await chmod(root, 0o777);
@@ -44,9 +59,6 @@ let malformedExtension;
 let staleExtension;
 let staleReplacement;
 let invalidRuntime;
-let holdListTabs = false;
-let heldRequestId = "";
-let cancelledRequestId = "";
 try {
   const initial = await owner.status();
   if (process.platform !== "win32" && ((await stat(root)).mode & 0o777) !== 0o700) {
@@ -317,7 +329,7 @@ try {
   owner.stop();
   await rm(root, { recursive: true, force: true });
 }
-
+}
 
 async function testBrowserRequestSettlementEvidence() {
   for (const method of ["manage_tabs", "point_action", "backend_node_action", "action", "fill_form", "upload_files", "screenshot"]) {
@@ -521,7 +533,303 @@ async function testBrowserRequestSettlementEvidence() {
     assert(extensionRequests.length === 0 && malformedRoutes.snapshot().routed_requests === 0 && malformedClient.closed[0]?.code === 1002,
       "coercible/malformed runtime request crossed the broker dispatch boundary");
   }
+
+  const registryTimeoutTransport = {
+    readyState: 1,
+    sent: [],
+    send(value) { this.sent.push(JSON.parse(value)); },
+  };
+  const registryTimeout = new BrowserRequestRegistry().request({
+    transport: registryTimeoutTransport, method: "list_tabs", params: {}, timeoutSeconds: 1,
+  }).then(() => null, (error) => error);
+  const routeTimeoutClient = brokerClient();
+  const routeTimeoutExtension = {
+    readyState: 1,
+    sent: [],
+    send(value) { this.sent.push(JSON.parse(value)); },
+  };
+  const routeTimeouts = brokerRoutes(routeTimeoutExtension);
+  routeTimeouts.handleClientMessage(routeTimeoutClient, brokerRequest("timeout-route", "list_tabs", { timeout_ms: 1000 }));
+  const [registryTimeoutError] = await Promise.all([
+    registryTimeout,
+    new Promise((resolvePromise) => { setTimeout(resolvePromise, 1100); }),
+  ]);
+  assert(String(registryTimeoutError?.message || registryTimeoutError).includes("timed out")
+    && registryTimeoutTransport.sent.some((message) => message.type === "cancel"),
+  "browser request registry timeout did not cancel the dispatched request");
+  assert(routeTimeoutClient.responses.some((message) => message.id === "timeout-route" && message.ok === false)
+    && routeTimeoutExtension.sent.some((message) => message.type === "cancel"),
+  "browser broker route timeout did not reject and cancel the routed request");
 }
+
+async function testInMemoryBrowserBridgeLifecycle() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-in-memory-"));
+  let brokerOptions = null;
+  let serverClosed = false;
+  let wssClosed = false;
+  const manager = new BrowserBridgeManager({
+    policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
+    stateRoot,
+    runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
+    readResourceText: async () => "resource-value",
+    readResourceBinary: () => ({ buffer: Buffer.from("file-data"), path: join(stateRoot, "upload.txt"), size: 9 }),
+    startBrokerServer: async (options) => {
+      brokerOptions = options;
+      return {
+        server: { close() { serverClosed = true; } },
+        wss: { close() { wssClosed = true; } },
+      };
+    },
+  });
+  try {
+    const initial = await manager.status();
+    assert(initial.broker_role === "owner" && brokerOptions?.port === manager.port,
+      "in-memory browser bridge did not traverse the production owner startup path");
+    assert(manager.brokerDiagnostics().runtime_clients === 0 && !manager.extensionConnected(),
+      "in-memory browser bridge began with a connected transport");
+
+    const malformed = new InMemoryBrowserSocket();
+    brokerOptions.onSocket(malformed, "extension");
+    assert(manager.extensionReloadRequired(), "pending in-memory extension did not require a completed hello");
+    malformed.emit("message", Buffer.from("{"));
+    assert(malformed.closed?.code === 1007 && manager.extensionReloadRequired(),
+      "malformed in-memory extension message did not preserve reload guidance");
+
+    const extension = new InMemoryBrowserSocket(inMemoryBrowserResult);
+    brokerOptions.onSocket(extension, "extension");
+    extension.emit("message", Buffer.from(JSON.stringify({
+      type: "hello", role: "extension", protocol: 3, version: PACKAGE_VERSION,
+      extension_id: EXPECTED_EXTENSION_ID,
+      capabilities: [
+        "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
+        "computer_observation_v1", "cdp_accessibility_snapshot", "cdp_surface_screenshot", "backend_node_trusted_input",
+      ],
+    })));
+    assert(manager.extensionConnected() && manager.extensionStatusInfo()?.extension_id === EXPECTED_EXTENSION_ID
+      && manager.extensionReloadRequired() === false,
+    "in-memory extension handshake did not reach the connected state");
+
+    extension.emit("message", Buffer.from(JSON.stringify({ type: "ping", seq: 7 })));
+    assert(extension.sent.some((message) => message.type === "pong" && message.seq === 7),
+      "in-memory extension ping did not exercise pong delivery");
+
+    assert((await manager.listTabs({})).tabs[0].id === 7, "in-memory list-tabs route did not settle");
+    assert((await manager.manageTabs({ action: "new", url: "https://example.test/", active: false })).action === "new",
+      "in-memory tab-management route did not settle");
+    assert((await manager.wait({ selector: { id: "target" }, state: "visible", timeout_seconds: 1 })).ok === true,
+      "in-memory wait route did not settle");
+    assert((await manager.getSource({})).source === "<html></html>", "in-memory source route did not settle");
+    assert(Array.isArray((await manager.inspectPage({})).elements), "in-memory inspect route did not settle");
+    assert((await manager.act({ action: "click", selector: { id: "target" }, input_mode: "dom" })).value_exposed === false,
+      "in-memory action route lost the non-exposure projection");
+    assert((await manager.fillForm({ fields: [{ selector: { id: "target" }, value: "value" }] })).ok === true,
+      "in-memory form route did not settle");
+    assert((await manager.uploadFiles({ selector: { id: "file" }, resources: ["upload"] })).resource_contents_exposed === false,
+      "in-memory upload route lost the resource non-exposure projection");
+    const screenshot = await manager.screenshot({});
+    assert(screenshot.$mcp?.content?.[0]?.type === "image", "in-memory screenshot route did not return MCP image content");
+    assert((await manager.pair({ open: false })).opened_pairing_page === false,
+      "in-memory pairing status unexpectedly launched a browser process");
+
+    await manager.documentState({}).catch(() => {});
+    await manager.observeComputer({}).catch(() => {});
+    await manager.pointAction({}).catch(() => {});
+    await manager.backendNodeAction({ action: "invalid" }).catch(() => {});
+
+    extension.holdRequests = true;
+    const cancelled = manager.listTabs({}, { callId: "in-memory-cancel" });
+    await Promise.resolve();
+    manager.cancelCall("in-memory-cancel");
+    await expectReject(cancelled, "cancelled");
+    extension.holdRequests = false;
+    assert(manager.pending.size === 0, "in-memory cancelled request remained pending");
+
+    const runtime = new InMemoryBrowserSocket();
+    brokerOptions.onSocket(runtime, "runtime");
+    runtime.emit("message", Buffer.from(JSON.stringify({ type: "request", id: "proxy-list", method: "list_tabs", params: {}, timeout_ms: 1000 })));
+    await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+    assert(runtime.sent.some((message) => message.type === "response" && message.id === "proxy-list" && message.ok === true),
+      "in-memory runtime client request did not traverse broker routing");
+    manager.handleRuntimeClientMessage(runtime, Buffer.from(JSON.stringify({ type: "ping" })));
+    runtime.emit("close");
+
+    assert(manager.handleUpstreamMessage({ type: "unknown" }) === false,
+      "unknown upstream message was accepted");
+    const savedServer = manager.server;
+    manager.server = null;
+    manager.upstream = new InMemoryBrowserSocket();
+    assert(manager.handleUpstreamMessage({
+      type: "status", extension_connected: true,
+      extension_info: manager.extensionInfo, extension_reload_required: false, extension_generation: 9,
+    }) === true && manager.extensionConnected(), "in-memory upstream status did not update proxy extension state");
+    manager.upstream = null;
+    manager.server = savedServer;
+
+    const response = new InMemoryHttpResponse();
+    manager.handleHttp({ method: "GET", url: "/healthz", headers: { host: `127.0.0.1:${manager.port}` } }, response);
+    assert(response.statusCode === 200 && response.body.includes("machine-bridge-browser"),
+      "in-memory browser health handler did not return broker health");
+
+    manager.markExtensionReloadRequired();
+    manager.broadcastRuntimeStatus(true);
+    manager.scheduleBrokerRecovery();
+    manager.rejectPending("in-memory cleanup");
+    manager.rejectProxyRoutes("in-memory cleanup");
+  } finally {
+    manager.stop();
+    assert(serverClosed && wssClosed, "in-memory browser bridge did not close its broker transports");
+    await rm(stateRoot, { recursive: true, force: true });
+  }
+}
+
+async function testBrowserBrokerServerFactories() {
+  let server = null;
+  let wss = null;
+  const accepted = [];
+  class FakeHttpServer extends EventEmitter {
+    constructor(handler) { super(); this.handler = handler; this.closed = false; }
+    listen(port, host) { this.listenArgs = { port, host }; queueMicrotask(() => this.emit("listening")); }
+    close() { this.closed = true; }
+  }
+  class FakeWebSocketServer extends EventEmitter {
+    constructor(options) { super(); this.options = options; this.closed = false; wss = this; }
+    handleUpgrade(_request, _socket, _head, callback) {
+      if (this.throwUpgrade) throw new Error("synthetic upgrade failure");
+      callback(new InMemoryBrowserSocket());
+    }
+    close() { this.closed = true; }
+  }
+  const runtimeToken = "r".repeat(43);
+  const started = await startBrowserBrokerServer({
+    port: 39393,
+    extensionToken: "e".repeat(43),
+    runtimeToken,
+    maxPayload: 1024,
+    onHttp: () => {},
+    onSocket: (socket, role) => accepted.push({ socket, role }),
+    serverFactory: (handler) => { server = new FakeHttpServer(handler); return server; },
+    WebSocketServerClass: FakeWebSocketServer,
+  });
+  assert(started.server === server && started.wss === wss && server.listenArgs?.host === "127.0.0.1",
+    "browser broker server factories did not preserve loopback startup");
+  const rejected = new InMemoryUpgradeSocket();
+  server.emit("upgrade", { headers: { host: "example.test", origin: "" }, url: "/runtime" }, rejected, Buffer.alloc(0));
+  assert(rejected.destroyed && rejected.written.includes("403 Forbidden"),
+    "in-memory broker upgrade did not reject a non-loopback Host");
+
+  const unauthorized = new InMemoryUpgradeSocket();
+  server.emit("upgrade", {
+    headers: { host: "127.0.0.1:39393", origin: "", "sec-websocket-protocol": "invalid" }, url: "/runtime",
+  }, unauthorized, Buffer.alloc(0));
+  assert(unauthorized.destroyed && unauthorized.written.includes("401 Unauthorized"),
+    "in-memory broker upgrade did not reject an invalid runtime protocol");
+
+  const clientChallenge = createBrokerAuthChallenge();
+  const authResponse = new InMemoryHttpResponse();
+  server.handler({
+    method: "GET",
+    url: `/runtime-auth?challenge=${encodeURIComponent(clientChallenge)}&init=${encodeURIComponent(createBrokerInitProof(runtimeToken, "runtime", clientChallenge))}`,
+    headers: { host: "127.0.0.1:39393", [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+  }, authResponse);
+  const serverNonce = String(authResponse.headers["x-machine-bridge-broker-nonce"] || "");
+  const protocol = createBrokerClientProtocol(runtimeToken, "runtime", clientChallenge, serverNonce);
+  const acceptedSocket = new InMemoryUpgradeSocket();
+  server.emit("upgrade", {
+    headers: { host: "127.0.0.1:39393", origin: "", "sec-websocket-protocol": protocol }, url: "/runtime",
+  }, acceptedSocket, Buffer.alloc(0));
+  assert(accepted.at(-1)?.role === "runtime", "in-memory broker did not accept a proved runtime upgrade");
+
+  const throwingChallenge = createBrokerAuthChallenge();
+  const throwingAuth = new InMemoryHttpResponse();
+  server.handler({
+    method: "GET",
+    url: `/runtime-auth?challenge=${encodeURIComponent(throwingChallenge)}&init=${encodeURIComponent(createBrokerInitProof(runtimeToken, "runtime", throwingChallenge))}`,
+    headers: { host: "127.0.0.1:39393", [BROKER_AUTH_REQUEST_HEADER]: BROKER_AUTH_REQUEST_VALUE },
+  }, throwingAuth);
+  wss.throwUpgrade = true;
+  const throwingProtocol = createBrokerClientProtocol(
+    runtimeToken, "runtime", throwingChallenge, String(throwingAuth.headers["x-machine-bridge-broker-nonce"] || ""),
+  );
+  const throwingSocket = new InMemoryUpgradeSocket();
+  server.emit("upgrade", {
+    headers: { host: "127.0.0.1:39393", origin: "", "sec-websocket-protocol": throwingProtocol }, url: "/runtime",
+  }, throwingSocket, Buffer.alloc(0));
+  assert(throwingSocket.destroyed, "broker upgrade exception did not destroy the raw socket");
+  server.close();
+  wss.close();
+
+  class FailingHttpServer extends FakeHttpServer {
+    listen() { queueMicrotask(() => this.emit("error", Object.assign(new Error("synthetic bind failure"), { code: "EADDRINUSE" }))); }
+  }
+  let failedWss = null;
+  class FailingWebSocketServer extends FakeWebSocketServer {
+    constructor(options) { super(options); failedWss = this; }
+  }
+  let startupError = null;
+  try {
+    await startBrowserBrokerServer({
+      port: 39394, extensionToken: "e".repeat(43), runtimeToken, maxPayload: 1024,
+      onHttp: () => {}, onSocket: () => {},
+      serverFactory: (handler) => new FailingHttpServer(handler),
+      WebSocketServerClass: FailingWebSocketServer,
+    });
+  } catch (error) { startupError = error; }
+  assert(startupError?.code === "EADDRINUSE" && failedWss?.closed,
+    "broker startup error did not close the half-open WebSocket server and reject startup");
+}
+
+class InMemoryBrowserSocket extends EventEmitter {
+  constructor(resultForRequest = null) {
+    super();
+    this.readyState = 1;
+    this.sent = [];
+    this.closed = null;
+    this.resultForRequest = resultForRequest;
+    this.holdRequests = false;
+  }
+  send(value) {
+    const message = typeof value === "string" ? JSON.parse(value) : value;
+    this.sent.push(message);
+    if (message?.type !== "request" || !this.resultForRequest || this.holdRequests) return;
+    const result = this.resultForRequest(message.method, message.params || {});
+    queueMicrotask(() => this.emit("message", Buffer.from(JSON.stringify({ type: "response", id: message.id, ok: true, result }))));
+  }
+  close(code = 1000, reason = "") {
+    if (this.readyState !== 1) return;
+    this.readyState = 3;
+    this.closed = { code, reason };
+    this.emit("close", code, Buffer.from(reason));
+  }
+  terminate() { this.close(1006, "terminated"); }
+}
+
+class InMemoryUpgradeSocket {
+  constructor() { this.written = ""; this.destroyed = false; }
+  write(value) { this.written += String(value); }
+  destroy() { this.destroyed = true; }
+}
+
+class InMemoryHttpResponse {
+  constructor() { this.statusCode = 0; this.headers = {}; this.body = ""; }
+  writeHead(statusCode, headers = {}) { this.statusCode = statusCode; this.headers = headers; return this; }
+  end(value = "") { this.body += String(value); return this; }
+}
+
+function inMemoryBrowserResult(method, params) {
+  if (method === "list_tabs") return { tabs: [{ id: 7, title: "Example", url: "https://example.test/" }] };
+  if (method === "manage_tabs") return { action: params.action || "new", url: params.url || "https://example.test/" };
+  if (method === "wait") return { ok: true, condition: { state: params.state || "visible" } };
+  if (method === "get_source") return { source: "<html></html>" };
+  if (method === "inspect_page") return { elements: [] };
+  if (method === "upload_files") return { file_count: Array.isArray(params.files) ? params.files.length : 0 };
+  if (method === "screenshot") return {
+    data: "data:image/png;base64,aQ==", tab_id: 7, url: "https://example.test/", title: "Example", tab_metadata_verified: true,
+  };
+  return { ok: true };
+}
+
+await testInMemoryBrowserBridgeLifecycle();
+await testBrowserBrokerServerFactories();
 
 async function testStopDuringStart() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-start-race-"));

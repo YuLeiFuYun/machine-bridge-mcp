@@ -77,7 +77,6 @@ try {
       surface: persistentExecutionSurface,
       stateRoot,
       packageRoot: root,
-      npmCli,
       env: process.env,
     });
     await withReleaseRuntimeLock(stateRoot, async () => {

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -111,34 +112,34 @@ console.log("CLI entrypoint test ok");
 
 
 async function testDirectLoopbackHealth() {
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, broker: "machine-bridge-browser" }));
-  });
-  await new Promise((resolvePromise, rejectPromise) => {
-    server.once("error", rejectPromise);
-    server.listen(0, "127.0.0.1", resolvePromise);
-  });
-  const address = server.address();
-  const previous = {
-    HTTP_PROXY: process.env.HTTP_PROXY,
-    HTTPS_PROXY: process.env.HTTPS_PROXY,
-    NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY,
+  const calls = [];
+  const request = (options, onResponse) => {
+    calls.push(options);
+    const client = new EventEmitter();
+    client.setTimeout = (timeoutMs, onTimeout) => { client.timeoutMs = timeoutMs; client.onTimeout = onTimeout; return client; };
+    client.destroy = (error) => { if (error) queueMicrotask(() => client.emit("error", error)); };
+    client.end = () => {
+      const response = new PassThrough();
+      response.statusCode = 200;
+      onResponse(response);
+      response.end(JSON.stringify({ ok: true, broker: "machine-bridge-browser" }));
+    };
+    return client;
   };
-  try {
-    process.env.HTTP_PROXY = "http://127.0.0.1:1";
-    process.env.HTTPS_PROXY = "http://127.0.0.1:1";
-    process.env.NODE_USE_ENV_PROXY = "1";
-    const health = await readLoopbackJson(`http://127.0.0.1:${address.port}/healthz`);
-    assert(health?.ok === true && health?.broker === "machine-bridge-browser", "loopback browser health was routed through environment proxy state");
-    assert(await readLoopbackJson(`http://localhost:${address.port}/healthz`) === null, "loopback health accepted a non-canonical hostname");
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    await new Promise((resolvePromise) => { server.close(resolvePromise); });
-  }
+  const port = 39393;
+  const health = await readLoopbackJson(`http://127.0.0.1:${port}/healthz`, { request, timeoutMs: 1234 });
+  assert(health?.ok === true && health?.broker === "machine-bridge-browser", "loopback browser health did not parse injected JSON response");
+  assert(calls.length === 1, "loopback health did not issue exactly one canonical request");
+  const options = calls[0];
+  assert(options.protocol === "http:" && options.hostname === "127.0.0.1" && options.port === port
+    && options.path === "/healthz" && options.method === "GET",
+  "loopback health lost its canonical request target");
+  assert(options.agent === false && options.headers?.accept === "application/json" && options.headers?.connection === "close",
+    "loopback health request stopped bypassing ambient proxy/keepalive state");
+  const beforeRejected = calls.length;
+  assert(await readLoopbackJson(`http://localhost:${port}/healthz`, { request }) === null,
+    "loopback health accepted a non-canonical hostname");
+  assert(calls.length === beforeRejected, "non-canonical loopback target reached the request transport");
 }
 
 function normalizePathText(value) {

@@ -2,14 +2,15 @@ import http from "node:http";
 import https from "node:https";
 import { proxyAgentForRelayHttp } from "./network-proxy.mjs";
 
-export function postDaemonHttpRelay({ url, headers, body, timeoutMs, maximumResponseBytes, signal }) {
+export function postDaemonHttpRelay({ url, headers, body, timeoutMs, maximumResponseBytes, signal, request: requestOverride, selectProxy = proxyAgentForRelayHttp }) {
   return new Promise((resolve, reject) => {
     const target = new URL(String(url));
     const client = target.protocol === "https:" ? https : target.protocol === "http:" ? http : null;
     if (!client) { reject(relayRequestError("daemon_http_invalid_url", "daemon HTTP relay URL must use HTTP or HTTPS")); return; }
     let proxy;
-    try { proxy = proxyAgentForRelayHttp(target.href); }
+    try { proxy = selectProxy(target.href); }
     catch (error) { reject(error); return; }
+    const requestClient = typeof requestOverride === "function" ? requestOverride : client.request.bind(client);
     let settled = false;
     let timer = null;
     const finish = (error, value) => {
@@ -18,7 +19,7 @@ export function postDaemonHttpRelay({ url, headers, body, timeoutMs, maximumResp
       if (timer) clearTimeout(timer);
       error ? reject(error) : resolve(value);
     };
-    const request = client.request(target, {
+    const request = requestClient(target, {
       method: "POST", headers, ...(proxy.agent ? { agent: proxy.agent } : {}), ...(signal ? { signal } : {}),
     }, (response) => {
       const declared = Number(response.headers["content-length"] || 0);

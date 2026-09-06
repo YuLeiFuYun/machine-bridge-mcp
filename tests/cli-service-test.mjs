@@ -51,6 +51,8 @@ const orphanStatus = createServiceCommand({
   currentPackageVersion: () => "3.0.0-test",
   service: { ...service, async autostartStatus() { return { ok: true, active: false, provider: "test", state: "not running" }; } },
   inspectWorkspaceDaemon: () => ({ alive: true, verified_service_daemon: true, mode: "service", pid: 42 }),
+  serviceEnvironmentSummary: () => ({ keys: [] }),
+  loadServiceOwner: () => null,
   loadState: () => structuredClone(state),
   resolveWorkspace: (value) => value,
   selectedWorkspace: () => "/synthetic-workspace",
@@ -59,6 +61,8 @@ const orphanStatus = createServiceCommand({
 await orphanStatus({ _: ["status"] });
 assert(orphanOutputs.at(-1).effective_active === true && orphanOutputs.at(-1).orphaned_workspace_daemon === true,
   "inactive provider with a verified surviving service daemon was not projected as orphaned active state");
+assert(orphanOutputs.at(-1).service_owner.status === "missing" && orphanOutputs.at(-1).service_environment.keys.length === 0,
+  "orphan status inherited installed machine owner or environment state");
 
 const unknownOutputs = [];
 const unknownStatus = createServiceCommand({
@@ -69,6 +73,8 @@ const unknownStatus = createServiceCommand({
   currentPackageVersion: () => "3.0.0-test",
   service: { ...service, async autostartStatus() { return { ok: true, active: null, provider: "test", state: "unknown" }; } },
   inspectWorkspaceDaemon: () => ({ alive: false, verified_service_daemon: false, mode: "service", pid: null }),
+  serviceEnvironmentSummary: () => ({ keys: [] }),
+  loadServiceOwner: () => null,
   loadState: () => structuredClone(state),
   resolveWorkspace: (value) => value,
   selectedWorkspace: () => "/synthetic-workspace",
@@ -77,6 +83,8 @@ const unknownStatus = createServiceCommand({
 await unknownStatus({ _: ["status"] });
 assert(unknownOutputs.at(-1).effective_active === null,
   "unverifiable provider state was collapsed into an inactive service status");
+assert(unknownOutputs.at(-1).service_owner.status === "missing" && unknownOutputs.at(-1).service_environment.keys.length === 0,
+  "unknown status inherited installed machine owner or environment state");
 
 const ownerStatusOutput = [];
 const ownerStatus = createServiceCommand({

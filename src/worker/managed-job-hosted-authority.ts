@@ -4,7 +4,7 @@ import { isRemoteDurableProcessTool } from "./tool-timeout.ts";
 import { issueManagedJobCapability, verifyManagedJobCapability } from "./managed-job-capability.ts";
 import { projectManagedJobMonitorHandoff, supportsManagedJobMonitor } from "./mcp-job-monitor-ui.ts";
 import { JOB_MONITOR_RENDER_TOOL } from "./mcp-job-monitor-tools.ts";
-import { issueManagedJobMonitor } from "./mcp-job-monitor-claims.ts";
+import { issueManagedJobMonitorIfAvailable, type ManagedJobMonitorClaimStore, type ManagedJobMonitorCoordinationFailureObserver } from "./mcp-job-monitor-claims.ts";
 
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const ISSUANCE_TOOLS = new Set(["stage_job", "start_job"]);
@@ -36,7 +36,7 @@ export async function projectHostedManagedJobResult(
   value: unknown,
   authorized: AuthorizedToken,
   keyMaterial: string,
-  options: { clientCapabilities?: unknown; uiMonitorClaimed?: boolean; uiMonitorScope?: object } = {},
+  options: { clientCapabilities?: unknown; uiMonitorClaimed?: boolean; uiMonitorStore?: ManagedJobMonitorClaimStore; onMonitorCoordinationFailure?: ManagedJobMonitorCoordinationFailureObserver } = {},
 ): Promise<unknown> {
   if (name === "list_jobs") return aggregateHostedManagedJobInventory(value);
   if (name === "read_job") return projectManagedJobMonitorHandoff(value, options.uiMonitorClaimed === true);
@@ -59,8 +59,9 @@ export async function projectHostedManagedJobResult(
     recovery: { ...recovery, recovery_key: recoveryKey, control_key: controlKey },
   };
   if (name !== "start_job" || result.follow_up_read_required !== true || !supportsManagedJobMonitor(options.clientCapabilities)
-    || !options.uiMonitorScope) return projected;
-  const monitorId = issueManagedJobMonitor(options.uiMonitorScope, jobId, authorized);
+    || !options.uiMonitorStore) return projected;
+  const monitorId = await issueManagedJobMonitorIfAvailable(options.uiMonitorStore, jobId, authorized, options.onMonitorCoordinationFailure);
+  if (!monitorId) return projected;
   return {
     ...projected,
     ui_monitor_id: monitorId,

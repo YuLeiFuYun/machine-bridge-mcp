@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { terminateProcessTree } from "./process-tree-signal.mjs";
-
 export const DEFAULT_FORCE_TREE_SETTLEMENT_MS = 5_000;
 
 export function terminateProcessTreeAndWait(child, signal = "SIGKILL", options = {}) {
@@ -13,8 +12,7 @@ export function terminateProcessTreeAndWait(child, signal = "SIGKILL", options =
   const clearSchedule = typeof options.clearTimeout === "function" ? options.clearTimeout : clearTimeout;
   const waitMs = boundedWait(options.waitMs);
   return new Promise((resolvePromise) => {
-    let killer;
-    let timer;
+    let killer; let timer;
     let settled = false;
     const finish = (value) => {
       if (settled) return;

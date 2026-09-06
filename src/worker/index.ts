@@ -52,10 +52,10 @@ import { projectOverviewDetail, projectProjectOverview } from "../shared/project
 import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./managed-job-read-timeout.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./managed-job-hosted-authority.ts";
-import { cancelManagedJobMonitorClaims, claimManagedJobMonitor, hasManagedJobMonitorClaim } from "./mcp-job-monitor-claims.ts";
-import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_RENDER_TOOL, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
+import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
+import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.162";
+const SERVER_VERSION = "3.0.0-beta.165";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -64,9 +64,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonRegistry;
-  private readonly mcp: McpController;
+  private readonly mcp: McpController; private readonly jobMonitorClaims: ManagedJobMonitorClaimStore;
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
-    super(ctx, env);
+    super(ctx, env); this.jobMonitorClaims = new ManagedJobMonitorClaimStore(ctx.storage);
     this.oauth = new OAuthController(
       ctx, env, SERVER_NAME, SERVER_VERSION,
       (event) => this.observability.oauthRefreshEvent(event),
@@ -159,7 +159,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       cancelledWaiters += cancelReadyDaemonAuthority(this.daemonRegistry, revocation);
       cancelledPending += await this.pending.cancelAuthority(revocation, () => revokedDaemonAuthorityError());
       cancelledSubscriptions += this.mcp.cancelAuthority(revocation);
-      cancelManagedJobMonitorClaims(this, revocation);
+      await cancelManagedJobMonitorClaimsIfAvailable(this.jobMonitorClaims, revocation, (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }));
     }
     if (cancelledWaiters > 0) {
       this.observability.event("info", "authority.revocation.pre_dispatch_waiters_cancelled", { waiters: cancelledWaiters });
@@ -501,9 +501,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   ): Promise<unknown> {
     this.assertWorkerToolArguments(name, args);
     if (name === "server_info") return this.serverInfoResult(base, authorized, args);
-    if ((name === JOB_MONITOR_RENDER_TOOL || name === JOB_MONITOR_CLAIM_TOOL) && !accountRoleAllowsTool(authorized.role, "start_job")) throw new WorkerToolError("authorization_denied", "managed-job monitor is not allowed for this account role");
-    if (name === JOB_MONITOR_RENDER_TOOL) return renderManagedJobMonitor(this, args, authorized, this.oauth.identityKey());
-    if (name === JOB_MONITOR_CLAIM_TOOL) return claimManagedJobMonitor(this, args, authorized, this.oauth.identityKey());
+    if ((name === JOB_MONITOR_RENDER_TOOL || name === JOB_MONITOR_CLAIM_TOOL || name === JOB_MONITOR_READ_TOOL) && !accountRoleAllowsTool(authorized.role, "start_job")) throw new WorkerToolError("authorization_denied", "managed-job monitor is not allowed for this account role");
+    if (name === JOB_MONITOR_RENDER_TOOL) return renderManagedJobMonitor(this.jobMonitorClaims, args, authorized, this.oauth.identityKey());
+    if (name === JOB_MONITOR_CLAIM_TOOL) return claimManagedJobMonitor(this.jobMonitorClaims, args, authorized, this.oauth.identityKey());
+    if (name === JOB_MONITOR_READ_TOOL) return projectManagedJobMonitorStatus(await this.callDaemonTool("read_job", await managedJobMonitorReadDaemonArguments(this.jobMonitorClaims, args, authorized, this.oauth.identityKey()), authorized, requestKey, signal), args.job_id);
     if (workspaceTools.some((tool) => tool.name === name)) {
       if (!accountRoleAllowsTool(authorized.role, name)) throw new WorkerToolError("authorization_denied", "tool is not allowed for this account role");
       const overviewDetail = name === "project_overview" ? projectOverviewDetail(args) : "full";
@@ -514,9 +515,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         return projectProjectOverview(decorateProjectOverview(result, { accountId: authorized.accountId,
           accountVersion: authorized.accountVersion, role: authorized.role }), overviewDetail);
       }
-      const monitorJobId = name === "read_job" ? args.job_id : asObject(result).job_id;
+      const monitorJobId = name === "read_job" ? args.job_id : asObject(result).job_id; const uiMonitorClaimed = await hasManagedJobMonitorClaimIfAvailable(this.jobMonitorClaims, monitorJobId, args.ui_monitor_id, authorized, (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }));
       return projectHostedManagedJobResult(name, result, authorized, this.oauth.identityKey(), {
-        clientCapabilities, uiMonitorScope: this, uiMonitorClaimed: hasManagedJobMonitorClaim(this, monitorJobId, args.ui_monitor_id, authorized),
+        clientCapabilities, uiMonitorStore: this.jobMonitorClaims, uiMonitorClaimed, onMonitorCoordinationFailure: (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }),
       });
     }
     throw new Error("unknown tool");
@@ -820,7 +821,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     this.reclaimStaleDaemonSockets();
     return daemonStatusSnapshot(this.daemonRegistry, detail);
   }
-
 }
 
 export default {

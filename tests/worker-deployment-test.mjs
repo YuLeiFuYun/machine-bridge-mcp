@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import http from "node:http";
+import { EventEmitter } from "node:events";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import net from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -27,53 +26,10 @@ import { ensureWorkerSecrets, loadState, saveState } from "../src/local/state.mj
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = "9.8.7";
-const target = http.createServer((request, response) => {
-  if (request.url === "/healthz") {
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ ok: true, server: "machine-bridge-mcp", version }));
-    return;
-  }
-  if (request.url === "/redirect/healthz") {
-    response.writeHead(302, { Location: "/healthz" }).end();
-    return;
-  }
-  if (request.url === "/invalid/healthz") {
-    response.writeHead(200, { "Content-Type": "application/json" }).end("not-json");
-    return;
-  }
-  if (request.url === "/wrong/healthz") {
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify({ ok: true, server: "other-server", version }));
-    return;
-  }
-  if (request.url === "/large/healthz") {
-    response.writeHead(200, { "Content-Type": "application/json" }).end(`{"padding":"${"x".repeat(70 * 1024)}"}`);
-    return;
-  }
-  if (request.url === "/slow/healthz") return;
-  if (request.url === "/unavailable/healthz") {
-    response.writeHead(503).end("unavailable");
-    return;
-  }
-  response.writeHead(404).end();
-});
-await listen(target);
+const healthRequests = [];
+const requestFactory = createHealthRequestFactory(healthRequests);
+const proxyRequestCount = () => healthRequests.filter((request) => request.hasProxyAgent).length;
 
-const proxy = http.createServer();
-let proxyConnects = 0;
-proxy.on("connect", (_request, clientSocket, head) => {
-  proxyConnects += 1;
-  const upstream = net.connect(address(target).port, "127.0.0.1", () => {
-    clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-    if (head.length) upstream.write(head);
-    upstream.pipe(clientSocket);
-    clientSocket.pipe(upstream);
-  });
-  upstream.on("error", () => clientSocket.destroy());
-});
-await listen(proxy);
-
-try {
   verifyWorkerFingerprintPathBoundaries();
   const workerUrl = "https://worker-health.account-example.workers.dev";
   const expectedWorkerName = "worker-health";
@@ -93,14 +49,14 @@ try {
   assert.equal((await workerHealth("not a URL", version)).error, "invalid_worker_url");
   assert.equal((await workerHealth("ftp://worker-health.account-example.workers.dev", version)).error, "invalid_worker_url");
 
-  const direct = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/healthz`, { proxyResolver: () => "" });
+  const direct = await requestWorkerHealthJson("http://127.0.0.1/healthz", { proxyResolver: () => "", requestFactory });
   assert.equal(direct.statusCode, 200);
   assert.equal(direct.body.version, version);
   assert.equal(direct.networkRoute, "direct");
 
-  const redirected = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/redirect/healthz`, { proxyResolver: () => "" });
+  const redirected = await requestWorkerHealthJson("http://127.0.0.1/redirect/healthz", { proxyResolver: () => "", requestFactory });
   assert.equal(redirected.statusCode, 302, "health transport followed an untrusted redirect");
-  const invalidBody = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/invalid/healthz`, { proxyResolver: () => "" });
+  const invalidBody = await requestWorkerHealthJson("http://127.0.0.1/invalid/healthz", { proxyResolver: () => "", requestFactory });
   assert.equal(invalidBody.body, null);
 
   const healthy = await workerHealth(workerUrl, version, {
@@ -129,47 +85,48 @@ try {
   }
 
   await assert.rejects(
-    requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/large/healthz`, { proxyResolver: () => "" }),
+    requestWorkerHealthJson("http://127.0.0.1/large/healthz", { proxyResolver: () => "", requestFactory }),
     /size limit/,
   );
   const timedOut = await workerHealth(workerUrl, version, {
     expectedWorkerName,
     timeoutMs: 10,
     proxyResolver: () => "",
-    probe: (_url, options) => requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/slow/healthz`, options),
+    probe: (_url, options) => requestWorkerHealthJson("http://127.0.0.1/slow/healthz", { ...options, requestFactory }),
   });
   assert.equal(timedOut.error, "timeout");
   assert.equal(timedOut.networkRoute, "direct");
   const unavailable = await workerHealth(workerUrl, version, {
     expectedWorkerName,
     proxyResolver: () => "",
-    probe: (_url, options) => requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/unavailable/healthz`, options),
+    probe: (_url, options) => requestWorkerHealthJson("http://127.0.0.1/unavailable/healthz", { ...options, requestFactory }),
   });
   assert.equal(unavailable.error, "HTTP 503");
 
-  const proxied = await requestWorkerHealthJson(`http://worker-health.example.invalid:${address(target).port}/healthz`, {
-    proxyResolver: () => `http://127.0.0.1:${address(proxy).port}`,
+  const proxied = await requestWorkerHealthJson("http://worker-health.example.invalid/healthz", {
+    proxyResolver: () => "http://proxy.example.invalid:8080",
+    requestFactory,
   });
   assert.equal(proxied.statusCode, 200);
   assert.equal(proxied.networkRoute, "proxy");
-  assert.equal(proxyConnects, 1);
+  assert.equal(proxyRequestCount(), 1);
 
   const environmentBefore = snapshotEnvironment(["HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"]);
   try {
-    process.env.HTTP_PROXY = `http://127.0.0.1:${address(proxy).port}`;
+    process.env.HTTP_PROXY = "http://proxy.example.invalid:8080";
     process.env.http_proxy = process.env.HTTP_PROXY;
     process.env.NO_PROXY = "";
     process.env.no_proxy = "";
-    const environmentProxied = await requestWorkerHealthJson(`http://worker-env.example.invalid:${address(target).port}/healthz`);
+    const environmentProxied = await requestWorkerHealthJson("http://worker-env.example.invalid/healthz", { requestFactory });
     assert.equal(environmentProxied.statusCode, 200);
     assert.equal(environmentProxied.networkRoute, "proxy");
-    const connectsBeforeBypass = proxyConnects;
+    const connectsBeforeBypass = proxyRequestCount();
     process.env.NO_PROXY = "127.0.0.1";
     process.env.no_proxy = "127.0.0.1";
-    const environmentBypass = await requestWorkerHealthJson(`http://127.0.0.1:${address(target).port}/healthz`);
+    const environmentBypass = await requestWorkerHealthJson("http://127.0.0.1/healthz", { requestFactory });
     assert.equal(environmentBypass.statusCode, 200);
     assert.equal(environmentBypass.networkRoute, "direct");
-    assert.equal(proxyConnects, connectsBeforeBypass);
+    assert.equal(proxyRequestCount(), connectsBeforeBypass);
   } finally {
     restoreEnvironment(environmentBefore);
   }
@@ -241,11 +198,7 @@ try {
   verifyWorkerNameSafety();
   verifyWorkerUrlParsing();
 
-  console.log("worker deployment and proxy-aware health test ok");
-} finally {
-  await close(proxy);
-  await close(target);
-}
+console.log("worker deployment and proxy-aware health test ok");
 
 async function verifyDeploymentPropagationBudget() {
   const state = workerState("mbm-propagation-budget-test");
@@ -646,6 +599,52 @@ function verifyWorkerUrlParsing() {
 }
 
 
+
+function createHealthRequestFactory(calls) {
+  return (options) => {
+    const request = new EventEmitter();
+    let holdTimer = null;
+    request.destroy = (error) => {
+      if (holdTimer) clearTimeout(holdTimer);
+      queueMicrotask(() => request.emit("error", error));
+    };
+    request.end = () => {
+      calls.push({ ...options, hasProxyAgent: Boolean(options.agent) });
+      const path = String(options.path || "");
+      if (path === "/slow/healthz") {
+        holdTimer = setTimeout(() => {}, 100);
+        request.once("error", () => clearTimeout(holdTimer));
+        return;
+      }
+      queueMicrotask(() => {
+        const response = new EventEmitter();
+        response.destroyed = false;
+        response.destroy = (error) => {
+          if (response.destroyed) return;
+          response.destroyed = true;
+          response.emit("error", error);
+        };
+        const fixture = healthResponseFixture(path);
+        response.statusCode = fixture.statusCode;
+        request.emit("response", response);
+        if (response.destroyed) return;
+        if (fixture.body) response.emit("data", Buffer.from(fixture.body));
+        if (!response.destroyed) response.emit("end");
+      });
+    };
+    return request;
+  };
+}
+
+function healthResponseFixture(path) {
+  if (path === "/healthz") return { statusCode: 200, body: JSON.stringify({ ok: true, server: "machine-bridge-mcp", version }) };
+  if (path === "/redirect/healthz") return { statusCode: 302, body: "" };
+  if (path === "/invalid/healthz") return { statusCode: 200, body: "not-json" };
+  if (path === "/large/healthz") return { statusCode: 200, body: `{"padding":"${"x".repeat(70 * 1024)}"}` };
+  if (path === "/unavailable/healthz") return { statusCode: 503, body: "unavailable" };
+  return { statusCode: 404, body: "" };
+}
+
 function snapshotEnvironment(names) {
   return Object.fromEntries(names.map(name => [name, Object.hasOwn(process.env, name) ? process.env[name] : undefined]));
 }
@@ -673,26 +672,4 @@ function quietLogger() {
 
 function recordingLogger(records) {
   return Object.fromEntries(["debug", "info", "warn", "success"].map(level => [level, (message, fields) => records.push({ level, message, fields })]));
-}
-
-function address(server) {
-  const value = server.address();
-  if (!value || typeof value === "string") throw new Error("test server did not expose a TCP address");
-  return value;
-}
-
-function listen(server) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    server.once("error", rejectPromise);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", rejectPromise);
-      resolvePromise();
-    });
-  });
-}
-
-function close(server) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    server.close(error => error ? rejectPromise(error) : resolvePromise());
-  });
 }

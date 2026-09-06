@@ -27,6 +27,7 @@ export async function acquireDaemonLockWithTakeover(state, options = {}) {
     pollMs,
     logger: options.logger,
     reason: "foreground startup",
+    identityOptions: options.identityOptions,
   });
   if (!stopped.verified_service_daemon) return lock;
   if (!stopped.ok) {
@@ -63,7 +64,7 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
   while (true) {
     if (owner?.pid && isPidAlive(owner.pid)) {
       lastOwner = owner;
-      const identity = inspectWorkspaceDaemonOwner(state, owner);
+      const identity = inspectWorkspaceDaemonOwner(state, owner, options.identityOptions || {});
       if (!identity.verified_service_daemon) {
         return {
           ok: false,
@@ -102,9 +103,9 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
 
     for (const [pid, signalState] of signalled) {
       if (signalState.forced || !signalState.forceDeadline.expired()) continue;
-      const current = inspectProcessInstance(signalState.owner);
+      const current = inspectDaemonProcess(signalState.owner, options.identityOptions || {});
       if (!current.current) continue;
-      const identity = inspectWorkspaceDaemonOwner(state, signalState.owner);
+      const identity = inspectWorkspaceDaemonOwner(state, signalState.owner, options.identityOptions || {});
       if (!identity.verified_service_daemon) continue;
       logger.warn?.("detached background daemon ignored graceful termination; forcing it to stop");
       try {
@@ -125,9 +126,9 @@ export async function stopWorkspaceServiceDaemon(state, options = {}) {
     }
 
     const liveSignalled = [...signalled.entries()]
-      .filter(([, signalState]) => inspectProcessInstance(signalState.owner).current)
+      .filter(([, signalState]) => inspectDaemonProcess(signalState.owner, options.identityOptions || {}).current)
       .map(([pid]) => pid);
-    const currentOwnerAlive = Boolean(owner?.pid && inspectProcessInstance(owner).current);
+    const currentOwnerAlive = Boolean(owner?.pid && inspectDaemonProcess(owner, options.identityOptions || {}).current);
     if (!currentOwnerAlive && liveSignalled.length === 0) break;
 
     if (deadline.expired()) {
@@ -201,7 +202,7 @@ function inspectWorkspaceDaemonOwner(state, owner, options = {}) {
   if (!owner || owner.purpose !== "daemon") return { verified_service_daemon: false, reason: "invalid_lock_owner" };
   const pid = Number(owner.pid);
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return { verified_service_daemon: false, reason: "invalid_pid" };
-  const processIdentity = inspectProcessInstance(owner);
+  const processIdentity = inspectDaemonProcess(owner, options);
   if (!processIdentity.current) return { verified_service_daemon: false, reason: processIdentity.reason };
   if (!sameCanonicalPath(owner.workspace, state.workspace.path)) return { verified_service_daemon: false, reason: "workspace_mismatch" };
   if (owner.mode === "foreground") return { verified_service_daemon: false, reason: "foreground_daemon" };
@@ -210,11 +211,15 @@ function inspectWorkspaceDaemonOwner(state, owner, options = {}) {
     return { verified_service_daemon: false, reason: "node_version_mismatch" };
   }
 
-  const command = processCommandLine(pid);
-  if (!command) {
+  const injectedArgv = typeof options.processArgv === "function"
+    ? options.processArgv(pid, owner)
+    : options.processArgv;
+  const argv = Array.isArray(injectedArgv)
+    ? injectedArgv.map((value) => String(value))
+    : splitProcessCommandLine(processCommandLine(pid));
+  if (!argv.length) {
     return { verified_service_daemon: false, reason: "service_identity_unavailable" };
   }
-  const argv = splitProcessCommandLine(command);
   if (options.expectedNodeExecutable && !sameCanonicalFile(argv[0], options.expectedNodeExecutable)) {
     return { verified_service_daemon: false, reason: "node_executable_mismatch" };
   }
@@ -237,6 +242,12 @@ function inspectWorkspaceDaemonOwner(state, owner, options = {}) {
     return { verified_service_daemon: true, reason: "implicit_service_command" };
   }
   return { verified_service_daemon: false, reason: "command_mismatch" };
+}
+
+
+function inspectDaemonProcess(owner, options = {}) {
+  const inspect = typeof options.inspectProcess === "function" ? options.inspectProcess : inspectProcessInstance;
+  return inspect(owner);
 }
 
 function commandFlagValue(argv, name) {

@@ -6,10 +6,11 @@ import { performance } from "node:perf_hooks";
 import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "./resource-wait.mjs";
 import { withResourceTransactionLock } from "./resource-transaction-lock.mjs";
-import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDirectorySync } from "./secure-file.mjs";
 import { currentProcessStartTimeMs, processStartTimeMsAsync, sampleProcessStartTimesAsync } from "./process-identity.mjs";
 import { freshResourceHostSnapshot, resourceHostNeedsFreshIo } from "./resource-host-cache.mjs";
 import { readResourceHostSample } from "./resource-host-sample-file.mjs";
+import { readResourceStateJson } from "./resource-state-file.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
 import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
@@ -285,14 +286,7 @@ export class ResourceCoordinator {
     return join(this.leasesDir, `lease_${id}.json`);
   }
   readJson(file, maxBytes, label, optional = false) {
-    try {
-      const text = readBoundedRegularFileSync(file, maxBytes, label, { verifyPathIdentity: true, rejectMultipleLinks: true }).toString("utf8");
-      const value = JSON.parse(text);
-      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-    } catch (error) {
-      if (optional && (error?.code === "ENOENT" || error?.cause?.code === "ENOENT")) return null;
-      throw error;
-    }
+    return readResourceStateJson(file, maxBytes, label, { optional });
   }
   writeJson(file, value) { replaceFileAtomicallySync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 }); }
 }

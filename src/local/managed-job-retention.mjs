@@ -6,7 +6,7 @@ import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories
 import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
 import { runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { acquireJobTransitionLock } from "./managed-job-lock.mjs";
-import { JOB_RETENTION_MS, orderManagedJobTerminalEviction, stagedPlanExpired, terminalRetentionTime } from "./managed-job-retention-policy.mjs";
+import { JOB_RETENTION_MS, orderManagedJobTerminalEviction, stagedPlanExpired, terminalRetentionTime, transientProcessUndeliveredRecoveryProtected } from "./managed-job-retention-policy.mjs";
 import { atomicWriteJson, readJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus, persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { scrubTerminalJobArtifacts } from "./managed-job-terminal-maintenance.mjs";
@@ -98,7 +98,9 @@ export function pruneManagedJobs({ jobRoot, logger = console, reserveSlots = 0, 
   const retainedCount = () => managedJobCapacitySnapshot(jobRoot).retained_state;
   if (retainedCount() <= targetMaximum) return;
   const removable = entries
-    .filter(({ status }) => status && isTerminalManagedJobStatus(status.status) && !dependencyProtection.ids.has(status.job_id));
+    .filter(({ status, mtime }) => status && isTerminalManagedJobStatus(status.status)
+      && !dependencyProtection.ids.has(status.job_id)
+      && !transientProcessUndeliveredRecoveryProtected(status, mtime, now));
   orderManagedJobTerminalEviction(removable, { now, incomingRetentionClass, reservedSlots: reserved });
   for (const item of removable) {
     if (retainedCount() <= targetMaximum) break;
