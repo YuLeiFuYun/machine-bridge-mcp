@@ -674,6 +674,8 @@ const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "loca
 const managedJobListingSource = readFileSync(join(root, "src", "local", "managed-job-listing.mjs"), "utf8");
 const managedJobRecoveryListingSource = readFileSync(join(root, "src", "local", "managed-job-recovery-listing.mjs"), "utf8");
 const managedJobTransientRecoverySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery.mjs"), "utf8");
+const managedJobTransientRecoveryCapacitySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery-capacity.mjs"), "utf8");
+const managedJobModuleBoundariesSource = readFileSync(join(root, "tests", "architecture", "module-boundaries.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
 const runtimeRelayControlSource = readFileSync(join(root, "src", "local", "runtime-relay-control.mjs"), "utf8");
 const runtimeRelayAcknowledgementsSource = readFileSync(join(root, "src", "local", "runtime-relay-acknowledgements.mjs"), "utf8");
@@ -1376,20 +1378,49 @@ if (!managedJobSource.includes('retentionClass = "managed"')
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
     || !managedJobRetentionSource.includes("orderManagedJobTerminalEviction(removable")
     || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_GRACE_MS = 30 * 60 * 1000")
+    || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS = 24 * 60 * 60 * 1000")
     || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS = 16")
     || !managedJobRetentionPolicySource.includes("transientProcessWithinRecoveryGrace")
+    || !managedJobRetentionPolicySource.includes("export function transientProcessUndeliveredRecoveryProtected")
     || !managedJobRetentionPolicySource.includes("export function transientProcessRecoveryIds")
     || !managedJobRetentionPolicySource.includes("export function orderManagedJobTerminalEviction")
     || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS - incomingSlots")
     || !managedJobRetentionPolicySource.includes("status?.transient_recovery_pending === true")
+    || !managedJobRetentionSource.includes("!transientProcessUndeliveredRecoveryProtected(status, mtime, now)")
     || !managedJobsIntegrationSource.includes("transient recovery grace excluded its exact documented boundary")
+    || !managedJobsIntegrationSource.includes("pending transient recovery grace excluded its exact 24-hour boundary")
+    || !managedJobsIntegrationSource.includes("pending transient recovery was incorrectly reduced to the post-delivery thirty-minute reserve")
     || !managedJobsIntegrationSource.includes("saturated managed-job retention did not preserve the bounded recent transient recovery reserve")
     || !managedJobsIntegrationSource.includes("follow-up-required transient recovery did not outrank ordinary durable terminal history at saturation")
     || !managedJobsIntegrationSource.includes("follow-up-required transient recovery was displaced by newer terminal-delivered helper churn")
+    || !managedJobsIntegrationSource.includes("undelivered transient saturation did not return retryable capacity backpressure")
+    || !managedJobsIntegrationSource.includes("undelivered transient saturation evicted promised recovery state")
+    || !managedJobsIntegrationSource.includes("delivered transient recovery did not become evictable under saturated capacity")
+    || !managedJobsIntegrationSource.includes("expired undelivered transient recovery did not become evictable after 24 hours")
     || !managedJobsIntegrationSource.includes("durable one-step process carrier did not persist its private follow-up recovery state through terminal settlement")
     || !managedJobsIntegrationSource.includes("transient_recovery_pending")
     || !managedJobsIntegrationSource.includes('missingJobError?.code === "not_found"')) {
-  throw new Error("managed-job retention lost its bounded recent transient recovery reserve, durable-history preference, dependency protection, or typed missing-state contract");
+  throw new Error("managed-job retention lost hard undelivered recovery protection, bounded delivery reserve, capacity backpressure, dependency protection, or typed missing-state semantics");
+}
+if (!managedJobTransientRecoveryCapacitySource.includes("NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS = TRANSIENT_PROCESS_RECOVERY_SLOTS")
+    || !managedJobTransientRecoveryCapacitySource.includes('context?.authority?.owner === false')
+    || !managedJobTransientRecoveryCapacitySource.includes('principal?.kind === "account"')
+    || !managedJobTransientRecoveryCapacitySource.includes("status.owner_account_id !== principal.accountId || status.owner_account_version !== principal.accountVersion")
+    || !managedJobTransientRecoveryCapacitySource.includes("currentDirectoryExists && idempotencyReplayEligible")
+    || !managedJobTransientRecoveryCapacitySource.includes("if (status === null) continue;")
+    || !managedJobTransientRecoveryCapacitySource.includes('capacity_scope: "account_pending_transient_recovery"')
+    || !managedJobTransientRecoveryCapacitySource.includes("assertTerminalJobEvidence(dir, status)")
+    || !managedJobSource.includes("assertTransientProcessRecoveryAccountCapacity")
+    || !managedJobSource.includes("idempotencyReplayEligible: idempotencyDigest !== null")
+    || !managedJobSource.includes("recoveryAccountCapacity.applies && alreadyExists")
+    || !managedJobModuleBoundariesSource.includes('"src/local/managed-job-transient-recovery-capacity.mjs": 180')
+    || !managedJobsIntegrationSource.includes("seventeenth same-account pending recovery was not rejected before durable state publication or process launch")
+    || !managedJobsIntegrationSource.includes("full account pending-recovery quota blocked or relaunched a genuine persisted same-key replay")
+    || !managedJobsIntegrationSource.includes("statusless deterministic directory was mistaken for an already-counted persisted replay at full account quota")
+    || !managedJobsIntegrationSource.includes("concurrent account pending-recovery submissions did not serialize to one remaining slot")
+    || !managedJobsIntegrationSource.includes("unclassifiable retained state did not fail account recovery quota closed with a privacy-safe integrity error")
+    || !managedJobsIntegrationSource.includes("account-version pending-recovery quota spilled into another account, relay owner, or local owner authority")) {
+  throw new Error("delegated account pending-recovery capacity lost its account-version aggregation, persisted-replay distinction, fail-closed privacy boundary, or concurrency proof");
 }
 if (!relayRedeliverySafetySource.includes("#unsafeCallIds = new Set()")
     || !relayRedeliverySafetySource.includes("#globalRedeliveryDisabled = false")
@@ -2019,7 +2050,10 @@ const operationsDoc = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
 const privacyDoc = readFileSync(join(root, "docs", "PRIVACY.md"), "utf8");
 const managedJobsDoc = readFileSync(join(root, "docs", "MANAGED_JOBS.md"), "utf8");
 const multiAccountDoc = readFileSync(join(root, "docs", "MULTI_ACCOUNT.md"), "utf8");
+const securityDoc = readFileSync(join(root, "SECURITY.md"), "utf8");
+const changelogDoc = readFileSync(join(root, "CHANGELOG.md"), "utf8");
 const serverMetadata = readFileSync(join(root, "src", "shared", "server-metadata.json"), "utf8");
+const auditDoc = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");
 const sensitiveValuePatternsSource = readFileSync(join(root, "src", "shared", "sensitive-value-patterns.mjs"), "utf8");
 const logRedactionSource = readFileSync(join(root, "src", "shared", "log-redaction.mjs"), "utf8");
 const privacyCheckerSource = readFileSync(join(root, "scripts", "privacy-check.mjs"), "utf8");
@@ -2200,13 +2234,15 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 25"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 26"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
   ["src/shared/server-metadata.json", serverMetadata, "durable_terminal from transient_terminal"],
-  ["src/shared/server-metadata.json", serverMetadata, "current response still requires read_job continuation retains stronger private recovery priority"],
+  ["src/shared/server-metadata.json", serverMetadata, "current response still requires read_job continuation is non-evictable under capacity pruning"],
+  ["src/shared/server-metadata.json", serverMetadata, "all 512 retained states are non-evictable"],
+  ["src/shared/server-metadata.json", serverMetadata, "owner/caller semantic assertion"],
   ["src/shared/server-metadata.json", serverMetadata, "Local/stdio list_jobs keeps its detailed primary jobs window capped at 50 and its recent_process_recovery handles capped at 16"],
   ["src/shared/server-metadata.json", serverMetadata, "Hosted list_jobs removes those job IDs/names/handles"],
   ["docs/MANAGED_JOBS.md", managedJobsDoc, "The daemon/local inventory's separate `recent_process_recovery` array remains capped at 16 authority-visible handles"],
@@ -2216,6 +2252,46 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "execution budget above 600 seconds"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted current hosted timing/diagnostic guidance: ${required}`);
+}
+for (const [file, content, required] of [
+  ["README.md", readme, "non-evictable during the fixed 24-hour undelivered-result grace"],
+  ["README.md", readme, "owner/caller semantic assertion"],
+  ["docs/ARCHITECTURE.md", architecture, "excluded from the removable set"],
+  ["docs/ARCHITECTURE.md", architecture, "owner/caller semantic assertion"],
+  ["docs/OPERATIONS.md", operationsDoc, "non-evictable under capacity pruning for the fixed 24-hour undelivered-result grace"],
+  ["docs/OPERATIONS.md", operationsDoc, "owner/caller semantic assertion"],
+  ["docs/TESTING.md", testingDoc, "store saturated with 512 such promised terminals returns typed retryable `limit_exceeded`"],
+  ["docs/AUDIT.md", auditDoc, "merely higher-priority eviction candidates"],
+  ["docs/AUDIT.md", auditDoc, "retry only `MBM_IDENTITY_CHANGED` for at most four observations"],
+]) {
+  if (!content.includes(required)) throw new Error(`${file} omitted beta.164 independent-review continuity contract: ${required}`);
+}
+for (const [file, content, required] of [
+  ["SECURITY.md", securityDoc, "at most 16 unresolved `transient_recovery_pending` carriers"],
+  ["SECURITY.md", securityDoc, "fairness key is account ID plus account version"],
+  ["SECURITY.md", securityDoc, "statusless partial publication must pass the account quota again"],
+  ["README.md", readme, "16 records per account ID plus account version across all OAuth clients and refresh families"],
+  ["CHANGELOG.md", changelogDoc, "cross-principal availability boundary"],
+  ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "changing either client or family cannot reset the quota"],
+  ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "deterministic directory with no persisted status is an incomplete transaction"],
+  ["docs/ARCHITECTURE.md", architecture, "`managed-job-transient-recovery-capacity.mjs`"],
+  ["docs/ARCHITECTURE.md", architecture, "at most 16 unresolved pending promises for one account ID plus account version"],
+  ["docs/OPERATIONS.md", operationsDoc, "capacity_scope=account_pending_transient_recovery"],
+  ["docs/OPERATIONS.md", operationsDoc, "statusless partial create must pass quota again"],
+  ["docs/TESTING.md", testingDoc, "seventeenth genuinely new carrier is rejected before state publication or process launch"],
+  ["docs/TESTING.md", testingDoc, "statusless deterministic directory is an incomplete publication rather than replay"],
+  ["docs/AUDIT.md", auditDoc, "cross-principal availability interaction"],
+  ["docs/AUDIT.md", auditDoc, "green full suite is not sufficient security evidence"],
+]) {
+  if (!content.includes(required)) throw new Error(`${file} omitted delegated account pending-recovery security contract: ${required}`);
+}
+for (const [file, content] of [
+  ["SECURITY.md", securityDoc], ["README.md", readme], ["docs/MULTI_ACCOUNT.md", multiAccountDoc],
+  ["docs/ARCHITECTURE.md", architecture], ["docs/OPERATIONS.md", operationsDoc], ["docs/TESTING.md", testingDoc],
+]) {
+  for (const forbidden of ["per-client pending-recovery quota", "client-scoped pending-recovery quota", "directory existence is idempotent replay"]) {
+    if (content.includes(forbidden)) throw new Error(`${file} retained unsafe delegated recovery quota guidance: ${forbidden}`);
+  }
 }
 if (serverMetadata.includes("inspect completion with read_job")
   || serverMetadata.includes("use short polling")
@@ -2335,6 +2411,7 @@ for (const file of [join(root, "docs", "ENGINEERING.md"), join(root, "CONTRIBUTI
   }
 }
 const projectStandards = readFileSync(join(root, "docs", "PROJECT_STANDARDS.md"), "utf8");
+if (!projectStandards.includes("owner/caller semantic assertion")) throw new Error("project standards omitted the beta.164 caller-semantic supervisor boundary");
 for (const required of ["GitHub Flow", "Conventional Commits", "MCP tool catalog", "An 80% aggregate coverage target", "Unhandled process-level exceptions", "npm trusted publishing", "High cohesion and low coupling", "KISS", "DRY", "ChatGPT GitHub plugin", "`gh api`", "Incident evidence discipline", "falsified hypotheses", "frozen tree", "deployed/live canaries", "Completion ownership, prerelease activation, and soak", "Autonomous long-running task continuity", "The user is not a polling clock", "status_polling_mode=bounded_followup", "host_turn_handoff_recommended=false", "same assistant response", "server-side long-poll", "high-density host tool loop", "one-second actual output/exit blocking", "fifteen-second", "cooldown boundary", "release-blocking continuity invariant", "21,600 seconds", "six hours", "npm run release:candidate", directCandidateVerifyCommand, "npm run release:candidate:activate -- --allow-worker-deploy", "npm run prerelease:release", "npm run prerelease:publish -- --owner-confirm", "npm run prerelease:install -- --allow-worker-deploy", "promotion-content digest", "seven days", "npm run stable:publish -- --owner-confirm", "npm run github:push", "observed live verification", "If Machine Bridge or the local authenticated CLI is unavailable", "browser-side GitHub integration"]) {
   if (!projectStandards.includes(required)) throw new Error(`project standards omitted required policy: ${required}`);
 }
@@ -2445,6 +2522,10 @@ if (operationsGuide.includes("cooldown in which another blocking request returns
   throw new Error("operations guide reintroduced the rapid process-checkpoint amplification path");
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");
+if (!toolReference.includes("non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace")
+    || !toolReference.includes("owner/caller semantic assertion")) {
+  throw new Error("generated MCP tool reference omitted beta.164 hard recovery or supervisor trust-boundary guidance");
+}
 const sharedToolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
 if (!toolReference.includes("Generated from `src/shared/tool-catalog.json`") || !toolReference.includes(`Tool count: **${sharedToolCatalog.length}**`)) {
   throw new Error("generated MCP tool reference is missing or malformed");
@@ -2455,6 +2536,7 @@ if (sharedToolCatalog.some((tool) => String(tool?.description || "").includes(ob
   throw new Error("current tool catalog/reference still routes generic browser/application work into process sessions");
 }
 const agentContract = readFileSync(join(root, "AGENTS.md"), "utf8");
+if (!agentContract.includes("owner/caller semantic assertion")) throw new Error("repository automation contract omitted the beta.164 caller-semantic supervisor boundary");
 for (const required of [
   "ChatGPT host-control-plane UI discipline",
   "not a separate conversational authorization boundary",

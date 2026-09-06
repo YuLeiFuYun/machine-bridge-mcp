@@ -10,6 +10,7 @@ import { deriveHostRates, evaluateResourceAdmission, resourcePressureSnapshot } 
 import { applyResourceProfileEnv, resourceCommandEffectiveCwd, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
 import { freshResourceHostSnapshot } from "../src/local/resource-host-cache.mjs";
 import { readResourceHostSample } from "../src/local/resource-host-sample-file.mjs";
+import { readResourceStateJson } from "../src/local/resource-state-file.mjs";
 import { sampleDarwinHostAsync } from "../src/local/resource-host-darwin.mjs";
 import { sampleLinuxHost } from "../src/local/resource-host-linux.mjs";
 import { aggregateResourceLeases, resourceLeaseAccountingContext, resourceRequestIncrement } from "../src/local/resource-lease-accounting.mjs";
@@ -64,6 +65,22 @@ assert.equal(readResourceHostSample("/synthetic/missing-host-sample.json", {
 assert.throws(() => readResourceHostSample("/synthetic/malformed-host-sample.json", {
   readFile: () => Buffer.from("not-json"),
 }), SyntaxError, "resource host sample retry masked malformed cache content");
+let resourceStateSecurityReads = 0;
+assert.throws(() => readResourceStateJson("/synthetic/denied.json", 4096, "resource state", {
+  readFile: () => {
+    resourceStateSecurityReads += 1;
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  },
+}), /denied/, "resource state reader retried a permission failure");
+assert.equal(resourceStateSecurityReads, 1, "resource state reader retried a non-generation security failure");
+let resourceStateLinkReads = 0;
+assert.throws(() => readResourceStateJson("/synthetic/linked.json", 4096, "resource state", {
+  readFile: () => {
+    resourceStateLinkReads += 1;
+    throw Object.assign(new Error("multiple hard links"), { code: "MBM_MULTIPLE_HARD_LINKS" });
+  },
+}), /multiple hard links/, "resource state reader retried an insecure hard-link state");
+assert.equal(resourceStateLinkReads, 1, "resource state reader retried a non-generation link failure");
 assert.equal(foregroundResourceWaitMs(60_000), 10_000, "default 60-second foreground work retained the interruption-prone two-second admission window");
 assert.equal(foregroundResourceWaitMs(30_000), 6_000, "foreground admission budget did not scale with the execution deadline");
 assert.equal(foregroundResourceWaitMs(10_000), 2_000, "short foreground work gained an excessive resource-admission delay");

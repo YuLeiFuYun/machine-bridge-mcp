@@ -19,10 +19,13 @@ import {
   managedJobActiveChildRecoveryReady, publishManagedJobActiveChild, terminateManagedJobActiveChild,
 } from "../src/local/managed-job-active-child.mjs";
 import { MAX_JOBS, MAX_LISTED_JOBS } from "../src/local/managed-job-capacity.mjs";
-import { TRANSIENT_PROCESS_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_SLOTS, transientProcessWithinRecoveryGrace } from "../src/local/managed-job-retention-policy.mjs";
+import { TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_SLOTS, transientProcessUndeliveredRecoveryProtected, transientProcessWithinRecoveryGrace } from "../src/local/managed-job-retention-policy.mjs";
 import { clearTransientProcessRecoveryPending } from "../src/local/managed-job-transient-recovery.mjs";
+import { NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS } from "../src/local/managed-job-transient-recovery-capacity.mjs";
+import { managedJobIdempotencyDigest } from "../src/local/managed-job-idempotency.mjs";
 import { readJson as readManagedJobJson, resourceErrorClass } from "../src/local/managed-job-storage.mjs";
 import { normalizeResourceRegistry, validatePlan } from "../src/local/managed-job-plan.mjs";
+import { publicStatus, reviewablePlan } from "../src/local/managed-job-projection.mjs";
 import { managedRunnerEnvironment, runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../src/local/managed-job-runner.mjs";
 import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
 import { createManagedJobRunnerExitRecovery } from "../src/local/managed-job-runner-exit-recovery.mjs";
@@ -61,6 +64,49 @@ function testManagedJobRetentionGraceBoundaries() {
     "transient recovery grace trusted a future terminal timestamp");
   assert(!transientProcessWithinRecoveryGrace({ finished_at: new Date(now).toISOString() }, now, now),
     "ordinary managed-job history entered the transient recovery grace");
+  const pending = { retention_class: "transient_process", transient_recovery_pending: true, finished_at: new Date(now - TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS).toISOString() };
+  assert(transientProcessWithinRecoveryGrace(pending, 0, now),
+    "pending transient recovery grace excluded its exact 24-hour boundary");
+  assert(transientProcessUndeliveredRecoveryProtected(pending, 0, now),
+    "pending transient recovery was not hard-protected at the exact 24-hour boundary");
+  pending.finished_at = new Date(now - TRANSIENT_PROCESS_RECOVERY_GRACE_MS - 1).toISOString();
+  assert(transientProcessWithinRecoveryGrace(pending, 0, now),
+    "pending transient recovery was incorrectly reduced to the post-delivery thirty-minute reserve");
+  pending.finished_at = new Date(now - TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS - 1).toISOString();
+  assert(!transientProcessWithinRecoveryGrace(pending, 0, now),
+    "pending transient recovery retained an expired 24-hour result");
+  assert(!transientProcessUndeliveredRecoveryProtected(pending, 0, now),
+    "expired pending transient recovery remained hard-protected after 24 hours");
+  const delivered = { retention_class: "transient_process", finished_at: new Date(now - 1).toISOString() };
+  assert(transientProcessWithinRecoveryGrace(delivered, 0, now)
+    && !transientProcessUndeliveredRecoveryProtected(delivered, 0, now),
+    "terminal-delivered transient recovery incorrectly entered hard undelivered protection");
+}
+
+function testManagedJobContinuationProjection() {
+  const ordinaryPlan = reviewablePlan({ version: 1, name: "ordinary", workspace: process.cwd(), steps: [] });
+  const supervisorPlan = reviewablePlan({ version: 1, name: "supervisor", continuation_mode: "task_supervisor", workspace: process.cwd(), steps: [] });
+  assert(!Object.hasOwn(ordinaryPlan, "continuation_mode") && supervisorPlan.continuation_mode === "task_supervisor",
+    "reviewable managed-job plan projection lost the finite task-supervisor authority boundary");
+  const ordinaryStatus = publicStatus({ job_id: "job-ordinary", name: "ordinary", status: "running" });
+  const supervisorStatus = publicStatus({ job_id: "job-supervisor", name: "supervisor", continuation_mode: "task_supervisor", status: "running" });
+  assert(!Object.hasOwn(ordinaryStatus, "continuation_mode") && supervisorStatus.continuation_mode === "task_supervisor",
+    "public managed-job status projection lost the finite task-supervisor authority boundary");
+}
+
+function testManagedJobContinuationModeValidation() {
+  const context = { workspace: process.cwd(), fullEnv: false, unrestrictedPaths: true, resources: {} };
+  const ordinary = validatePlan({ name: "ordinary", steps: [{ argv: [process.execPath, "-e", ""] }] }, context);
+  assert(!Object.hasOwn(ordinary, "continuation_mode"),
+    "ordinary managed-job plan gained task-supervisor authority by default");
+  const supervisor = validatePlan({ name: "supervisor", continuation_mode: "task_supervisor", steps: [{ argv: [process.execPath, "-e", ""] }] }, context);
+  assert(supervisor.continuation_mode === "task_supervisor",
+    "task-supervisor continuation authority did not survive managed-job plan validation");
+  let invalid = null;
+  try { validatePlan({ name: "invalid", continuation_mode: "job_monitor", steps: [{ argv: [process.execPath, "-e", ""] }] }, context); }
+  catch (error) { invalid = error; }
+  assert(String(invalid?.message || "").includes("continuation_mode must be task_supervisor"),
+    "managed-job plan accepted a continuation mode outside the finite supervisor authority set");
 }
 
 async function testTransientRecoveryMarkerBoundaries() {
@@ -727,6 +773,229 @@ function createManagedJobTestManager(options) {
   return manager;
 }
 
+function relayRecoveryQuotaContext({ accountChar = "q", accountVersion = 1, clientChar = "a", familyChar = clientChar, role = "operator" } = {}) {
+  return {
+    origin: "relay",
+    authority: {
+      origin: "relay",
+      owner: role === "owner",
+      principal: {
+        kind: "account",
+        accountId: `acct_${accountChar.repeat(32)}`,
+        accountVersion,
+        clientId: `mcp_client_${clientChar.repeat(43)}`,
+        familyId: `mcp_family_${familyChar.repeat(43)}`,
+        role,
+      },
+    },
+  };
+}
+
+async function testManagedJobAccountRecoveryCapacity() {
+  assert(NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS === TRANSIENT_PROCESS_RECOVERY_SLOTS,
+    "non-owner pending-recovery quota drifted from the bounded transient recovery slot contract");
+  const quotaRoot = join(root, "account-pending-recovery-quota-jobs");
+  let runnerLaunches = 0;
+  const quotaManager = createManagedJobTestManager({
+    jobRoot: quotaRoot,
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true },
+    resources: {}, recover: false,
+    runnerSpawnProcess: (...args) => { runnerLaunches += 1; return spawnManagedJobTestRunner(...args); },
+  });
+  const accountA = relayRecoveryQuotaContext();
+  const accountASecondClient = relayRecoveryQuotaContext({ clientChar: "b", familyChar: "c" });
+  const accountAThirdClient = relayRecoveryQuotaContext({ clientChar: "d", familyChar: "e" });
+  const accountB = relayRecoveryQuotaContext({ accountChar: "r", clientChar: "f", familyChar: "g" });
+  const accountAOwner = relayRecoveryQuotaContext({ clientChar: "h", familyChar: "i", role: "owner" });
+  const pendingIds = [];
+  for (let index = 0; index < NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS - 1; index += 1) {
+    const context = index % 2 === 0 ? accountA : accountASecondClient;
+    const pending = quotaManager.createJob({
+      name: `account recovery quota ${index}`,
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: false, retentionClass: "transient_process" }, context);
+    quotaManager.cancel({ job_id: pending.job_id });
+    pendingIds.push(pending.job_id);
+  }
+  const replayPlan = {
+    idempotency_key: "account-recovery-quota-replay",
+    name: "account recovery quota persisted replay",
+    steps: [{ argv: [process.execPath, "--version"] }],
+  };
+  const persisted = quotaManager.createJob(replayPlan,
+    { launch: true, retentionClass: "transient_process" }, accountAThirdClient);
+  await waitForJob(quotaManager, persisted.job_id);
+  pendingIds.push(persisted.job_id);
+  assert(runnerLaunches === 1, "account quota persisted replay fixture did not launch exactly one original runner");
+  const replay = quotaManager.createJob(replayPlan,
+    { launch: true, retentionClass: "transient_process" }, accountAThirdClient);
+  assert(replay.job_id === persisted.job_id && replay.idempotency_replay === true && runnerLaunches === 1,
+    "full account pending-recovery quota blocked or relaunched a genuine persisted same-key replay");
+
+  const beforeOverflowEntries = (await readdir(quotaRoot)).filter((name) => /^job_/.test(name)).sort();
+  let overflowError = null;
+  try {
+    quotaManager.createJob({
+      idempotency_key: "account-recovery-quota-overflow",
+      name: "account recovery quota overflow",
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: true, retentionClass: "transient_process" }, accountASecondClient);
+  } catch (error) { overflowError = error; }
+  const afterOverflowEntries = (await readdir(quotaRoot)).filter((name) => /^job_/.test(name)).sort();
+  const privateNeedles = [
+    accountA.authority.principal.accountId,
+    accountASecondClient.authority.principal.clientId,
+    accountASecondClient.authority.principal.familyId,
+    quotaRoot,
+  ];
+  assert(overflowError?.code === "limit_exceeded" && overflowError?.retryable === true
+    && overflowError?.details?.maximum === NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS
+    && overflowError?.details?.capacity_scope === "account_pending_transient_recovery"
+    && beforeOverflowEntries.join("\0") === afterOverflowEntries.join("\0") && runnerLaunches === 1,
+  "seventeenth same-account pending recovery was not rejected before durable state publication or process launch");
+  assert(privateNeedles.every((needle) => !`${overflowError?.message || ""}${JSON.stringify(overflowError?.details || {})}`.includes(needle)),
+    "account pending-recovery quota error leaked principal, path, or client/family identity");
+
+  const otherAccount = quotaManager.createJob({
+    name: "other account recovery quota",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" }, accountB);
+  const ownerRelay = quotaManager.createJob({
+    name: "owner relay recovery quota exemption",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" }, accountAOwner);
+  const local = quotaManager.createJob({
+    name: "local recovery quota exemption",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" });
+  assert(otherAccount.status === "staged" && ownerRelay.status === "staged" && local.status === "staged",
+    "account-version pending-recovery quota spilled into another account, relay owner, or local owner authority");
+
+  assert(clearTransientProcessRecoveryPending(join(quotaRoot, pendingIds[0])) === true,
+    "delivery downgrade fixture could not release one account pending-recovery reservation");
+  const deliveredReplacement = quotaManager.createJob({
+    name: "account quota delivery released replacement",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" }, accountASecondClient);
+  assert(deliveredReplacement.status === "staged", "terminal delivery marker clearing did not release the account pending-recovery quota");
+
+  const expiryId = pendingIds[1];
+  const expiryStatusFile = join(quotaRoot, expiryId, "status.json");
+  const expiryResultFile = join(quotaRoot, expiryId, "result.json");
+  const expiryStatus = JSON.parse(await readFile(expiryStatusFile, "utf8"));
+  const expiryResult = JSON.parse(await readFile(expiryResultFile, "utf8"));
+  const expiredFinishedAt = new Date(Date.now() - TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS - 1).toISOString();
+  expiryStatus.finished_at = expiredFinishedAt;
+  expiryResult.finished_at = expiredFinishedAt;
+  await writeFile(expiryStatusFile, `${JSON.stringify(expiryStatus, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(expiryResultFile, `${JSON.stringify(expiryResult, null, 2)}\n`, { mode: 0o600 });
+  const expiredReplacement = quotaManager.createJob({
+    name: "account quota expired replacement",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false, retentionClass: "transient_process" }, accountA);
+  assert(expiredReplacement.status === "staged", "24-hour pending terminal expiry did not release the account pending-recovery quota");
+
+  const partialRoot = join(root, "account-pending-recovery-partial-jobs");
+  const partialManager = createManagedJobTestManager({
+    jobRoot: partialRoot, workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {}, recover: false,
+  });
+  for (let index = 0; index < NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS - 1; index += 1) {
+    const pending = partialManager.createJob({ name: `partial quota ${index}`, steps: [{ argv: [process.execPath, "-e", ""] }] },
+      { launch: false, retentionClass: "transient_process" }, accountA);
+    partialManager.cancel({ job_id: pending.job_id });
+  }
+  const partialKey = "account-recovery-partial-publication";
+  const partialId = `job_${managedJobIdempotencyDigest(partialKey, accountA)}`;
+  await mkdir(join(partialRoot, partialId), { mode: 0o700 });
+  const filler = partialManager.createJob({ name: "partial quota filler", steps: [{ argv: [process.execPath, "-e", ""] }] },
+    { launch: false, retentionClass: "transient_process" }, accountASecondClient);
+  partialManager.cancel({ job_id: filler.job_id });
+  let partialError = null;
+  try {
+    partialManager.createJob({
+      idempotency_key: partialKey,
+      name: "partial quota retry",
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: true, retentionClass: "transient_process" }, accountA);
+  } catch (error) { partialError = error; }
+  assert(partialError?.code === "limit_exceeded" && !(await exists(join(partialRoot, partialId, "status.json"))),
+    "statusless deterministic directory was mistaken for an already-counted persisted replay at full account quota");
+
+  const integrityRoot = join(root, "account-pending-recovery-integrity-jobs");
+  const integrityManager = createManagedJobTestManager({
+    jobRoot: integrityRoot, workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {}, recover: false,
+  });
+  const malformedId = `job_${"I".repeat(24)}`;
+  await mkdir(join(integrityRoot, malformedId), { mode: 0o700 });
+  await writeFile(join(integrityRoot, malformedId, "status.json"), "{not-json\n", { mode: 0o600 });
+  let integrityError = null;
+  try {
+    integrityManager.createJob({ name: "quota integrity probe", steps: [{ argv: [process.execPath, "-e", ""] }] },
+      { launch: false, retentionClass: "transient_process" }, accountA);
+  } catch (error) { integrityError = error; }
+  assert(integrityError?.code === "integrity_error" && integrityError?.retryable === false
+    && !String(integrityError?.message || "").includes(integrityRoot)
+    && !String(integrityError?.message || "").includes(accountA.authority.principal.accountId),
+  "unclassifiable retained state did not fail account recovery quota closed with a privacy-safe integrity error");
+
+  const concurrentRoot = join(root, "account-pending-recovery-concurrent-jobs");
+  const concurrentManager = createManagedJobTestManager({
+    jobRoot: concurrentRoot, workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {}, recover: false,
+  });
+  for (let index = 0; index < NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS - 1; index += 1) {
+    concurrentManager.createJob({ name: `concurrent quota ${index}`, steps: [{ argv: [process.execPath, "-e", ""] }] },
+      { launch: false, retentionClass: "transient_process" }, accountA);
+  }
+  const moduleUrl = new URL("../src/local/managed-jobs.mjs", import.meta.url).href;
+  const childSource = `
+    import { ManagedJobManager } from ${JSON.stringify(moduleUrl)};
+    const [jobRoot, workspace, clientChar] = process.argv.slice(1);
+    const context = { origin: "relay", authority: { origin: "relay", owner: false, principal: {
+      kind: "account", accountId: "acct_${"q".repeat(32)}", accountVersion: 1,
+      clientId: "mcp_client_" + clientChar.repeat(43), familyId: "mcp_family_" + clientChar.repeat(43), role: "operator",
+    } } };
+    try {
+      const manager = new ManagedJobManager({ jobRoot, workspace, policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {}, recover: false });
+      const result = manager.createJob({ name: "concurrent account quota", steps: [{ argv: [process.execPath, "-e", ""] }] },
+        { launch: false, retentionClass: "transient_process" }, context);
+      process.stdout.write(JSON.stringify({ accepted: true, job_id: result.job_id }));
+    } catch (error) {
+      process.stdout.write(JSON.stringify({ accepted: false, code: error?.code || null, retryable: error?.retryable === true }));
+    }
+  `;
+  const runConcurrentChild = (char) => new Promise((resolveChild, rejectChild) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", childSource, concurrentRoot, workspace, char], {
+      stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NODE_V8_COVERAGE: "" },
+    });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", rejectChild);
+    child.once("exit", (code) => {
+      if (code !== 0) return rejectChild(new Error(`account quota child failed (${code}): ${stderr}`));
+      try { resolveChild(JSON.parse(stdout)); } catch { rejectChild(new Error(`account quota child returned invalid JSON: ${stdout} ${stderr}`)); }
+    });
+  });
+  const concurrentResults = await Promise.all([runConcurrentChild("x"), runConcurrentChild("y")]);
+  const acceptedConcurrent = concurrentResults.filter((result) => result.accepted).length;
+  assert(acceptedConcurrent === 1
+    && concurrentResults.every((result) => result.accepted || ["conflict", "limit_exceeded"].includes(result.code)),
+  `concurrent account pending-recovery submissions did not serialize to one remaining slot: ${JSON.stringify(concurrentResults)}`);
+  let concurrentPending = 0;
+  for (const entry of await readdir(concurrentRoot)) {
+    if (!/^job_/.test(entry)) continue;
+    const status = await readManagedJobJson(join(concurrentRoot, entry, "status.json"), 256 * 1024, "job status");
+    if (status?.transient_recovery_pending === true && status.owner_account_id === accountA.authority.principal.accountId
+        && status.owner_account_version === accountA.authority.principal.accountVersion) concurrentPending += 1;
+  }
+  assert(concurrentPending === NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS,
+    "concurrent account recovery admissions oversubscribed or lost the final bounded pending-recovery slot");
+}
+
 async function testManagedJobCapacityBoundary() {
   const terminalRoot = join(root, "capacity-terminal-jobs");
   const terminalManager = createManagedJobTestManager({
@@ -835,6 +1104,69 @@ async function testManagedJobCapacityBoundary() {
     && secondRecoveryList.recent_process_recovery.some((job) => job.job_id === recentTransientIds[0])
     && secondRecoveryList.recent_process_recovery.length === TRANSIENT_PROCESS_RECOVERY_SLOTS,
   "follow-up-required transient recovery was displaced by newer terminal-delivered helper churn");
+
+  const hardPendingEntries = (await readdir(terminalRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && /^job_/.test(entry.name));
+  assert(hardPendingEntries.length === MAX_JOBS,
+    "undelivered transient saturation fixture did not begin at the hard retained-state limit");
+  const hardPendingIds = hardPendingEntries.map((entry) => entry.name);
+  for (const jobId of hardPendingIds) {
+    const statusFile = join(terminalRoot, jobId, "status.json");
+    const status = JSON.parse(await readFile(statusFile, "utf8"));
+    assert(ACTIVE_JOB_STATES.has(status.status) === false,
+      "undelivered transient saturation fixture unexpectedly contained active state");
+    status.retention_class = "transient_process";
+    status.transient_recovery_pending = true;
+    await writeFile(statusFile, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
+  }
+  let undeliveredCapacityError = null;
+  try {
+    terminalManager.stage({
+      name: "undelivered transient capacity overflow",
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    });
+  } catch (error) { undeliveredCapacityError = error; }
+  assert(undeliveredCapacityError?.code === "limit_exceeded" && undeliveredCapacityError?.retryable === true
+    && undeliveredCapacityError?.details?.retained_state === MAX_JOBS,
+    "undelivered transient saturation did not return retryable capacity backpressure");
+  assert((await Promise.all(hardPendingIds.map((id) => exists(join(terminalRoot, id))))).every(Boolean),
+    "undelivered transient saturation evicted promised recovery state");
+
+  const deliveredEvictionId = hardPendingIds[0];
+  assert(clearTransientProcessRecoveryPending(join(terminalRoot, deliveredEvictionId)) === true,
+    "delivery downgrade fixture could not clear the pending recovery marker");
+  const deliveredReplacement = terminalManager.stage({
+    name: "delivery-downgraded capacity replacement",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  assert(!(await exists(join(terminalRoot, deliveredEvictionId)))
+    && terminalManager.read({ job_id: deliveredReplacement.job_id }).status === "staged",
+    "delivered transient recovery did not become evictable under saturated capacity");
+  terminalManager.cancel({ job_id: deliveredReplacement.job_id });
+  const deliveredReplacementStatusFile = join(terminalRoot, deliveredReplacement.job_id, "status.json");
+  const deliveredReplacementStatus = JSON.parse(await readFile(deliveredReplacementStatusFile, "utf8"));
+  deliveredReplacementStatus.retention_class = "transient_process";
+  deliveredReplacementStatus.transient_recovery_pending = true;
+  await writeFile(deliveredReplacementStatusFile, `${JSON.stringify(deliveredReplacementStatus, null, 2)}\n`, { mode: 0o600 });
+
+  const expiryEvictionId = hardPendingIds[1];
+  const expiryStatusFile = join(terminalRoot, expiryEvictionId, "status.json");
+  const expiryResultFile = join(terminalRoot, expiryEvictionId, "result.json");
+  const expiryStatus = JSON.parse(await readFile(expiryStatusFile, "utf8"));
+  const expiryResult = JSON.parse(await readFile(expiryResultFile, "utf8"));
+  const expiredFinishedAt = new Date(Date.now() - TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS - 1).toISOString();
+  expiryStatus.finished_at = expiredFinishedAt;
+  expiryResult.finished_at = expiredFinishedAt;
+  await writeFile(expiryStatusFile, `${JSON.stringify(expiryStatus, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(expiryResultFile, `${JSON.stringify(expiryResult, null, 2)}\n`, { mode: 0o600 });
+  const expiredReplacement = terminalManager.stage({
+    name: "expired-undelivered capacity replacement",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  assert(!(await exists(join(terminalRoot, expiryEvictionId)))
+    && terminalManager.read({ job_id: expiredReplacement.job_id }).status === "staged",
+    "expired undelivered transient recovery did not become evictable after 24 hours");
+  terminalManager.cancel({ job_id: expiredReplacement.job_id });
 
   const durableHelperRoot = join(root, "durable-helper-retention-jobs");
   const durableHelperManager = createManagedJobTestManager({
@@ -1462,6 +1794,8 @@ await writeFile(helperFile, "temporary", "utf8");
 try {
   testTerminalPersistenceBoundary();
   testManagedJobRetentionGraceBoundaries();
+  testManagedJobContinuationProjection();
+  testManagedJobContinuationModeValidation();
   await testTransientRecoveryMarkerBoundaries();
   testManagedStateIdentityRetry();
   await testRunnerExitRecoveryRetryPolicy();
@@ -1470,6 +1804,7 @@ try {
   await testManagedJobReadWaitPacing();
   await testRunnerClaimBoundary();
   await testRecoveryClaimFailurePreservesRetryState();
+  await testManagedJobAccountRecoveryCapacity();
   await testManagedJobCapacityBoundary();
   await testManagedJobDependencies();
   await testDependencyResultFirstProjection();

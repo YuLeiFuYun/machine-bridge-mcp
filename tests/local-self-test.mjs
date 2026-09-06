@@ -387,15 +387,24 @@ const metadata = { mode: args.includes("--foreground-lock") ? "foreground" : "se
 const state = loadState(workspace, { stateDir: stateRoot });
 const lock = acquireDaemonLock(state, metadata);
 if (!lock.acquired) process.exit(3);
-process.stdout.write("ready\\n");
 process.on("SIGTERM", () => {
   if (args.includes("--ignore-term")) return;
   lock.release();
   process.exit(0);
 });
 process.on("exit", () => lock.release());
+process.stdout.write("ready\\n");
 setInterval(() => {}, 2 ** 31 - 1);
 `, "utf8");
+
+  const daemonFixtureSource = await readFile(fixture, "utf8");
+  const sigtermHandlerIndex = daemonFixtureSource.indexOf('process.on("SIGTERM"');
+  const exitHandlerIndex = daemonFixtureSource.indexOf('process.on("exit"');
+  const readyPublishIndex = daemonFixtureSource.indexOf('process.stdout.write("ready\\n")');
+  if (sigtermHandlerIndex < 0 || exitHandlerIndex < 0 || readyPublishIndex < 0
+      || sigtermHandlerIndex >= readyPublishIndex || exitHandlerIndex >= readyPublishIndex) {
+    throw new Error("daemon fixture readiness must be published only after SIGTERM/exit handlers are installed");
+  }
 
   let child = null;
   try {

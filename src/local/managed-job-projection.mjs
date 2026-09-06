@@ -7,6 +7,7 @@ import { managedJobDependencyCount } from "./managed-job-dependency-metadata.mjs
  * @param {{
  *   version?: unknown,
  *   name?: unknown,
+ *   continuation_mode?: unknown,
  *   workspace?: unknown,
  *   full_env?: unknown,
  *   depends_on?: unknown[],
@@ -20,6 +21,7 @@ export function reviewablePlan(plan) {
   return {
     version: plan.version,
     name: plan.name,
+    ...(plan.continuation_mode === "task_supervisor" ? { continuation_mode: "task_supervisor" } : {}),
     workspace: plan.workspace,
     full_env: plan.full_env === true,
     depends_on: Array.isArray(plan.depends_on) ? plan.depends_on : [],
@@ -52,7 +54,7 @@ export function projectManagedJobResult(result, { includeResourceAdmissionTiming
 
 /**
  * Return the stable public status shape without runner identity or internal paths.
- * @param {{job_id?: unknown, name?: unknown, status?: unknown, created_at?: unknown, started_at?: unknown,
+ * @param {{job_id?: unknown, name?: unknown, continuation_mode?: unknown, status?: unknown, created_at?: unknown, started_at?: unknown,
  * finished_at?: unknown, current_phase?: unknown, current_step?: unknown, approval?: unknown, plan_sha256?: unknown,
  * cleanup_guarantee?: unknown, error_class?: unknown, recovery_attempts?: unknown, result_persisted?: unknown,
  * terminal_record_error_class?: unknown, artifact_cleanup_pending?: unknown, artifact_cleanup_error_class?: unknown,
@@ -62,6 +64,7 @@ export function publicStatus(status) {
   return {
     job_id: status.job_id,
     name: status.name,
+    ...(status.continuation_mode === "task_supervisor" ? { continuation_mode: "task_supervisor" } : {}),
     status: status.status,
     created_at: status.created_at,
     started_at: status.started_at ?? null,

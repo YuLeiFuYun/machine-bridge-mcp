@@ -54,9 +54,10 @@ export function publicResourceRegistry(resources = {}, { includePaths = false } 
 
 export function validatePlan(args, context) {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("job arguments must be an object");
-  const allowed = new Set(["name", "depends_on", "steps", "finally_steps", "temporary_files"]);
+  const allowed = new Set(["name", "continuation_mode", "depends_on", "steps", "finally_steps", "temporary_files"]);
   for (const key of Object.keys(args)) if (!allowed.has(key)) throw new Error(`job contains unknown field: ${key}`);
   const name = args.name === undefined ? "managed job" : boundedString(args.name, 128, "name").trim() || "managed job";
+  const continuationMode = args.continuation_mode === undefined ? null : validateContinuationMode(args.continuation_mode);
   const dependsOn = args.depends_on === undefined ? null : validateDependencyIds(args.depends_on);
   const steps = validateSteps(args.steps, "steps", context);
   const finallySteps = validateSteps(args.finally_steps === undefined ? [] : args.finally_steps, "finally_steps", context, true);
@@ -65,6 +66,7 @@ export function validatePlan(args, context) {
   return {
     version: 1,
     name,
+    ...(continuationMode === null ? {} : { continuation_mode: continuationMode }),
     ...(dependsOn === null ? {} : { depends_on: dependsOn }),
     workspace: context.workspace,
     full_env: context.fullEnv,
@@ -73,6 +75,11 @@ export function validatePlan(args, context) {
     steps,
     finally_steps: finallySteps,
   };
+}
+
+function validateContinuationMode(value) {
+  if (value === "task_supervisor") return value;
+  throw new Error("continuation_mode must be task_supervisor when provided");
 }
 
 function validateDependencyIds(value) {

@@ -119,7 +119,7 @@ export function projectManagedJobMonitorHandoff(value: unknown, claimed: boolean
   if (result.same_response_followup_supported !== true && result.follow_up_read_required !== true) return value;
   return {
     ...result, follow_up_read_required: false, ui_follow_up_read_required: true, ui_monitor_claimed: true,
-    status_polling_mode: "ui_monitor", host_turn_handoff_recommended: false, same_response_followup_supported: false,
+    status_polling_mode: "ui_monitor", host_turn_handoff_recommended: result.continuation_mode === "task_supervisor", same_response_followup_supported: false,
     completion_delivery: "mcp_app_job_monitor", ui_resource_uri: JOB_MONITOR_RESOURCE_URI,
   };
 }

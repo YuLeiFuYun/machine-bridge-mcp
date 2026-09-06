@@ -9,6 +9,7 @@ import { assertOwnedByContext, principalBinding } from "./authority-context.mjs"
 import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { startDurableProcessJob } from "./managed-job-durable-process.mjs";
 import { clearTransientProcessRecoveryPending, transientProcessRecoveryStatusFields } from "./managed-job-transient-recovery.mjs";
+import { assertTransientProcessRecoveryAccountCapacity } from "./managed-job-transient-recovery-capacity.mjs";
 import { acceptedManagedJobProjection } from "./managed-job-acceptance.mjs";
 import { managedJobActiveChildFile, managedJobActiveChildRecoveryState } from "./managed-job-active-child.mjs";
 import { resolveManagedJobDependencies } from "./managed-job-dependency-admission.mjs";
@@ -174,6 +175,10 @@ export class ManagedJobManager {
       }
       const alreadyExists = Boolean(existingInfo);
       if (alreadyExists) ensureOwnerOnlyDir(dir);
+      const recoveryAccountCapacity = assertTransientProcessRecoveryAccountCapacity({
+        jobRoot: this.jobRoot, retentionClass, context, currentJobId: id, currentDirectoryExists: alreadyExists,
+        idempotencyReplayEligible: idempotencyDigest !== null,
+      });
       const dependencyResolution = alreadyExists
         ? { witnesses: [], pending: 0 }
         : resolveManagedJobDependencies({
@@ -183,13 +188,15 @@ export class ManagedJobManager {
           context,
           reconcileStatus: (dependencyDir) => this.reconcileStatus(dependencyDir),
         });
-      pruneManagedJobs({
-        jobRoot: this.jobRoot,
-        logger: this.logger,
-        reserveSlots: alreadyExists ? 0 : 1,
-        protectedJobIds: new Set(plan.depends_on || []),
-        incomingRetentionClass: retentionClass,
-      });
+      if (!(recoveryAccountCapacity.applies && alreadyExists)) {
+        pruneManagedJobs({
+          jobRoot: this.jobRoot,
+          logger: this.logger,
+          reserveSlots: alreadyExists ? 0 : 1,
+          protectedJobIds: new Set(plan.depends_on || []),
+          incomingRetentionClass: retentionClass,
+        });
+      }
       const capacitySnapshot = managedJobCapacitySnapshot(this.jobRoot);
       if (!alreadyExists && capacitySnapshot.retained_state >= MAX_JOBS) {
         throw new BridgeError("limit_exceeded", `managed job capacity is fully occupied (${MAX_JOBS})`, {
@@ -247,6 +254,7 @@ export class ManagedJobManager {
           cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
           dependency_total: (plan.depends_on || []).length,
           dependency_pending_count: dependencyResolution.pending,
+          ...(plan.continuation_mode === "task_supervisor" ? { continuation_mode: "task_supervisor" } : {}),
           ...((plan.depends_on || []).length ? { dependency_witnesses: dependencyResolution.witnesses } : {}),
           ...transientProcessRecoveryStatusFields(retentionClass, context),
           ...principalBinding(context),

@@ -6,6 +6,7 @@ export function acceptedManagedJobProjection(status, plan, { idempotencyReplay =
     job_id: status.job_id,
     name: status.name,
     status: status.status,
+    ...(plan.continuation_mode === "task_supervisor" ? { continuation_mode: "task_supervisor" } : {}),
     detached: true,
     continues_without_mcp_connection: true,
     approval: status.approval,

@@ -1495,6 +1495,7 @@ async function testRelayTimeoutContract() {
   const ownerJobMonitorClaim = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_CLAIM_TOOL);
   const ownerJobMonitorRead = workerToolsForRole("owner").find((tool) => tool.name === JOB_MONITOR_READ_TOOL);
   assert(remoteStartJob?.inputSchema?.required?.includes("idempotency_key")
+    && JSON.stringify(remoteStartJob?.inputSchema?.properties?.continuation_mode?.enum) === '["task_supervisor"]'
     && remoteStartJob?.inputSchema?.properties?.dependency_recovery?.type === "object"
     && remoteStartJob?._meta?.ui?.resourceUri === undefined
     && remoteStartJob?._meta?.["ui/resourceUri"] === undefined
@@ -1512,6 +1513,7 @@ async function testRelayTimeoutContract() {
     && remoteStartJobDescription.includes("idempotency_key known before dispatch")
     && remoteStartJobDescription.includes("recovery_key and control_key")
     && remoteStartJobDescription.includes("dependency_recovery")
+    && remoteStartJobDescription.includes("continuation_mode=task_supervisor")
     && remoteStartJobDescription.includes("render_job_monitor")
     && remoteStartJobDescription.includes("status_polling_mode=ui_monitor")
     && remoteStartJobDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time"),
@@ -1709,10 +1711,10 @@ async function testRelayTimeoutContract() {
     && !("recovery_key" in projectedReadArgs) && !("ui_monitor_id" in projectedReadArgs),
     "hosted read_job forwarded Worker-only recovery/monitor coordination material to the daemon");
   const projectedDependencyArgs = await hostedManagedJobDaemonArguments("start_job", {
-    idempotency_key: "capability-dependency", depends_on: [capabilityJobId],
+    idempotency_key: "capability-dependency", continuation_mode: "task_supervisor", depends_on: [capabilityJobId],
     dependency_recovery: { [capabilityJobId]: recoveryKey }, steps: [{ argv: ["true"] }],
   }, capabilityAuthority, capabilityKeyMaterial);
-  assert(Array.isArray(projectedDependencyArgs.depends_on) && !("dependency_recovery" in projectedDependencyArgs),
+  assert(Array.isArray(projectedDependencyArgs.depends_on) && projectedDependencyArgs.continuation_mode === "task_supervisor" && !("dependency_recovery" in projectedDependencyArgs),
     "hosted dependency authorization material crossed the Worker/daemon boundary");
   let wrongCapabilityError;
   try {
@@ -1752,6 +1754,30 @@ async function testRelayTimeoutContract() {
     && activeClaimed.host_turn_handoff_recommended === false && activeClaimed.same_response_followup_supported === false
     && activeClaimed.completion_delivery === "mcp_app_job_monitor",
   "a proven Job Monitor claim incorrectly recommended transferring the whole assistant turn instead of only job polling");
+  const supervisorWithoutClaim = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "running", continuation_mode: "task_supervisor", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: false });
+  assert(supervisorWithoutClaim.follow_up_read_required === true
+    && supervisorWithoutClaim.host_turn_handoff_recommended === false
+    && supervisorWithoutClaim.status_polling_mode !== "ui_monitor",
+  "unclaimed task supervisor incorrectly recommended host-turn handoff");
+  const activeSupervisorClaimed = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "running", continuation_mode: "task_supervisor", follow_up_read_required: true,
+    host_turn_handoff_recommended: false, same_response_followup_supported: true,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: true });
+  assert(activeSupervisorClaimed.continuation_mode === "task_supervisor"
+    && activeSupervisorClaimed.follow_up_read_required === false && activeSupervisorClaimed.ui_follow_up_read_required === true
+    && activeSupervisorClaimed.ui_monitor_claimed === true && activeSupervisorClaimed.status_polling_mode === "ui_monitor"
+    && activeSupervisorClaimed.host_turn_handoff_recommended === true && activeSupervisorClaimed.same_response_followup_supported === false,
+  "claimed active task supervisor did not transfer host-turn continuation to its durable supervisor lifecycle");
+  const terminalSupervisorClaimed = await projectHostedManagedJobResult("read_job", {
+    job_id: capabilityJobId, status: "succeeded", continuation_mode: "task_supervisor", follow_up_read_required: false,
+    host_turn_handoff_recommended: false, same_response_followup_supported: false,
+  }, capabilityAuthority, capabilityKeyMaterial, { uiMonitorClaimed: true });
+  assert(terminalSupervisorClaimed.host_turn_handoff_recommended === false
+    && terminalSupervisorClaimed.status_polling_mode !== "ui_monitor",
+  "terminal task supervisor incorrectly emitted a new host-turn handoff recommendation");
   const terminalWithUi = await projectHostedManagedJobResult("start_job", {
     accepted: true, job_id: capabilityJobId, status: "succeeded", follow_up_read_required: false,
   }, capabilityAuthority, capabilityKeyMaterial, { clientCapabilities: uiClientCapabilities, uiMonitorClaimed: true });
