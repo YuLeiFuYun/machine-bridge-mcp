@@ -80,22 +80,23 @@ else {
   const priorTarget = Buffer.from("prior target bytes\n");
   await writeFile(target, priorTarget);
   await chmod(target, 0o640);
+  const priorTargetMode = (await stat(target)).mode & 0o777;
   await writeFile(seed, "!!!!\n", "utf8");
   const malformedOutput = capture();
   await assert.rejects(runWranglerTypes(typesOptions("normal", malformedOutput)), /not canonical UTF-8 Base64/);
   assert.equal(malformedOutput.stdout, "", "malformed runtime seed reached Wrangler dispatch");
-  await assertSnapshot(target, priorTarget, 0o640, "malformed seed changed the prior target");
+  await assertSnapshot(target, priorTarget, priorTargetMode, "malformed seed changed the prior target");
 
   await writeSeed(seed, runtimePayload("interface OldRuntime {}\n", "// Runtime types generated with workerd@1.0.0 2020-01-01 old"));
   const staleOutput = capture();
   await assert.rejects(runWranglerTypes(typesOptions("normal", staleOutput)), /stale or contains non-runtime/);
   assert.equal(staleOutput.stdout, "", "stale runtime seed reached Wrangler dispatch");
-  await assertSnapshot(target, priorTarget, 0o640, "stale seed changed the prior target");
+  await assertSnapshot(target, priorTarget, priorTargetMode, "stale seed changed the prior target");
   await writeSeed(seed, baselineRuntime);
 
   const mismatchOutput = capture();
   await assert.rejects(runWranglerTypes(typesOptions("mismatch", mismatchOutput)), /do not match the tracked runtime seed/);
-  await assertSnapshot(target, priorTarget, 0o640, "post-generation runtime mismatch did not restore the prior target");
+  await assertSnapshot(target, priorTarget, priorTargetMode, "post-generation runtime mismatch did not restore the prior target");
 
   await rm(target, { force: true });
   const failedAbsent = capture();
@@ -106,7 +107,7 @@ else {
   await chmod(target, 0o640);
   const failedExisting = capture();
   await assert.rejects(runWranglerTypes(typesOptions("fail", failedExisting)), /exit code 7/);
-  await assertSnapshot(target, priorTarget, 0o640, "Wrangler failure did not restore a pre-existing target exactly");
+  await assertSnapshot(target, priorTarget, priorTargetMode, "Wrangler failure did not restore a pre-existing target exactly");
 
   await rm(target, { force: true });
   const stalledAbsent = capture();
@@ -117,7 +118,7 @@ else {
   await chmod(target, 0o640);
   const stalledExisting = capture();
   await assert.rejects(runWranglerTypes(typesOptions("hang-before", stalledExisting, { timeoutMs: 80 })), /wrangler types timed out after 80ms/);
-  await assertSnapshot(target, priorTarget, 0o640, "Wrangler timeout did not restore a pre-existing target exactly");
+  await assertSnapshot(target, priorTarget, priorTargetMode, "Wrangler timeout did not restore a pre-existing target exactly");
 
   const oldSeed = Buffer.from(await readFile(seed));
   await chmod(seed, 0o640);
@@ -133,10 +134,11 @@ else {
   await writeFile(target, priorTarget);
   await chmod(target, 0o640);
   const refreshSeedBefore = Buffer.from(await readFile(seed));
+  const refreshSeedMode = (await stat(seed)).mode & 0o777;
   const refreshFailure = capture();
   await assert.rejects(runWranglerTypes(typesOptions("fail", refreshFailure, { refreshRuntimeSeed: true, runtimePayload: refreshedRuntime })), /exit code 7/);
-  await assertSnapshot(target, priorTarget, 0o640, "refresh failure did not restore the prior target");
-  await assertSnapshot(seed, refreshSeedBefore, 0o640, "refresh failure did not restore the prior seed");
+  await assertSnapshot(target, priorTarget, priorTargetMode, "refresh failure did not restore the prior target");
+  await assertSnapshot(seed, refreshSeedBefore, refreshSeedMode, "refresh failure did not restore the prior seed");
 
   assert.deepEqual(parseWorkerTypesArguments([]), { refreshRuntimeSeed: false });
   assert.deepEqual(parseWorkerTypesArguments(["--refresh-runtime-seed"]), { refreshRuntimeSeed: true });
