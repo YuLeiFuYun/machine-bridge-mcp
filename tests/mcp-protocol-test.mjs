@@ -16,14 +16,13 @@ import {
 } from "../src/shared/mcp-protocol.mjs";
 import {
   MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
-  MCP_LEGACY_SERVER_CAPABILITIES, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
+  MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
 } from "../src/worker/worker-mcp-config.ts";
 import {
   McpHttpContractError,
   decodeMcpHeaderValue,
   toolParameterHeaderNames,
   validateHttpRequest,
-  validateOptionalCompatibilityMirrors,
   validateToolHeaderSchemas,
 } from "../src/worker/mcp-http-contract.ts";
 
@@ -144,7 +143,6 @@ assert.equal(discovery.cacheScope, "public");
 assert.equal(SERVER_NAME, "machine-bridge-mcp");
 assert.deepEqual(MCP_PROTOCOL_VERSIONS, [MCP_PROTOCOL_VERSION]);
 assert(MCP_INSTRUCTIONS.length > 0 && MCP_SERVER_CAPABILITIES.tools.listChanged === true);
-assert.equal(MCP_LEGACY_SERVER_CAPABILITIES.tools.listChanged, false);
 assert(MCP_DISCOVERY_TTL_MS === 0 && MCP_TOOL_LIST_TTL_MS === 0, "discovery instructions and tool descriptions must not advertise reusable cross-release caches");
 assert.equal(mcpServerInfo("test").version, "test");
 const subscriptionFilter = validateSubscriptionRequest(request("subscriptions/listen", {
@@ -207,41 +205,6 @@ assert.throws(
   (error) => error instanceof McpHttpContractError && error.code === -32602 && error.message === "name must be a string",
   "current tools/call body validation did not precede its missing mirrored-name header error",
 );
-const compatibilityHeaders = new Headers();
-assert.doesNotThrow(() => validateOptionalCompatibilityMirrors({ headers: compatibilityHeaders, body: call, tools: [tool] }),
-  "stateless compatibility unexpectedly required current mirrored headers");
-compatibilityHeaders.set("Mcp-Method", "tools/call");
-compatibilityHeaders.set("Mcp-Name", tool.name);
-compatibilityHeaders.set("Mcp-Param-Region", encodeHeader("世界"));
-assert.doesNotThrow(() => validateOptionalCompatibilityMirrors({ headers: compatibilityHeaders, body: call, tools: [tool] }),
-  "matching optional compatibility mirrors were rejected");
-for (const mutate of [
-  (value) => value.set("Mcp-Method", "tools/list"),
-  (value) => value.set("Mcp-Name", "other"),
-  (value) => value.set("Mcp-Param-Region", "other"),
-  (value) => value.set("Mcp-Param-Enabled", "false"),
-  (value) => value.set("Mcp-Param-Undeclared", "other"),
-]) {
-  const changed = new Headers(compatibilityHeaders);
-  mutate(changed);
-  assert.throws(
-    () => validateOptionalCompatibilityMirrors({ headers: changed, body: call, tools: [tool] }),
-    (error) => error instanceof McpHttpContractError && error.code === MCP_HEADER_MISMATCH,
-  );
-}
-for (const unexpectedHeaders of [
-  new Headers({ "Mcp-Name": tool.name }),
-  new Headers({ "Mcp-Param-Region": "us" }),
-]) {
-  assert.throws(
-    () => validateOptionalCompatibilityMirrors({
-      headers: unexpectedHeaders,
-      body: request("tools/list", { _meta: requestMeta }),
-      tools: [tool],
-    }),
-    (error) => error instanceof McpHttpContractError && error.code === MCP_HEADER_MISMATCH,
-  );
-}
 const unknownBodyVersion = request("server/discover", { _meta: {
   ...requestMeta,
   "io.modelcontextprotocol/protocolVersion": "1900-01-01",

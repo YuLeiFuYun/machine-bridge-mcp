@@ -1,6 +1,6 @@
 # Threat model
 
-This document defines the security claims Machine Bridge is designed to make and the claims it explicitly does not make. It complements [SECURITY.md](../SECURITY.md), [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md), and [ARCHITECTURE.md](ARCHITECTURE.md).
+This document defines the security claims Machine Bridge is designed to make and the claims it explicitly does not make. It complements [SECURITY.md](../SECURITY.md) and [LOCAL_AUTHORIZATION.md](LOCAL_AUTHORIZATION.md). Detailed implementation architecture remains source-repository maintenance material.
 
 ## Scope
 
@@ -233,7 +233,7 @@ Regression suites cover:
 - audit-chain integrity, privacy redaction, package contents, installation, release impact, dependency integrity, CodeQL, Scorecard findings, and GitHub publication guard/lock behavior;
 - malformed, over-limit, concurrent, replayed, stale, and fault-injected inputs.
 
-See [TESTING.md](TESTING.md) for the test inventory and [AUDIT.md](AUDIT.md) for historical findings and residual limitations.
+See [AUDIT.md](AUDIT.md) for current audit conclusions and residual review requirements. Detailed test inventory and historical audit evidence remain in the source repository and tagged history.
 
 ## Reporting
 

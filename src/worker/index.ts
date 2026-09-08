@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
+import { MCP_REMOVED_PROTOCOL_MESSAGE } from "../shared/mcp-protocol.mjs";
 import { PendingCallRegistrationError } from "./pending-call-contract.ts";
 import { PendingCallRegistry } from "./pending-calls.ts";
 import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./pending-call-capacity.ts";
@@ -20,7 +21,6 @@ import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
 import { McpController } from "./mcp-controller.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { removedProtocolResponse } from "./mcp-removed-protocol.ts";
-import { initializationCompatibilityResponse } from "./mcp-initialization-compat.ts";
 import { mcpStreamProxyMode } from "./mcp-stream-proxy-contract.ts";
 import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
 import { handleOuterWorkerFetch } from "./worker-entry.ts";
@@ -46,7 +46,7 @@ import { authorizationServerMetadata } from "./worker-metadata.ts";
 import { workerBodyLimitBytes, type BridgeEnv } from "./worker-runtime-config.ts";
 import { retainWorkerTask } from "./worker-task-lifetime.ts";
 import { statefulRouteClass } from "./worker-rate-limit-key.ts";
-import { MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS, MCP_LEGACY_SERVER_CAPABILITIES,
+import { MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
   MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo } from "./worker-mcp-config.ts";
 import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
@@ -55,7 +55,7 @@ import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "
 import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.165";
+const SERVER_VERSION = "3.0.0-beta.166";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -442,12 +442,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (isJsonRpcResponse(body)) return json(rpcError(null, -32600, "Clients must not send JSON-RPC responses"), 400);
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
     try {
-      const compatibility = await initializationCompatibilityResponse({
-        request, body, base, authorized: access.authorized, controller: this.mcp,
-        capabilities: MCP_LEGACY_SERVER_CAPABILITIES, serverInfo: MCP_SERVER_INFO, instructions: MCP_INSTRUCTIONS,
-        tools: workerToolsForRole(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
-      });
-      if (compatibility) return compatibility;
+      if (request.headers.has("Last-Event-ID")) {
+        return json(rpcError(body.id ?? null, -32601, MCP_REMOVED_PROTOCOL_MESSAGE, { supported: [...MCP_PROTOCOL_VERSIONS] }), 400);
+      }
       const removed = removedProtocolResponse(request, body, MCP_PROTOCOL_VERSIONS);
       if (removed) return removed;
       validateHttpRequest({

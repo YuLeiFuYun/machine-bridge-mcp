@@ -44,9 +44,6 @@ export class BrowserOperationService {
     this.computerObservation = new BrowserComputerObservationService({
       authorizeTool: (tool) => this.authorizeTool(tool),
       request: (...args) => this.requestComputerObservation(...args),
-      bridgeStatus: () => this.bridgeStatus(),
-      inspectPage: (args, context) => this.inspectPage(args, context),
-      screenshot: (args, context) => this.screenshot(args, context),
     });
   }
   async status(context = {}) {

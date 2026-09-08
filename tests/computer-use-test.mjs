@@ -4826,6 +4826,17 @@ function appStub({ inspectQueue, inspectErrors = null, repeatLastInspect = false
     }
   };
   const stub = {
+    visualPointCapability() {
+      return {
+        available: true,
+        configured: true,
+        probed: true,
+        backend: "test",
+        experimental: false,
+        non_disruptive_intent: false,
+        error_class: "",
+      };
+    },
     async inspectApplication(args) {
       calls.push({ kind: "inspect-app", args });
       const inspectError = inspectErrorQueue.length ? inspectErrorQueue.shift() : null;

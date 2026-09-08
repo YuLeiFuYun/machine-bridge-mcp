@@ -12,10 +12,6 @@ export function mcpMetadata(base: string, identity: WorkerIdentity): Record<stri
       type: "streamable-http",
       url: `${base}/mcp`,
       methods: ["POST"],
-      initializationCompatibility: {
-        protocolVersions: serverMetadata.remoteHttpInitializationCompatibilityVersions.map((value) => String(value)),
-        sessionless: true,
-      },
     },
     auth: { type: "oauth", authorization_servers: [base] },
   };

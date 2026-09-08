@@ -43,7 +43,7 @@ const hello = {
   protocol: BROWSER_EXTENSION_PROTOCOL,
   version: EXPECTED_EXTENSION_VERSION,
   extension_id: EXPECTED_EXTENSION_ID,
-  capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits"],
+  capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits", "computer_observation_v1"],
 };
 const parsed = parseExtensionHello(hello);
 assert.equal(parsed.extension_id, EXPECTED_EXTENSION_ID);
@@ -53,6 +53,9 @@ assert.equal(normalizeCompatibleExtensionInfo({ ...hello, extension_id: undefine
 assert.throws(() => parseExtensionHello({ ...hello, extension_id: "a".repeat(32) }), /identity mismatch/);
 assert.throws(() => parseExtensionHello({ ...hello, extension_id: undefined }), /invalid extension hello/);
 assert.throws(() => parseExtensionHello({ ...hello, role: "runtime" }), /protocol mismatch/);
+const missingObservationCapability = { ...hello, capabilities: hello.capabilities.filter((capability) => capability !== "computer_observation_v1") };
+assert.equal(normalizeCompatibleExtensionInfo(missingObservationCapability), null);
+assert.throws(() => parseExtensionHello(missingObservationCapability), /capability mismatch.*computer_observation_v1/);
 
 await testLegacyPairingMigration();
 console.log("browser extension identity test ok");

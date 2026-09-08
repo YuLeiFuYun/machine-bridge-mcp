@@ -179,7 +179,7 @@ try {
   const staleClosed = onceClose(staleExtension);
   staleExtension.send(JSON.stringify({
     type: "hello", role: "extension", protocol: 3, version: "0.14.0", extension_id: EXPECTED_EXTENSION_ID,
-    capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits"],
+    capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits", "computer_observation_v1"],
   }));
   const staleResult = await staleClosed;
   assert(staleResult.code === 1002 && staleResult.reason.includes("version mismatch"), "stale extension version was not rejected with reload guidance");
@@ -1044,7 +1044,7 @@ function attachExtensionResponder(socket) {
       handshakeStage = "broker-ack";
       socket.send(JSON.stringify({
         type: "hello", role: "extension", protocol: 3, version: PACKAGE_VERSION, extension_id: EXPECTED_EXTENSION_ID,
-        capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits"],
+        capabilities: ["semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits", "computer_observation_v1"],
       }));
       return;
     }

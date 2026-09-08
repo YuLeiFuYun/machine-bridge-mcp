@@ -205,7 +205,7 @@ Do not use secret rotation, state deletion, manual version edits, or repeated fo
 
 ## Current upgrade convergence
 
-The current release uses MCP `2026-07-28` as its native request-scoped protocol. Native clients send per-request metadata and the required Streamable HTTP headers and do not depend on an initialization-owned session, GET recovery stream, or `Last-Event-ID` replay. Remote HTTP additionally accepts the bounded stateless initialization compatibility dates `2025-06-18` and `2025-11-25` for `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`; those requests never mint `Mcp-Session-Id`, persist replay/session state, or restore the removed stateful adapter. Other removed session-protocol requests receive bounded upgrade guidance and cannot dispatch obsolete behavior. Version 3 also requires matching Worker, daemon, CLI, and browser-extension components and may perform a two-phase device-root migration. Preserve the state root and follow [UPGRADING.md](UPGRADING.md); do not delete state to force apparent convergence.
+The current release uses MCP `2026-07-28` as its request-scoped protocol for both stdio and remote HTTP. Current clients send per-request metadata and the required Streamable HTTP headers and do not depend on an initialization-owned session, GET recovery stream, or `Last-Event-ID` replay. `initialize`, `Mcp-Session-Id`, `Last-Event-ID`, replay markers, and other explicit removed protocol-session markers receive bounded upgrade guidance and cannot dispatch obsolete behavior. Remote `/mcp` is POST-only; GET remains a 405 method rejection and is not a recovery channel. Version 3 also requires matching Worker, daemon, CLI, and browser-extension components and may perform a two-phase device-root migration. Preserve the state root and follow [UPGRADING.md](UPGRADING.md); do not delete state to force apparent convergence.
 
 Use this sequence:
 
@@ -213,7 +213,7 @@ Use this sequence:
 2. Run `machine-mcp --verbose` once. Startup verifies package/Worker versions, performs the ordinary authenticated Worker convergence when needed, stops only a verified service-style old daemon, waits for its lock, and starts the installed version.
 3. Run `machine-mcp status` and `machine-mcp doctor`.
 4. Reload the unpacked browser extension and revisit the pairing page. Exact package version and capability equality are required before browser readiness is reported.
-5. Reconnect MCP clients. Native clients rediscover the server and send fresh `2026-07-28` per-request metadata. Remote HTTP clients using the declared `2025-06-18` or `2025-11-25` stateless initialization compatibility may continue through that bounded adapter; clients that require session IDs, recovery GET, replay, or other removed session semantics must upgrade before they can execute those flows.
+5. Reconnect MCP clients. All clients rediscover the server and send fresh `2026-07-28` per-request metadata. Clients that still require `initialize`, session IDs, recovery GET, replay, or other removed protocol-session semantics must upgrade before reconnecting.
 
 A failed state read, unverifiable process owner, active managed job, Worker authentication failure, or extension version mismatch remains fail closed. Preserve the state root and logs for diagnosis rather than deleting them to force apparent success.
 
@@ -431,7 +431,7 @@ After suspected credential, client, or device compromise:
 7. cancel active managed jobs and remove compromised resource aliases;
 8. remove the Worker and local state if continued remote access is unnecessary.
 
-Historical audit records and residual operational limits are in [AUDIT.md](AUDIT.md); this operations guide remains the current runbook.
+Current audit conclusions and residual review requirements are in [AUDIT.md](AUDIT.md). Historical audit records remain in tagged repository history; this operations guide remains the current runbook.
 
 ### Worker pending-call budget
 
