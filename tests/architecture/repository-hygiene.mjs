@@ -139,7 +139,7 @@ function validateCurrentMcpDeliveryDocumentation() {
 function validateCurrentMaintenanceDocumentation() {
   const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
   const headings = [...changelog.matchAll(/^## /gm)];
-  if (headings.length !== 2 || !changelog.includes("## 3.0.0-beta.166 - 2026-09-07") || !changelog.includes("## Historical releases")) {
+  if (headings.length !== 2 || !changelog.includes("## 3.0.0-beta.167 - 2026-09-08") || !changelog.includes("## Historical releases")) {
     throw new Error("CHANGELOG.md must contain only the active release section plus the historical-release pointer");
   }
   const audit = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");

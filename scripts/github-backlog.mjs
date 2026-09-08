@@ -11,9 +11,35 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const githubBacklogCommandTimeoutMs = 120_000;
 
 export function closingIssueNumbers(messages) {
+  const text = String(messages || "");
   const numbers = new Set();
-  const pattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?[ \t]+#(\d+)\b/gi;
-  for (const match of String(messages || "").matchAll(pattern)) numbers.add(Number(match[1]));
+  const keywordPattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b/gi;
+  for (const match of text.matchAll(keywordPattern)) {
+    let cursor = match.index + match[0].length;
+    const leadingWhitespaceStart = cursor;
+    while (text[cursor] === " " || text[cursor] === "\t") cursor += 1;
+
+    if (text[cursor] === ":") {
+      cursor += 1;
+      const trailingWhitespaceStart = cursor;
+      while (text[cursor] === " " || text[cursor] === "\t") cursor += 1;
+      if (cursor === trailingWhitespaceStart) continue;
+    } else if (cursor === leadingWhitespaceStart) {
+      continue;
+    }
+
+    if (text[cursor] !== "#") continue;
+    cursor += 1;
+    const digitsStart = cursor;
+    while (cursor < text.length) {
+      const code = text.charCodeAt(cursor);
+      if (code < 48 || code > 57) break;
+      cursor += 1;
+    }
+    if (cursor === digitsStart) continue;
+    if (cursor < text.length && /[A-Za-z0-9_]/.test(text[cursor])) continue;
+    numbers.add(Number(text.slice(digitsStart, cursor)));
+  }
   return numbers;
 }
 
