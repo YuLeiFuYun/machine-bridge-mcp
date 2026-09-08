@@ -98,6 +98,37 @@ async function testDedicatedHttpFallbackProxy() {
   assert.equal(resolverCalls, 0,
     "signed HTTPS fallback allowed NO_PROXY resolution to override MBM_RELAY_PROXY");
 
+  let independentResolverCalls = 0;
+  const independentFallback = proxyAgentForRelayHttp(
+    targetUrl,
+    () => { independentResolverCalls += 1; return ""; },
+    {
+      MBM_RELAY_PROXY: "http://proxy.example.invalid:8080",
+      MBM_RELAY_FALLBACK_PROXY: "",
+    },
+  );
+  assert.equal(independentFallback.mode, "direct",
+    "explicit empty fallback proxy did not bypass the primary relay proxy");
+  assert.equal(independentFallback.agent, null,
+    "explicit empty fallback proxy unexpectedly constructed an application proxy agent");
+  assert.equal(independentResolverCalls, 1,
+    "explicit empty fallback proxy did not restore standard environment-proxy resolution");
+
+  let fallbackProxyResolverCalls = 0;
+  const independentFallbackProxy = proxyAgentForRelayHttp(
+    targetUrl,
+    () => { fallbackProxyResolverCalls += 1; return "http://standard.example.invalid:8081"; },
+    {
+      MBM_RELAY_PROXY: "http://primary.example.invalid:8080",
+      MBM_RELAY_FALLBACK_PROXY: "http://fallback.example.invalid:8082",
+    },
+  );
+  assert.equal(independentFallbackProxy.mode, "proxy");
+  assert(independentFallbackProxy.agent,
+    "explicit fallback proxy did not construct an independent HTTP proxy agent");
+  assert.equal(fallbackProxyResolverCalls, 0,
+    "explicit fallback proxy unexpectedly consulted standard environment-proxy resolution");
+
   const proxyMarker = { kind: "synthetic-relay-proxy" };
   const requests = [];
   const result = await postDaemonHttpRelay({

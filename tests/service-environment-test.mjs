@@ -15,6 +15,7 @@ try {
   mkdirSync(root, { recursive: true });
   const source = {
     MBM_RELAY_PROXY: "http://127.0.0.1:17891",
+    MBM_RELAY_FALLBACK_PROXY: "",
     HTTPS_PROXY: "http://proxy.example.invalid:8080",
     NO_PROXY: "localhost,127.0.0.1",
     NODE_USE_ENV_PROXY: "1",
@@ -22,6 +23,7 @@ try {
   };
   assert.deepEqual(captureServiceEnvironment(source), {
     MBM_RELAY_PROXY: source.MBM_RELAY_PROXY,
+    MBM_RELAY_FALLBACK_PROXY: source.MBM_RELAY_FALLBACK_PROXY,
     HTTPS_PROXY: source.HTTPS_PROXY,
     NO_PROXY: source.NO_PROXY,
     NODE_USE_ENV_PROXY: source.NODE_USE_ENV_PROXY,
@@ -29,7 +31,7 @@ try {
 
   const written = writeServiceEnvironment(root, source);
   assert.equal(written.path, serviceEnvironmentPath(root));
-  assert.deepEqual(written.keys, ["HTTPS_PROXY", "MBM_RELAY_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"]);
+  assert.deepEqual(written.keys, ["HTTPS_PROXY", "MBM_RELAY_FALLBACK_PROXY", "MBM_RELAY_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"]);
   const disk = readFileSync(written.path, "utf8");
   assert.equal(disk.includes("SECRET_TOKEN"), false, "unapproved environment key was persisted");
   assert.equal(disk.includes("must-not-be-persisted"), false, "unapproved environment value was persisted");
@@ -38,12 +40,13 @@ try {
   const loaded = loadServiceEnvironment(root, target);
   assert.equal(target.HTTPS_PROXY, "http://runtime.example.invalid:3128", "runtime environment was overwritten");
   assert.equal(target.MBM_RELAY_PROXY, source.MBM_RELAY_PROXY);
+  assert.equal(target.MBM_RELAY_FALLBACK_PROXY, source.MBM_RELAY_FALLBACK_PROXY);
   assert.equal(target.NO_PROXY, source.NO_PROXY);
   assert.equal(target.NODE_USE_ENV_PROXY, source.NODE_USE_ENV_PROXY);
-  assert.deepEqual(loaded.keys, ["MBM_RELAY_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"]);
+  assert.deepEqual(loaded.keys, ["MBM_RELAY_FALLBACK_PROXY", "MBM_RELAY_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"]);
   assert.deepEqual(serviceEnvironmentSummary(root), {
     configured: true,
-    keys: ["HTTPS_PROXY", "MBM_RELAY_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"],
+    keys: ["HTTPS_PROXY", "MBM_RELAY_FALLBACK_PROXY", "MBM_RELAY_PROXY", "NODE_USE_ENV_PROXY", "NO_PROXY"],
   });
   const storageFailure = {
     inspectPathIfPresentSync() {

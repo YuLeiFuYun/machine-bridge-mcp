@@ -3,6 +3,7 @@ import { getProxyForUrl } from "proxy-from-env";
 
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 export const RELAY_PROXY_ENVIRONMENT_KEY = "MBM_RELAY_PROXY";
+export const RELAY_FALLBACK_PROXY_ENVIRONMENT_KEY = "MBM_RELAY_FALLBACK_PROXY";
 
 export function proxyAgentForWebSocket(webSocketUrl, proxyResolver = getProxyForUrl, environment = process.env) {
   const target = new URL(String(webSocketUrl));
@@ -18,6 +19,19 @@ export function proxyAgentForWebSocket(webSocketUrl, proxyResolver = getProxyFor
 export function proxyAgentForRelayHttp(httpUrl, proxyResolver = getProxyForUrl, environment = process.env) {
   const target = new URL(String(httpUrl));
   if (!HTTP_PROTOCOLS.has(target.protocol)) throw new Error("relay HTTP URL must use http or https");
+  if (Object.hasOwn(environment || {}, RELAY_FALLBACK_PROXY_ENVIRONMENT_KEY)) {
+    const fallbackProxy = String(environment[RELAY_FALLBACK_PROXY_ENVIRONMENT_KEY] ?? "").trim();
+    if (fallbackProxy) {
+      return proxyAgentForValue(fallbackProxy, {
+        errorCode: "relay_proxy_configuration",
+        subject: "relay fallback proxy",
+      });
+    }
+    return proxyAgentForLookup(target, proxyResolver, {
+      errorCode: "relay_proxy_configuration",
+      subject: "relay fallback proxy",
+    });
+  }
   return proxyAgentForRelayLookup(target, proxyResolver, environment, {
     errorCode: "relay_proxy_configuration",
     subject: "relay proxy",

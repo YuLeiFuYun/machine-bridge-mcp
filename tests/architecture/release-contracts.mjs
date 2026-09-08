@@ -665,7 +665,7 @@ const verificationEnvironmentSource = readFileSync(join(root, "scripts", "verifi
 if (!checkRunnerSource.includes("verificationChildEnvironment")
     || !coverageRunnerSource.includes("verificationChildEnvironment")
     || !verificationEnvironmentSource.includes("key.toUpperCase()")
-    || ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER", "MBM_RELAY_PROXY"]
+    || ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER", "MBM_RELAY_FALLBACK_PROXY", "MBM_RELAY_PROXY"]
       .some((key) => !verificationEnvironmentSource.includes(`"${key}"`))) {
   throw new Error("verification runners lost case-insensitive isolation from owner runtime configuration");
 }

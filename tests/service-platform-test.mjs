@@ -100,7 +100,7 @@ async function serviceRestartabilityPreflightTest() {
   const stateRoot = path.join(root, "state");
   const bin = path.join(packageRoot, "bin");
   const entryScript = path.join(bin, "machine-mcp.mjs");
-  const version = "3.0.0-beta.168";
+  const version = "3.0.0-beta.169";
   try {
     for (const directory of [workspace, stateRoot, bin]) mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({ name: "machine-bridge-mcp", version })}\n`, { mode: 0o600 });
@@ -124,13 +124,13 @@ async function serviceRestartabilityPreflightTest() {
     assert.equal(existsSync(path.join(stateRoot, "logs")), false,
       "restartability preflight created service logs");
 
-    assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: "3.0.0-beta.169" }), /does not match expected version/,
+    assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: "3.0.0-beta.170" }), /does not match expected version/,
       "runtime package identity accepted a mismatched expected version");
 
     const environmentFile = path.join(stateRoot, "service-environment.json");
     const unsupportedEnvironment = `${JSON.stringify({
       schemaVersion: 1,
-      environment: { MBM_RELAY_FALLBACK_PROXY: "http://proxy.example.invalid:8080" },
+      environment: { MBM_SYNTHETIC_UNSUPPORTED_SERVICE_KEY: "1" },
       updatedAt: "2026-09-08T00:00:00.000Z",
     }, null, 2)}\n`;
     writeFileSync(environmentFile, unsupportedEnvironment, { mode: 0o600 });
