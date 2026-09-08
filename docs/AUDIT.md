@@ -15,4 +15,4 @@ This file is the current audit summary. Historical findings, closed incidents, a
 
 A green fast or full suite is necessary but not sufficient security evidence for publication. Release acceptance still requires the package/install/security gates and any hosted or live boundary evidence required by the changed surface. This summary does not authorize deployment or npm publication.
 
-No unresolved defect was identified by the beta.166 simplification review before final verification. If final verification discovers a defect, it becomes a current item here or in the active changelog rather than another historical narrative.
+No unresolved defect is known after the beta.167 release-gate fix review. If final verification discovers a defect, it becomes a current item here or in the active changelog rather than another historical narrative.

@@ -4,7 +4,9 @@ import { assertGitHubBacklogReady, backlogBlockers, closingIssueNumbers, githubB
 assert.equal(githubBacklogCommandTimeoutMs, 120_000, "standalone GitHub backlog probes lost their bounded network-command deadline");
 
 assert.deepEqual([...closingIssueNumbers("fix output\n\nCloses #47\nResolves: #51\nfixed #52")], [47, 51, 52], "closing keyword parser missed supported forms");
+assert.deepEqual([...closingIssueNumbers("Closes   #53\nFixes\t:\t#54")], [53, 54], "closing keyword parser missed whitespace variants");
 assert.deepEqual([...closingIssueNumbers("mentions #47 but does not close it")], [], "plain issue references incorrectly satisfied the backlog gate");
+assert.deepEqual([...closingIssueNumbers(`Closes${"\t".repeat(100_000)}not-an-issue`)], [], "closing keyword parser mishandled a long non-matching separator");
 
 const ready = backlogBlockers({
   branch: "fix/current",
