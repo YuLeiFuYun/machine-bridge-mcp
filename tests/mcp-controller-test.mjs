@@ -7,9 +7,6 @@ import {
 import { McpSubscriptionRegistry } from "../src/worker/mcp-subscription-registry.ts";
 import { McpRequestCancellationRegistry } from "../src/worker/mcp-request-cancellation.ts";
 import { removedProtocolResponse } from "../src/worker/mcp-removed-protocol.ts";
-import {
-  initializationCompatibilityResponse, MCP_INITIALIZATION_COMPATIBILITY_VERSIONS,
-} from "../src/worker/mcp-initialization-compat.ts";
 import { MCP_PROTOCOL_VERSION, serverImplementation } from "../src/shared/mcp-protocol.mjs";
 import { MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER } from "../src/worker/mcp-stream-proxy-contract.ts";
 import { JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID } from "../src/worker/mcp-job-monitor-ui.ts";
@@ -90,7 +87,7 @@ const controller = new McpController({
 });
 
 assert.equal(removedProtocolResponse(new Request("https://example.test/mcp"), request("tools/list", {}), [MCP_PROTOCOL_VERSION]), null);
-const removedInitialize = removedProtocolResponse(new Request("https://example.test/mcp"), request("initialize", {}), [MCP_PROTOCOL_VERSION]);
+const removedInitialize = removedProtocolResponse(new Request("https://example.test/mcp"), request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "outdated-client", version: "1" } }), [MCP_PROTOCOL_VERSION]);
 assert.equal(removedInitialize.status, 400);
 assert.equal((await removedInitialize.json()).error.code, -32601);
 const removedSession = removedProtocolResponse(new Request("https://example.test/mcp", {
@@ -102,76 +99,6 @@ const futureSessionShape = removedProtocolResponse(new Request("https://example.
   headers: { "Mcp-Session-Id": "future-shape" },
 }), request("tools/list", { _meta: { "io.modelcontextprotocol/protocolVersion": "2099-01-01" } }), [MCP_PROTOCOL_VERSION]);
 assert.equal(futureSessionShape, null, "future protocol metadata was misclassified as a removed session protocol");
-
-const legacyVersion = "2025-11-25";
-assert.deepEqual([...MCP_INITIALIZATION_COMPATIBILITY_VERSIONS], ["2025-11-25", "2025-06-18"]);
-for (const version of MCP_INITIALIZATION_COMPATIBILITY_VERSIONS) {
-  const legacyInitialize = await initializationCompatibilityResponse(compatInput(
-    legacyRequest("initialize", {
-      protocolVersion: version,
-      capabilities: {},
-      clientInfo: { name: "ChatGPT", version: "test" },
-    }),
-  ));
-  assert.equal(legacyInitialize.status, 200);
-  const legacyInitializeBody = await legacyInitialize.json();
-  assert.equal(legacyInitializeBody.result.protocolVersion, version);
-  assert.equal(legacyInitializeBody.result.serverInfo.name, "machine-bridge-mcp");
-  assert.equal(legacyInitialize.headers.get("mcp-session-id"), null);
-}
-
-for (const version of [MCP_PROTOCOL_VERSION, "2024-11-05"]) {
-  const notCompatibility = await initializationCompatibilityResponse(compatInput(
-    legacyRequest("initialize", {
-      protocolVersion: version,
-      capabilities: {},
-      clientInfo: { name: "non-compat-client", version: "test" },
-    }),
-  ));
-  assert.equal(notCompatibility, null, `initialization compatibility intercepted ${version}`);
-}
-
-const legacyInitialized = await initializationCompatibilityResponse(compatInput(
-  { jsonrpc: "2.0", method: "notifications/initialized", params: {} }, { version: legacyVersion },
-));
-assert.equal(legacyInitialized.status, 202);
-assert.equal(await legacyInitialized.text(), "");
-
-const legacyPing = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("ping", {}), { version: legacyVersion },
-));
-assert.deepEqual((await legacyPing.json()).result, {});
-
-const legacyTools = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("tools/list", {}), { version: legacyVersion },
-));
-assert.equal(legacyTools.status, 200);
-assert((await legacyTools.json()).result.tools.some((tool) => tool.name === "list_dir"));
-
-const legacySessionRejected = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("tools/list", {}), { version: legacyVersion, sessionId: "not-issued" },
-)).catch((error) => error);
-assert.equal(legacySessionRejected.code, -32600);
-
-const legacyMismatch = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("initialize", {
-    protocolVersion: legacyVersion,
-    capabilities: {},
-    clientInfo: { name: "ChatGPT", version: "test" },
-  }), { version: "2025-06-18" },
-)).catch((error) => error);
-assert.equal(legacyMismatch.code, -32020);
-
-const legacyMethodMismatch = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("tools/list", {}), { version: legacyVersion, method: "tools/call" },
-)).catch((error) => error);
-assert.equal(legacyMethodMismatch.code, -32020);
-
-const legacyNameMismatch = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("tools/call", { name: "list_dir", arguments: { path: "." } }),
-  { version: legacyVersion, method: "tools/call", name: "list_files" },
-)).catch((error) => error);
-assert.equal(legacyNameMismatch.code, -32020);
 
 assert.equal(await controller.handleControl(new Request("https://example.test/mcp"), ""), null);
 const invalidControl = await controller.handleControl(controlRequest("bad"), "cancel");
@@ -325,12 +252,6 @@ await jsonResult(await handle(request("tools/call", {
   name: "list_dir", arguments: {}, _meta: { "io.modelcontextprotocol/clientCapabilities": uiCapabilities },
 }), { accept: "application/json" }));
 assert.deepEqual(calls.at(-1).clientCapabilities, uiCapabilities);
-
-const legacyMirrorsMatch = await initializationCompatibilityResponse(compatInput(
-  legacyRequest("tools/call", { name: "list_dir", arguments: { path: "." } }),
-  { version: legacyVersion, method: "tools/call", name: "list_dir" },
-));
-assert.equal(legacyMirrorsMatch.status, 200);
 
 const succeeded = await jsonResult(await handle(request("tools/call", { name: "list_dir", arguments: { path: "." } }), { accept: "application/json" }));
 assert.equal(succeeded.result.resultType, "complete");
@@ -584,32 +505,6 @@ function input(body, options = {}) {
 
 function request(method, params, id = 1) {
   return { jsonrpc: "2.0", id, method, params };
-}
-
-function legacyRequest(method, params, id = 1) {
-  return { jsonrpc: "2.0", id, method, params };
-}
-
-function compatInput(body, options = {}) {
-  const headers = new Headers({
-    accept: "application/json, text/event-stream",
-    "content-type": "application/json",
-  });
-  if (options.version) headers.set("MCP-Protocol-Version", options.version);
-  if (options.sessionId) headers.set("Mcp-Session-Id", options.sessionId);
-  if (options.method) headers.set("Mcp-Method", options.method);
-  if (options.name) headers.set("Mcp-Name", options.name);
-  return {
-    request: new Request("https://example.test/mcp", { method: "POST", headers, body: "{}" }),
-    body,
-    base: "https://example.test",
-    authorized,
-    controller,
-    capabilities: { tools: { listChanged: false } },
-    serverInfo,
-    instructions: "Use tools.",
-    tools: [serverInfoTool, ...workspaceTools],
-  };
 }
 
 function controlRequest(streamId) {

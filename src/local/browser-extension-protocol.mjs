@@ -7,7 +7,7 @@ import { EXPECTED_EXTENSION_ID, normalizeExtensionId } from "./browser-extension
 export const BROWSER_EXTENSION_PROTOCOL = 3;
 export const EXPECTED_EXTENSION_VERSION = extensionVersion();
 const REQUIRED_EXTENSION_CAPABILITIES = Object.freeze([
-  "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits",
+  "semantic_snapshot_refs", "actionability_waits", "trusted_input", "tab_management", "explicit_waits", "computer_observation_v1",
 ]);
 export const MAX_BROWSER_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MUTATING_BROWSER_METHODS = new Set([

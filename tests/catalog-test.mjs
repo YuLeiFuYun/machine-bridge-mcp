@@ -7,8 +7,8 @@ const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadat
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
 assert(metadata.protocolVersion === "2026-07-28", "shared primary protocol version is invalid");
 assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify(["2026-07-28"]), "supported protocol inventory is not current-only");
-assert(JSON.stringify(metadata.remoteHttpInitializationCompatibilityVersions) === JSON.stringify(["2025-11-25", "2025-06-18"]),
-  "remote HTTP initialization compatibility inventory drifted");
+assert(!Object.hasOwn(metadata, "remoteHttpInitializationCompatibilityVersions"),
+  "shared metadata must not advertise removed remote initialization compatibility");
 assert(!Object.hasOwn(metadata, "modernProtocolVersions") && !Object.hasOwn(metadata, "legacyProtocolVersions"), "shared metadata retained protocol-era compatibility inventories");
 assert(Array.isArray(metadata.instructions) && metadata.instructions.length >= 4, "shared server instructions are missing");
 assert(metadata.instructions.some((line) => line.includes("never use a hosted GitHub connector or ChatGPT GitHub plugin") && line.includes("stop rather than substitute")), "shared instructions omitted the fail-closed local GitHub control-plane rule");

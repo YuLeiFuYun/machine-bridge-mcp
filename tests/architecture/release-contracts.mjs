@@ -1798,9 +1798,13 @@ for (const [name, command] of Object.entries(packageJson.scripts || {})) {
   if (match && !existsSync(join(root, match[1]))) throw new Error(`package script ${name} references missing ${match[1]}`);
 }
 const packaged = new Set(packageJson.files || []);
-if (!packaged.has("scripts") || !packaged.has("src/local") || !packaged.has("tsconfig.local.json")
-    || !packaged.has("CODE_OF_CONDUCT.md") || !packaged.has("SUPPORT.md") || !packaged.has("GOVERNANCE.md")) {
-  throw new Error("package files omit executable scripts, local runtime, type contract, or governance documents");
+if (packaged.has("scripts") || packaged.has("docs") || !packaged.has("src/local") || !packaged.has("tsconfig.local.json")
+    || !packaged.has("SUPPORT.md") || !packaged.has("scripts/release-impact-check.mjs")
+    || !packaged.has("docs/UPGRADING.md") || !packaged.has("docs/AUDIT.md")) {
+  throw new Error("package files lost the explicit consumer/runtime whitelist or regained broad docs/scripts publication");
+}
+for (const repositoryOnly of ["CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "GOVERNANCE.md", "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md"]) {
+  if (packaged.has(repositoryOnly)) throw new Error(`package files retained repository-only maintenance material ${repositoryOnly}`);
 }
 const localTypeConfig = JSON.parse(readFileSync(join(root, "tsconfig.local.json"), "utf8"));
 for (const required of [
@@ -1937,7 +1941,7 @@ if (!workerMcpConfigSource.includes("tools: Object.freeze({ listChanged: true })
     || !workerMcpConfigSource.includes("resources: Object.freeze({})")
     || !workerMcpConfigSource.includes("[MCP_UI_EXTENSION_ID]")
     || !workerMcpConfigSource.includes("MCP_APP_MIME_TYPE")
-    || !workerMcpConfigSource.includes("MCP_LEGACY_SERVER_CAPABILITIES = Object.freeze({ tools: Object.freeze({ listChanged: false }) })")
+    || workerMcpConfigSource.includes("MCP_LEGACY_SERVER_CAPABILITIES")
     || !mcpSubscriptionCapacitySource.includes("MAX_ACTIVE_MCP_SUBSCRIPTIONS = 32")
     || !mcpSubscriptionCapacitySource.includes("MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT = 8")
     || !mcpSubscriptionCapacitySource.includes("MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS = 64")
@@ -1961,7 +1965,7 @@ if (!workerMcpConfigSource.includes("tools: Object.freeze({ listChanged: true })
     || !workerRuntimeSource.includes("cancelReadyDaemonAuthority(this.daemonRegistry, revocation)")
     || !workerRuntimeSource.includes("this.mcp.cancelAuthority(revocation)")
     || !workerRuntimeSource.includes("authority.revocation.pre_dispatch_waiters_cancelled")) {
-  throw new Error("current MCP tool-list freshness/capacity no longer serves bounded toolsListChanged subscriptions while legacy capability remains isolated");
+  throw new Error("current MCP tool-list freshness/capacity no longer serves bounded toolsListChanged subscriptions or retained a removed legacy capability");
 }
 if (!workerToolTimeoutSource.includes('name === "read_process"')
     || !workerToolTimeoutSource.includes("waitMs === 0 ? 5_000 : relayContract.defaultRemoteToolExecutionTimeoutMs")
@@ -2051,9 +2055,7 @@ const privacyDoc = readFileSync(join(root, "docs", "PRIVACY.md"), "utf8");
 const managedJobsDoc = readFileSync(join(root, "docs", "MANAGED_JOBS.md"), "utf8");
 const multiAccountDoc = readFileSync(join(root, "docs", "MULTI_ACCOUNT.md"), "utf8");
 const securityDoc = readFileSync(join(root, "SECURITY.md"), "utf8");
-const changelogDoc = readFileSync(join(root, "CHANGELOG.md"), "utf8");
 const serverMetadata = readFileSync(join(root, "src", "shared", "server-metadata.json"), "utf8");
-const auditDoc = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");
 const sensitiveValuePatternsSource = readFileSync(join(root, "src", "shared", "sensitive-value-patterns.mjs"), "utf8");
 const logRedactionSource = readFileSync(join(root, "src", "shared", "log-redaction.mjs"), "utf8");
 const privacyCheckerSource = readFileSync(join(root, "scripts", "privacy-check.mjs"), "utf8");
@@ -2261,8 +2263,6 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "non-evictable under capacity pruning for the fixed 24-hour undelivered-result grace"],
   ["docs/OPERATIONS.md", operationsDoc, "owner/caller semantic assertion"],
   ["docs/TESTING.md", testingDoc, "store saturated with 512 such promised terminals returns typed retryable `limit_exceeded`"],
-  ["docs/AUDIT.md", auditDoc, "merely higher-priority eviction candidates"],
-  ["docs/AUDIT.md", auditDoc, "retry only `MBM_IDENTITY_CHANGED` for at most four observations"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted beta.164 independent-review continuity contract: ${required}`);
 }
@@ -2271,7 +2271,6 @@ for (const [file, content, required] of [
   ["SECURITY.md", securityDoc, "fairness key is account ID plus account version"],
   ["SECURITY.md", securityDoc, "statusless partial publication must pass the account quota again"],
   ["README.md", readme, "16 records per account ID plus account version across all OAuth clients and refresh families"],
-  ["CHANGELOG.md", changelogDoc, "cross-principal availability boundary"],
   ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "changing either client or family cannot reset the quota"],
   ["docs/MULTI_ACCOUNT.md", multiAccountDoc, "deterministic directory with no persisted status is an incomplete transaction"],
   ["docs/ARCHITECTURE.md", architecture, "`managed-job-transient-recovery-capacity.mjs`"],
@@ -2280,8 +2279,6 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "statusless partial create must pass quota again"],
   ["docs/TESTING.md", testingDoc, "seventeenth genuinely new carrier is rejected before state publication or process launch"],
   ["docs/TESTING.md", testingDoc, "statusless deterministic directory is an incomplete publication rather than replay"],
-  ["docs/AUDIT.md", auditDoc, "cross-principal availability interaction"],
-  ["docs/AUDIT.md", auditDoc, "green full suite is not sufficient security evidence"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted delegated account pending-recovery security contract: ${required}`);
 }
@@ -2346,7 +2343,6 @@ for (const required of [
   "Multi-record authority state commits through one explicit transaction boundary",
   "Verification runs require an immutable source snapshot",
   "OAuth persistence is a deployed acceptance boundary",
-  "remote initialization compatibility is stateless and bounded",
 ]) {
   if (!engineering.includes(required)) throw new Error(`engineering incident invariant omitted: ${required}`);
 }

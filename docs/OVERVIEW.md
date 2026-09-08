@@ -112,9 +112,10 @@ The repository uses several complementary layers:
 
 ## Read next
 
-- [Architecture](ARCHITECTURE.md) for detailed invariants and protocol flow
 - [Computer Use](COMPUTER_USE.md) for snapshot identity, verified UI actions, visual grounding, and retry settlement
 - [Threat model](THREAT_MODEL.md) for assets, attackers, non-goals, and residual risks
 - [Security policy](../SECURITY.md) for reporting and supported security boundaries
-- [Engineering](ENGINEERING.md) for implementation rules
-- [Testing](TESTING.md) for verification design
+- [Operations](OPERATIONS.md) for runtime diagnosis and recovery
+- [Upgrading](UPGRADING.md) for the supported current migration path
+
+Detailed architecture, engineering, and test-design documents are maintained in the source repository rather than the consumer package.

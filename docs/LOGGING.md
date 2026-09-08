@@ -170,4 +170,4 @@ Use `server_info`, `project_overview`, `machine-mcp status`, and `machine-mcp do
 
 A default-level message must be actionable, privacy-preserving, and resistant to repetition. Add a regression test for severity and field visibility. Raw protocol values belong at debug unless a user can act on them without external documentation. New plain-output calls require explicit review of whether `safePlain` is sufficient.
 
-See [ENGINEERING.md](ENGINEERING.md) for the project-wide review rules.
+Project-wide log-review and implementation rules are maintained with the source-repository engineering standards rather than the consumer package.

@@ -40,12 +40,9 @@ export function normalizeBackendNodeActionMetadata(args = {}) {
 }
 
 export class BrowserComputerObservationService {
-  constructor({ authorizeTool, request, bridgeStatus, inspectPage, screenshot }) {
+  constructor({ authorizeTool, request }) {
     this.authorizeTool = authorizeTool;
     this.request = request;
-    this.bridgeStatus = bridgeStatus;
-    this.inspectPage = inspectPage;
-    this.screenshot = screenshot;
   }
 
   async documentState(args = {}, context = {}) {
@@ -105,9 +102,6 @@ export class BrowserComputerObservationService {
       screenshot_quality: clampInt(args.screenshot_quality, 90, 1, 100),
       focus_query: optionalFocusQuery(args.focus_query),
     };
-    const capabilities = new Set(this.bridgeStatus().extensionInfo?.capabilities || []);
-    if (!capabilities.has("computer_observation_v1")) return this.observeLegacy(normalized, timeoutSeconds, context);
-
     const result = await this.request("observe_computer", {
       tabId: normalized.tab_id, allFrames: normalized.all_frames, maxElements: normalized.max_elements, maxAxNodes: normalized.max_ax_nodes,
       maxFrames: normalized.max_frames, axDepth: normalized.ax_depth, includeValues: normalized.include_values, includeScreenshot: normalized.include_screenshot,
@@ -121,50 +115,6 @@ export class BrowserComputerObservationService {
     };
   }
 
-  async observeLegacy(args, timeoutSeconds, context) {
-    const inspected = await this.inspectPage({
-      tab_id: args.tab_id,
-      max_elements: args.max_elements,
-      include_values: args.include_values,
-      all_frames: args.all_frames,
-      timeout_seconds: timeoutSeconds,
-      focus_query: args.focus_query,
-    }, context);
-    let imageContent = [];
-    if (args.include_screenshot) {
-      const screenshot = await this.screenshot({
-        tab_id: inspected.tab_id,
-        format: args.screenshot_format,
-        quality: args.screenshot_quality,
-        timeout_seconds: timeoutSeconds,
-      }, context);
-      imageContent = Array.isArray(screenshot?.$mcp?.content) ? screenshot.$mcp.content : [];
-    }
-    const rawSemanticEpoch = inspected.frames?.find?.((frame) => frame.frame_id === 0)?.document?.epoch;
-    const semanticEpoch = typeof rawSemanticEpoch === "string" ? rawSemanticEpoch : "";
-    return {
-      tab_id: inspected.tab_id,
-      title: inspected.title || "",
-      url: inspected.url || "",
-      semantic: inspected,
-      accessibility: null,
-      viewport: null,
-      frame_tree: [],
-      document_epoch: semanticEpoch,
-      capture: {
-        atomic: false,
-        navigation_coherent: false,
-        semantic_epoch: semanticEpoch,
-        cdp_epoch: "",
-        cdp: false,
-        screenshot_source: imageContent.length ? "capture_visible_tab_legacy" : "none",
-        coherence: "legacy_extension_without_computer_observation_v1",
-        fallback_reason: "extension_reload_required_for_cdp_observation",
-        screenshot_sha256: screenshotSha256(imageContent),
-      },
-      imageContent,
-    };
-  }
 }
 
 function computerObservationImage(result) {

@@ -484,7 +484,6 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-job-monitor-store.ts": 150,
   "src/worker/mcp-job-monitor-status.ts": 60,
   "src/worker/mcp-job-monitor-tools.ts": 90,
-  "src/worker/mcp-initialization-compat.ts": 170,
   "src/worker/mcp-removed-protocol.ts": 40,
   "src/worker/worker-static-routes.ts": 90,
   "src/worker/worker-metadata.ts": 80,
@@ -1550,16 +1549,32 @@ for (const forbidden of ["mcp-subscriptions", "subscriptionResponse(", "subscrip
 for (const forbidden of ["initialize", "Mcp-Session-Id", "Last-Event-ID", "resumption", "legacy", "modern"]) {
   if (mcpControllerBoundary.includes(forbidden)) throw new Error(`current MCP controller regained removed protocol-era state: ${forbidden}`);
 }
-const mcpInitializationCompatibilityBoundary = readFileSync(join(root, "src", "worker", "mcp-initialization-compat.ts"), "utf8");
-for (const required of ["MCP_INITIALIZATION_COMPATIBILITY_VERSIONS", "initialize", "notifications/initialized", "tools/list", "tools/call", "ping"]) {
-  if (!mcpInitializationCompatibilityBoundary.includes(required)) throw new Error(`MCP initialization compatibility lost required stateless surface: ${required}`);
+const removedInitializationCompatibility = join(root, "src", "worker", "mcp-initialization-compat.ts");
+if (existsSync(removedInitializationCompatibility)) throw new Error("removed MCP initialization compatibility module still exists");
+for (const forbidden of ["initializationCompatibilityResponse", "MCP_LEGACY_SERVER_CAPABILITIES", "MCP_INITIALIZATION_COMPATIBILITY_VERSIONS"]) {
+  if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker entrypoint retained removed initialization compatibility: ${forbidden}`);
 }
-for (const forbidden of ["Last-Event-ID", "resumption", "replay", "subscribe", "DurableObjectStorage", "ctx.storage"]) {
-  if (mcpInitializationCompatibilityBoundary.includes(forbidden)) throw new Error(`MCP initialization compatibility regained stateful legacy machinery: ${forbidden}`);
+const removedProtocolBoundary = readFileSync(join(root, "src", "worker", "mcp-removed-protocol.ts"), "utf8");
+for (const required of ["initialize", "Mcp-Session-Id", "MCP_REMOVED_PROTOCOL_MESSAGE", "supportedVersions"]) {
+  if (!removedProtocolBoundary.includes(required)) throw new Error(`removed-protocol rejection boundary lost current fail-closed guard: ${required}`);
 }
-if (!mcpInitializationCompatibilityBoundary.includes('headers.has("Mcp-Session-Id")')
-    || !mcpInitializationCompatibilityBoundary.includes("stateless compatibility transport")) {
-  throw new Error("MCP initialization compatibility stopped rejecting session IDs explicitly");
+const handleMcpBoundary = /private async handleMcp[\s\S]*?private async serverInfoResult/.exec(workerIndexBoundary)?.[0] || "";
+const removedReplayGuard = `request.headers.has("Last-Event-ID")`;
+for (const required of [removedReplayGuard, "MCP_REMOVED_PROTOCOL_MESSAGE", "supported: [...MCP_PROTOCOL_VERSIONS]"]) {
+  if (!handleMcpBoundary.includes(required)) throw new Error(`MCP replay-marker rejection boundary lost current fail-closed guard: ${required}`);
+}
+const mcpMethodIndex = handleMcpBoundary.indexOf('request.method !== "POST"');
+const mcpParseIndex = handleMcpBoundary.indexOf("parseJsonRequest");
+const removedReplayIndex = handleMcpBoundary.indexOf(removedReplayGuard);
+const mcpValidateIndex = handleMcpBoundary.indexOf("validateHttpRequest");
+const mcpDispatchIndex = handleMcpBoundary.indexOf("this.mcp.handleRequest");
+if (mcpMethodIndex < 0 || mcpParseIndex <= mcpMethodIndex || removedReplayIndex <= mcpParseIndex
+    || mcpValidateIndex <= removedReplayIndex || mcpDispatchIndex <= removedReplayIndex) {
+  throw new Error("removed Last-Event-ID must fail only after bounded POST parsing and before current validation/dispatch");
+}
+if ((handleMcpBoundary.match(/Last-Event-ID/g) || []).length !== 1
+    || handleMcpBoundary.includes(`request.method === "GET" || ${removedReplayGuard}`)) {
+  throw new Error("MCP replay-marker rejection regained an early GET/session compatibility branch");
 }
 for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse(", ".resumption", "durableCalls"]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`BridgeRoom regained removed MCP delivery state: ${forbidden}`);
@@ -1681,7 +1696,7 @@ for (const forbidden of ["registerEvent", "settlement.kind", 'kind: "event"']) {
 }
 
 for (const forbidden of [
-  "Mcp-Session-Id", "Last-Event-ID", "mcp-resumption", "durable-stream", "mcp-legacy", "mcp-modern",
+  "Mcp-Session-Id", "mcp-resumption", "durable-stream", "mcp-legacy", "mcp-modern",
 ]) {
   if (workerIndexBoundary.includes(forbidden)) throw new Error(`Worker composition root regained removed MCP compatibility state: ${forbidden}`);
 }

@@ -19,6 +19,7 @@ const docs = [
 ];
 for (const file of docs) validateRelativeLinks(file);
 validateCurrentMcpDeliveryDocumentation();
+validateCurrentMaintenanceDocumentation();
 
 const repositoryFiles = execFileSync(resolveTrustedGitExecutable({ workspace: root }), ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root })
   .toString("utf8")
@@ -118,21 +119,36 @@ function validateCurrentMcpDeliveryDocumentation() {
   }
 
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  for (const obsolete of ["there is no `initialize` handshake", "upgrade guidance for an obsolete `initialize`"]) {
-    if (readme.includes(obsolete)) throw new Error(`README.md regained obsolete all-initialize-rejected semantics: ${obsolete}`);
+  for (const obsolete of ["stateless initialization compatibility", "`2025-06-18` and `2025-11-25`", "Remote initialization compatibility is stateless"]) {
+    if (readme.includes(obsolete)) throw new Error(`README.md retained removed initialization compatibility: ${obsolete}`);
   }
   for (const required of [
-    "MCP `2026-07-28` as its native protocol",
-    "stateless initialization compatibility",
-    "`2025-06-18` and `2025-11-25`",
-    "does not create or accept `Mcp-Session-Id`",
+    "MCP `2026-07-28` for both stdio and remote HTTP",
+    "Removed protocol requests fail closed",
+    "must reconnect with MCP `2026-07-28`",
   ]) {
-    if (!readme.includes(required)) throw new Error(`README.md lost current native/stateless-compatibility semantics: ${required}`);
+    if (!readme.includes(required)) throw new Error(`README.md lost current-only MCP semantics: ${required}`);
   }
 
   const overview = readFileSync(join(root, "docs", "OVERVIEW.md"), "utf8");
   if (!overview.includes("organized around four independent questions") || overview.includes("MCP session state")) {
     throw new Error("OVERVIEW.md drifted from the current request-scoped MCP authority model");
+  }
+}
+
+function validateCurrentMaintenanceDocumentation() {
+  const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+  const headings = [...changelog.matchAll(/^## /gm)];
+  if (headings.length !== 2 || !changelog.includes("## 3.0.0-beta.166 - 2026-09-07") || !changelog.includes("## Historical releases")) {
+    throw new Error("CHANGELOG.md must contain only the active release section plus the historical-release pointer");
+  }
+  const audit = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");
+  if (Buffer.byteLength(audit, "utf8") > 32 * 1024 || !audit.includes("# Current audit status") || !audit.includes("Historical findings")) {
+    throw new Error("docs/AUDIT.md must remain a compact current audit summary with a history pointer");
+  }
+  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  if ((packageJson.files || []).includes("docs") || (packageJson.files || []).includes("scripts")) {
+    throw new Error("package manifest regained broad docs/scripts publication");
   }
 }
 

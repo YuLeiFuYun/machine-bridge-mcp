@@ -75,10 +75,8 @@ try {
     "public MCP metadata advertised a removed protocol version");
   assert(!("protocolEras" in publicMetadata.body), "public MCP metadata retained a removed protocol-era taxonomy");
   assert(publicMetadata.body.transport?.type === "streamable-http", "public MCP metadata did not advertise Streamable HTTP");
-  assert(JSON.stringify(publicMetadata.body.transport?.initializationCompatibility?.protocolVersions)
-      === JSON.stringify(["2025-11-25", "2025-06-18"])
-      && publicMetadata.body.transport?.initializationCompatibility?.sessionless === true,
-  "public MCP metadata omitted the bounded stateless initialization compatibility surface");
+  assert(!Object.hasOwn(publicMetadata.body.transport ?? {}, "initializationCompatibility"),
+    "public MCP metadata advertised removed initialization compatibility");
   assert(!Object.hasOwn(publicMetadata.body.transport ?? {}, "protocolSessions")
     && !Object.hasOwn(publicMetadata.body.transport ?? {}, "resumableSse")
     && JSON.stringify(publicMetadata.body.transport?.methods) === JSON.stringify(["POST"]),
@@ -677,78 +675,6 @@ try {
   });
   assert(unauthenticated.status === 401, "MCP endpoint accepted a request without a bearer token");
 
-  const legacyProtocolVersion = "2025-06-18";
-  const compatibilityInitialize = await fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      authorization: `Bearer ${ownerAccessToken}`,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1000,
-      method: "initialize",
-      params: {
-        protocolVersion: legacyProtocolVersion,
-        capabilities: {},
-        clientInfo: { name: "ChatGPT", version: "integration" },
-      },
-    }),
-  });
-  assert(compatibilityInitialize.response.status === 200
-      && compatibilityInitialize.body.result?.protocolVersion === legacyProtocolVersion
-      && compatibilityInitialize.body.result?.capabilities?.tools
-      && compatibilityInitialize.body.result?.serverInfo?.name === "machine-bridge-mcp",
-  "stateless initialization compatibility did not initialize the hosted MCP client");
-  assert(compatibilityInitialize.response.headers.get("mcp-session-id") === null,
-    "initialization compatibility minted a removed MCP session id");
-
-  const compatibilityInitialized = await stableFetch(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": legacyProtocolVersion,
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }),
-  });
-  assert(compatibilityInitialized.status === 202,
-    "stateless initialization compatibility rejected notifications/initialized");
-
-  const compatibilityTools = await fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": legacyProtocolVersion,
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1001, method: "tools/list", params: {} }),
-  });
-  assert(compatibilityTools.response.status === 200
-      && compatibilityTools.body.result?.tools?.some((tool) => tool.name === "server_info")
-      && compatibilityTools.response.headers.get("mcp-session-id") === null,
-  "stateless initialization compatibility did not expose the authenticated tool list");
-
-  const compatibilityToolCall = await fetchJson(`${base}/mcp`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      authorization: `Bearer ${ownerAccessToken}`,
-      "mcp-protocol-version": legacyProtocolVersion,
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0", id: 1002, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } },
-    }),
-  });
-  assert(compatibilityToolCall.response.status === 200
-      && compatibilityToolCall.response.headers.get("content-type")?.startsWith("application/json")
-      && compatibilityToolCall.body.result?.isError === false,
-  "stateless initialization compatibility did not execute a JSON tool call");
-
   const removedInitialize = await fetchJson(`${base}/mcp`, {
     method: "POST",
     headers: {
@@ -759,7 +685,7 @@ try {
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
-      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "outdated-client", version: "1" } },
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "outdated-client", version: "1" } },
     }),
   });
   assert(removedInitialize.response.status === 400 && removedInitialize.body.error?.code === -32601
@@ -995,6 +921,20 @@ try {
     && currentInitialize.body.error.data.supported[0] === "2026-07-28",
   "removed HTTP initialize did not return bounded current-version upgrade guidance");
   assert(!initializeMessages.stop().includes("tool_call"), "removed HTTP initialize reached the daemon");
+
+  const replayMarkerMessages = captureWsMessageTypes(candidateDaemon);
+  const removedReplayMarker = await fetchJson(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      ...currentMcpHeaders(ownerAccessToken, "tools/list"),
+      "Last-Event-ID": "removed-replay-marker",
+    },
+    body: JSON.stringify(currentMcpRequest(9191, "tools/list", {})),
+  });
+  assert(removedReplayMarker.response.status === 400 && removedReplayMarker.body.error?.code === -32601
+    && JSON.stringify(removedReplayMarker.body.error?.data?.supported) === JSON.stringify(["2026-07-28"]),
+  "removed Last-Event-ID replay marker did not return bounded current-version upgrade guidance");
+  assert(!replayMarkerMessages.stop().includes("tool_call"), "removed Last-Event-ID replay marker reached the daemon");
 
   const removedPing = await currentMcpCall(base, ownerAccessToken, 9103, "ping", {});
   assert(removedPing.response.status === 404 && removedPing.body.error?.code === -32601,

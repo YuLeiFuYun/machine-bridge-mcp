@@ -343,9 +343,7 @@ export class ComputerUseManager {
       captureDeadline,
       context,
     });
-    const visualPointCapability = typeof this.applications.visualPointCapability === "function"
-      ? this.applications.visualPointCapability()
-      : { available: typeof this.applications.pointApplication === "function", backend: "test-or-legacy", experimental: false };
+    const visualPointCapability = this.applications.visualPointCapability();
     const prepared = prepareApplicationObservationElements(inspected.elements, {
       maxElements,
       focusQuery,

@@ -257,13 +257,13 @@ async function testEligibility() {
   });
   assert(await proxyMcpResponseStream({ request: missingVersion, bridge, ctx }) === null,
     "request without the current protocol version entered stream proxying");
-  const initializationCompatibility = new Request("https://example.test/mcp", {
+  const obsoleteProtocolRequest = new Request("https://example.test/mcp", {
     method: "POST",
     headers: { accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18" },
     body: "{}",
   });
-  assert(await proxyMcpResponseStream({ request: initializationCompatibility, bridge, ctx }) === null,
-    "initialization-era compatibility request entered the 2026 response stream proxy");
+  assert(await proxyMcpResponseStream({ request: obsoleteProtocolRequest, bridge, ctx }) === null,
+    "obsolete protocol request entered the 2026 response stream proxy");
   const jsonOnly = currentRequest(undefined, "application/json");
   assert(await proxyMcpResponseStream({ request: jsonOnly, bridge, ctx }) === null,
     "JSON-only request entered stream proxying");

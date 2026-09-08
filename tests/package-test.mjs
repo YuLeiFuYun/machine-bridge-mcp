@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 
@@ -25,13 +25,25 @@ try {
   }
   const record = normalizePackRecord(records);
   if (!record || !Array.isArray(record.files)) throw new Error("npm pack metadata omitted the file list");
+  if ((packageJson.files || []).includes("docs") || (packageJson.files || []).includes("scripts")) {
+    throw new Error("package.json files must use explicit docs/scripts whitelists rather than broad directories");
+  }
+  validatePackagedMarkdownLinks(record.files);
   const sensitive = record.files
     .map((item) => String(item.path || ""))
     .filter((path) => /(?:^|\/)(?:\.env|\.npmrc|\.dev\.vars|\.privacy-denylist|\.project-local|\.wrangler|node_modules)(?:\/|$)|\.(?:pem|key|sqlite|log)$/.test(path));
   if (sensitive.length) throw new Error(`npm package contains sensitive local artifacts: ${sensitive.join(", ")}`);
-  if (!record.files.some((item) => item.path === "docs/PRIVACY.md")) throw new Error("npm package omitted privacy guidance");
-  if (!record.files.some((item) => item.path === "docs/ENGINEERING.md")) throw new Error("npm package omitted engineering invariants");
-  if (!record.files.some((item) => item.path === "docs/AUDIT.md")) throw new Error("npm package omitted the engineering/security audit record");
+  for (const file of ["docs/PRIVACY.md", "docs/AUDIT.md", "docs/UPGRADING.md", "docs/OPERATIONS.md", "docs/TOOL_REFERENCE.md", "docs/POLICY_REFERENCE.md"]) {
+    if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted current consumer guidance ${file}`);
+  }
+  const auditEntry = record.files.find((item) => item.path === "docs/AUDIT.md");
+  if (Number(auditEntry?.size || 0) > 32 * 1024) throw new Error("npm package audit summary regained historical bulk");
+  for (const repositoryOnly of [
+    "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "GOVERNANCE.md",
+    "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md",
+  ]) {
+    if (record.files.some((item) => item.path === repositoryOnly)) throw new Error(`npm package retained repository-only maintenance material ${repositoryOnly}`);
+  }
   if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
   for (const file of [
     "src/local/hardened-npm.mjs",
@@ -138,16 +150,25 @@ try {
   if (!record.files.some((item) => item.path === "scripts/release-impact-check.mjs")) throw new Error("npm package omitted the release-impact checker");
   if (!record.files.some((item) => item.path === "scripts/start-release-candidate.mjs")) throw new Error("npm package omitted the isolated candidate startup helper");
   if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");
-  if (!record.files.some((item) => item.path === "scripts/syntax-check.mjs")) throw new Error("npm package omitted the dynamic syntax checker");
   if (!record.files.some((item) => item.path === "scripts/github-release.mjs")) throw new Error("npm package omitted the release helper referenced by package scripts");
   if (!record.files.some((item) => item.path === "scripts/release-publication-guard.mjs")) throw new Error("npm package omitted the GitHub publication ownership guard");
   for (const helper of ["release-acceptance.mjs", "local-release-acceptance.mjs", "github-push.mjs", "release-channel.mjs", "release-candidate-manifest.mjs", "promotion-digest.mjs", "prerelease-activation.mjs", "release-soak.mjs", "published-release.mjs", "npm-publication-policy.mjs", "publish-npm.mjs", "install-published-prerelease.mjs", "candidate-runtime-store.mjs"]) {
     if (!record.files.some((item) => item.path === `scripts/${helper}`)) throw new Error(`npm package omitted release gate helper ${helper}`);
   }
+  for (const repositoryOnlyScript of [
+    "check-plan.mjs", "check-runner.mjs", "commit-message-check.mjs", "coverage-check.mjs", "generate-policy-reference.mjs",
+    "generate-tool-reference.mjs", "generate-worker-types.mjs", "macos-background-input-smoke.mjs", "markdown.mjs",
+    "official-mcp-conformance.mjs", "prepare-pinned-npm.mjs", "run-checks.mjs", "run-worker-dry-run.mjs", "sarif-security-gate.mjs",
+    "syntax-check.mjs", "verification-environment.mjs", "verification-generation-guard.mjs", "verification-idle-sleep-guard.mjs",
+    "wrangler-command-lifecycle.mjs",
+  ]) {
+    if (record.files.some((item) => item.path === `scripts/${repositoryOnlyScript}`)) {
+      throw new Error(`npm package retained repository-only development script ${repositoryOnlyScript}`);
+    }
+  }
   if (record.files.some((item) => item.path.startsWith("release-acceptance/") || item.path.startsWith("release-soak/") || item.path.startsWith(".release-candidate/"))) throw new Error("npm package contains local release or soak evidence");
   if (!record.files.some((item) => item.path === "src/local/runtime-activation.mjs")) throw new Error("npm package omitted persistent runtime activation orchestration");
-  if (!record.files.some((item) => item.path === "CONTRIBUTING.md")) throw new Error("npm package omitted contribution/release discipline");
-  for (const file of ["CODE_OF_CONDUCT.md", "SUPPORT.md", "GOVERNANCE.md", "docs/UPGRADING.md", "tsconfig.local.json"]) {
+  for (const file of ["SUPPORT.md", "docs/UPGRADING.md", "tsconfig.local.json"]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
   }
   const badModes = record.files.filter((item) => ![0o644, 0o755].includes(Number(item.mode))).map((item) => `${item.path}:${item.mode}`);
@@ -155,6 +176,27 @@ try {
   console.log(`npm package manifest test ok (${record.files.length} files)`);
 } finally {
   rmSync(output, { recursive: true, force: true });
+}
+
+function validatePackagedMarkdownLinks(files) {
+  const packaged = new Set(files.map((item) => String(item.path || "")));
+  for (const item of files) {
+    const packagePath = String(item.path || "");
+    if (!packagePath.endsWith(".md")) continue;
+    const file = join(root, packagePath);
+    const source = readFileSync(file, "utf8");
+    for (const match of source.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+      const raw = match[1].trim();
+      if (!raw || raw.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(raw)) continue;
+      const targetPath = raw.split("#", 1)[0];
+      if (!targetPath) continue;
+      const target = relative(root, resolve(dirname(file), decodeURIComponent(targetPath))).replaceAll("\\", "/");
+      if (!target || target === "." || target === ".." || target.startsWith("../")) {
+        throw new Error(`npm package markdown link escapes package root in ${packagePath}: ${raw}`);
+      }
+      if (!packaged.has(target)) throw new Error(`npm package markdown link targets an omitted file in ${packagePath}: ${raw}`);
+    }
+  }
 }
 
 function normalizePackRecord(value) {

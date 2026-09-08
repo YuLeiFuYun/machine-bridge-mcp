@@ -14,7 +14,7 @@ const source = await readFile(new URL("../browser-extension/browser-operations.j
 await localServiceHashesReturnedScreenshotBytes();
 await localServiceRejectsMalformedScreenshotEvidence();
 await localServiceRejectsCoercibleSnapshotAuthority();
-await localServiceEntryPointsAndLegacyFallback();
+await localServiceEntryPointsUseCurrentObservation();
 await extensionRejectsCoercibleDocumentAuthority();
 await localScreenshotPreservesVerifiedMetadata();
 await pairingLauncherSettlementIsNonReplayable();
@@ -69,7 +69,6 @@ console.log("browser computer observation test ok");
 async function localServiceHashesReturnedScreenshotBytes() {
   const service = new BrowserComputerObservationService({
     authorizeTool() {},
-    bridgeStatus() { return { extensionInfo: { capabilities: ["computer_observation_v1"] } }; },
     async request(method) {
       assert.equal(method, "observe_computer");
       return {
@@ -79,8 +78,6 @@ async function localServiceHashesReturnedScreenshotBytes() {
         screenshot: { data: `data:image/png;base64,${PNG_BASE64}` },
       };
     },
-    async inspectPage() { throw new Error("legacy inspect not expected"); },
-    async screenshot() { throw new Error("legacy screenshot not expected"); },
   });
   const result = await service.observe({ include_screenshot: true });
   const expected = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
@@ -96,17 +93,14 @@ async function localServiceRejectsMalformedScreenshotEvidence() {
   ]) {
     const service = new BrowserComputerObservationService({
       authorizeTool() {},
-      bridgeStatus() { return { extensionInfo: { capabilities: ["computer_observation_v1"] } }; },
-      async request() {
+        async request() {
         return {
           tab_id: 7, title: "Fixture", url: "https://example.test/", semantic: { frames: [] }, accessibility: null,
           viewport: { width: 800, height: 600, scale: 1 }, frame_tree: [], document_epoch: "doc",
           capture: { cdp: true, navigation_coherent: true, screenshot_source: "cdp_surface" }, screenshot: { data },
         };
       },
-      async inspectPage() { throw new Error("legacy inspect not expected"); },
-      async screenshot() { throw new Error("legacy screenshot not expected"); },
-    });
+        });
     await assert.rejects(() => service.observe({ include_screenshot: true }),
       /browser extension returned an invalid computer observation screenshot/);
   }
@@ -117,7 +111,6 @@ async function localServiceRejectsCoercibleSnapshotAuthority() {
   const service = new BrowserComputerObservationService({
     authorizeTool() {},
     async request(method, params) { requested.push({ method, params }); return { ok: true }; },
-    bridgeStatus() { return { extensionInfo: { capabilities: ["computer_observation_v1"] } }; },
     async inspectPage() { return {}; },
     async screenshot() { return {}; },
   });
@@ -182,25 +175,15 @@ async function localServiceRejectsCoercibleSnapshotAuthority() {
   assert.equal(requested.length, 0, "coercible snapshot authority crossed the daemon/extension boundary");
 }
 
-async function localServiceEntryPointsAndLegacyFallback() {
+async function localServiceEntryPointsUseCurrentObservation() {
   const requests = [];
-  let legacyScreenshots = 0;
   const service = new BrowserComputerObservationService({
     authorizeTool() {},
-    bridgeStatus() { return { extensionInfo: { capabilities: [] } }; },
     async request(method, params, timeoutSeconds) {
       requests.push({ method, params, timeoutSeconds });
-      return { ok: true };
-    },
-    async inspectPage() {
-      return {
-        tab_id: 7, title: "Legacy", url: "https://legacy.example/", truncated: false,
-        frames: [{ frame_id: 0, document: { epoch: "legacy-doc" }, elements: [], truncated: false }],
-      };
-    },
-    async screenshot() {
-      legacyScreenshots += 1;
-      return { $mcp: { content: [{ type: "image", data: PNG_BASE64, mimeType: "image/png" }] } };
+      return method === "observe_computer"
+        ? { tab_id: 7, capture: { atomic: true, navigation_coherent: true }, screenshot: null }
+        : { ok: true };
     },
   });
   await service.documentState({ tab_id: 7, timeout_seconds: 4 });
@@ -211,14 +194,11 @@ async function localServiceEntryPointsAndLegacyFallback() {
     action: "click", normalized_x: 0.25, normalized_y: 0.75, screenshot_sha256: "a".repeat(64),
     viewport: { width: 800, height: 600, scale: 1 }, timeout_seconds: 4,
   });
-  const legacy = await service.observe({ include_screenshot: true, timeout_seconds: 4 });
-  assert.equal(legacy.capture.coherence, "legacy_extension_without_computer_observation_v1");
-  assert.equal(legacy.capture.semantic_epoch, "legacy-doc");
-  assert.equal(legacy.imageContent.length, 1);
-  assert.equal(legacyScreenshots, 1);
-  assert.deepEqual(requests.map((entry) => entry.method), ["document_state", "backend_node_action", "point_action"]);
+  const observed = await service.observe({ include_screenshot: false, timeout_seconds: 4 });
+  assert.equal(observed.capture.atomic, true);
+  assert.deepEqual(observed.imageContent, []);
+  assert.deepEqual(requests.map((entry) => entry.method), ["document_state", "backend_node_action", "point_action", "observe_computer"]);
 }
-
 async function extensionRejectsCoercibleDocumentAuthority() {
   const context = createContext(null, {
     documentState: () => ({
