@@ -15,6 +15,7 @@ import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFiles
 import { appName, packageRoot } from "./package-identity.mjs";
 import { inspectStateRootGeneration, pruneRetiredStateRootDirectories, removeStateRootGenerationIfCurrent } from "./state-root-retirement.mjs";
 import { validateOwnedStateNamespaces } from "./state-root-owned-namespaces.mjs";
+import { normalizeIdleSleepMode } from "./idle-sleep-mode.mjs";
 
 const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;
@@ -113,6 +114,17 @@ export function setSelectedWorkspace(workspace, stateRoot = defaultStateRoot()) 
 export function selectedWorkspace(stateRoot = defaultStateRoot()) {
   const value = loadGlobalConfig(stateRoot).selectedWorkspace;
   return typeof value === "string" && value.trim() ? value : "";
+}
+
+export function configuredIdleSleepMode(stateRoot = defaultStateRoot()) {
+  return normalizeIdleSleepMode(loadGlobalConfig(stateRoot).idleSleepMode || "activity");
+}
+
+export function setConfiguredIdleSleepMode(mode, stateRoot = defaultStateRoot()) {
+  const config = loadGlobalConfig(stateRoot);
+  config.idleSleepMode = normalizeIdleSleepMode(mode);
+  saveGlobalConfig(config, stateRoot);
+  return config.idleSleepMode;
 }
 
 export function validateStateRootForRemoval(stateRoot = defaultStateRoot()) {

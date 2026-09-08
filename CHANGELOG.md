@@ -1,11 +1,12 @@
 # Changelog
 
-## 3.0.0-beta.169 - 2026-09-08
+## 3.0.0-beta.170 - 2026-09-08
 
-- Add `MBM_RELAY_FALLBACK_PROXY` so the signed HTTPS fallback no longer has to share the preferred WebSocket relay's application proxy. The default remains backward compatible: without the new key, `MBM_RELAY_PROXY` still governs both transports. A non-empty fallback value selects a fallback-only HTTP(S) proxy; an explicitly empty value restores standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` resolution for only the fallback.
-- Preserve fail-closed routing semantics: failure of a configured route never authorizes an undeclared direct retry, and diagnostics continue to expose only coarse route classes rather than proxy identities or credentials. Application-layer path separation does not claim to bypass an operating-system VPN/TUN.
-- Drive the change from a live awake incident with repeated ready WebSocket close-1006 interruptions and no matching sleep/event-loop stall. The local sidecar remained healthy with balanced opens/closes during that episode, so beta.169 removes the observed WSS/fallback common-mode application-proxy coupling without claiming to identify the upstream component that emitted the remote EOFs.
-- Advance package, Worker, and browser-extension identity to `3.0.0-beta.169`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
+- Preserve the existing macOS `activity` policy as the default: authorized remote activity keeps `/usr/bin/caffeinate -i -s -w <owner-pid>` through execution and the fixed thirty-minute inactivity grace, so an ordinary upgrade does not silently change laptop battery behavior.
+- Add persistent `ac-continuous` and `continuous` daemon policies, configurable with `machine-mcp idle-sleep show|set MODE`. `ac-continuous` holds a daemon-lifetime `-s` assertion and layers the normal `-i -s` activity assertion while work is active; `continuous` holds `-i -s` for the daemon lifetime and does not arm inactivity grace.
+- Make every macOS idle-sleep assertion self-healing. Unexpected `caffeinate` exit/start failure retains desired-state ownership and retries with bounded 1/5/30-second backoff; explicit release or runtime shutdown cancels pending recovery so an intentional stop cannot respawn the child.
+- Extend owner diagnostics with the configured mode, assertion generation, restart count, recovery-pending state, and bounded current/last unprotected duration. These fields remain content-free and do not claim to prevent explicit sleep, lid-close sleep, power loss, or operating-system behavior outside `caffeinate` contracts.
+- Advance package, Worker, and browser-extension identity to `3.0.0-beta.170`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
 
 ## Historical releases
 

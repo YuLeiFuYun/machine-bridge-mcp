@@ -59,7 +59,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null }) {
+  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null, idleSleepMode = "activity" }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -83,7 +83,7 @@ export class LocalRuntime {
     this.activeRelayCalls = new Map();
     this.suppressedRelayResults = new Map();
     this.relayResumeSessionId = 0; this.relayResumeMissingIds = [];
-    this.remoteActivityIdleSleepGuard = new RemoteActivityIdleSleepGuard({ logger: this.logger });
+    this.remoteActivityIdleSleepGuard = new RemoteActivityIdleSleepGuard({ logger: this.logger, mode: idleSleepMode });
     this.callRegistry = new CallRegistry({
       maximum: MAX_CONCURRENT_TOOL_CALLS,
       reserved: RESERVED_CONTROL_TOOL_CALLS,
@@ -283,6 +283,7 @@ export class LocalRuntime {
   async start() {
     if (!this.relay) throw new Error("remote daemon start requires a Worker URL and device identity");
     if (!this.lifecycle.beginStart()) return;
+    this.remoteActivityIdleSleepGuard.start();
     this.relayShutdownDrain = new RuntimeRelayShutdownDrain({ send: (value) => this.send(value), ready: () => this.relay?.status?.().ready === true, logger: this.logger });
     if (this.policy.profile === "full") {
       void this.browserBridgeManager.ensureStarted().catch((error) => {
@@ -296,6 +297,7 @@ export class LocalRuntime {
       this.lifecycle.markRunning();
     } catch (error) {
       if (this.lifecycle.snapshot().state !== "starting") return;
+      this.remoteActivityIdleSleepGuard.stop();
       this.lifecycle.markFailed(error);
       throw error;
     }

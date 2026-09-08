@@ -150,6 +150,7 @@ function testRemoteActivityIdleSleepGuard() {
     "first remote activity did not establish a handler-lifetime idle-sleep guard");
   assert(spawned[0].executable === "/usr/bin/caffeinate"
     && JSON.stringify(spawned[0].args) === JSON.stringify(["-i", "-s", "-w", "4242"])
+    && guard.snapshot().requests_idle_sleep_prevention === true
     && guard.snapshot().requests_system_sleep_prevention_on_ac === true,
   "idle-sleep guard did not bind caffeinate to daemon lifetime with AC system-sleep prevention");
   assert(spawned[0].options.stdio === "ignore" && spawned[0].options.shell === false && spawned[0].child.unrefCalled === true,
@@ -173,24 +174,81 @@ function testRemoteActivityIdleSleepGuard() {
   assert(spawned[0].child.killed === true && spawned[0].child.killSignal === "SIGTERM" && guard.snapshot().active === false,
     "idle-sleep guard did not release after the last activity plus inactivity grace");
 
+  const acContinuousTimers = [];
+  const acContinuousSpawned = [];
+  const acContinuous = new RemoteActivityIdleSleepGuard({
+    platform: "darwin", daemonPid: 4242, graceMs: 5_000, mode: "ac-continuous",
+    spawnProcess(executable, args, options) {
+      const child = fakeChild(); acContinuousSpawned.push({ executable, args, options, child }); return child;
+    },
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cleared: false, unref() { this.unrefCalled = true; } };
+      acContinuousTimers.push(timer); return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; }, logger: { event() {} },
+  });
+  assert(acContinuous.start() === true && acContinuousSpawned.length === 1
+    && JSON.stringify(acContinuousSpawned[0].args) === JSON.stringify(["-s", "-w", "4242"])
+    && acContinuous.snapshot().mode === "ac-continuous"
+    && acContinuous.snapshot().requests_idle_sleep_prevention === false
+    && acContinuous.snapshot().requests_system_sleep_prevention_on_ac === true,
+  "AC-continuous mode did not establish an AC-only daemon-lifetime assertion");
+  assert(acContinuous.beginActivity() === true && acContinuousSpawned.length === 2
+    && JSON.stringify(acContinuousSpawned[1].args) === JSON.stringify(["-i", "-s", "-w", "4242"]),
+  "AC-continuous mode did not add the normal remote-activity assertion");
+  assert(acContinuous.endActivity() === true && acContinuousTimers.length === 1 && acContinuousTimers[0].delay === 5_000,
+    "AC-continuous remote activity did not retain its normal inactivity grace");
+  acContinuousTimers[0].callback();
+  assert(acContinuousSpawned[1].child.killed === true && acContinuousSpawned[0].child.killed === false
+    && acContinuous.snapshot().active === true && acContinuous.snapshot().requests_idle_sleep_prevention === false,
+  "AC-continuous grace expiry released the daemon-lifetime AC assertion or retained the activity assertion");
+  acContinuous.stop();
+  assert(acContinuousSpawned[0].child.killed === true && acContinuous.snapshot().active === false,
+    "AC-continuous stop did not release the daemon-lifetime assertion");
+
+  const continuousTimers = [];
+  const continuousSpawned = [];
+  const continuous = new RemoteActivityIdleSleepGuard({
+    platform: "darwin", daemonPid: 4242, graceMs: 5_000, mode: "continuous",
+    spawnProcess(executable, args, options) {
+      const child = fakeChild(); continuousSpawned.push({ executable, args, options, child }); return child;
+    },
+    setTimer(callback, delay) { const timer = { callback, delay, unref() {} }; continuousTimers.push(timer); return timer; },
+    clearTimer() {}, logger: { event() {} },
+  });
+  assert(continuous.start() === true && continuousSpawned.length === 1
+    && JSON.stringify(continuousSpawned[0].args) === JSON.stringify(["-i", "-s", "-w", "4242"])
+    && continuous.snapshot().mode === "continuous"
+    && continuous.snapshot().requests_idle_sleep_prevention === true,
+  "continuous mode did not establish a daemon-lifetime idle/system sleep assertion");
+  assert(continuous.beginActivity() === true && continuousSpawned.length === 1
+    && continuous.endActivity() === true && continuousTimers.length === 0 && continuous.snapshot().active === true,
+  "continuous mode spawned a duplicate activity assertion or armed inactivity grace");
+  continuous.stop();
+  assert(continuousSpawned[0].child.killed === true && continuous.snapshot().active === false,
+    "continuous stop did not release the daemon-lifetime assertion");
+
   let unsupportedSpawned = false;
   const unsupported = new RemoteActivityIdleSleepGuard({
-    platform: "linux",
+    platform: "linux", mode: "continuous",
     spawnProcess() { unsupportedSpawned = true; return fakeChild(); },
   });
-  assert(unsupported.beginActivity() === false && unsupported.endActivity() === false && unsupportedSpawned === false
+  assert(unsupported.start() === false && unsupported.beginActivity() === false && unsupported.endActivity() === false && unsupportedSpawned === false
     && unsupported.snapshot().supported === false && unsupported.snapshot().enabled === false
     && unsupported.snapshot().requests_system_sleep_prevention_on_ac === false,
   "non-macOS runtime attempted to establish or report support for a platform-specific idle-sleep guard");
 
   const failureEvents = [];
-  let failureTimers = 0;
+  const failureRecoveryTimers = [];
   const unavailable = new RemoteActivityIdleSleepGuard({
     platform: "darwin",
     daemonPid: 4242,
     graceMs: 5_000,
     spawnProcess() { throw new Error("FORBIDDEN_DETAIL_MARKER FORBIDDEN_LOCATION_MARKER"); },
-    setTimer() { failureTimers += 1; throw new Error("timer should not be armed"); },
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cleared: false, unref() {} }; failureRecoveryTimers.push(timer); return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; },
     logger: { event(level, name, fields, message) { failureEvents.push({ level, name, fields, message }); } },
   });
   const firstUnavailableBegin = unavailable.beginActivity();
@@ -198,14 +256,17 @@ function testRemoteActivityIdleSleepGuard() {
   const firstUnavailableEnd = unavailable.endActivity();
   const repeatedUnavailableEnd = unavailable.endActivity();
   assert(firstUnavailableBegin === false && repeatedUnavailableBegin === false
-    && firstUnavailableEnd === false && repeatedUnavailableEnd === false && failureTimers === 0,
-  "failed idle-sleep process setup armed timers or escaped as a tool-call failure");
+    && firstUnavailableEnd === false && repeatedUnavailableEnd === false
+    && failureRecoveryTimers.length === 1 && failureRecoveryTimers[0].delay === 1_000,
+  "failed idle-sleep process setup did not coalesce one bounded recovery timer or escaped as a tool-call failure");
   assert(failureEvents.length === 1 && failureEvents[0].level === "warn"
     && failureEvents[0].name === "runtime.idle_sleep_guard.unavailable"
     && Object.keys(failureEvents[0].fields).join(",") === "error_class"
     && !JSON.stringify(failureEvents[0]).includes("FORBIDDEN_DETAIL_MARKER")
     && !JSON.stringify(failureEvents[0]).includes("FORBIDDEN_LOCATION_MARKER"),
   "idle-sleep guard failure logging exposed sensitive process error text or failed to suppress duplicate error classes");
+  unavailable.stop();
+  assert(failureRecoveryTimers[0].cleared === true, "idle-sleep stop did not cancel pending setup recovery");
 
   const timerFailureChild = fakeChild();
   const timerFailureEvents = [];
@@ -222,22 +283,69 @@ function testRemoteActivityIdleSleepGuard() {
     && !JSON.stringify(timerFailureEvents[0]).includes("FORBIDDEN_TIMER_DETAIL_MARKER"),
   "idle-sleep timer setup failure blocked fail-open cleanup or left an active power assertion");
 
-  const unexpectedChild = fakeChild();
+  const recoveryTimers = [];
+  const recoverySpawned = [];
+  let recoveryNow = 10_000;
   const unexpectedEvents = [];
   const unexpected = new RemoteActivityIdleSleepGuard({
     platform: "darwin", daemonPid: 4242, graceMs: 5_000,
-    spawnProcess() { return unexpectedChild; },
+    spawnProcess(executable, args, options) {
+      if (recoverySpawned.length === 1 || recoverySpawned.length === 2) {
+        recoverySpawned.push({ executable, args, options, child: null });
+        throw new Error("FORBIDDEN_RECOVERY_DETAIL_MARKER");
+      }
+      const child = fakeChild(); recoverySpawned.push({ executable, args, options, child }); return child;
+    },
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cleared: false, unref() {} }; recoveryTimers.push(timer); return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; }, wallNow: () => recoveryNow,
     logger: { event(level, name, fields) { unexpectedEvents.push({ level, name, fields }); } },
   });
   assert(unexpected.beginActivity() === true, "unexpected-exit fixture failed to establish the guard");
-  unexpectedChild.emit("exit", 1, null);
-  assert(unexpected.snapshot().active === false && unexpectedEvents.length === 1
-    && unexpectedEvents[0].name === "runtime.idle_sleep_guard.unavailable" && unexpected.endActivity() === false,
-  "unexpected idle-sleep child exit during active work was silent or armed an invalid grace timer");
+  recoverySpawned[0].child.emit("exit", 1, null);
+  assert(unexpected.snapshot().active === false && unexpected.snapshot().recovery_pending === true
+    && recoveryTimers.length === 1 && recoveryTimers[0].delay === 1_000 && unexpectedEvents.length === 1
+    && unexpectedEvents[0].name === "runtime.idle_sleep_guard.unavailable",
+  "unexpected idle-sleep child exit did not enter bounded recovery");
+  recoveryNow += 1_000; recoveryTimers[0].callback();
+  assert(recoveryTimers.length === 2 && recoveryTimers[1].delay === 5_000 && unexpected.snapshot().recovery_pending === true,
+    "first failed idle-sleep recovery did not advance to five-second backoff");
+  recoveryNow += 5_000; recoveryTimers[1].callback();
+  assert(recoveryTimers.length === 3 && recoveryTimers[2].delay === 30_000 && unexpected.snapshot().recovery_pending === true,
+    "second failed idle-sleep recovery did not advance to thirty-second backoff");
+  recoveryNow += 30_000; recoveryTimers[2].callback();
+  assert(recoverySpawned.length === 4 && unexpected.snapshot().active === true
+    && unexpected.snapshot().assertion_generation === 2 && unexpected.snapshot().restart_count === 1
+    && unexpected.snapshot().recovery_pending === false && unexpected.snapshot().last_unprotected_duration_ms === 36_000
+    && !JSON.stringify(unexpectedEvents).includes("FORBIDDEN_RECOVERY_DETAIL_MARKER"),
+  "idle-sleep recovery did not restore protection with bounded telemetry or leaked raw recovery errors");
+  unexpected.stop();
+
+  const cancelledRecoveryTimers = [];
+  const cancelledRecoverySpawned = [];
+  const cancelledRecovery = new RemoteActivityIdleSleepGuard({
+    platform: "darwin", daemonPid: 4242, graceMs: 5_000,
+    spawnProcess() { const child = fakeChild(); cancelledRecoverySpawned.push(child); return child; },
+    setTimer(callback, delay) {
+      const timer = { callback, delay, cleared: false, unref() {} }; cancelledRecoveryTimers.push(timer); return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; }, logger: { event() {} },
+  });
+  assert(cancelledRecovery.beginActivity() === true, "cancelled-recovery fixture failed to establish the guard");
+  cancelledRecoverySpawned[0].emit("exit", 1, null);
+  assert(cancelledRecoveryTimers.length === 1 && cancelledRecoveryTimers[0].delay === 1_000,
+    "cancelled-recovery fixture did not arm first recovery delay");
+  cancelledRecovery.stop();
+  cancelledRecoveryTimers[0].callback();
+  assert(cancelledRecoveryTimers[0].cleared === true && cancelledRecoverySpawned.length === 1
+    && cancelledRecovery.snapshot().recovery_pending === false,
+  "explicit stop allowed a stale recovery callback to respawn caffeinate");
 
   const loggingFailure = new RemoteActivityIdleSleepGuard({
     platform: "darwin", daemonPid: 4242, graceMs: 5_000,
     spawnProcess() { throw new Error("FORBIDDEN_LOGGING_FAILURE_MARKER"); },
+    setTimer() { throw new Error("FORBIDDEN_RECOVERY_TIMER_MARKER"); },
     logger: { event() { throw new Error("logger unavailable"); } },
   });
   assert(loggingFailure.beginActivity() === false && loggingFailure.endActivity() === false,
@@ -1345,6 +1453,7 @@ async function testRuntimeStartStopRace() {
     relay: { start: () => new Promise((_, reject) => { rejectRelayStart = reject; }) },
     lifecycle,
     policy: { profile: "agent" },
+    remoteActivityIdleSleepGuard: { start() {}, stop() {} },
   };
   const starting = LocalRuntime.prototype.start.call(runtime);
   await Promise.resolve();

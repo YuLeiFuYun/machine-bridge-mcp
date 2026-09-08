@@ -224,6 +224,7 @@ machine-mcp
 machine-mcp status
 machine-mcp doctor
 machine-mcp workspace show|set|reset
+machine-mcp idle-sleep show|set MODE
 machine-mcp service status|install|start|stop|uninstall
 machine-mcp account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
 machine-mcp browser status|setup|pair|path

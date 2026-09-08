@@ -11,6 +11,7 @@ import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, val
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
 import { createActivateCommand } from "./cli-activate.mjs";
+import { idleSleepCommand } from "./cli-idle-sleep.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
@@ -35,6 +36,7 @@ import {
   acquireMachineServiceLockWithWait,
   acquireMaintenanceLock,
   acquireStartupLockWithWait,
+  configuredIdleSleepMode,
   daemonLockPathForState,
   defaultFirstRunWorkspace,
   defaultStateRoot,
@@ -54,7 +56,6 @@ import {
   setSelectedWorkspace,
 } from "./state.mjs";
 import { packageName, packageVersion } from "./package-identity.mjs";
-
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
 const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger, acquireMachineServiceLockWithWait, currentPackageVersion });
@@ -76,6 +77,7 @@ const COMMAND_HANDLERS = new Map([
   ["doctor", doctorCommand],
   ["full-test", fullTestCommand],
   ["workspace", workspaceCommand],
+  ["idle-sleep", idleSleepCommand],
   ["service", serviceCommand],
   ["autostart", serviceCommand],
   ["rotate-secrets", rotateSecretsCommand],
@@ -391,6 +393,7 @@ function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSession
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
     deviceRootStatus: deviceRootProviderStatus(state.worker.deviceIdentity),
+    idleSleepMode: configuredIdleSleepMode(state.paths.stateRoot),
     onSuperseded: () => {
       if (!exitOnTerminal) {
         terminalState.error ??= new Error("candidate daemon was superseded before service handoff");
@@ -833,6 +836,7 @@ Commands:
   client-config     Print stdio client configuration snippets
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
+  idle-sleep show|set MODE  Show/set activity, ac-continuous, or continuous; restart after set
   service status    Show autostart status
   service install   Install login autostart for remembered/current workspace
   service start     Ensure the installed autostart service is running (idempotent)

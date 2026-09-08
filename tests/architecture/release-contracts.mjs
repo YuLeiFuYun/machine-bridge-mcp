@@ -672,7 +672,9 @@ if (!checkRunnerSource.includes("verificationChildEnvironment")
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
 const macosIdleSleepAssertionSource = readFileSync(join(root, "src", "local", "macos-idle-sleep-assertion.mjs"), "utf8");
+const macosIdleSleepRecoverySource = readFileSync(join(root, "src", "local", "macos-idle-sleep-recovery.mjs"), "utf8");
 const remoteActivityIdleSleepGuardSource = readFileSync(join(root, "src", "local", "remote-activity-idle-sleep-guard.mjs"), "utf8");
+const remoteIdleSleepAssertionsSource = readFileSync(join(root, "src", "local", "remote-idle-sleep-assertions.mjs"), "utf8");
 const processSessionRemoteActivitySource = readFileSync(join(root, "src", "local", "process-session-remote-activity.mjs"), "utf8");
 const processSessionsSource = readFileSync(join(root, "src", "local", "process-sessions.mjs"), "utf8");
 const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
@@ -774,19 +776,28 @@ if (!managedJobListingSource.includes("durable_terminal: durableTerminal")
   throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
 }
 if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
-    || !macosIdleSleepAssertionSource.includes('["-i", "-s", "-w", String(this.processId)]')
+    || !macosIdleSleepAssertionSource.includes('this.preventIdleSleep ? ["-i"] : []')
+    || !macosIdleSleepAssertionSource.includes('this.preventSystemSleepOnAc ? ["-s"] : []')
+    || !macosIdleSleepAssertionSource.includes('MacosIdleSleepRecovery')
     || !macosIdleSleepAssertionSource.includes("requests_system_sleep_prevention_on_ac")
+    || !macosIdleSleepAssertionSource.includes("requests_idle_sleep_prevention")
     || !macosIdleSleepAssertionSource.includes('shell: false')
+    || !macosIdleSleepRecoverySource.includes('Object.freeze([1_000, 5_000, 30_000])')
+    || !macosIdleSleepRecoverySource.includes('if (this.desired) this.onRetry?.()')
+    || !macosIdleSleepRecoverySource.includes('restart_count: this.restartCount')
     || macosIdleSleepAssertionSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
-    || !remoteActivityIdleSleepGuardSource.includes('from "./macos-idle-sleep-assertion.mjs"')
+    || !remoteActivityIdleSleepGuardSource.includes('from "./remote-idle-sleep-assertions.mjs"')
     || remoteActivityIdleSleepGuardSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
     || !remoteActivityIdleSleepGuardSource.includes('DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 30 * 60_000')
     || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities += 1;')
-    || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities > 0 || !this.assertion.snapshot().active')
+    || !remoteActivityIdleSleepGuardSource.includes('this.assertions.usesActivityGrace()')
+    || !remoteIdleSleepAssertionsSource.includes('this.mode === "activity" ? null')
+    || !remoteIdleSleepAssertionsSource.includes('preventIdleSleep: this.mode === "continuous"')
     || !runtimeSource.includes('onAuthorizedRelayActivityStart: () => this.remoteActivityIdleSleepGuard.beginActivity()')
     || !runtimeSource.includes('onAuthorizedRelayActivityEnd: () => this.remoteActivityIdleSleepGuard.endActivity()')
     || !toolExecutorSource.includes('invokeHandler(this.handlers, this.onAuthorizedRelayActivityStart, this.onAuthorizedRelayActivityEnd)')
     || !toolExecutorSource.includes('finally { if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityEnd); }')
+    || !runtimeSource.includes('this.remoteActivityIdleSleepGuard.start();')
     || !runtimeSource.includes('this.remoteActivityIdleSleepGuard.stop();')
     || !runtimeDiagnosticStateSource.includes('idle_sleep_guard: state.idleSleepGuard ?? null')) {
   throw new Error("runtime remote-activity idle-sleep guard lost its bounded fixed-command lifecycle or diagnostic projection");
@@ -797,7 +808,7 @@ if (!processSessionRemoteActivitySource.includes('context?.origin !== "relay"')
     || !runtimeSource.includes('remoteActivityGuard: this.remoteActivityIdleSleepGuard')
     || processSessionAdmissionIndex < 0 || processSessionActivityIndex <= processSessionAdmissionIndex
     || !processSessionsSource.includes('endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);')
-    || runtimeSource.indexOf("this.remoteActivityIdleSleepGuard.stop();") < runtimeSource.indexOf("await this.processSessionManager.clearAndWait();")) {
+    || runtimeSource.lastIndexOf("this.remoteActivityIdleSleepGuard.stop();") < runtimeSource.indexOf("await this.processSessionManager.clearAndWait();")) {
   throw new Error("remote process-session idle-sleep activity lost its post-admission child-lifetime ownership boundary");
 }
 const managedJobClaimIndex = managedJobRunnerSource.indexOf("await confirmRunnerClaim({");
@@ -2148,11 +2159,14 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`diagnose_runtime.runtime.idle_sleep_guard`"],
   ["docs/TESTING.md", testingDoc, "distinct from production ownership"],
   ["docs/TESTING.md", testingDoc, "full execution lifetime"],
-  ["docs/ARCHITECTURE.md", architecture, "fixed thirty-minute inactivity grace begins only after the last handler settles"],
-  ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners do not depend on daemon ownership"],
-  ["docs/OPERATIONS.md", operationsDoc, "the thirty-minute default inactivity grace begins only after the last one settles"],
-  ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends the same assertion only after resource admission succeeds"],
-  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -s -w <runner-pid>`"],
+  ["docs/ARCHITECTURE.md", architecture, "fixed thirty-minute inactivity grace begins only after the last handler/process-session activity settles"],
+  ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners remain independently bound to the runner PID"],
+  ["docs/ARCHITECTURE.md", architecture, "fixed 1/5/30-second backoff"],
+  ["docs/OPERATIONS.md", operationsDoc, "that grace begins only after the last owned daemon-side activity settles"],
+  ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends activity ownership only after resource admission"],
+  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold the same `-i -s -w <runner-pid>` primitive"],
+  ["docs/OPERATIONS.md", operationsDoc, "`machine-mcp idle-sleep set continuous`"],
+  ["docs/OPERATIONS.md", operationsDoc, "fixed 1/5/30-second recovery"],
   ["docs/LOGGING.md", loggingDoc, "opens one fifteen-second application-confirmation window"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.not_received_after_reconnect` retains the same aggregate-only `calls` shape"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.redelivered_after_proven_non_delivery` with only an aggregate `calls` count"],
