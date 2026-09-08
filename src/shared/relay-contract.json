@@ -38,6 +38,10 @@
   "managedJobReadExecutionHeadroomMs": 10000,
   "maximumProcessReadWaitMs": 1000,
   "remoteProcessBlockingPollCooldownMs": 15000,
+  "maximumHostedReadFileResultBytes": 65536,
+  "maximumHostedProcessReadBytes": 32768,
+  "maximumHostedTransientProcessCaptureBytes": 32768,
+  "hostedLargeResultThresholdBytes": 65536,
   "workerSettlementOverheadMs": 5000,
   "maximumOrdinaryRelayToolTimeoutMs": 50000,
   "maximumRelayToolTimeoutMs": 315000

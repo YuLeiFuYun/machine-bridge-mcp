@@ -4,6 +4,7 @@ import { lstat, open, stat } from "node:fs/promises";
 import path, { basename, resolve } from "node:path";
 import { directoryEntriesWithMetadata } from "./directory-metadata.mjs";
 import { BridgeError } from "./errors.mjs";
+import { hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
 import { clampInteger } from "./numbers.mjs";
@@ -103,7 +104,8 @@ export class WorkspaceFileService {
     const { buffer, info } = await readBoundedFile(full, MAX_WRITE_BYTES, "readable text file");
     const content = decodeUtf8(buffer);
     this.throwIfCancelled(context);
-    const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, MAX_WRITE_BYTES);
+    const hostedLimits = hostedFileReadLimits(context);
+    const maxBytes = clampInteger(args.max_bytes, hostedLimits?.defaultContentBytes ?? 1024 * 1024, 1, hostedLimits?.maximumContentBytes ?? MAX_WRITE_BYTES);
     const startLine = args.start_line === undefined ? 1 : clampInteger(args.start_line, 1, 1, Number.MAX_SAFE_INTEGER);
     const lineStarts = [0];
     for (let index = 0; index < content.length; index += 1) {
@@ -114,21 +116,18 @@ export class WorkspaceFileService {
     if (endLine < startLine) throw new BridgeError("invalid_request", "end_line must be greater than or equal to start_line", { details: { reason: "invalid_line_range" } });
     if (startLine > totalLines) throw new BridgeError("invalid_request", `start_line exceeds total lines (${startLine} > ${totalLines})`, { details: { reason: "line_out_of_range", total_lines: totalLines } });
     const selectedEnd = Math.min(endLine, totalLines);
+    const base = { path: this.displayPath(full, context), size: info.size, sha256: sha256(content) };
+    const hostedResult = hostedFileReadResult({
+      context, base, content, lineStarts, startLine, selectedEnd, totalLines, maxContentBytes: maxBytes,
+      automatic: args.end_line === undefined,
+    });
+    if (hostedResult) return hostedResult;
     const selectedStartOffset = lineStarts[startLine - 1];
     const selectedEndOffset = selectedEnd < totalLines ? lineStarts[selectedEnd] : content.length;
     const selected = content.slice(selectedStartOffset, selectedEndOffset);
     const selectedBytes = Buffer.byteLength(selected);
     if (selectedBytes > maxBytes) throw new BridgeError("limit_exceeded", `selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`, { details: { reason: "read_limit", selected_bytes: selectedBytes, maximum_bytes: maxBytes } });
-    return {
-      path: this.displayPath(full, context),
-      size: info.size,
-      sha256: sha256(content),
-      content: selected,
-      start_line: startLine,
-      end_line: selectedEnd,
-      total_lines: totalLines,
-      complete: startLine === 1 && selectedEnd === totalLines,
-    };
+    return { ...base, content: selected, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines };
   }
 
   async viewImage(args, context = {}) {

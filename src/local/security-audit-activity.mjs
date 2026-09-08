@@ -1,5 +1,6 @@
 const WINDOWS_MS = Object.freeze({ one: 60_000, five: 5 * 60_000, fifteen: 15 * 60_000, sixty: 60 * 60_000 });
 const PROCESS_HELPERS = new Set(["exec_command", "run_process", "run_local_command"]);
+const LARGE_RESULT_BYTES = 64 * 1024;
 
 export function securityAuditRecentActivity(state = {}) {
   const events = Array.isArray(state?.events) ? state.events : [];
@@ -9,11 +10,18 @@ export function securityAuditRecentActivity(state = {}) {
   const last15 = recent(WINDOWS_MS.fifteen);
   const toolCounts = new Map();
   const minuteCounts = new Map();
+  const minuteOutputBytes = new Map();
+  let outputBytes = 0; let maximumOutputBytes = 0; let largeResultCalls = 0;
   for (const event of last15) {
     const tool = String(event?.tool || "unknown");
     toolCounts.set(tool, (toolCounts.get(tool) || 0) + 1);
     const bucket = Math.floor(eventAgeMs(event, endMs) / 60_000);
     minuteCounts.set(bucket, (minuteCounts.get(bucket) || 0) + 1);
+    const bytes = boundedOutputBytes(event?.output_bytes);
+    outputBytes = boundedSum(outputBytes, bytes);
+    maximumOutputBytes = Math.max(maximumOutputBytes, bytes);
+    if (bytes >= LARGE_RESULT_BYTES) largeResultCalls += 1;
+    minuteOutputBytes.set(bucket, boundedSum(minuteOutputBytes.get(bucket) || 0, bytes));
   }
   const topTools = [...toolCounts.entries()]
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
@@ -31,9 +39,22 @@ export function securityAuditRecentActivity(state = {}) {
     read_job_calls_last_15m: last15.filter((event) => event?.tool === "read_job").length,
     start_job_calls_last_15m: last15.filter((event) => event?.tool === "start_job").length,
     peak_calls_per_minute_last_15m: Math.max(0, ...minuteCounts.values()),
+    output_bytes_last_15m: outputBytes,
+    maximum_output_bytes_last_15m: maximumOutputBytes,
+    large_result_calls_last_15m: largeResultCalls,
+    peak_output_bytes_per_minute_last_15m: Math.max(0, ...minuteOutputBytes.values()),
     distinct_tools_last_15m: toolCounts.size,
     top_tools_last_15m: topTools,
   };
+}
+
+function boundedOutputBytes(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(parsed))) : 0;
+}
+
+function boundedSum(left, right) {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
 }
 
 function eventAgeMs(event, endMs) {
@@ -46,6 +67,7 @@ function emptyActivity() {
     coverage: "daemon_reached_relay_tool_calls_only", host_side_events_observable: false,
     window_end_at: null, calls_last_1m: 0, calls_last_5m: 0, calls_last_15m: 0, calls_last_60m: 0,
     failures_last_15m: 0, process_helper_calls_last_15m: 0, read_job_calls_last_15m: 0, start_job_calls_last_15m: 0,
-    peak_calls_per_minute_last_15m: 0, distinct_tools_last_15m: 0, top_tools_last_15m: [],
+    peak_calls_per_minute_last_15m: 0, output_bytes_last_15m: 0, maximum_output_bytes_last_15m: 0,
+    large_result_calls_last_15m: 0, peak_output_bytes_per_minute_last_15m: 0, distinct_tools_last_15m: 0, top_tools_last_15m: [],
   };
 }

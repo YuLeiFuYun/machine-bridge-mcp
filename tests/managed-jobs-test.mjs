@@ -1196,19 +1196,36 @@ async function testManagedJobCapacityBoundary() {
     && !durableHelperManager.list({ limit: 10 }).jobs.some((job) => Object.hasOwn(job, "retention_class") || Object.hasOwn(job, "transient_recovery_pending")),
   "hosted terminal read did not downgrade private follow-up recovery state or leaked it through public projections");
 
+  const hostedBudgetContext = { origin: "relay", authority: { origin: "relay", owner: true, principal: {
+    kind: "account", accountId: `acct_${"h".repeat(32)}`, accountVersion: 1,
+    clientId: `mcp_client_${"h".repeat(43)}`, familyId: `mcp_family_${"h".repeat(43)}`, role: "owner",
+  } } };
+  const hostedBudgetHelper = durableHelperManager.startDurableProcess({
+    sourceTool: "run_process", name: "hosted aggregate output budget",
+    argv: [process.execPath, "-e", "process.stdout.write('x'.repeat(60000))"], cwd: workspace, timeoutSeconds: 30,
+  }, hostedBudgetContext);
+  const hostedBudgetResult = await waitForJob(durableHelperManager, hostedBudgetHelper.job_id, null, MANAGED_JOB_TEST_WAIT_MS, hostedBudgetContext);
+  const hostedBudgetStep = hostedBudgetResult.result.steps[0];
+  assert(hostedBudgetResult.result.capture_limit_bytes === 32 * 1024
+    && Buffer.byteLength(hostedBudgetStep.stdout) <= 32 * 1024 && hostedBudgetStep.stdout_truncated_bytes > 0,
+  "hosted account transient durable helper did not enforce or disclose the 32 KiB aggregate capture budget");
+
   const localDurableHelper = durableHelperManager.startDurableProcess({
     sourceTool: "run_process",
     name: "local retention class wiring",
-    argv: [process.execPath, "-e", ""],
+    argv: [process.execPath, "-e", "process.stdout.write('x'.repeat(60000))"],
     cwd: workspace,
     timeoutSeconds: 30,
     idempotencyKey: "local-retention-class-wiring",
   });
-  await waitForJob(durableHelperManager, localDurableHelper.job_id);
+  const localDurableResult = await waitForJob(durableHelperManager, localDurableHelper.job_id);
   const localDurableHelperStatus = JSON.parse(await readFile(join(durableHelperRoot, localDurableHelper.job_id, "status.json"), "utf8"));
   assert(localDurableHelperStatus.retention_class === "transient_process"
-    && !Object.hasOwn(localDurableHelperStatus, "transient_recovery_pending"),
-  "local idempotent durable helper incorrectly retained hosted follow-up priority");
+    && !Object.hasOwn(localDurableHelperStatus, "transient_recovery_pending")
+    && localDurableResult.result.capture_limit_bytes === 256 * 1024
+    && Buffer.byteLength(localDurableResult.result.steps[0].stdout) === 60000
+    && localDurableResult.result.steps[0].stdout_truncated_bytes === 0,
+  "local idempotent durable helper lost its existing 256 KiB capture capacity or retained hosted follow-up priority");
 
   const recoveryVisibilityRoot = join(root, "recovery-visibility-jobs");
   const recoveryVisibilityManager = createManagedJobTestManager({

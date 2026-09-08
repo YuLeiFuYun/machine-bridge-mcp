@@ -14,6 +14,17 @@ if (/not found\|does not exist\|could not find/i.test(cliSource) || !cliSource.i
 const cliActivateSource = readFileSync(join(root, "src", "local", "cli-activate.mjs"), "utf8");
 const runtimeActivationSource = readFileSync(join(root, "src", "local", "runtime-activation.mjs"), "utf8");
 const activationRecoverySource = readFileSync(join(root, "src", "shared", "activation-recovery.mjs"), "utf8");
+const restartabilityPreflightIndex = runtimeActivationSource.indexOf("await options.preflightRestartability");
+const providerStoppedIndex = runtimeActivationSource.indexOf("providerStopped = ownership.previousServiceRuntimeActive;");
+const providerStopIndex = runtimeActivationSource.indexOf("await options.stopAutostart");
+if (!runtimeActivationSource.includes('"preflightRestartability"')
+    || restartabilityPreflightIndex < 0
+    || !(restartabilityPreflightIndex < providerStoppedIndex && providerStoppedIndex < providerStopIndex)) {
+  throw new Error("persistent activation restartability preflight must remain mandatory before provider mutation/recovery intent");
+}
+for (const required of ["preflightServiceRestartability", "preflightRestartability: () => preflightServiceRestartability({"] ) {
+  if (!cliActivateSource.includes(required)) throw new Error(`candidate activation CLI lost restartability preflight wiring: ${required}`);
+}
 for (const required of [
   "recovery?.candidateServiceStarted && candidateRelayVerified && recoverablePostReadySettlement(error)",
   "isActivationRecoveryReason",
@@ -2236,7 +2247,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 26"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 27"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],

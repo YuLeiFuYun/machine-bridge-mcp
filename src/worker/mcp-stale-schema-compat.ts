@@ -67,14 +67,19 @@ export function staleSchemaCompatibilityResult(
     }, true, serverInfo));
   }
   if (!compatibleMaximum(toolName, issues)) return null;
+  const maxBytesIssue = issues.every((issue) => issue.instancePath === "/max_bytes");
   return rpcResult(request.id, textToolResult({
     error: {
       code: "invalid_request",
-      message: toolName === "read_process"
-        ? "cached read_process arguments exceed the current server limit; refresh tools/list, keep each remote blocking wait within the current one-second limit, let the daemon pace repeated would-block reads inside the same MCP call through next_blocking_poll_after_ms/cooldown state instead of rapid retrying, and use run_process/read_job for non-interactive durable work"
-        : toolName === "read_job"
-          ? "cached read_job arguments exceed the current hosted wait limit; refresh tools/list and continue the same durable job through bounded server-paced read_job calls instead of one overlong host request"
-          : "cached tool arguments exceed the current server limit; refresh tools/list and use request-bounded execution or durable jobs instead of holding one response open",
+      message: maxBytesIssue && toolName === "read_file"
+        ? "cached read_file max_bytes exceeds the current hosted result budget; refresh tools/list and omit end_line to use bounded whole-line pagination with next_start_line when the file does not fit"
+        : maxBytesIssue && toolName === "read_process"
+          ? "cached read_process max_bytes exceeds the current hosted per-read result budget; refresh tools/list and continue through bounded output offsets rather than requesting one large page"
+          : toolName === "read_process"
+            ? "cached read_process arguments exceed the current server limit; refresh tools/list, keep each remote blocking wait within the current one-second limit, let the daemon pace repeated would-block reads inside the same MCP call through next_blocking_poll_after_ms/cooldown state instead of rapid retrying, and use run_process/read_job for non-interactive durable work"
+            : toolName === "read_job"
+              ? "cached read_job arguments exceed the current hosted wait limit; refresh tools/list and continue the same durable job through bounded server-paced read_job calls instead of one overlong host request"
+              : "cached tool arguments exceed the current server limit; refresh tools/list and use request-bounded execution or durable jobs instead of holding one response open",
       retryable: false,
       details: {
         side_effects_started: false,
@@ -118,5 +123,7 @@ function compatibleMaximum(toolName: string, issues: readonly ValidationIssue[])
   if (issues.some((issue) => issue.keyword !== "maximum")) return false;
   return issues.every((issue) => issue.instancePath === "/timeout_seconds")
     || (toolName === "read_process" || toolName === "read_job")
-      && issues.every((issue) => issue.instancePath === "/wait_ms");
+      && issues.every((issue) => issue.instancePath === "/wait_ms")
+    || (toolName === "read_file" || toolName === "read_process")
+      && issues.every((issue) => issue.instancePath === "/max_bytes");
 }

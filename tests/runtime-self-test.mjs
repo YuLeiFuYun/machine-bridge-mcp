@@ -461,6 +461,24 @@ export async function runtimeSelfTest() {
     if (crlfWhole.content !== crlfText || crlfWhole.sha256 !== sha256(crlfWhole.content) || crlfSlice.content !== "second\r\n") {
       throw new Error("read_file normalized CRLF content or returned a hash for different text");
     }
+    const hostedText = Array.from({ length: 700 }, (_, index) => `${String(index).padStart(4, "0")}:${'"'.repeat(72)}\n`).join("");
+    await restricted.writeFile({ path: "nested/hosted-pages.txt", content: hostedText, create_only: true });
+    const hostedContext = { origin: "relay", authority: { origin: "relay" } };
+    const hostedPage = await restricted.readFile({ path: "nested/hosted-pages.txt" }, hostedContext);
+    if (Buffer.byteLength(JSON.stringify(hostedPage)) > 64 * 1024 || hostedPage.complete !== false
+      || !Number.isInteger(hostedPage.next_start_line) || hostedPage.next_start_line !== hostedPage.end_line + 1) {
+      throw new Error("hosted read_file did not enforce complete-result whole-line pagination");
+    }
+    const hostedNext = await restricted.readFile({ path: "nested/hosted-pages.txt", start_line: hostedPage.next_start_line }, hostedContext);
+    if (hostedNext.start_line !== hostedPage.next_start_line || Object.hasOwn(hostedNext, "next_start_line")) {
+      throw new Error("hosted read_file continuation did not deterministically consume the remaining whole-line page");
+    }
+    const localWhole = await restricted.readFile({ path: "nested/hosted-pages.txt", max_bytes: 64 * 1024 });
+    if (localWhole.content !== hostedText || Buffer.byteLength(JSON.stringify(localWhole)) <= 64 * 1024) {
+      throw new Error("hosted read_file budget changed local read capacity or failed to cover JSON escaping overhead");
+    }
+    await expectReject(() => restricted.readFile({ path: "nested/hosted-pages.txt", start_line: 1, end_line: 700 }, hostedContext),
+      "serialized result budget", "limit_exceeded", "hosted_read_result_limit");
     await expectReject(() => restricted.editFile({ path: "nested/written.txt", old_text: "missing", new_text: "replacement" }), "old_text was not found", "not_found", "text_not_found");
     await restricted.writeFile({ path: "nested/ambiguous.txt", content: "same\nsame\n", create_only: true });
     await expectReject(() => restricted.editFile({ path: "nested/ambiguous.txt", old_text: "same", new_text: "changed" }), "occurs 2 times", "conflict", "text_ambiguous");

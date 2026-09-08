@@ -75,6 +75,7 @@ try {
   testProcessSessionRetentionUsesMonotonicTime();
   testRemoteReadCompletionUsesFinalSessionState();
   await testRemoteCooldownStateMachine();
+  await testHostedProcessReadByteCeiling();
   await testExecutionSurfaceMarkers();
   await testProcessCancellationAfterAdmissionBeforeSpawn();
   await testRemoteSessionAdmissionIsFailFast();
@@ -339,6 +340,22 @@ async function testRemoteBlockingPollCooldown() {
   }
 }
 
+async function testHostedProcessReadByteCeiling() {
+  const session = syntheticReadSession(1_000, 200_000);
+  session.stdout.append("x".repeat(100_000));
+  const remote = await readProcessSession({
+    args: { wait_ms: 0, max_bytes: 256 * 1024 }, context: { authority: { origin: "relay" } }, session,
+    throwIfCancelled() {}, now: () => 1_100,
+  });
+  assert.equal(Buffer.byteLength(remote.stdout.data), 32 * 1024,
+    "relay read_process accepted a stale-schema max_bytes value above the hosted daemon ceiling");
+  const local = await readProcessSession({
+    args: { wait_ms: 0, max_bytes: 256 * 1024 }, context: {}, session, throwIfCancelled() {}, now: () => 1_100,
+  });
+  assert.equal(Buffer.byteLength(local.stdout.data), 100_000,
+    "hosted read_process ceiling reduced the existing local read capacity");
+}
+
 async function testRemoteCooldownStateMachine() {
   const remoteContext = { origin: "relay", authority: { origin: "relay" } };
   const session = syntheticReadSession(1_000);
@@ -474,12 +491,12 @@ function testRemoteReadCompletionUsesFinalSessionState() {
     "remote read completion armed a blocking cooldown after the session had exited");
 }
 
-function syntheticReadSession(lastRemoteBlockingReadAt) {
+function syntheticReadSession(lastRemoteBlockingReadAt, retainedBytes = 1024) {
   return {
     closedAt: null,
     lastRemoteBlockingReadAt,
-    stdout: new ProcessOutputStream(1024),
-    stderr: new ProcessOutputStream(1024),
+    stdout: new ProcessOutputStream(retainedBytes),
+    stderr: new ProcessOutputStream(retainedBytes),
     waiters: new Set(),
   };
 }
