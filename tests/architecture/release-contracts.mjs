@@ -121,13 +121,13 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
 if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.127.1"
-    || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.3"
+    || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.4"
     || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.127.1"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
-    || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.3") {
+    || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.4") {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
-const patchedSharpVersion = "0.35.3";
+const patchedSharpVersion = "0.35.4";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
 if (packageLock.packages?.["node_modules/sharp"]?.version !== patchedSharpVersion) throw new Error("package-lock does not resolve the audited Sharp version");
 if (packageJson.allowScripts?.[`sharp@${patchedSharpVersion}`] !== true) throw new Error("the audited Sharp lifecycle-script allowlist entry is missing");
@@ -1266,7 +1266,7 @@ for (const required of ["prepareHardenedNpm", "result = await verifyConsumerTarb
 if (consumerSecuritySource.includes('"--omit=optional"')) throw new Error("consumer package security no longer models an ordinary optional-dependency installation");
 const toolchainSource = readFileSync(join(root, "src", "local", "wrangler-toolchain.mjs"), "utf8");
 const toolchainVerificationSource = readFileSync(join(root, "src", "local", "wrangler-toolchain-verification.mjs"), "utf8");
-for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "7.29.0", "0.35.3"]) {
+for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "7.29.0", "0.35.4"]) {
   if (!toolchainSource.includes(required)) throw new Error(`private Wrangler toolchain lost required boundary: ${required}`);
 }
 for (const required of ["TOOLCHAIN_MARKER", "MAX_TREE_NODES", "throwOperationalOrIntegrity", "privateToolchainIntegrityError"]) {

@@ -9,6 +9,7 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
+import { retryProcessLockIdentityReadSync } from "./process-lock-read-retry.mjs";
 import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
@@ -516,11 +517,11 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
 function readProcessLockSnapshot(lockPath) {
   let opened;
   try {
-    opened = retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
+    opened = retryProcessLockIdentityReadSync(() => retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
       allowedMultipleLinkIdentity: residueIdentity,
-    }), { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(lockPath) });
+    }), { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(lockPath) }));
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;

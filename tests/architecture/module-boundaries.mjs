@@ -919,7 +919,7 @@ for (const required of ["readRecoveryMarker(recoveryPath", "recoverySnapshot.ide
   if (!processLockStateSource.includes(required)) throw new Error(`state recovery marker lost identity-bound removal: ${required}`);
 }
 if (processLockStateSource.includes("unlinkSync(recoveryPath)")) throw new Error("state recovery marker regained path-only unlink");
-for (const required of ["readBoundedRegularFileWithInfoSync(lockPath", "verifyPathIdentity: true", "rejectMultipleLinks: true", "opened.identity", "opened.identityInfo", "process lock link count"]) {
+for (const required of ["retryProcessLockIdentityReadSync", "readBoundedRegularFileWithInfoSync(lockPath", "verifyPathIdentity: true", "rejectMultipleLinks: true", "opened.identity", "opened.identityInfo", "process lock link count"]) {
   if (!processLockStateSource.includes(required)) throw new Error(`process lock reader lost single-descriptor snapshot identity: ${required}`);
 }
 const projectMetadataSource = readFileSync(join(localRoot, "project-metadata.mjs"), "utf8");
