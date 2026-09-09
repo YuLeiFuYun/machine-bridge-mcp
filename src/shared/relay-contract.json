@@ -1,6 +1,7 @@
 {
   "reconnectGraceMs": 120000,
   "newCallReconnectGraceMs": 15000,
+  "reconnectResultDeliveryGraceMs": 15000,
   "transportPingIntervalMs": 5000,
   "transportPingDispatchTimeoutMs": 30000,
   "transportPongTimeoutMs": 10000,
