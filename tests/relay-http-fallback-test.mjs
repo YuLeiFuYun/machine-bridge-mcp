@@ -45,6 +45,32 @@ async function testSignedHttpRelayAuthentication() {
   }), false, "expired daemon HTTP request replay window was accepted");
 }
 
+async function testDynamicHttpDeviceSessionProvider() {
+  const root = createDeviceIdentity();
+  let current = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW);
+  const scheduler = new ManualScheduler();
+  const keys = [];
+  const connection = new DaemonHttpRelayConnection({
+    workerUrl: ORIGIN, deviceIdentity: current, deviceIdentityProvider: () => current,
+    expectedServer: SERVER, expectedVersion: VERSION, instanceId: "instance_session_rotate_1",
+    scheduler, now: () => scheduler.now, wallNow: () => NOW + scheduler.now,
+    minimumRequestIntervalMs: 1, pollIntervalMs: 1000, standbyRetryIntervalMs: 1,
+    descriptor: () => ({ tools: [], policy: {}, relayDiagnostics: {} }), ownedCallIds: () => [],
+    postRequest: async ({ headers }) => {
+      keys.push(headers["X-Bridge-Device-Key"]);
+      return response({ protocol: 1, phase: "standby", ack_daemon_seq: 0, messages: [] });
+    },
+  });
+  connection.start();
+  await runNext(scheduler);
+  current = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW + 1_000);
+  await runNext(scheduler);
+  assert.equal(keys.length, 2, "dynamic HTTP session fixture did not issue two authenticated polls");
+  assert.notEqual(keys[0], keys[1],
+    "HTTPS fallback retained the startup device-session identity after the shared provider rotated");
+  connection.stop();
+}
+
 function testTransportSequences() {
   const outbound = new RelayOutboundSequence();
   outbound.enqueue({ type: "tool_result", id: "call_12345678", ok: true });
@@ -570,6 +596,25 @@ async function testPrimaryFallbackHandover() {
   relay.stop();
 }
 
+function testAuthenticationRefreshInterruptsBothTransports() {
+  FakeWebSocketRelay.instances.length = 0;
+  FakeHttpRelay.instances.length = 0;
+  const relay = new ResilientRelayConnection({
+    scheduler: new ManualScheduler(), WebSocketRelayClass: FakeWebSocketRelay, HttpRelayClass: FakeHttpRelay,
+    websocket: {}, http: {},
+  });
+  const ws = FakeWebSocketRelay.instances[0];
+  const http = FakeHttpRelay.instances[0];
+  const categories = [];
+  ws.interrupt = (category) => { categories.push(["websocket", category]); return true; };
+  http.interrupt = (category) => { categories.push(["https", category]); return true; };
+  assert.equal(relay.refreshAuthentication(), true,
+    "session rotation did not request transport authentication refresh");
+  assert.deepEqual(categories, [
+    ["websocket", "relay_session_rotated"], ["https", "relay_session_rotated"],
+  ], "session rotation refreshed only one relay transport or used an unstable close category");
+}
+
 function toolCallEnvelope() {
   return {
     type: "tool_call", id: "call_abcdefgh", tool: "list_dir", arguments: {}, timeout_ms: 20000,
@@ -689,6 +734,7 @@ class FakeHttpRelay extends FakeRelayBase {
 }
 
 await testSignedHttpRelayAuthentication();
+await testDynamicHttpDeviceSessionProvider();
 testTransportSequences();
 await testDedicatedHttpFallbackProxy();
 await testHttpFallbackFailureClassification();
@@ -697,5 +743,6 @@ await testSessionResetDoesNotCommitPriorInboundSequence();
 await testTakeoverPreemptsStandbyRequest();
 await testStandbyAndFailureBackoff();
 await testTakeoverTimeoutFitsNewCallRecoveryWindow();
+testAuthenticationRefreshInterruptsBothTransports();
 await testPrimaryFallbackHandover();
 console.log("relay HTTP fallback reliability test ok");

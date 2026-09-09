@@ -23,7 +23,7 @@ import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { stopOwnedPlatformService } from "./service-ownership.mjs";
 import { loadServiceEnvironment } from "./service-environment.mjs";
-import { createDeviceSessionForRoot, deviceRootProviderStatus, ensurePreferredDeviceRoot } from "./device-root-provider.mjs";
+import { createDeviceSessionForRoot, createUnattendedDeviceSessionFactory, deviceRootProviderStatus, ensurePreferredDeviceRoot } from "./device-root-provider.mjs";
 import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "./doctor-reporting.mjs";
@@ -309,7 +309,8 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger, 
   try {
     const readiness = await prepareRemoteState({ args, workspace, state, logger,
       ensureWorkerDeployment: dependencies.ensureWorkerDeployment });
-    runtime = createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity: readiness.deviceSessionIdentity });
+    runtime = createRemoteRuntime({ args, workspace, state, daemonLock,
+      deviceSessionIdentity: readiness.deviceSessionIdentity, renewDeviceSession: readiness.renewDeviceSession });
     await runtime.start();
     if (typeof daemonLock.update !== "function") throw new Error("daemon lock cannot publish startup readiness");
     daemonLock.update({ startupReady: true, startupReadyAt: new Date().toISOString() });
@@ -358,16 +359,15 @@ async function prepareRemoteState({ args, workspace, state, logger, onRemotePrep
     currentPackageVersion(),
     { profileDir: state.paths.profileDir, reason: "Authorize Machine Bridge startup" },
   );
+  const renewDeviceSession = createUnattendedDeviceSessionFactory(state.worker.deviceIdentity, state.worker.url, "machine-bridge-mcp", currentPackageVersion());
   const initialOwner = args.daemonOnly || provisionInitialOwner === false
     ? null
     : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
   if (!args.daemonOnly && !args.noAutostart) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
   }
-  return { initialOwner, deviceSessionIdentity };
+  return { initialOwner, deviceSessionIdentity, renewDeviceSession };
 }
-
-
 
 async function ensureInitialOwnerAccount(state, deviceSessionIdentity) {
   const client = await accountAdminClient(state, deviceSessionIdentity);
@@ -378,11 +378,11 @@ async function ensureInitialOwnerAccount(state, deviceSessionIdentity) {
   return { ...created.account, password };
 }
 
-function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity, exitOnTerminal = true }) {
+function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity, renewDeviceSession = null, exitOnTerminal = true }) {
   const terminalState = { error: null };
   const runtime = new LocalRuntime({
     workerUrl: state.worker.url,
-    deviceIdentity: deviceSessionIdentity,
+    deviceIdentity: deviceSessionIdentity, renewDeviceSession,
     expectedRelayVersion: currentPackageVersion(),
     workspace,
     policy: state.policy,

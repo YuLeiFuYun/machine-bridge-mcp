@@ -115,6 +115,12 @@ export class ResilientRelayConnection {
     return this.websocket.interrupt(category);
   }
 
+  refreshAuthentication() {
+    const websocketInterrupted = this.websocket.interrupt("relay_session_rotated");
+    const httpInterrupted = this.http.interrupt("relay_session_rotated");
+    return websocketInterrupted || httpInterrupted;
+  }
+
   observeWelcome(message, relayContext = {}) {
     if (relayContext?.transport === "https") return false;
     return this.websocket.observeWelcome(message);

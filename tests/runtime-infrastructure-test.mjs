@@ -37,6 +37,10 @@ import { createSecurityAuditFailureReporter } from "../src/local/security-audit-
 import { resourceAdmissionLogFields } from "../src/local/resource-admission-diagnostics.mjs";
 import { LifecycleController } from "../src/local/lifecycle.mjs";
 import { DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS, RemoteActivityIdleSleepGuard } from "../src/local/remote-activity-idle-sleep-guard.mjs";
+import { createDeviceIdentity, createDeviceSessionIdentity } from "../src/local/device-identity.mjs";
+import { createUnattendedDeviceSessionFactory } from "../src/local/device-root-provider.mjs";
+import { runtimeRelayConnectionOptions } from "../src/local/runtime-relay-connection-options.mjs";
+import { DEVICE_SESSION_RENEW_BEFORE_MS, RuntimeDeviceSession } from "../src/local/runtime-device-session.mjs";
 
 const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 
@@ -60,6 +64,7 @@ testRelayHandshakeDiagnostics();
 testRuntimeConvenienceMethods();
 await testRuntimeStartStopRace();
 testRemoteActivityIdleSleepGuard();
+testRuntimeDeviceSessionRotation();
 testRelayRecoveryCapacity();
 testRelayReconnectDelivery();
 await testRelayShutdownDrain();
@@ -84,6 +89,99 @@ testErrors();
 testWorkspaceShellSelection();
 testBoundedOutput();
 console.log("runtime infrastructure test ok");
+
+function testRuntimeDeviceSessionRotation() {
+  const origin = "https://relay.example.invalid";
+  const server = "machine-bridge-mcp";
+  const version = "test";
+  const root = createDeviceIdentity();
+  let now = Date.now();
+  const initial = createDeviceSessionIdentity(root, origin, server, version, now);
+  const renew = createUnattendedDeviceSessionFactory(root, origin, server, version);
+  assert(typeof renew === "function", "portable device root did not expose unattended session renewal");
+  const secureRoot = {
+    provider: "macos-secure-enclave-v1", brokerProtocol: 1, brokerPath: "/tmp/machine-bridge-test-broker",
+    brokerIdentifier: "com.example.machinebridge", brokerTeamIdentifier: "ABCDEFGHIJ",
+    keyTag: "com.machine-bridge-mcp.device.runtime-session-test", publicJwk: root.publicJwk,
+    keyId: root.keyId, createdAt: root.createdAt,
+  };
+  assert(createUnattendedDeviceSessionFactory(secureRoot, origin, server, version) === null,
+    "Secure Enclave root incorrectly exposed unattended session renewal");
+
+  const timers = [];
+  const scheduler = {
+    setTimeout(callback, delay) {
+      const timer = { callback, delay, cleared: false, unref() { this.unrefCalled = true; } };
+      timers.push(timer); return timer;
+    },
+    clearTimeout(timer) { timer.cleared = true; },
+  };
+  let rotations = 0;
+  const session = new RuntimeDeviceSession({
+    identity: initial, renew, scheduler, wallNow: () => now,
+    onRotated() { rotations += 1; }, logger: { event() {} },
+  });
+  session.start();
+  const firstDue = initial.certificate.expires_at * 1000 - DEVICE_SESSION_RENEW_BEFORE_MS;
+  assert(timers.length === 1 && timers[0].delay === firstDue - now && timers[0].unrefCalled === true,
+    "runtime device session did not schedule one unreferenced renewal ten minutes before expiry");
+  const firstKey = session.current().keyId;
+  now = firstDue;
+  timers[0].callback();
+  assert(session.current().keyId !== firstKey && rotations === 1 && session.snapshot().session_generation === 2
+    && session.snapshot().automatic_renewal === true && session.snapshot().last_rotated_at !== null,
+  "scheduled runtime device-session renewal did not rotate identity and request one authentication refresh");
+
+  let emergencyNow = Date.now();
+  const emergencyInitial = createDeviceSessionIdentity(root, origin, server, version, emergencyNow);
+  let emergencyRefreshes = 0;
+  const emergency = new RuntimeDeviceSession({
+    identity: emergencyInitial, renew, scheduler: { setTimeout() { return { unref() {} }; }, clearTimeout() {} },
+    wallNow: () => emergencyNow, onRotated() { emergencyRefreshes += 1; }, logger: { event() {} },
+  });
+  emergency.start();
+  const emergencyKey = emergency.current().keyId;
+  emergencyNow = emergencyInitial.certificate.expires_at * 1000 + 1;
+  assert(emergency.current().keyId !== emergencyKey && emergencyRefreshes === 0,
+    "authentication-boundary renewal after a delayed timer failed or recursively interrupted its own reconnect");
+  emergency.stop();
+
+  const failureTimers = [];
+  let failureNow = Date.now();
+  const failureInitial = createDeviceSessionIdentity(root, origin, server, version, failureNow);
+  const failed = new RuntimeDeviceSession({
+    identity: failureInitial, renew() { throw new Error("synthetic renewal failure"); }, wallNow: () => failureNow,
+    scheduler: {
+      setTimeout(callback, delay) { const timer = { callback, delay, cleared: false, unref() {} }; failureTimers.push(timer); return timer; },
+      clearTimeout(timer) { timer.cleared = true; },
+    }, logger: { event() {} },
+  });
+  failed.start();
+  const retainedKey = failed.current().keyId;
+  failureNow = failureInitial.certificate.expires_at * 1000 - DEVICE_SESSION_RENEW_BEFORE_MS;
+  failureTimers[0].callback();
+  assert(failed.current().keyId === retainedKey && failed.snapshot().renewal_failure_count === 1
+    && failureTimers.length === 2 && failureTimers[1].delay === 1_000,
+  "failed runtime session renewal discarded the current identity or skipped bounded retry");
+  failed.stop();
+  assert(failureTimers[1].cleared === true, "runtime shutdown did not cancel pending device-session renewal retry");
+
+  let currentIdentity = createDeviceSessionIdentity(root, origin, server, version, Date.now());
+  const fakeRuntime = {
+    logger: {}, relayInstanceId: "daemon_runtime_session_test", policy: {}, tools: () => [], relayOwnedCallIds: () => [],
+    relay: { status: () => ({}) }, stop: async () => {}, onSuperseded() {},
+  };
+  const relayOptions = runtimeRelayConnectionOptions(fakeRuntime, {
+    workerUrl: origin, sessionIdentity: () => currentIdentity, expectedVersion: version, onFatal() {}, onMessage() {},
+  });
+  const firstHeaders = relayOptions.websocket.connectionHeaders();
+  const nextIdentity = createDeviceSessionIdentity(root, origin, server, version, Date.now() + 1_000);
+  currentIdentity = nextIdentity;
+  const secondHeaders = relayOptions.websocket.connectionHeaders();
+  assert(firstHeaders["X-Bridge-Device-Key"] !== secondHeaders["X-Bridge-Device-Key"]
+    && relayOptions.http.deviceIdentityProvider().keyId === nextIdentity.keyId,
+  "WebSocket and HTTPS fallback did not share the current runtime device-session provider");
+}
 
 function testRemoteActivityIdleSleepGuard() {
   assert(DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS === 30 * 60_000,

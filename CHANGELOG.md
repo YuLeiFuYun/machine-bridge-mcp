@@ -1,12 +1,12 @@
 # Changelog
 
-## 3.0.0-beta.170 - 2026-09-08
+## 3.0.0-beta.171 - 2026-09-09
 
-- Preserve the existing macOS `activity` policy as the default: authorized remote activity keeps `/usr/bin/caffeinate -i -s -w <owner-pid>` through execution and the fixed thirty-minute inactivity grace, so an ordinary upgrade does not silently change laptop battery behavior.
-- Add persistent `ac-continuous` and `continuous` daemon policies, configurable with `machine-mcp idle-sleep show|set MODE`. `ac-continuous` holds a daemon-lifetime `-s` assertion and layers the normal `-i -s` activity assertion while work is active; `continuous` holds `-i -s` for the daemon lifetime and does not arm inactivity grace.
-- Make every macOS idle-sleep assertion self-healing. Unexpected `caffeinate` exit/start failure retains desired-state ownership and retries with bounded 1/5/30-second backoff; explicit release or runtime shutdown cancels pending recovery so an intentional stop cannot respawn the child.
-- Extend owner diagnostics with the configured mode, assertion generation, restart count, recovery-pending state, and bounded current/last unprotected duration. These fields remain content-free and do not claim to prevent explicit sleep, lid-close sleep, power loss, or operating-system behavior outside `caffeinate` contracts.
-- Advance package, Worker, and browser-extension identity to `3.0.0-beta.170`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
+- Keep root-certified daemon session certificates capped at 24 hours while removing the avoidable daemon-stop boundary for the default portable JWK root: the runtime derives a fresh ephemeral session ten minutes before expiry and reconnects the same daemon instance through existing relay reconciliation.
+- Make WebSocket preflight/challenge authentication and signed HTTPS fallback polls read one shared current-session provider, so a rollover cannot leave the preferred and fallback transports on different certificate generations.
+- Cover delayed timers after system suspension: when an authentication boundary is reached at or after the renewal point, a portable root synchronously renews before signing. Renewal failure retains the previous session, uses bounded 1/5/30/300-second retry, and the existing `relay_device_session_expired` fatal path remains fail closed if no valid renewal is available.
+- Do not grant unattended signing to Secure Enclave roots. They retain their user-presence semantics and supervised-restart fallback. Owner runtime info exposes only coarse renewal generation/expiry/due/failure state, never key or certificate material.
+- Advance package, Worker, and browser-extension identity to `3.0.0-beta.171`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
 
 ## Historical releases
 

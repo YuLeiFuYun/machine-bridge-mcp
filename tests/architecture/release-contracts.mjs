@@ -690,6 +690,11 @@ const managedJobTransientRecoverySource = readFileSync(join(root, "src", "local"
 const managedJobTransientRecoveryCapacitySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery-capacity.mjs"), "utf8");
 const managedJobModuleBoundariesSource = readFileSync(join(root, "tests", "architecture", "module-boundaries.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
+const runtimeDeviceSessionSource = readFileSync(join(root, "src", "local", "runtime-device-session.mjs"), "utf8");
+const runtimeRelayConnectionOptionsSource = readFileSync(join(root, "src", "local", "runtime-relay-connection-options.mjs"), "utf8");
+const daemonHttpRelayConnectionSource = readFileSync(join(root, "src", "local", "daemon-http-relay-connection.mjs"), "utf8");
+const deviceRootProviderSource = readFileSync(join(root, "src", "local", "device-root-provider.mjs"), "utf8");
+const resilientRelayConnectionSource = readFileSync(join(root, "src", "local", "resilient-relay-connection.mjs"), "utf8");
 const runtimeRelayControlSource = readFileSync(join(root, "src", "local", "runtime-relay-control.mjs"), "utf8");
 const runtimeRelayAcknowledgementsSource = readFileSync(join(root, "src", "local", "runtime-relay-acknowledgements.mjs"), "utf8");
 const runtimeRelayShutdownDrainSource = readFileSync(join(root, "src", "local", "runtime-relay-shutdown-drain.mjs"), "utf8");
@@ -801,6 +806,21 @@ if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
     || !runtimeSource.includes('this.remoteActivityIdleSleepGuard.stop();')
     || !runtimeDiagnosticStateSource.includes('idle_sleep_guard: state.idleSleepGuard ?? null')) {
   throw new Error("runtime remote-activity idle-sleep guard lost its bounded fixed-command lifecycle or diagnostic projection");
+}
+if (!runtimeDeviceSessionSource.includes("DEVICE_SESSION_RENEW_BEFORE_MS = 10 * 60_000")
+    || !runtimeDeviceSessionSource.includes("DEVICE_SESSION_RETRY_MS = Object.freeze([1_000, 5_000, 30_000, 5 * 60_000])")
+    || !runtimeDeviceSessionSource.includes('this.rotate("authentication_boundary", false)')
+    || !runtimeDeviceSessionSource.includes('this.onRotated({ generation: this.generation, reason })')
+    || !deviceRootProviderSource.includes("if (isMacosSecureDeviceRoot(identity)) return null;")
+    || !runtimeRelayConnectionOptionsSource.includes('const currentSessionIdentity = typeof sessionIdentity === "function"')
+    || !runtimeRelayConnectionOptionsSource.includes("deviceIdentityProvider: currentSessionIdentity")
+    || !daemonHttpRelayConnectionSource.includes("this.deviceIdentityProvider()")
+    || !resilientRelayConnectionSource.includes("refreshAuthentication()")
+    || !resilientRelayConnectionSource.includes('this.websocket.interrupt("relay_session_rotated")')
+    || !resilientRelayConnectionSource.includes('this.http.interrupt("relay_session_rotated")')
+    || !runtimeSource.includes("this.deviceSession?.start();")
+    || runtimeSource.lastIndexOf("this.deviceSession?.stop();") > runtimeSource.indexOf("await this.relayShutdownDrain?.begin")) {
+  throw new Error("runtime device-session rollover lost its portable-root renewal, shared transport identity, shutdown, or fail-closed documentation contract");
 }
 const processSessionAdmissionIndex = processSessionsSource.indexOf("const admitted = await acquireProcessResources");
 const processSessionActivityIndex = processSessionsSource.indexOf("beginRemoteProcessSessionActivity(context, this.remoteActivityGuard)");
@@ -2167,6 +2187,8 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold the same `-i -s -w <runner-pid>` primitive"],
   ["docs/OPERATIONS.md", operationsDoc, "`machine-mcp idle-sleep set continuous`"],
   ["docs/OPERATIONS.md", operationsDoc, "fixed 1/5/30-second recovery"],
+  ["docs/OPERATIONS.md", operationsDoc, "derives a fresh root-certified ephemeral session ten minutes before expiry"],
+  ["docs/OPERATIONS.md", operationsDoc, "Secure Enclave root does not receive unattended renewal"],
   ["docs/LOGGING.md", loggingDoc, "opens one fifteen-second application-confirmation window"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.not_received_after_reconnect` retains the same aggregate-only `calls` shape"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.redelivered_after_proven_non_delivery` with only an aggregate `calls` count"],

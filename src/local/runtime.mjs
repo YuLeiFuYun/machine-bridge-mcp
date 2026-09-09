@@ -49,6 +49,7 @@ import { assertContainedPath, createRuntimeDir, redactRuntimeErrorMessage } from
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { ResourceCoordinator } from "./resource-admission.mjs";
 import { RemoteActivityIdleSleepGuard } from "./remote-activity-idle-sleep-guard.mjs";
+import { RuntimeDeviceSession } from "./runtime-device-session.mjs";
 import { runRuntimeDirectProcess, runRuntimeExecCommand, runRuntimeLocalCommand } from "./runtime-process-routing.mjs";
 import { resolveTaskCapabilities as resolveRuntimeTaskCapabilities, sessionBootstrap as buildRuntimeSessionBootstrap } from "./runtime-capabilities.mjs";
 
@@ -59,7 +60,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null, idleSleepMode = "activity" }) {
+  constructor({ workerUrl = "", deviceIdentity = null, renewDeviceSession = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null, idleSleepMode = "activity" }) {
     const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
@@ -226,9 +227,9 @@ export class LocalRuntime {
       safeMessage: (error, args, context) => this.safeErrorMessage(error, args, context),
       slowMs: SLOW_TOOL_CALL_MS,
     });
-    this.relay = createRuntimeRelayConnection(this, {
-      workerUrl: remoteWorkerUrl, deviceIdentity, expectedVersion: expectedRelayVersion, onFatal,
-    });
+    this.deviceSession = createRuntimeDeviceSession(this, deviceIdentity, renewDeviceSession);
+    this.relay = createRuntimeRelayConnection(this, { workerUrl: remoteWorkerUrl,
+      deviceIdentity: this.deviceSession ? () => this.deviceSession.current() : deviceIdentity, expectedVersion: expectedRelayVersion, onFatal });
     this.relayCallRecovery = new RelayCallRecovery({
       logger: this.logger,
       send: (value) => this.send(value),
@@ -273,7 +274,10 @@ export class LocalRuntime {
       ...info,
       trust: {
         ...info.trust,
-        daemon_session: { ephemeral: true, certificate_lifetime_seconds: 86400, reconnect_prompts: false },
+        daemon_session: {
+          ephemeral: true, certificate_lifetime_seconds: 86400, reconnect_prompts: false,
+          ...(this.deviceSession?.snapshot?.() || {}),
+        },
         delegated_process_isolation: delegatedProcessIsolationStatus(),
         routine_operation_prompts: false,
       },
@@ -284,6 +288,7 @@ export class LocalRuntime {
     if (!this.relay) throw new Error("remote daemon start requires a Worker URL and device identity");
     if (!this.lifecycle.beginStart()) return;
     this.remoteActivityIdleSleepGuard.start();
+    this.deviceSession?.start();
     this.relayShutdownDrain = new RuntimeRelayShutdownDrain({ send: (value) => this.send(value), ready: () => this.relay?.status?.().ready === true, logger: this.logger });
     if (this.policy.profile === "full") {
       void this.browserBridgeManager.ensureStarted().catch((error) => {
@@ -297,6 +302,7 @@ export class LocalRuntime {
       this.lifecycle.markRunning();
     } catch (error) {
       if (this.lifecycle.snapshot().state !== "starting") return;
+      this.deviceSession?.stop();
       this.remoteActivityIdleSleepGuard.stop();
       this.lifecycle.markFailed(error);
       throw error;
@@ -306,6 +312,7 @@ export class LocalRuntime {
   async stop() {
     if (!this.lifecycle.beginStop()) return;
     try {
+      this.deviceSession?.stop();
       await this.relayShutdownDrain?.begin(this.activeRelayCalls.size);
       this.relay?.stop();
       this.relayShutdownDrain?.stop();
@@ -673,4 +680,10 @@ export class LocalRuntime {
   throwIfCancelled(context = {}) {
     this.callRegistry.throwIfCancelled(context);
   }
+}
+
+function createRuntimeDeviceSession(runtime, identity, renew) {
+  if (!identity?.certificate) return null;
+  return new RuntimeDeviceSession({ identity, renew, logger: runtime.logger,
+    onRotated: () => runtime.relay?.refreshAuthentication?.() });
 }

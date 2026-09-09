@@ -17,6 +17,8 @@ export class DaemonHttpRelayConnection {
     this.workerUrl = String(options.workerUrl || "").replace(/\/$/, "");
     this.endpoint = `${this.workerUrl}/daemon/http`;
     this.deviceIdentity = options.deviceIdentity;
+    this.deviceIdentityProvider = typeof options.deviceIdentityProvider === "function"
+      ? options.deviceIdentityProvider : () => this.deviceIdentity;
     this.expectedServer = String(options.expectedServer || "");
     this.expectedVersion = String(options.expectedVersion || "");
     this.instanceId = String(options.instanceId || "");
@@ -196,7 +198,7 @@ export class DaemonHttpRelayConnection {
     this.inFlight = controller;
     try {
       const headers = createDaemonHttpRelayHeaders(
-        this.deviceIdentity, this.workerUrl, this.expectedServer, this.expectedVersion, body, this.wallNow(),
+        this.deviceIdentityProvider(), this.workerUrl, this.expectedServer, this.expectedVersion, body, this.wallNow(),
       );
       const response = await this.postRequest({
         url: this.endpoint, headers, body,

@@ -55,6 +55,12 @@ export async function createDeviceSessionForRoot(identity, workerOrigin, server,
   return finalizeDeviceSessionIdentity(draft, signature, now);
 }
 
+export function createUnattendedDeviceSessionFactory(identity, workerOrigin, server, version) {
+  if (isMacosSecureDeviceRoot(identity)) return null;
+  const root = validateDeviceIdentity(identity);
+  return (now = Date.now()) => createDeviceSessionIdentity(root, workerOrigin, server, version, now);
+}
+
 export function deviceRootProviderStatus(identity, { env = process.env } = {}) {
   if (isMacosSecureDeviceRoot(identity)) {
     return {
