@@ -1303,6 +1303,28 @@ try {
     && postDrainStatus.worker?.continuity_evidence?.last_planned_drain_at,
   "Worker durable continuity evidence did not survive the planned-drain reconnect boundary");
 
+  const lateResultRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const lateResultCall = toolCallRequest(base, ownerAccessToken, 8870, "session_bootstrap", { path: "." });
+  const lateResultRelay = await lateResultRelayPromise;
+  const lateResultSocket = candidateDaemon;
+  const lateResultSocketClosed = waitForWsClose(lateResultSocket);
+  lateResultSocket.terminate();
+  await lateResultSocketClosed;
+  await new Promise((resolve) => { setTimeout(resolve, 15_500); });
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const lateResultProbe = await beginDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  const lateResultResume = await completeDaemonProbe(candidateDaemon, lateResultProbe);
+  assert(lateResultResume.ids.includes(lateResultRelay.id),
+    "same-instance reconnect discarded the pending result owner at its original settlement deadline");
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result", id: lateResultRelay.id, ok: true,
+    result: { late_reconnect_result: true },
+  }));
+  const lateResultSettled = await lateResultCall;
+  assert(lateResultSettled.body.result?.structuredContent?.late_reconnect_result === true,
+    "terminal result arriving after the original settlement deadline did not settle the original MCP request");
+
   const fallbackRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const fallbackCall = toolCallRequest(base, ownerAccessToken, 8880, "list_dir", { path: "." });
   const fallbackRelay = await fallbackRelayPromise;
@@ -1547,6 +1569,35 @@ try {
     && missingOwnershipResult.body.result?.isError !== true
     && missingOwnershipResult.body.result?.structuredContent?.proven_non_delivery_redelivered === true,
   "daemon-proven non-delivery did not recover transparently through one safe same-id transport redelivery");
+
+  const expiredRedeliveryRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const expiredRedeliveryCall = toolCallRequest(base, ownerAccessToken, 88041, "session_bootstrap", { path: "." });
+  const expiredRedeliveryRelay = await expiredRedeliveryRelayPromise;
+  const expiredRedeliveryPreviousSocket = candidateDaemon;
+  const expiredRedeliveryPreviousClosed = waitForWsClose(expiredRedeliveryPreviousSocket);
+  expiredRedeliveryPreviousSocket.terminate();
+  await expiredRedeliveryPreviousClosed;
+  await new Promise((resolve) => { setTimeout(resolve, 10_500); });
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const expiredRedeliveryResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(expiredRedeliveryResume.ids.includes(expiredRedeliveryRelay.id),
+    "result-delivery grace did not retain the call owner after the original execution budget elapsed");
+  const expiredRedeliveryMessages = captureWsMessageTypes(candidateDaemon);
+  candidateDaemon.send(JSON.stringify({
+    type: "resume_calls_ack",
+    missing_ids: [expiredRedeliveryRelay.id],
+  }));
+  const expiredRedeliveryResult = await expiredRedeliveryCall;
+  const expiredRedeliveryError = expiredRedeliveryResult.body.result?.structuredContent?.error;
+  await new Promise((resolve) => { setTimeout(resolve, 25); });
+  assert(expiredRedeliveryResult.body.result?.isError === true
+    && expiredRedeliveryError?.code === "unavailable"
+    && expiredRedeliveryError?.retryable === true
+    && expiredRedeliveryError?.details?.side_effects_started === false
+    && expiredRedeliveryError?.details?.reason === "daemon_call_not_received_after_reconnect"
+    && !expiredRedeliveryMessages.stop().includes("tool_call"),
+  "extended result settlement incorrectly authorized a new daemon execution after the original execution deadline");
 
   const idlessMessages = captureWsMessageTypes(candidateDaemon);
   const idlessBody = currentMcpRequest(250, "tools/call", { name: "server_info", arguments: {} });

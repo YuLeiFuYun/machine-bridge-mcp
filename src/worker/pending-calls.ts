@@ -31,7 +31,6 @@ export class PendingCallRegistry {
     for (const record of due) expired += Number(await this.expireRecord(record));
     return expired;
   }
-
   register(input: RegisterPendingCall): Promise<unknown> {
     this.assertCanRegister(input);
     let resolveResult!: (value: unknown) => void;
@@ -46,11 +45,9 @@ export class PendingCallRegistry {
   reject(id: string, error: Error, socket?: DaemonChannel): Promise<boolean> {
     const record = this.byId.get(id); return !record || (socket && record.socket !== socket) ? Promise.resolve(false) : this.finish(id, { ok: false, error });
   }
-
   async cancelRequest(requestKey: string, onCancel: (record: PendingCallRecord) => Error): Promise<boolean> {
     const id = this.byRequestKey.get(requestKey); return id ? this.fail(id, onCancel, "pending daemon call was cancelled") : false;
   }
-
   async cancelAuthority(revocation: AuthorityRevocation, onCancel: (record: PendingCallRecord) => Error): Promise<number> {
     const ids = [...this.byId.values()].filter((record) => recordMatchesAuthorityRevocation(record, revocation)).map((record) => record.id);
     let cancelled = 0;
@@ -78,6 +75,7 @@ export class PendingCallRegistry {
       record.socket = undefined;
       record.onReconnectTimeout = createError;
       this.deadlines.pauseOperation(record);
+      this.extendSettlementForReconnect(record);
       const delay = Math.min(maximumGrace, record.remainingTimeoutMs);
       this.deadlines.armReconnect(record, delay, (id) => { void this.expireReconnect(id); });
     }
@@ -91,6 +89,7 @@ export class PendingCallRegistry {
       if (record.daemonInstanceId !== daemonInstanceId || record.socket === socket) continue;
       if (record.socket) this.deadlines.pauseOperation(record);
       else this.deadlines.clearReconnect(record);
+      this.extendSettlementForReconnect(record);
       const remainingTimeoutMs = Math.max(1, Math.ceil(record.deadlineAt - this.deadlines.now()));
       record.onReconnectTimeout = undefined;
       record.socket = socket;
@@ -124,7 +123,7 @@ export class PendingCallRegistry {
         owner_family_id: input.authority.familyId,
       } : {}),
       tool: String(input.tool || "unknown"), ...(input.recovery ? { recovery: input.recovery } : {}),
-      startedAt, deadlineAt: startedAt + timeoutMs, remainingTimeoutMs: timeoutMs,
+      startedAt, originalDeadlineAt: startedAt + timeoutMs, deadlineAt: startedAt + timeoutMs, remainingTimeoutMs: timeoutMs,
       onTimeout: input.onTimeout, redeliverAfterProvenMissing: input.redeliverAfterProvenMissing, settlement, signal: input.signal, abortHandler,
     };
     this.byId.set(input.id, record);
@@ -135,6 +134,12 @@ export class PendingCallRegistry {
   }
 
   private expireOperation(id: string): Promise<boolean> { return this.expireRecord(this.byId.get(id)); }
+  private extendSettlementForReconnect(record: PendingCallRecord): void {
+    const maximumDeadlineAt = record.startedAt + pendingCallTimeoutMaximumMs(record.tool);
+    const recoveryDeadlineAt = Math.min(maximumDeadlineAt, record.originalDeadlineAt + relayContract.reconnectResultDeliveryGraceMs);
+    if (recoveryDeadlineAt > record.deadlineAt) record.deadlineAt = recoveryDeadlineAt;
+    record.remainingTimeoutMs = Math.max(1, Math.ceil(record.deadlineAt - this.deadlines.now()));
+  }
   private expireReconnect(id: string): Promise<boolean> {
     const record = this.byId.get(id); return record && !record.socket ? this.expireRecord(record) : Promise.resolve(false);
   }

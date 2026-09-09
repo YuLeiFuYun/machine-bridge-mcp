@@ -502,13 +502,16 @@ async function testDetachedTimeoutPause() {
   });
   advance(40);
   assert(registry.detachSocket(socketA, 120, () => new Error("reconnect timeout")) === 1, "timeout-pause test did not detach its call");
-  assert(registry.nextDeadlineDelayMs() === 60, "detached reconnect grace extended the original operation deadline");
+  assert(registry.nextDeadlineDelayMs() === 120, "detached call did not receive its bounded result-delivery reconnect grace");
   advance(59);
-  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 1, "detached call expired before its original operation deadline");
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 1, "detached call expired before its reconnect delivery grace");
   assert(registry.rebindInstance("daemon_pause_12345678", socketB).length === 1, "detached timeout test did not rebind");
+  advance(15000);
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 0,
+    "rebound call expired before the one-time result-delivery grace elapsed");
   advance(1);
   await expectReject(pending, "operation timeout");
-  assert(registry.snapshot().active === 0, "rebound call extended beyond its original operation deadline");
+  assert(registry.snapshot().active === 0, "rebound call exceeded its bounded result-delivery grace");
 
   const detachedExpiry = registry.register({
     id: "detached-original-deadline", tool: "run_process", socket: socketA, daemonInstanceId: "daemon_detached_deadline_1",
@@ -516,9 +519,28 @@ async function testDetachedTimeoutPause() {
   });
   advance(40);
   assert(registry.detachSocket(socketA, 120, () => new Error("reconnect timeout")) === 1, "original-deadline detach did not find its call");
-  advance(60);
+  advance(119);
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 1,
+    "detached call ignored reconnect grace after extending result settlement");
+  advance(1);
   await expectReject(detachedExpiry, "reconnect timeout");
-  assert(registry.snapshot().active === 0, "detached reconnect grace outlived the original operation deadline");
+  assert(registry.snapshot().active === 0, "detached reconnect grace exceeded its own fixed ceiling");
+
+  const lateResult = registry.register({
+    id: "late-result-after-original-deadline", tool: "exec_command", socket: socketA,
+    daemonInstanceId: "daemon_late_result_12345678", timeoutMs: 1000,
+    onTimeout: () => new Error("late result operation timeout"),
+  });
+  advance(400);
+  assert(registry.detachSocket(socketA, 20_000, () => new Error("late result reconnect timeout")) === 1,
+    "late-result fixture did not detach its call");
+  advance(1100);
+  assert(registry.rebindInstance("daemon_late_result_12345678", socketB).includes("late-result-after-original-deadline"),
+    "result owner expired at the original settlement deadline before same-instance recovery");
+  assert(await registry.resolve("late-result-after-original-deadline", socketB, { delivered_after_reconnect: true }),
+    "late terminal result was rejected inside the bounded reconnect delivery grace");
+  assert((await lateResult).delivered_after_reconnect === true,
+    "late terminal result did not settle the original caller after reconnect");
 
   const socketC = {};
   const handover = registry.register({
@@ -528,11 +550,33 @@ async function testDetachedTimeoutPause() {
   advance(40);
   assert(registry.rebindInstance("daemon_handover_12345678", socketC)[0] === "live-handover", "verified same-instance handover did not transfer an attached call");
   assert(!(await registry.resolve("live-handover", socketA, { stale: true })), "old daemon socket retained ownership after handover");
-  advance(59);
-  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 0, "live handover reset or detached the operation timeout");
+  advance(1000);
+  assert(registry.rebindInstance("daemon_handover_12345678", socketB)[0] === "live-handover",
+    "second same-instance handover did not transfer the call");
+  assert(registry.nextDeadlineDelayMs() === 14_060,
+    "repeated same-instance handover changed the fixed result-delivery deadline");
+  advance(14_059);
+  assert(registry.snapshot().active === 1 && registry.snapshot().detached === 0,
+    "repeated handover shortened or cumulatively extended the fixed delivery grace");
   advance(1);
   await expectReject(handover, "handover operation timeout");
-  assert(registry.snapshot().active === 0, "live handover timeout leaked from the registry");
+  assert(registry.snapshot().active === 0, "live handover result-delivery grace leaked from the registry");
+
+  const capped = registry.register({
+    id: "maximum-settlement-cap", tool: "browser_action", socket: socketA,
+    daemonInstanceId: "daemon_maximum_cap_12345678", timeoutMs: relayContract.maximumOrdinaryRelayToolTimeoutMs,
+    onTimeout: () => new Error("maximum settlement timeout"),
+  });
+  advance(1);
+  assert(registry.detachSocket(socketA, relayContract.reconnectGraceMs, () => new Error("maximum reconnect timeout")) === 1,
+    "maximum-settlement fixture did not detach its call");
+  assert(registry.rebindInstance("daemon_maximum_cap_12345678", socketB).includes("maximum-settlement-cap"),
+    "maximum-settlement fixture did not rebind");
+  assert(registry.nextDeadlineDelayMs() === relayContract.maximumOrdinaryRelayToolTimeoutMs - 1,
+    "reconnect delivery grace exceeded the existing ordinary settlement maximum");
+  advance(relayContract.maximumOrdinaryRelayToolTimeoutMs - 1);
+  await expectReject(capped, "maximum settlement timeout");
+  assert(registry.snapshot().active === 0, "maximum settlement cap leaked from the registry");
 }
 
 async function testEventBoundaryDeadlineSweep() {
@@ -1322,6 +1366,9 @@ async function testRelayTimeoutContract() {
   assert(relayContract.reconnectGraceMs === 120_000, "relay reconnect grace drifted from the incident-tested budget");
   assert(relayContract.newCallReconnectGraceMs === 15_000,
     "new-call recovery no longer covers the bounded HTTPS fallback window before the original execution budget is reduced");
+  assert(relayContract.reconnectResultDeliveryGraceMs === 15_000
+    && relayContract.reconnectResultDeliveryGraceMs < relayContract.reconnectGraceMs,
+  "terminal-result reconnect delivery grace drifted from its bounded one-time recovery contract");
   assert(relayContract.httpFallbackMinimumRequestIntervalMs >= 750
     && Math.ceil(60_000 / relayContract.httpFallbackMinimumRequestIntervalMs) < 120,
   "HTTPS fallback can consume the full daemon route rate-limit budget without headroom");
@@ -1389,11 +1436,21 @@ async function testRelayTimeoutContract() {
     && exhaustedRecoveryError.retryable === true
     && exhaustedRecoveryError.details?.side_effects_started === false,
   "daemon recovery could dispatch after consuming the complete foreground execution window");
-  const originalDeadlineExpiry = daemonReconnectExpiry({ remainingTimeoutMs: 20_000 }, relayContract.reconnectGraceMs);
+  const originalDeadlineExpiry = daemonReconnectExpiry({
+    remainingTimeoutMs: 20_000, originalDeadlineAt: 25_000, deadlineAt: 25_000,
+  }, relayContract.reconnectGraceMs);
   assert(originalDeadlineExpiry.reason === "original_call_deadline_expired_during_reconnect"
     && originalDeadlineExpiry.message === "original call deadline expired during reconnect",
   "disconnect diagnostics mislabeled the original foreground deadline as the longer reconnect grace");
-  const reconnectGraceExpiry = daemonReconnectExpiry({ remainingTimeoutMs: relayContract.reconnectGraceMs }, relayContract.reconnectGraceMs);
+  const deliveryGraceExpiry = daemonReconnectExpiry({
+    remainingTimeoutMs: 40_000, originalDeadlineAt: 25_000, deadlineAt: 40_000,
+  }, relayContract.reconnectGraceMs);
+  assert(deliveryGraceExpiry.reason === "terminal_result_delivery_grace_expired"
+    && deliveryGraceExpiry.message === "terminal result delivery grace expired during reconnect",
+  "disconnect diagnostics did not distinguish bounded terminal-result delivery grace from the original execution envelope");
+  const reconnectGraceExpiry = daemonReconnectExpiry({
+    remainingTimeoutMs: relayContract.reconnectGraceMs, originalDeadlineAt: 25_000, deadlineAt: 40_000,
+  }, relayContract.reconnectGraceMs);
   assert(reconnectGraceExpiry.reason === "reconnect_grace_expired"
     && reconnectGraceExpiry.message === "reconnect grace expired",
   "disconnect diagnostics failed to report a full reconnect-grace expiry when it is the actual limiter");

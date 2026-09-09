@@ -13,8 +13,16 @@ export function daemonToolTimeoutBudgetAfterDelay(budget: DaemonToolTimeoutBudge
   return Object.freeze({ executionTimeoutMs: Math.floor(executionTimeoutMs), settlementTimeoutMs: Math.floor(settlementTimeoutMs) });
 }
 
-export function daemonReconnectExpiry(record: Pick<PendingCallRecord, "remainingTimeoutMs">, reconnectGraceMs: number) {
+export function daemonReconnectExpiry(
+  record: Pick<PendingCallRecord, "remainingTimeoutMs" | "originalDeadlineAt" | "deadlineAt">, reconnectGraceMs: number,
+) {
   const grace = Math.min(relayContract.reconnectGraceMs, Math.max(1, Math.floor(reconnectGraceMs)));
+  if (record.remainingTimeoutMs < grace && record.deadlineAt > record.originalDeadlineAt) {
+    return {
+      reason: "terminal_result_delivery_grace_expired",
+      message: "terminal result delivery grace expired during reconnect",
+    };
+  }
   return record.remainingTimeoutMs < grace
     ? { reason: "original_call_deadline_expired_during_reconnect", message: "original call deadline expired during reconnect" }
     : { reason: "reconnect_grace_expired", message: "reconnect grace expired" };

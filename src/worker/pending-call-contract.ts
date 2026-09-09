@@ -37,6 +37,7 @@ export interface PendingCallRecord {
   tool: string;
   recovery?: Record<string, unknown>;
   startedAt: number;
+  originalDeadlineAt: number;
   timeout?: ReturnType<typeof setTimeout>;
   deadlineAt: number;
   remainingTimeoutMs: number;
