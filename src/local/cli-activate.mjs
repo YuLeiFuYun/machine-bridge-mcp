@@ -3,6 +3,7 @@ import { effectiveLogFormat, effectiveLogLevel } from "./cli-options.mjs";
 import { createLogger } from "./log.mjs";
 import { activatePersistentRuntime } from "./runtime-activation.mjs";
 import { autostartStatus, installAutostart, startAutostart, stopAutostart } from "./service.mjs";
+import { preflightServiceRestartability } from "./service-restartability.mjs";
 import { startOwnedServiceRuntime } from "./service-runtime.mjs";
 import { acquireMachineServiceLockWithWait, acquireStartupLockWithWait, daemonLockPathForState, loadState, readDaemonLockOwner } from "./state.mjs";
 import { workerHealth } from "./worker-health.mjs";
@@ -65,6 +66,9 @@ export function createActivateCommand({
           previousRuntime: owner ? { version: owner.version, entryScript: owner.entryScript } : null,
         };
       },
+      preflightRestartability: () => preflightServiceRestartability({
+        workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], expectedVersion,
+      }),
       stopAutostart: () => stopAutostart({ logger: structuredLogger(true) }),
       acquireDaemonLock: () => acquireDaemonLockWithTakeover(state, {
         takeOverServiceOwner: true,

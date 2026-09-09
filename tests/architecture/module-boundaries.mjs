@@ -264,6 +264,7 @@ const lineLimits = Object.freeze({
   "src/local/managed-job-listing.mjs": 60,
   "src/local/managed-job-recovery-listing.mjs": 30,
   "src/local/process-session-read.mjs": 70,
+  "src/local/hosted-file-read-budget.mjs": 70,
   "src/local/process-session-remote-poll.mjs": 50,
   "src/local/resource-admission-diagnostic-error.mjs": 35,
   "src/local/process-sessions.mjs": 340,
@@ -506,6 +507,7 @@ const lineLimits = Object.freeze({
   "src/worker/worker-entry.ts": 80,
   "src/worker/tool-timeout.ts": 80,
   "src/worker/tool-catalog.ts": 80,
+  "src/worker/hosted-result-budget.ts": 50,
   "src/worker/daemon-liveness.ts": 80,
   "src/worker/daemon-sockets.ts": 140,
   "src/worker/daemon-channel.ts": 50,
@@ -917,7 +919,7 @@ for (const required of ["readRecoveryMarker(recoveryPath", "recoverySnapshot.ide
   if (!processLockStateSource.includes(required)) throw new Error(`state recovery marker lost identity-bound removal: ${required}`);
 }
 if (processLockStateSource.includes("unlinkSync(recoveryPath)")) throw new Error("state recovery marker regained path-only unlink");
-for (const required of ["readBoundedRegularFileWithInfoSync(lockPath", "verifyPathIdentity: true", "rejectMultipleLinks: true", "opened.identity", "opened.identityInfo", "process lock link count"]) {
+for (const required of ["retryProcessLockIdentityReadSync", "readBoundedRegularFileWithInfoSync(lockPath", "verifyPathIdentity: true", "rejectMultipleLinks: true", "opened.identity", "opened.identityInfo", "process lock link count"]) {
   if (!processLockStateSource.includes(required)) throw new Error(`process lock reader lost single-descriptor snapshot identity: ${required}`);
 }
 const projectMetadataSource = readFileSync(join(localRoot, "project-metadata.mjs"), "utf8");

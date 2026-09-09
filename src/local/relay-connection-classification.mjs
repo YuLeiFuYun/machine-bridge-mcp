@@ -48,10 +48,10 @@ export function relayFatalMessage(category) {
     return "remote relay protocol error; upgrade and redeploy both components, then restart the daemon";
   }
   if (category === "relay_proxy_configuration") {
-    return "remote relay proxy configuration is invalid; check MBM_RELAY_PROXY, HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
+    return "remote relay proxy configuration is invalid; check MBM_RELAY_PROXY, MBM_RELAY_FALLBACK_PROXY, HTTP_PROXY, HTTPS_PROXY, and NO_PROXY";
   }
   if (category === "relay_device_session_expired") {
-    return "daemon device session expired; restart the daemon to obtain a fresh root-signed session certificate";
+    return "daemon device session expired and could not be renewed; restart the daemon to obtain a fresh root-signed session certificate";
   }
   return "remote relay rejected the daemon connection; verify credentials or redeploy the Worker";
 }
@@ -75,6 +75,7 @@ export function relayCloseUserCause(category) {
     relay_protocol_error: "relay protocol error",
     relay_proxy_configuration: "relay proxy configuration invalid",
     relay_device_session_expired: "daemon device session certificate expired",
+    relay_session_rotated: "daemon device session certificate rotated",
     invalid_transport_payload: "invalid transport payload",
     message_too_large: "message exceeded the relay limit",
     normal_close: "connection closed",

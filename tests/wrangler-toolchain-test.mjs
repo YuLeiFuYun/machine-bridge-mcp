@@ -216,7 +216,7 @@ function createFakeNpmRunner(options = {}) {
   const versions = {
     wrangler: options.wrangler || "4.127.1",
     undici: options.undici || "7.29.0",
-    sharp: options.sharp || "0.35.3",
+    sharp: options.sharp || "0.35.4",
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },

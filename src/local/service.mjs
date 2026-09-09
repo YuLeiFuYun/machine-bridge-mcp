@@ -20,6 +20,7 @@ import {
   stopWindowsTask,
   uninstallWindowsTask,
 } from "./windows-service.mjs";
+import { windowsLauncherContent, windowsLauncherPath, windowsTaskAction } from "./windows-launcher.mjs";
 export { windowsCommandLineArgument } from "./windows-service.mjs";
 
 const LABEL = "dev.machine-bridge-mcp.daemon";
@@ -43,7 +44,8 @@ export function runServiceCommand(command, args, execute = runExecutable) {
 export async function installAutostart({ workspace, stateRoot, entryScript, version, logger = console,
   installProvider = defaultInstallProvider, beginOwnerUpdate = beginServiceOwnerUpdate,
   writeEnvironment = writeServiceEnvironment, deferOwnerCommit = false } = {}) {
-  const spec = serviceSpec({ workspace, stateRoot, entryScript });
+  const spec = buildServiceSpec({ workspace, stateRoot, entryScript });
+  prepareServiceSpecFilesystem(spec);
   const ownerUpdate = beginOwnerUpdate({ ...spec, version });
   let serviceEnvironment;
   try { serviceEnvironment = writeEnvironment(spec.stateRoot); }
@@ -209,24 +211,34 @@ function lineSafeTail(buffer) {
   return Buffer.from(text, "utf8");
 }
 
-function serviceSpec({ workspace, stateRoot, entryScript }) {
+export function buildServiceSpec({ workspace, stateRoot, entryScript, platform = process.platform,
+  execPath = process.execPath, environment = process.env } = {}) {
   const root = expandHome(stateRoot);
   const logs = path.join(root, "logs");
   const resolvedEntryScript = path.resolve(entryScript);
-  const node = stableNodeExecutable();
-  ensureOwnerOnlyDir(root);
-  ensureOwnerOnlyDir(logs);
-  for (const file of [path.join(logs, "daemon.out.log"), path.join(logs, "daemon.err.log")]) ensurePrivateLogFile(file);
-  const spec = {
-    workspace,
-    stateRoot: root,
-    entryScript: resolvedEntryScript,
-    node,
-    pathEnv: serviceEnvironmentPath({ node, entryScript: resolvedEntryScript }),
-    stdout: path.join(logs, "daemon.out.log"),
-    stderr: path.join(logs, "daemon.err.log"),
-  };
-  return { ...spec, daemonArgs: daemonArgs(spec) };
+  const pathEnv = String(environment?.PATH ?? "");
+  const node = stableNodeExecutable({ platform, execPath, pathEnv });
+  const spec = { workspace, stateRoot: root, entryScript: resolvedEntryScript, node,
+    pathEnv: serviceEnvironmentPath({ platform, node, entryScript: resolvedEntryScript, pathEnv }),
+    stdout: path.join(logs, "daemon.out.log"), stderr: path.join(logs, "daemon.err.log") };
+  return Object.freeze({ ...spec, daemonArgs: Object.freeze(daemonArgs(spec)) });
+}
+export function prepareServiceSpecFilesystem(spec) {
+  ensureOwnerOnlyDir(spec.stateRoot); ensureOwnerOnlyDir(path.dirname(spec.stdout));
+  for (const file of [spec.stdout, spec.stderr]) ensurePrivateLogFile(file);
+  return spec;
+}
+export function previewAutostartDefinition(spec, options = {}) {
+  const platform = String(options.platform || process.platform);
+  if (platform === "darwin") return Object.freeze({ provider: "launchd", content: launchdPlist({
+    args: [spec.node, ...spec.daemonArgs], pathEnv: spec.pathEnv, stdout: spec.stdout, stderr: spec.stderr,
+  }) });
+  if (platform === "win32") {
+    const launcher = windowsLauncherPath(spec.stateRoot);
+    return Object.freeze({ provider: "schtasks", launcher, action: windowsTaskAction(launcher),
+      content: windowsLauncherContent(spec) });
+  }
+  return Object.freeze({ provider: "systemd", content: systemdUnit(spec) });
 }
 
 export function stableNodeExecutable(options = {}) {
@@ -359,8 +371,8 @@ function launchdDomainTarget(uid = process.getuid?.()) {
 async function installLaunchd(spec, logger) {
   const plistPath = launchdPlistPath();
   mkdirSync(path.dirname(plistPath), { recursive: true });
-  const args = [spec.node, ...daemonArgs(spec)];
-  writePrivateServiceFile(plistPath, launchdPlist({ args, pathEnv: spec.pathEnv, stdout: spec.stdout, stderr: spec.stderr }));
+  const definition = previewAutostartDefinition(spec, { platform: "darwin" });
+  writePrivateServiceFile(plistPath, definition.content);
   logger.info?.("Autostart installed for next login.");
   return { ok: true, provider: "launchd", path: plistPath };
 }
@@ -552,7 +564,8 @@ function systemdPath() {
 async function installSystemd(spec, logger) {
   const servicePath = systemdPath();
   mkdirSync(path.dirname(servicePath), { recursive: true });
-  writePrivateServiceFile(servicePath, systemdUnit(spec));
+  const definition = previewAutostartDefinition(spec, { platform: "linux" });
+  writePrivateServiceFile(servicePath, definition.content);
   const reload = await serviceRun("systemctl", ["--user", "daemon-reload"]);
   const enable = await serviceRun("systemctl", ["--user", "enable", "machine-bridge-mcp.service"]);
   const linger = await serviceRun("loginctl", ["enable-linger", os.userInfo().username]);

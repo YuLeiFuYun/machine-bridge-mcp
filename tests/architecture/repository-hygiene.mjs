@@ -137,16 +137,17 @@ function validateCurrentMcpDeliveryDocumentation() {
 }
 
 function validateCurrentMaintenanceDocumentation() {
+  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
   const headings = [...changelog.matchAll(/^## /gm)];
-  if (headings.length !== 2 || !changelog.includes("## 3.0.0-beta.167 - 2026-09-08") || !changelog.includes("## Historical releases")) {
-    throw new Error("CHANGELOG.md must contain only the active release section plus the historical-release pointer");
+  const activeReleaseHeading = `## ${packageJson.version} - `;
+  if (headings.length !== 2 || !changelog.includes(activeReleaseHeading) || !changelog.includes("## Historical releases")) {
+    throw new Error("CHANGELOG.md must contain only the package-version active release section plus the historical-release pointer");
   }
   const audit = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");
   if (Buffer.byteLength(audit, "utf8") > 32 * 1024 || !audit.includes("# Current audit status") || !audit.includes("Historical findings")) {
     throw new Error("docs/AUDIT.md must remain a compact current audit summary with a history pointer");
   }
-  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   if ((packageJson.files || []).includes("docs") || (packageJson.files || []).includes("scripts")) {
     throw new Error("package manifest regained broad docs/scripts publication");
   }

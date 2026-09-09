@@ -36,7 +36,8 @@ assert(versionFlag.status === 0 && versionFlag.stdout.trim() === `${pkg.name} ${
 
 const help = run(["help"]);
 assert(help.status === 0, `help command failed: ${help.stderr}`);
-assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format") && help.stdout.includes("activate          Deploy/update Worker"), "help output omitted current CLI options");
+assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format") && help.stdout.includes("activate          Deploy/update Worker")
+  && help.stdout.includes("idle-sleep show|set MODE"), "help output omitted current CLI options");
 assert(help.stdout.includes("newly generated account passwords are included once"), "help output incorrectly claims JSON can never contain a generated password");
 
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-state-"));
@@ -68,6 +69,22 @@ try {
     remembered.status === 0 && normalizePathText(remembered.stdout.trim()) === normalizePathText(persistedWorkspace),
     "workspace show did not return the persisted selection",
   );
+
+  const initialIdleSleep = run(["idle-sleep", "show", "--state-dir", stateRoot]);
+  assert(initialIdleSleep.status === 0 && initialIdleSleep.stdout.trim() === "activity",
+    `idle-sleep show did not preserve the default activity mode: ${initialIdleSleep.stderr}`);
+  const continuousIdleSleep = run(["idle-sleep", "set", "continuous", "--state-dir", stateRoot]);
+  assert(continuousIdleSleep.status === 0 && continuousIdleSleep.stdout.includes("continuous"),
+    `idle-sleep set continuous failed: ${continuousIdleSleep.stderr}`);
+  const persistedIdleSleep = run(["idle-sleep", "show", "--state-dir", stateRoot]);
+  assert(persistedIdleSleep.status === 0 && persistedIdleSleep.stdout.trim() === "continuous",
+    "idle-sleep mode was not persisted across CLI processes");
+  const invalidIdleSleep = run(["idle-sleep", "set", "forever-awake", "--state-dir", stateRoot]);
+  assert(invalidIdleSleep.status !== 0 && invalidIdleSleep.stderr.includes("idle-sleep mode must be one of"),
+    "idle-sleep CLI accepted an unknown power policy");
+  const afterInvalidIdleSleep = run(["idle-sleep", "show", "--state-dir", stateRoot]);
+  assert(afterInvalidIdleSleep.status === 0 && afterInvalidIdleSleep.stdout.trim() === "continuous",
+    "invalid idle-sleep mode corrupted the previously persisted setting");
 
   const status = run(["status", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(status.status === 0, `status command failed without a Worker: ${status.stderr}`);

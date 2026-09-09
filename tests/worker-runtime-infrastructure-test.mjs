@@ -21,6 +21,7 @@ import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBu
 import { issueManagedJobCapability, verifyManagedJobCapability } from "../src/worker/managed-job-capability.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../src/worker/managed-job-hosted-authority.ts";
 import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { staleSchemaCompatibilityResult } from "../src/worker/mcp-stale-schema-compat.ts";
 import { workerAuthorityContext, workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -1463,6 +1464,7 @@ async function testRelayTimeoutContract() {
       && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
     `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
+  assert(workerToolSchemaGeneration === 27, "hosted result-budget contract did not advance the tool schema generation to 27");
   assert(String(serverInfoTool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)
     && workspaceTools.every((tool) => String(tool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)),
   "host-visible tool descriptions omitted the current schema generation marker");
@@ -1473,6 +1475,15 @@ async function testRelayTimeoutContract() {
     && remoteBrowserDescription.includes("start_process only when interactive stdin or incremental process output")
     && !remoteBrowserDescription.includes("use process sessions or managed jobs for longer work"),
   "configurable foreground guidance still routes generic long browser/application work into process sessions");
+  const remoteReadFile = workspaceTools.find((tool) => tool.name === "read_file");
+  const remoteReadFileDescription = String(remoteReadFile?.description || "");
+  assert(remoteReadFile?.inputSchema?.properties?.max_bytes?.maximum === 64 * 1024
+    && remoteReadFile?.inputSchema?.properties?.max_bytes?.default === 64 * 1024
+    && remoteReadFileDescription.includes("complete serialized read_file result")
+    && remoteReadFileDescription.includes("whole-line pagination")
+    && remoteReadFileDescription.includes("next_start_line")
+    && remoteReadFileDescription.includes("Local/stdio read capacity is unchanged"),
+  "remote read_file schema/description omitted the hosted complete-result pagination budget");
   const remoteExec = workspaceTools.find((tool) => tool.name === "exec_command");
   const remoteExecDescription = String(remoteExec?.description || "");
   assert(remoteExecDescription.includes("one-step durable job")
@@ -1481,6 +1492,8 @@ async function testRelayTimeoutContract() {
     && remoteExecDescription.includes("30 minutes pre-spawn")
     && remoteExecDescription.includes("current_phase=resource_admission")
     && remoteExecDescription.includes("bounded same-response read_job follow-up")
+    && remoteExecDescription.includes("redirect it to a file")
+    && remoteExecDescription.includes("bounded read_file pages")
     && remoteExecDescription.includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
     && remoteExecDescription.includes(`Tool schema generation ${workerToolSchemaGeneration}.`),
   "remote exec_command description omitted the durable execution, pre-spawn admission, recovery, or bounded follow-up contract");
@@ -1963,8 +1976,10 @@ async function testRelayTimeoutContract() {
   const remoteReadProcess = workspaceTools.find((tool) => tool.name === "read_process");
   const remoteReadProcessDescription = String(remoteReadProcess?.description || "");
   assert(remoteReadProcess?.inputSchema?.properties?.wait_ms?.maximum === 1_000
-    && remoteReadProcess?.inputSchema?.properties?.wait_ms?.default === 1_000,
-    "remote read_process schema lost its one-second server-paced default/maximum");
+    && remoteReadProcess?.inputSchema?.properties?.wait_ms?.default === 1_000
+    && remoteReadProcess?.inputSchema?.properties?.max_bytes?.maximum === 32 * 1024
+    && remoteReadProcess?.inputSchema?.properties?.max_bytes?.default === 32 * 1024,
+    "remote read_process schema lost its one-second pacing or 32 KiB hosted result ceiling");
   assert(remoteReadProcessDescription.includes("paced follow-up")
     && remoteReadProcessDescription.includes("same MCP call")
     && remoteReadProcessDescription.includes("cooldown boundary")
@@ -1972,8 +1987,23 @@ async function testRelayTimeoutContract() {
     && remoteReadProcessDescription.includes("next_blocking_poll_after_ms")
     && remoteReadProcessDescription.includes("must not busy-loop")
     && remoteReadProcessDescription.includes("run_process/read_job")
+    && remoteReadProcessDescription.includes("32768 bytes per read")
+    && remoteReadProcessDescription.includes("local/stdio read capacity is unchanged")
     && !remoteReadProcessDescription.includes("poll again"),
   "remote read_process description lost server-paced same-response follow-up limits");
+  const staleReadFileMaximum = staleSchemaCompatibilityResult(
+    { jsonrpc: "2.0", id: "stale-read-file-max", method: "tools/call", params: { name: "read_file", arguments: { path: "fixture.txt", max_bytes: 1024 * 1024 } } },
+    [{ instancePath: "/max_bytes", keyword: "maximum", message: "must be <= 65536" }], {},
+  );
+  const staleReadProcessMaximum = staleSchemaCompatibilityResult(
+    { jsonrpc: "2.0", id: "stale-read-process-max", method: "tools/call", params: { name: "read_process", arguments: { session_id: "proc_fixture", max_bytes: 256 * 1024 } } },
+    [{ instancePath: "/max_bytes", keyword: "maximum", message: "must be <= 32768" }], {},
+  );
+  assert(JSON.stringify(staleReadFileMaximum).includes("cached read_file max_bytes")
+    && JSON.stringify(staleReadFileMaximum).includes("schema_refresh_recommended")
+    && JSON.stringify(staleReadProcessMaximum).includes("cached read_process max_bytes")
+    && JSON.stringify(staleReadProcessMaximum).includes("schema_refresh_recommended"),
+  "stale schema max_bytes compatibility did not return bounded refresh guidance for generation 27");
   const immediateReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 0 });
   const defaultReadBudget = daemonToolTimeoutBudget("read_process", {});
   const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 1_000 });

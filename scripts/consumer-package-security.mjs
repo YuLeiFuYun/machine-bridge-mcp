@@ -154,7 +154,7 @@ export function validateConsumerTree(tree, options = {}) {
     if (item.name === "undici" && vulnerableUndici(item.version)) {
       throw new Error(`consumer dependency tree contains vulnerable undici ${item.version}`);
     }
-    if (item.name === "sharp" && compareNumericVersion(item.version, "0.35.3") < 0) {
+    if (item.name === "sharp" && compareNumericVersion(item.version, "0.35.4") < 0) {
       throw new Error(`consumer dependency tree contains unsupported sharp ${item.version}`);
     }
   }

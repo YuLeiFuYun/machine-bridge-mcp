@@ -14,6 +14,17 @@ if (/not found\|does not exist\|could not find/i.test(cliSource) || !cliSource.i
 const cliActivateSource = readFileSync(join(root, "src", "local", "cli-activate.mjs"), "utf8");
 const runtimeActivationSource = readFileSync(join(root, "src", "local", "runtime-activation.mjs"), "utf8");
 const activationRecoverySource = readFileSync(join(root, "src", "shared", "activation-recovery.mjs"), "utf8");
+const restartabilityPreflightIndex = runtimeActivationSource.indexOf("await options.preflightRestartability");
+const providerStoppedIndex = runtimeActivationSource.indexOf("providerStopped = ownership.previousServiceRuntimeActive;");
+const providerStopIndex = runtimeActivationSource.indexOf("await options.stopAutostart");
+if (!runtimeActivationSource.includes('"preflightRestartability"')
+    || restartabilityPreflightIndex < 0
+    || !(restartabilityPreflightIndex < providerStoppedIndex && providerStoppedIndex < providerStopIndex)) {
+  throw new Error("persistent activation restartability preflight must remain mandatory before provider mutation/recovery intent");
+}
+for (const required of ["preflightServiceRestartability", "preflightRestartability: () => preflightServiceRestartability({"] ) {
+  if (!cliActivateSource.includes(required)) throw new Error(`candidate activation CLI lost restartability preflight wiring: ${required}`);
+}
 for (const required of [
   "recovery?.candidateServiceStarted && candidateRelayVerified && recoverablePostReadySettlement(error)",
   "isActivationRecoveryReason",
@@ -110,13 +121,13 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
 if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.127.1"
-    || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.3"
+    || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.4"
     || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.127.1"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
-    || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.3") {
+    || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.4") {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
-const patchedSharpVersion = "0.35.3";
+const patchedSharpVersion = "0.35.4";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
 if (packageLock.packages?.["node_modules/sharp"]?.version !== patchedSharpVersion) throw new Error("package-lock does not resolve the audited Sharp version");
 if (packageJson.allowScripts?.[`sharp@${patchedSharpVersion}`] !== true) throw new Error("the audited Sharp lifecycle-script allowlist entry is missing");
@@ -654,14 +665,16 @@ const verificationEnvironmentSource = readFileSync(join(root, "scripts", "verifi
 if (!checkRunnerSource.includes("verificationChildEnvironment")
     || !coverageRunnerSource.includes("verificationChildEnvironment")
     || !verificationEnvironmentSource.includes("key.toUpperCase()")
-    || ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER", "MBM_RELAY_PROXY"]
+    || ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER", "MBM_RELAY_FALLBACK_PROXY", "MBM_RELAY_PROXY"]
       .some((key) => !verificationEnvironmentSource.includes(`"${key}"`))) {
   throw new Error("verification runners lost case-insensitive isolation from owner runtime configuration");
 }
 const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
 const macosIdleSleepAssertionSource = readFileSync(join(root, "src", "local", "macos-idle-sleep-assertion.mjs"), "utf8");
+const macosIdleSleepRecoverySource = readFileSync(join(root, "src", "local", "macos-idle-sleep-recovery.mjs"), "utf8");
 const remoteActivityIdleSleepGuardSource = readFileSync(join(root, "src", "local", "remote-activity-idle-sleep-guard.mjs"), "utf8");
+const remoteIdleSleepAssertionsSource = readFileSync(join(root, "src", "local", "remote-idle-sleep-assertions.mjs"), "utf8");
 const processSessionRemoteActivitySource = readFileSync(join(root, "src", "local", "process-session-remote-activity.mjs"), "utf8");
 const processSessionsSource = readFileSync(join(root, "src", "local", "process-sessions.mjs"), "utf8");
 const managedJobRunnerSource = readFileSync(join(root, "src", "local", "job-runner.mjs"), "utf8");
@@ -677,6 +690,11 @@ const managedJobTransientRecoverySource = readFileSync(join(root, "src", "local"
 const managedJobTransientRecoveryCapacitySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery-capacity.mjs"), "utf8");
 const managedJobModuleBoundariesSource = readFileSync(join(root, "tests", "architecture", "module-boundaries.mjs"), "utf8");
 const runtimeSource = readFileSync(join(root, "src", "local", "runtime.mjs"), "utf8");
+const runtimeDeviceSessionSource = readFileSync(join(root, "src", "local", "runtime-device-session.mjs"), "utf8");
+const runtimeRelayConnectionOptionsSource = readFileSync(join(root, "src", "local", "runtime-relay-connection-options.mjs"), "utf8");
+const daemonHttpRelayConnectionSource = readFileSync(join(root, "src", "local", "daemon-http-relay-connection.mjs"), "utf8");
+const deviceRootProviderSource = readFileSync(join(root, "src", "local", "device-root-provider.mjs"), "utf8");
+const resilientRelayConnectionSource = readFileSync(join(root, "src", "local", "resilient-relay-connection.mjs"), "utf8");
 const runtimeRelayControlSource = readFileSync(join(root, "src", "local", "runtime-relay-control.mjs"), "utf8");
 const runtimeRelayAcknowledgementsSource = readFileSync(join(root, "src", "local", "runtime-relay-acknowledgements.mjs"), "utf8");
 const runtimeRelayShutdownDrainSource = readFileSync(join(root, "src", "local", "runtime-relay-shutdown-drain.mjs"), "utf8");
@@ -763,22 +781,46 @@ if (!managedJobListingSource.includes("durable_terminal: durableTerminal")
   throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
 }
 if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
-    || !macosIdleSleepAssertionSource.includes('["-i", "-s", "-w", String(this.processId)]')
+    || !macosIdleSleepAssertionSource.includes('this.preventIdleSleep ? ["-i"] : []')
+    || !macosIdleSleepAssertionSource.includes('this.preventSystemSleepOnAc ? ["-s"] : []')
+    || !macosIdleSleepAssertionSource.includes('MacosIdleSleepRecovery')
     || !macosIdleSleepAssertionSource.includes("requests_system_sleep_prevention_on_ac")
+    || !macosIdleSleepAssertionSource.includes("requests_idle_sleep_prevention")
     || !macosIdleSleepAssertionSource.includes('shell: false')
+    || !macosIdleSleepRecoverySource.includes('Object.freeze([1_000, 5_000, 30_000])')
+    || !macosIdleSleepRecoverySource.includes('if (this.desired) this.onRetry?.()')
+    || !macosIdleSleepRecoverySource.includes('restart_count: this.restartCount')
     || macosIdleSleepAssertionSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
-    || !remoteActivityIdleSleepGuardSource.includes('from "./macos-idle-sleep-assertion.mjs"')
+    || !remoteActivityIdleSleepGuardSource.includes('from "./remote-idle-sleep-assertions.mjs"')
     || remoteActivityIdleSleepGuardSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
     || !remoteActivityIdleSleepGuardSource.includes('DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 30 * 60_000')
     || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities += 1;')
-    || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities > 0 || !this.assertion.snapshot().active')
+    || !remoteActivityIdleSleepGuardSource.includes('this.assertions.usesActivityGrace()')
+    || !remoteIdleSleepAssertionsSource.includes('this.mode === "activity" ? null')
+    || !remoteIdleSleepAssertionsSource.includes('preventIdleSleep: this.mode === "continuous"')
     || !runtimeSource.includes('onAuthorizedRelayActivityStart: () => this.remoteActivityIdleSleepGuard.beginActivity()')
     || !runtimeSource.includes('onAuthorizedRelayActivityEnd: () => this.remoteActivityIdleSleepGuard.endActivity()')
     || !toolExecutorSource.includes('invokeHandler(this.handlers, this.onAuthorizedRelayActivityStart, this.onAuthorizedRelayActivityEnd)')
     || !toolExecutorSource.includes('finally { if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityEnd); }')
+    || !runtimeSource.includes('this.remoteActivityIdleSleepGuard.start();')
     || !runtimeSource.includes('this.remoteActivityIdleSleepGuard.stop();')
     || !runtimeDiagnosticStateSource.includes('idle_sleep_guard: state.idleSleepGuard ?? null')) {
   throw new Error("runtime remote-activity idle-sleep guard lost its bounded fixed-command lifecycle or diagnostic projection");
+}
+if (!runtimeDeviceSessionSource.includes("DEVICE_SESSION_RENEW_BEFORE_MS = 10 * 60_000")
+    || !runtimeDeviceSessionSource.includes("DEVICE_SESSION_RETRY_MS = Object.freeze([1_000, 5_000, 30_000, 5 * 60_000])")
+    || !runtimeDeviceSessionSource.includes('this.rotate("authentication_boundary", false)')
+    || !runtimeDeviceSessionSource.includes('this.onRotated({ generation: this.generation, reason })')
+    || !deviceRootProviderSource.includes("if (isMacosSecureDeviceRoot(identity)) return null;")
+    || !runtimeRelayConnectionOptionsSource.includes('const currentSessionIdentity = typeof sessionIdentity === "function"')
+    || !runtimeRelayConnectionOptionsSource.includes("deviceIdentityProvider: currentSessionIdentity")
+    || !daemonHttpRelayConnectionSource.includes("this.deviceIdentityProvider()")
+    || !resilientRelayConnectionSource.includes("refreshAuthentication()")
+    || !resilientRelayConnectionSource.includes('this.websocket.interrupt("relay_session_rotated")')
+    || !resilientRelayConnectionSource.includes('this.http.interrupt("relay_session_rotated")')
+    || !runtimeSource.includes("this.deviceSession?.start();")
+    || runtimeSource.lastIndexOf("this.deviceSession?.stop();") > runtimeSource.indexOf("await this.relayShutdownDrain?.begin")) {
+  throw new Error("runtime device-session rollover lost its portable-root renewal, shared transport identity, shutdown, or fail-closed documentation contract");
 }
 const processSessionAdmissionIndex = processSessionsSource.indexOf("const admitted = await acquireProcessResources");
 const processSessionActivityIndex = processSessionsSource.indexOf("beginRemoteProcessSessionActivity(context, this.remoteActivityGuard)");
@@ -786,7 +828,7 @@ if (!processSessionRemoteActivitySource.includes('context?.origin !== "relay"')
     || !runtimeSource.includes('remoteActivityGuard: this.remoteActivityIdleSleepGuard')
     || processSessionAdmissionIndex < 0 || processSessionActivityIndex <= processSessionAdmissionIndex
     || !processSessionsSource.includes('endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);')
-    || runtimeSource.indexOf("this.remoteActivityIdleSleepGuard.stop();") < runtimeSource.indexOf("await this.processSessionManager.clearAndWait();")) {
+    || runtimeSource.lastIndexOf("this.remoteActivityIdleSleepGuard.stop();") < runtimeSource.indexOf("await this.processSessionManager.clearAndWait();")) {
   throw new Error("remote process-session idle-sleep activity lost its post-admission child-lifetime ownership boundary");
 }
 const managedJobClaimIndex = managedJobRunnerSource.indexOf("await confirmRunnerClaim({");
@@ -1224,7 +1266,7 @@ for (const required of ["prepareHardenedNpm", "result = await verifyConsumerTarb
 if (consumerSecuritySource.includes('"--omit=optional"')) throw new Error("consumer package security no longer models an ordinary optional-dependency installation");
 const toolchainSource = readFileSync(join(root, "src", "local", "wrangler-toolchain.mjs"), "utf8");
 const toolchainVerificationSource = readFileSync(join(root, "src", "local", "wrangler-toolchain-verification.mjs"), "utf8");
-for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "7.29.0", "0.35.3"]) {
+for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "7.29.0", "0.35.4"]) {
   if (!toolchainSource.includes(required)) throw new Error(`private Wrangler toolchain lost required boundary: ${required}`);
 }
 for (const required of ["TOOLCHAIN_MARKER", "MAX_TREE_NODES", "throwOperationalOrIntegrity", "privateToolchainIntegrityError"]) {
@@ -2137,11 +2179,16 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`diagnose_runtime.runtime.idle_sleep_guard`"],
   ["docs/TESTING.md", testingDoc, "distinct from production ownership"],
   ["docs/TESTING.md", testingDoc, "full execution lifetime"],
-  ["docs/ARCHITECTURE.md", architecture, "fixed thirty-minute inactivity grace begins only after the last handler settles"],
-  ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners do not depend on daemon ownership"],
-  ["docs/OPERATIONS.md", operationsDoc, "the thirty-minute default inactivity grace begins only after the last one settles"],
-  ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends the same assertion only after resource admission succeeds"],
-  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold `/usr/bin/caffeinate -i -s -w <runner-pid>`"],
+  ["docs/ARCHITECTURE.md", architecture, "fixed thirty-minute inactivity grace begins only after the last handler/process-session activity settles"],
+  ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners remain independently bound to the runner PID"],
+  ["docs/ARCHITECTURE.md", architecture, "fixed 1/5/30-second backoff"],
+  ["docs/OPERATIONS.md", operationsDoc, "that grace begins only after the last owned daemon-side activity settles"],
+  ["docs/OPERATIONS.md", operationsDoc, "A remote `start_process` extends activity ownership only after resource admission"],
+  ["docs/OPERATIONS.md", operationsDoc, "Remote account managed-job runners independently hold the same `-i -s -w <runner-pid>` primitive"],
+  ["docs/OPERATIONS.md", operationsDoc, "`machine-mcp idle-sleep set continuous`"],
+  ["docs/OPERATIONS.md", operationsDoc, "fixed 1/5/30-second recovery"],
+  ["docs/OPERATIONS.md", operationsDoc, "derives a fresh root-certified ephemeral session ten minutes before expiry"],
+  ["docs/OPERATIONS.md", operationsDoc, "Secure Enclave root does not receive unattended renewal"],
   ["docs/LOGGING.md", loggingDoc, "opens one fifteen-second application-confirmation window"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.not_received_after_reconnect` retains the same aggregate-only `calls` shape"],
   ["docs/LOGGING.md", loggingDoc, "`daemon.calls.redelivered_after_proven_non_delivery` with only an aggregate `calls` count"],
@@ -2236,7 +2283,7 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 26"],
+  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 27"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "Legacy schema-1 disconnect counters are intentionally not carried into schema 2"],

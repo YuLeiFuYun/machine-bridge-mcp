@@ -10,8 +10,9 @@ export { MAX_RELAY_MESSAGE_BYTES } from "./runtime-relay-connection-options.mjs"
 const RELAY_CALL_ID = /^call_[A-Za-z0-9_-]{8,240}$/; const RELAY_TOOL_NAME = /^[a-z][a-z0-9_]{0,127}$/;
 export function createRuntimeRelayConnection(runtime, { workerUrl, deviceIdentity, expectedVersion, onFatal }) {
   if (!workerUrl || !deviceIdentity) return null;
-  const sessionIdentity = deviceIdentity?.certificate ? validateDeviceSessionIdentity(deviceIdentity)
-    : createDeviceSessionIdentity(deviceIdentity, workerUrl, SERVER_NAME, String(expectedVersion || ""));
+  const sessionIdentity = typeof deviceIdentity === "function" ? deviceIdentity : (deviceIdentity?.certificate
+    ? () => validateDeviceSessionIdentity(deviceIdentity)
+    : () => createDeviceSessionIdentity(deviceIdentity, workerUrl, SERVER_NAME, String(expectedVersion || "")));
   return new ResilientRelayConnection(runtimeRelayConnectionOptions(runtime, {
     workerUrl, sessionIdentity, expectedVersion, onFatal,
     onMessage: (data, relayContext) => handleRelayData(runtime, data, relayContext),

@@ -28,6 +28,7 @@ const COMMAND_OPTIONS = new Map(Object.entries({
   "full-test": new Set(["workspace", "stateDir", "json"]),
   "rotate-secrets": new Set(["workspace", "stateDir", "quiet"]),
   workspace: new Set(["workspace", "stateDir"]),
+  "idle-sleep": new Set(["stateDir"]),
   service: new Set(["workspace", "stateDir", "quiet"]),
   autostart: new Set(["workspace", "stateDir", "quiet"]),
   resource: new Set(["workspace", "stateDir", "allowInsecurePermissions", "showPaths", "json"]),
@@ -49,6 +50,10 @@ const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   workspace(args) {
     const action = String(args._[0] || "show");
     return { max: action === "set" || action === "select" ? 2 : 1, tooMany: `workspace ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
+  },
+  "idle-sleep"(args) {
+    const action = String(args._[0] || "show");
+    return { max: action === "set" ? 2 : 1, tooMany: `idle-sleep ${action} received too many positional arguments` };
   },
   service(args) {
     const action = String(args._[0] || "status");

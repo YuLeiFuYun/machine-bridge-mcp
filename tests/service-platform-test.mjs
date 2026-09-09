@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { installAutostart, runServiceCommand, stopLaunchdService, stopSystemdService } from "../src/local/service.mjs";
+import { buildServiceSpec, installAutostart, previewAutostartDefinition, runServiceCommand, stopLaunchdService, stopSystemdService } from "../src/local/service.mjs";
+import { inspectRuntimePackageIdentity } from "../src/local/runtime-package-identity.mjs";
+import { preflightServiceRestartability } from "../src/local/service-restartability.mjs";
 import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary } from "../src/local/service-status.mjs";
 import { removeServiceDefinitionIfCurrent, snapshotServiceDefinition } from "../src/local/service-definition.mjs";
 import { beginServiceOwnerUpdate, loadCommittedServiceOwner, loadServiceOwner, removeServiceOwner, serviceOwnerPath } from "../src/local/service-owner.mjs";
@@ -67,6 +69,7 @@ assert.equal(serviceInvocation.options.timeoutMs, 30_000);
 assert.equal(serviceInvocation.options.maxOutputBytes, 64 * 1024);
 
 if (process.platform === "win32") windowsLauncherLiveTest();
+await serviceRestartabilityPreflightTest();
 await serviceDefinitionIdentityTest();
 await serviceOwnerTransactionTest();
 await serviceInstallOwnerCommitTest();
@@ -89,6 +92,72 @@ await launchdStopContractTest();
 await delayedLaunchdStopTest();
 await stuckLaunchdStopTest();
 console.log("service platform lifecycle test ok");
+
+async function serviceRestartabilityPreflightTest() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "mbm-service-restartability-"));
+  const packageRoot = path.join(root, "package");
+  const workspace = path.join(root, "workspace");
+  const stateRoot = path.join(root, "state");
+  const bin = path.join(packageRoot, "bin");
+  const entryScript = path.join(bin, "machine-mcp.mjs");
+  const version = "3.0.0-beta.169";
+  try {
+    for (const directory of [workspace, stateRoot, bin]) mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({ name: "machine-bridge-mcp", version })}\n`, { mode: 0o600 });
+    writeFileSync(entryScript, "export {};\n", { mode: 0o600 });
+
+    const identity = inspectRuntimePackageIdentity(entryScript, { expectedVersion: version });
+    assert.equal(identity.version, version);
+    assert.equal(identity.entry, realpathSync(entryScript));
+
+    const spec = buildServiceSpec({ workspace, stateRoot, entryScript });
+    const definition = previewAutostartDefinition(spec);
+    assert(["launchd", "systemd", "schtasks"].includes(definition.provider), "service definition preview returned an unknown provider");
+    assert.equal(typeof definition.content, "string");
+    assert(definition.content.includes("machine-mcp.mjs"), "service definition preview lost the exact runtime entry");
+    assert.equal(existsSync(path.join(stateRoot, "logs")), false,
+      "side-effect-free service specification created service logs");
+
+    const ready = preflightServiceRestartability({ workspace, stateRoot, entryScript, expectedVersion: version });
+    assert.equal(ready.runtime.version, version);
+    assert.equal(ready.service_environment.configured, false);
+    assert.equal(existsSync(path.join(stateRoot, "logs")), false,
+      "restartability preflight created service logs");
+
+    assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: "3.0.0-beta.170" }), /does not match expected version/,
+      "runtime package identity accepted a mismatched expected version");
+
+    const environmentFile = path.join(stateRoot, "service-environment.json");
+    const unsupportedEnvironment = `${JSON.stringify({
+      schemaVersion: 1,
+      environment: { MBM_SYNTHETIC_UNSUPPORTED_SERVICE_KEY: "1" },
+      updatedAt: "2026-09-08T00:00:00.000Z",
+    }, null, 2)}\n`;
+    writeFileSync(environmentFile, unsupportedEnvironment, { mode: 0o600 });
+    assert.throws(() => preflightServiceRestartability({ workspace, stateRoot, entryScript, expectedVersion: version }), /unsupported key/,
+      "restartability preflight accepted a service environment unknown to the candidate");
+    assert.equal(readFileSync(environmentFile, "utf8"), unsupportedEnvironment,
+      "restartability preflight rewrote the persisted service environment");
+    assert.equal(existsSync(path.join(stateRoot, "logs")), false,
+      "failed restartability preflight created service logs");
+
+    rmSync(environmentFile, { force: true });
+    if (process.platform !== "win32") {
+      const hardlink = path.join(bin, "machine-mcp-hardlink.mjs");
+      linkSync(entryScript, hardlink);
+      assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: version }), /private regular file/,
+        "runtime package identity accepted a multiply linked entry");
+      rmSync(hardlink, { force: true });
+
+      const realEntry = path.join(bin, "machine-mcp-real.mjs");
+      rmSync(entryScript, { force: true });
+      writeFileSync(realEntry, "export {};\n", { mode: 0o600 });
+      symlinkSync(realEntry, entryScript);
+      assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: version }), /private regular file/,
+        "runtime package identity followed a symbolic-link entry");
+    }
+  } finally { removeTestTree(root); }
+}
 
 async function serviceDefinitionIdentityTest() {
   const root = mkdtempSync(path.join(os.tmpdir(), "mbm-service-definition-"));

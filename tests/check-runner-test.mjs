@@ -15,6 +15,7 @@ const root = await mkdtemp(join(tmpdir(), "mbm-check-runner-test-"));
 try {
   const isolatedEnvironment = verificationChildEnvironment({
     MBM_RELAY_PROXY: "http://127.0.0.1:17891",
+    MBM_RELAY_FALLBACK_PROXY: "",
     mbm_relay_proxy: "http://127.0.0.1:17892",
     MbM_ReLaY_PrOxY: "http://127.0.0.1:17893",
     MBM_DEBUG: "1",
@@ -25,6 +26,8 @@ try {
   });
   assert.equal(Object.keys(isolatedEnvironment).some((key) => key.toUpperCase() === "MBM_RELAY_PROXY"), false,
     "verification child environment retained a case-variant daemon-only relay proxy route");
+  assert.equal(Object.keys(isolatedEnvironment).some((key) => key.toUpperCase() === "MBM_RELAY_FALLBACK_PROXY"), false,
+    "verification child environment retained the daemon-only relay fallback proxy route");
   for (const key of ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER"]) {
     assert.equal(isolatedEnvironment[key], undefined,
       `verification child environment retained owner runtime configuration: ${key}`);
@@ -116,6 +119,7 @@ if (task === "noisy-success") {
     },
     env: {
       MBM_RELAY_PROXY: "http://127.0.0.1:17891",
+      MBM_RELAY_FALLBACK_PROXY: "",
       CHECK_RUNNER_PRESERVED: "yes",
     },
     spawnProcess: direct.spawn,
@@ -126,6 +130,8 @@ if (task === "noisy-success") {
   assert.equal(direct.invocations[0].options.env.npm_lifecycle_event, "direct-test", "direct Node execution lost npm lifecycle identity");
   assert.equal(direct.invocations[0].options.env.MBM_RELAY_PROXY, undefined,
     "direct Node verification inherited the owner daemon's relay-only proxy route");
+  assert.equal(direct.invocations[0].options.env.MBM_RELAY_FALLBACK_PROXY, undefined,
+    "direct Node verification inherited the owner daemon's relay fallback proxy route");
   assert.equal(direct.invocations[0].options.env.CHECK_RUNNER_PRESERVED, "yes",
     "verification environment isolation removed an unrelated environment value");
   direct.finish("direct-test", 0);
@@ -133,6 +139,8 @@ if (task === "noisy-success") {
   assert(direct.invocations[1].args.includes(fakeNpm) && direct.invocations[1].args.at(-1) === "hooked-test", "package script with lifecycle hooks bypassed npm");
   assert.equal(direct.invocations[1].options.env.MBM_RELAY_PROXY, undefined,
     "nested npm verification inherited the owner daemon's relay-only proxy route");
+  assert.equal(direct.invocations[1].options.env.MBM_RELAY_FALLBACK_PROXY, undefined,
+    "nested npm verification inherited the owner daemon's relay fallback proxy route");
   assert.equal(direct.invocations[1].options.env.CHECK_RUNNER_PRESERVED, "yes",
     "nested npm verification lost an unrelated environment value");
   direct.finish("hooked-test", 0);

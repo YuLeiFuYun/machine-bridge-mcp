@@ -9,6 +9,7 @@ const SERVICE_ENVIRONMENT_FILE = "service-environment.json";
 
 export const SERVICE_NETWORK_ENVIRONMENT_KEYS = Object.freeze([
   "MBM_RELAY_PROXY",
+  "MBM_RELAY_FALLBACK_PROXY",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",

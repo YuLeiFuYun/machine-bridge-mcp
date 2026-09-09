@@ -13,12 +13,12 @@ import {
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { applyHostedManagedJobToolContract } from "./managed-job-hosted-schema.ts";
 import { applyHostedBrowserTargetContract } from "./hosted-browser-target-schema.ts";
+import { applyHostedResultBudgetContract } from "./hosted-result-budget.ts";
 import { attachManagedJobMonitorMetadata } from "./mcp-job-monitor-ui.ts";
 import { managedJobMonitorClaimToolDefinition, managedJobMonitorReadToolDefinition, managedJobMonitorRenderToolDefinition } from "./mcp-job-monitor-tools.ts";
 
 export type WorkerToolDefinition = Record<string, unknown> & { name: string; description: string; availability?: string };
 type JsonSchema = Record<string, unknown> & { properties: Record<string, Record<string, unknown>>; required?: string[] };
-
 const allTools = toolCatalog as WorkerToolDefinition[];
 export const workerToolSchemaGeneration = Number(serverMetadata.toolSchemaGeneration);
 const HOSTED_CONTINUATION_RULE = "Do not infer or preempt a host/tool deadline from elapsed wall-clock time. While tool calls continue to be accepted and the current task still needs the result, bounded same-response follow-up may continue. Hand progress back only after an actual host/tool boundary is observed, external input or authorization is required, or the user explicitly requested a checkpoint. If an actual host/tool boundary ends the response, preserve the durable recovery identifier and resume that same operation later instead of resubmitting its underlying side effect.";
@@ -49,6 +49,7 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   }
   applyHostedManagedJobToolContract(definition, schema, relayContract, HOSTED_CONTINUATION_RULE);
   applyHostedBrowserTargetContract(definition, schema);
+  applyHostedResultBudgetContract(definition, schema, relayContract);
   if (isRemoteDurableProcessTool(definition.name)) {
     const timeout = schema.properties.timeout_seconds;
     timeout.maximum = REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS;

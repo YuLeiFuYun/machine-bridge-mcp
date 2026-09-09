@@ -137,8 +137,12 @@ async function testAuditStorageBoundaries() {
       && activity.read_job_calls_last_15m === 1
       && activity.start_job_calls_last_15m === 1
       && activity.peak_calls_per_minute_last_15m === 5
+      && activity.output_bytes_last_15m === Number.MAX_SAFE_INTEGER
+      && activity.maximum_output_bytes_last_15m === Number.MAX_SAFE_INTEGER
+      && activity.large_result_calls_last_15m === 1
+      && activity.peak_output_bytes_per_minute_last_15m === Number.MAX_SAFE_INTEGER
       && activity.top_tools_last_15m.some((item) => item.tool === "read_job" && item.count === 1),
-    "security audit snapshot did not expose bounded content-free recent tool activity");
+    "security audit snapshot did not expose bounded content-free recent tool/result activity");
     assert(!JSON.stringify(activity).includes(rawAccount) && !JSON.stringify(activity).includes("fixture.txt"),
       "security audit activity aggregate leaked private principal or tool argument content");
 

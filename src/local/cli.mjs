@@ -11,6 +11,7 @@ import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, val
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
 import { createActivateCommand } from "./cli-activate.mjs";
+import { idleSleepCommand } from "./cli-idle-sleep.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
@@ -22,7 +23,7 @@ import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { stopOwnedPlatformService } from "./service-ownership.mjs";
 import { loadServiceEnvironment } from "./service-environment.mjs";
-import { createDeviceSessionForRoot, deviceRootProviderStatus, ensurePreferredDeviceRoot } from "./device-root-provider.mjs";
+import { createDeviceSessionForRoot, createUnattendedDeviceSessionFactory, deviceRootProviderStatus, ensurePreferredDeviceRoot } from "./device-root-provider.mjs";
 import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "./doctor-reporting.mjs";
@@ -35,6 +36,7 @@ import {
   acquireMachineServiceLockWithWait,
   acquireMaintenanceLock,
   acquireStartupLockWithWait,
+  configuredIdleSleepMode,
   daemonLockPathForState,
   defaultFirstRunWorkspace,
   defaultStateRoot,
@@ -54,7 +56,6 @@ import {
   setSelectedWorkspace,
 } from "./state.mjs";
 import { packageName, packageVersion } from "./package-identity.mjs";
-
 const localAdminCommands = createLocalAdminCommands({ chooseWorkspace, confirm });
 const accountCommand = createAccountCommand({ chooseWorkspace, confirm });
 const serviceCommand = createServiceCommand({ chooseWorkspace, stateRootFromArgs, structuredLogger, acquireMachineServiceLockWithWait, currentPackageVersion });
@@ -76,6 +77,7 @@ const COMMAND_HANDLERS = new Map([
   ["doctor", doctorCommand],
   ["full-test", fullTestCommand],
   ["workspace", workspaceCommand],
+  ["idle-sleep", idleSleepCommand],
   ["service", serviceCommand],
   ["autostart", serviceCommand],
   ["rotate-secrets", rotateSecretsCommand],
@@ -307,7 +309,8 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger, 
   try {
     const readiness = await prepareRemoteState({ args, workspace, state, logger,
       ensureWorkerDeployment: dependencies.ensureWorkerDeployment });
-    runtime = createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity: readiness.deviceSessionIdentity });
+    runtime = createRemoteRuntime({ args, workspace, state, daemonLock,
+      deviceSessionIdentity: readiness.deviceSessionIdentity, renewDeviceSession: readiness.renewDeviceSession });
     await runtime.start();
     if (typeof daemonLock.update !== "function") throw new Error("daemon lock cannot publish startup readiness");
     daemonLock.update({ startupReady: true, startupReadyAt: new Date().toISOString() });
@@ -356,16 +359,15 @@ async function prepareRemoteState({ args, workspace, state, logger, onRemotePrep
     currentPackageVersion(),
     { profileDir: state.paths.profileDir, reason: "Authorize Machine Bridge startup" },
   );
+  const renewDeviceSession = createUnattendedDeviceSessionFactory(state.worker.deviceIdentity, state.worker.url, "machine-bridge-mcp", currentPackageVersion());
   const initialOwner = args.daemonOnly || provisionInitialOwner === false
     ? null
     : await ensureInitialOwnerAccount(state, deviceSessionIdentity);
   if (!args.daemonOnly && !args.noAutostart) {
     await installAutostartBestEffort({ workspace, stateRoot: state.paths.stateRoot, entryScript: process.argv[1], logger });
   }
-  return { initialOwner, deviceSessionIdentity };
+  return { initialOwner, deviceSessionIdentity, renewDeviceSession };
 }
-
-
 
 async function ensureInitialOwnerAccount(state, deviceSessionIdentity) {
   const client = await accountAdminClient(state, deviceSessionIdentity);
@@ -376,11 +378,11 @@ async function ensureInitialOwnerAccount(state, deviceSessionIdentity) {
   return { ...created.account, password };
 }
 
-function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity, exitOnTerminal = true }) {
+function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSessionIdentity, renewDeviceSession = null, exitOnTerminal = true }) {
   const terminalState = { error: null };
   const runtime = new LocalRuntime({
     workerUrl: state.worker.url,
-    deviceIdentity: deviceSessionIdentity,
+    deviceIdentity: deviceSessionIdentity, renewDeviceSession,
     expectedRelayVersion: currentPackageVersion(),
     workspace,
     policy: state.policy,
@@ -391,6 +393,7 @@ function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSession
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
     deviceRootStatus: deviceRootProviderStatus(state.worker.deviceIdentity),
+    idleSleepMode: configuredIdleSleepMode(state.paths.stateRoot),
     onSuperseded: () => {
       if (!exitOnTerminal) {
         terminalState.error ??= new Error("candidate daemon was superseded before service handoff");
@@ -833,6 +836,7 @@ Commands:
   client-config     Print stdio client configuration snippets
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
+  idle-sleep show|set MODE  Show/set activity, ac-continuous, or continuous; restart after set
   service status    Show autostart status
   service install   Install login autostart for remembered/current workspace
   service start     Ensure the installed autostart service is running (idempotent)

@@ -36,6 +36,7 @@ const TEMP_TOKEN = /\{\{temp:([a-z][a-z0-9._-]{0,63})\}\}/g;
 const MAX_RESOURCE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_JOB_CAPTURE_BYTES = 256 * 1024;
+const MAX_HOSTED_TRANSIENT_PROCESS_CAPTURE_BYTES = Number(relayContract.maximumHostedTransientProcessCaptureBytes);
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 const MAX_STATUS_BYTES = 256 * 1024;
 const RECOVERY_LOCK_HANDOFF_WAIT_MS = 30_000;
@@ -142,7 +143,8 @@ async function main(plan, initial) {
 
   const mainResults = [];
   const cleanupResults = [];
-  const captureBudget = { remaining: MAX_JOB_CAPTURE_BYTES };
+  const captureLimitBytes = managedJobCaptureLimit(initial);
+  const captureBudget = { remaining: captureLimitBytes };
   let mainError = null;
   let cleanupError = null;
   const resourceContext = createManagedJobResourceContext(() => {
@@ -217,7 +219,7 @@ async function main(plan, initial) {
     error_class: classifyError(mainError),
     cleanup_error_class: classifyError(cleanupError),
     ...(dependencyFailureDetails(mainError) ? { dependency_failure: dependencyFailureDetails(mainError) } : {}),
-    capture_limit_bytes: MAX_JOB_CAPTURE_BYTES,
+    capture_limit_bytes: captureLimitBytes,
     capture_remaining_bytes: captureBudget.remaining,
     finished_at: new Date().toISOString(),
   };
@@ -231,6 +233,12 @@ async function main(plan, initial) {
   });
   Object.assign(status, terminal.status);
   reportTerminalPersistenceFailure(terminal);
+}
+
+function managedJobCaptureLimit(status) {
+  return status?.owner_kind === "account" && status?.retention_class === "transient_process"
+    ? MAX_HOSTED_TRANSIENT_PROCESS_CAPTURE_BYTES
+    : MAX_JOB_CAPTURE_BYTES;
 }
 
 function assertLaunchState(status) {

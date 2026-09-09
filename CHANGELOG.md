@@ -1,11 +1,14 @@
 # Changelog
 
-## 3.0.0-beta.167 - 2026-09-08
+## 3.0.0-beta.173 - 2026-09-09
 
-- Retire executable compatibility paths that have a current versioned replacement: require the current browser atomic-observation capability, require the formal desktop visual-point capability interface, and make remote MCP HTTP initialization current-protocol-only while preserving explicit fail-closed upgrade guidance for obsolete protocol/session requests.
-- Reduce the default maintenance and installation surface: the changelog now keeps the active release plus a history pointer, the audit file keeps only current conclusions and residual-risk notes, and npm packaging uses explicit runtime/operational-document and release-tool whitelists. Repository-only architecture, engineering, testing, release-governance, and contributor-governance material remains in source control but no longer ships to consumers.
-- Replace the GitHub backlog closing-keyword parser's overlapping quantified regular expression with a deterministic separator/issue-number scanner, removing the CodeQL `js/polynomial-redos` release blocker without weakening the SARIF gate.
-- Advance package/runtime identity to `3.0.0-beta.167`. Hosted tool schema generation remains 26 because these changes do not alter any MCP tool name, input schema, visibility, description, or result shape. No publication or live activation is part of this source change.
+- Keep root-certified daemon session certificates capped at 24 hours while removing the avoidable daemon-stop boundary for the default portable JWK root: the runtime derives a fresh ephemeral session ten minutes before expiry and reconnects the same daemon instance through existing relay reconciliation.
+- Make WebSocket preflight/challenge authentication and signed HTTPS fallback polls read one shared current-session provider, so a rollover cannot leave the preferred and fallback transports on different certificate generations.
+- Cover delayed timers after system suspension: when an authentication boundary is reached at or after the renewal point, a portable root synchronously renews before signing. Renewal failure retains the previous session, uses bounded 1/5/30/300-second retry, and the existing `relay_device_session_expired` fatal path remains fail closed if no valid renewal is available.
+- Do not grant unattended signing to Secure Enclave roots. They retain their user-presence semantics and supervised-restart fallback. Owner runtime info exposes only coarse renewal generation/expiry/due/failure state, never key or certificate material.
+- Raise the reviewed Sharp security floor from 0.35.3 to 0.35.4 in both the main development tree and the private Wrangler control-plane toolchain after the beta.171 live-activation preflight detected a new high-severity libheif advisory chain. The same Wrangler 4.127.1 / workerd 1.20260828.1 control-plane versions remain in place, and fresh production-only audits report zero vulnerabilities.
+- Bound process-lock snapshot reads across the daemon's atomic startup-readiness publication. A path/descriptor identity mismatch retries only `MBM_IDENTITY_CHANGED` up to four reads before failing closed; hard-link, symlink, permission, oversized-file, and unrelated storage failures keep their existing immediate failure semantics. This closes the beta.172 post-ready activation race where the candidate Worker/service was already healthy but the activation subprocess failed while observing a concurrently replaced daemon lock.
+- Advance package, Worker, and browser-extension identity to `3.0.0-beta.173`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
 
 ## Historical releases
 

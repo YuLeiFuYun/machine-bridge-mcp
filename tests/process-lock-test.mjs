@@ -9,6 +9,7 @@ import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "../src/local/process-identity.mjs";
+import { retryProcessLockIdentityReadSync } from "../src/local/process-lock-read-retry.mjs";
 import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -33,6 +34,7 @@ try {
     },
   }), "synthetic global configuration storage failure");
   await daemonReadinessLockTest();
+  await transientIdentityChangedLockReadTest();
   await startupWaitTest();
   await startupWaitUsesBoundedDeadlineTest();
   await maintenanceLockTest();
@@ -229,6 +231,41 @@ async function daemonReadinessLockTest() {
   daemon.release();
   assert(readDaemonLockOwner(daemonLockPathForState(state)) === null,
     "updated daemon lock could not be released by its original token");
+}
+
+async function transientIdentityChangedLockReadTest() {
+  let recoveredAttempts = 0;
+  const recovered = retryProcessLockIdentityReadSync(() => {
+    recoveredAttempts += 1;
+    if (recoveredAttempts < 4) {
+      throw Object.assign(new Error("process lock identity changed while opening"), { code: "MBM_IDENTITY_CHANGED" });
+    }
+    return "settled";
+  });
+  assert(recoveredAttempts === 4 && recovered === "settled",
+    "process-lock reader did not recover from a bounded atomic-replacement identity race");
+
+  let persistentAttempts = 0;
+  let persistentFailure = null;
+  try {
+    retryProcessLockIdentityReadSync(() => {
+      persistentAttempts += 1;
+      throw Object.assign(new Error("process lock identity changed while opening"), { code: "MBM_IDENTITY_CHANGED" });
+    });
+  } catch (error) { persistentFailure = error; }
+  assert(persistentAttempts === 4 && persistentFailure?.code === "MBM_IDENTITY_CHANGED",
+    "persistent process-lock identity churn did not remain fail closed after four reads");
+
+  let unrelatedAttempts = 0;
+  let unrelatedFailure = null;
+  try {
+    retryProcessLockIdentityReadSync(() => {
+      unrelatedAttempts += 1;
+      throw Object.assign(new Error("synthetic permission failure"), { code: "EACCES" });
+    });
+  } catch (error) { unrelatedFailure = error; }
+  assert(unrelatedAttempts === 1 && unrelatedFailure?.code === "EACCES",
+    "process-lock identity retry widened into unrelated storage-error retry");
 }
 
 async function startupWaitTest() {

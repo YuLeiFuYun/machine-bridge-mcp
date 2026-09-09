@@ -5,6 +5,7 @@ export async function activatePersistentRuntime(options = {}) {
     "acquireStartupLock",
     "acquireServiceLock",
     "inspectActivationOwnership",
+    "preflightRestartability",
     "stopAutostart",
     "acquireDaemonLock",
     "prepareRemoteState",
@@ -55,8 +56,9 @@ export async function activatePersistentRuntime(options = {}) {
     requireReleasableLock(acquiredStartupLock, "startup");
     startupLock = acquiredStartupLock;
     const ownership = validateActivationOwnership(await options.inspectActivationOwnership());
-    providerStopped = ownership.previousServiceRuntimeActive;
     previousServiceRuntime = ownership.previousServiceRuntime;
+    await options.preflightRestartability({ expectedVersion, ownership });
+    providerStopped = ownership.previousServiceRuntimeActive;
     const providerStop = await options.stopAutostart();
     providerStopped = validateProviderStop(providerStop) || providerStopped;
 

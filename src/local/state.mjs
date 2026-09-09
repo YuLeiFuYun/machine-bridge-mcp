@@ -9,12 +9,14 @@ import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
+import { retryProcessLockIdentityReadSync } from "./process-lock-read-retry.mjs";
 import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
 import { isPlainRecord } from "./records.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import { appName, packageRoot } from "./package-identity.mjs";
 import { inspectStateRootGeneration, pruneRetiredStateRootDirectories, removeStateRootGenerationIfCurrent } from "./state-root-retirement.mjs";
 import { validateOwnedStateNamespaces } from "./state-root-owned-namespaces.mjs";
+import { normalizeIdleSleepMode } from "./idle-sleep-mode.mjs";
 
 const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;
@@ -113,6 +115,17 @@ export function setSelectedWorkspace(workspace, stateRoot = defaultStateRoot()) 
 export function selectedWorkspace(stateRoot = defaultStateRoot()) {
   const value = loadGlobalConfig(stateRoot).selectedWorkspace;
   return typeof value === "string" && value.trim() ? value : "";
+}
+
+export function configuredIdleSleepMode(stateRoot = defaultStateRoot()) {
+  return normalizeIdleSleepMode(loadGlobalConfig(stateRoot).idleSleepMode || "activity");
+}
+
+export function setConfiguredIdleSleepMode(mode, stateRoot = defaultStateRoot()) {
+  const config = loadGlobalConfig(stateRoot);
+  config.idleSleepMode = normalizeIdleSleepMode(mode);
+  saveGlobalConfig(config, stateRoot);
+  return config.idleSleepMode;
 }
 
 export function validateStateRootForRemoval(stateRoot = defaultStateRoot()) {
@@ -504,11 +517,11 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
 function readProcessLockSnapshot(lockPath) {
   let opened;
   try {
-    opened = retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
+    opened = retryProcessLockIdentityReadSync(() => retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(lockPath, MAX_LOCK_BYTES, "process lock", {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
       allowedMultipleLinkIdentity: residueIdentity,
-    }), { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(lockPath) });
+    }), { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(lockPath) }));
   } catch (error) {
     if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return null;
     throw error;

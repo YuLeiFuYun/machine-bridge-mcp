@@ -7,7 +7,9 @@ import { sessionHasOutputAfter, waitForSessionChange } from "./process-session-e
 export async function readProcessSession({ args, context, session, throwIfCancelled, now }) {
   const stdoutOffset = clampInteger(args.stdout_offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const stderrOffset = clampInteger(args.stderr_offset, 0, 0, Number.MAX_SAFE_INTEGER);
-  const maxBytes = clampInteger(args.max_bytes, 64 * 1024, 1, 256 * 1024);
+  const hosted = context?.authority?.origin === "relay";
+  const hostedMaximum = Number(relayContract.maximumHostedProcessReadBytes);
+  const maxBytes = clampInteger(args.max_bytes, hosted ? hostedMaximum : 64 * 1024, 1, hosted ? hostedMaximum : 256 * 1024);
   const remoteRead = planRemoteProcessRead({
     context,
     session,

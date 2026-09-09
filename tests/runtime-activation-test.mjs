@@ -2,6 +2,7 @@ import { activatePersistentRuntime, waitForActivatedRuntime } from "../src/local
 import { BridgeError } from "../src/local/errors.mjs";
 
 await testValidationAndPreflightFailures();
+await testRestartabilityPreflightFailureIsZeroMutation();
 await testConvergenceWait();
 await testSuccessfulHandoff();
 await testOwnerCommitFailureStopsVerifiedCandidate();
@@ -27,11 +28,19 @@ await testCleanupFailureAggregation();
 console.log("persistent runtime activation convergence and handoff test ok");
 
 async function testValidationAndPreflightFailures() {
-  await expectReject(() => activatePersistentRuntime({}), "requires acquireStartupLock");
+  await expectReject(() => activateWithPreflight({}), "requires acquireStartupLock");
+  await expectReject(() => activatePersistentRuntime({
+    expectedVersion: "3.0.0-beta.1",
+    acquireStartupLock: unexpected, acquireServiceLock: unexpected,
+    inspectActivationOwnership: unexpected,
+    stopAutostart: unexpected, acquireDaemonLock: unexpected, prepareRemoteState: unexpected,
+    createRuntime: unexpected, installAutostart: unexpected, startAutostart: unexpected,
+    inspectDaemon: unexpected, checkWorker: unexpected,
+  }), "requires preflightRestartability");
   await expectReject(() => waitForActivatedRuntime({ inspectDaemon: async () => ({}) }), "requires daemon and Worker inspectors");
 
   const serviceLockEvents = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     acquireStartupLock: async () => lock("startup", serviceLockEvents),
     acquireServiceLock: async () => ({ acquired: false, owner: { pid: 8123 }, release() {} }),
@@ -43,7 +52,7 @@ async function testValidationAndPreflightFailures() {
     "machine-service lock contention touched the workspace startup lock or provider state");
 
   const startupFailureEvents = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     acquireServiceLock: async () => lock("service", startupFailureEvents),
     acquireStartupLock: async () => { throw new Error("startup lock unavailable"); },
@@ -55,7 +64,7 @@ async function testValidationAndPreflightFailures() {
     "startup lock failure leaked the machine-service transaction lock");
 
   const stopEvents = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => lock("startup", stopEvents),
@@ -72,7 +81,7 @@ async function testValidationAndPreflightFailures() {
   assert(stopEvents.join(",") === "startup:release", "service-stop refusal did not release the startup lock");
 
   const ambiguousStopEvents = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => lock("startup", ambiguousStopEvents),
@@ -90,7 +99,7 @@ async function testValidationAndPreflightFailures() {
     "ambiguous service-stop result entered activation or leaked the startup lock");
 
   const daemonEvents = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => lock("startup", daemonEvents),
@@ -107,7 +116,7 @@ async function testValidationAndPreflightFailures() {
   assert(daemonEvents.join(",") === "startup:release", "background-daemon refusal did not release the startup lock");
 
   const malformedDaemonEvents = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => lock("startup", malformedDaemonEvents),
@@ -129,7 +138,7 @@ async function testValidationAndPreflightFailures() {
     ["startRecoveryAutostart", "later", "startRecoveryAutostart must be a function"],
     ["inspectCandidateAutostart", true, "inspectCandidateAutostart must be a function"],
   ]) {
-    await expectReject(() => activatePersistentRuntime({
+    await expectReject(() => activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       [field]: value,
@@ -139,7 +148,7 @@ async function testValidationAndPreflightFailures() {
       startAutostart: unexpected, inspectDaemon: unexpected, checkWorker: unexpected,
     }), expected);
   }
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "bad version\n",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: unexpected, stopAutostart: unexpected, acquireDaemonLock: unexpected,
@@ -147,7 +156,7 @@ async function testValidationAndPreflightFailures() {
     prepareRemoteState: unexpected, createRuntime: unexpected, installAutostart: unexpected,
     startAutostart: unexpected, inspectDaemon: unexpected, checkWorker: unexpected,
   }), "expectedVersion must be a bounded package version string");
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => ({}),
@@ -157,7 +166,7 @@ async function testValidationAndPreflightFailures() {
     inspectDaemon: unexpected, checkWorker: unexpected,
   }), "startup lock must expose release");
 
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     candidateStartAttempts: 0,
@@ -172,6 +181,34 @@ async function testValidationAndPreflightFailures() {
     inspectDaemon: unexpected,
     checkWorker: unexpected,
   }), "candidate relay start attempts must be between 1 and 10");
+}
+
+
+async function testRestartabilityPreflightFailureIsZeroMutation() {
+  const events = [];
+  await expectReject(() => activateWithPreflight({
+    expectedVersion: "3.0.0-beta.168",
+    acquireServiceLock: async () => lock("service", events),
+    acquireStartupLock: async () => lock("startup", events),
+    inspectActivationOwnership: previousServiceActivationOwnership,
+    preflightRestartability: async ({ expectedVersion, ownership }) => {
+      assert(expectedVersion === "3.0.0-beta.168" && ownership.previousServiceRuntimeActive === true,
+        "restartability preflight did not receive the validated active-service ownership boundary");
+      events.push("restartability:preflight");
+      throw new Error("service environment file contains an unsupported key");
+    },
+    stopAutostart: async () => { events.push("service:stop"); return { ok: true, active_before: true, active: false, restore_required: true, provider: "test" }; },
+    acquireDaemonLock: async () => { events.push("daemon:takeover"); return lock("daemon", events); },
+    prepareRemoteState: async () => { events.push("worker:prepare"); return {}; },
+    createRuntime: () => { events.push("runtime:create"); return { async start() {}, stop() {} }; },
+    installAutostart: async () => { events.push("service:install"); return deferredServiceInstall(events); },
+    startAutostart: async () => { events.push("service:start"); return { ok: true, active: true, provider: "test" }; },
+    inspectDaemon: unexpected,
+    checkWorker: unexpected,
+  }), "unsupported key");
+  assert(JSON.stringify(events) === JSON.stringify([
+    "restartability:preflight", "startup:release", "service:release",
+  ]), `failed restartability preflight crossed the production mutation boundary: ${events.join(",")}`);
 }
 
 async function testConvergenceWait() {
@@ -234,13 +271,14 @@ async function testSuccessfulHandoff() {
     async start() { events.push("runtime:start"); },
     stop() { events.push("runtime:stop"); },
   };
-  const result = await activatePersistentRuntime({
+  const result = await activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     maximumAttempts: 1,
     wait: async () => {},
     acquireStartupLock: async () => startup,
     acquireServiceLock: async () => silentServiceLock(),
+    preflightRestartability: async () => { events.push("restartability:preflight"); },
     stopAutostart: async () => { events.push("service:stop"); return { ok: true, active_before: false, active: false, restore_required: false, provider: "test" }; },
     acquireDaemonLock: async () => daemon,
     prepareRemoteState: async () => { events.push("relay:prepare"); return { session: true }; },
@@ -267,6 +305,7 @@ async function testSuccessfulHandoff() {
   });
   assert(result.ok && result.candidateRelayVerified, "successful activation did not report candidate relay verification");
   assert(JSON.stringify(events) === JSON.stringify([
+    "restartability:preflight",
     "service:stop",
     "relay:prepare",
     "runtime:create",
@@ -286,7 +325,7 @@ async function testOwnerCommitFailureStopsVerifiedCandidate() {
   const events = [];
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       maximumAttempts: 1,
@@ -325,7 +364,7 @@ async function testUncommittedActiveCandidateStopsWhenRecoveryCannotConverge() {
   let stopCalls = 0;
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       maximumAttempts: 1,
@@ -367,7 +406,7 @@ async function testAuthenticationFailureRedeploysOnce() {
   const startup = lock("startup", events);
   const daemon = lock("daemon", events);
   let runtimeNumber = 0;
-  const result = await activatePersistentRuntime({
+  const result = await activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     maximumAttempts: 1,
@@ -431,7 +470,7 @@ async function testAuthenticationRecoveryIsBounded() {
   let runtimeNumber = 0;
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       candidateStartAttempts: 3,
@@ -484,7 +523,7 @@ async function testCompatibleCandidateRecoveryFailureIsObservable() {
   const events = [];
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       candidateStartAttempts: 1,
@@ -530,7 +569,7 @@ async function testCandidateStartCleanupFailureAggregation() {
   const daemon = lock("daemon", events);
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: previousServiceActivationOwnership,
       acquireStartupLock: async () => startup,
@@ -567,7 +606,7 @@ async function testCandidateStartCleanupFailureAggregation() {
 async function testForegroundRefusal() {
   const events = [];
   const startup = lock("startup", events);
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: async () => ({
       daemon: { alive: true, verified_service_daemon: false, identity_reason: "foreground_daemon", mode: "foreground", pid: 77 },
@@ -590,7 +629,7 @@ async function testForegroundRefusal() {
 
 async function testUnownedActiveServiceRefusal() {
   const events = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: async () => ({
       daemon: { alive: false, verified_service_daemon: false },
@@ -611,7 +650,7 @@ async function testUnownedActiveServiceRefusal() {
     [{ daemon: { alive: false }, provider: { active: null, provider: "test" } }, "autostart state could not be verified"],
   ]) {
     const branchEvents = [];
-    await expectReject(() => activatePersistentRuntime({
+    await expectReject(() => activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: async () => ownership,
       acquireStartupLock: async () => lock("startup", branchEvents),
@@ -630,7 +669,7 @@ async function testInstallFailureCleanup() {
   const daemon = lock("daemon", events);
   const runtime = { async start() { events.push("runtime:start"); }, stop() { events.push("runtime:stop"); } };
   let installCalls = 0;
-  const result = await activatePersistentRuntime({
+  const result = await activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => startup,
@@ -677,7 +716,7 @@ async function testCandidateFatalDuringInstall() {
     async start() { events.push("runtime:start"); },
     stop() { events.push("runtime:stop"); },
   };
-  const result = await activatePersistentRuntime({
+  const result = await activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => startup,
@@ -726,7 +765,7 @@ async function testUnexpectedPostReadyFailureRemainsFatal() {
   };
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       acquireStartupLock: async () => startup,
@@ -758,7 +797,7 @@ async function testPostDeploymentPreparationFailureUsesCandidateService() {
   const daemon = lock("daemon", events);
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       acquireStartupLock: async () => startup,
@@ -800,7 +839,7 @@ async function testRemotePreparationFailureRestoresService() {
   const events = [];
   const startup = lock("startup", events);
   const daemon = lock("daemon", events);
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: previousServiceActivationOwnership,
     acquireStartupLock: async () => startup,
@@ -841,7 +880,7 @@ async function testAmbiguousServiceStopRetriesPreviousRecovery() {
   let inspectCalls = 0;
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: previousServiceActivationOwnership,
       acquireStartupLock: async () => lock("startup", events),
@@ -887,7 +926,7 @@ async function testAmbiguousServiceStopRetriesPreviousRecovery() {
 
 async function testOrphanServiceRuntimeRestoresService() {
   const events = [];
-  await expectReject(() => activatePersistentRuntime({
+  await expectReject(() => activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: async () => ({
       daemon: { alive: true, verified_service_daemon: true, mode: "service", pid: 91 },
@@ -920,7 +959,7 @@ async function testRestorationFailureAggregation() {
   const daemon = lock("daemon", events);
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: previousServiceActivationOwnership,
       acquireStartupLock: async () => startup,
@@ -951,7 +990,7 @@ async function testServiceFailureAfterVerifiedCandidate() {
   const daemon = lock("daemon", events);
   const runtime = { async start() { events.push("runtime:start"); }, stop() { events.push("runtime:stop"); } };
   let startCalls = 0;
-  const result = await activatePersistentRuntime({
+  const result = await activateWithPreflight({
     expectedVersion: "3.0.0-beta.1",
     inspectActivationOwnership: inactiveActivationOwnership,
     acquireStartupLock: async () => startup,
@@ -992,7 +1031,7 @@ async function testServiceLockReleaseFailureAggregation() {
   const events = [];
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       acquireStartupLock: async () => lock("startup", events),
       acquireServiceLock: async () => ({
@@ -1028,7 +1067,7 @@ async function testCleanupFailureAggregation() {
   };
   let caught;
   try {
-    await activatePersistentRuntime({
+    await activateWithPreflight({
       expectedVersion: "3.0.0-beta.1",
       inspectActivationOwnership: inactiveActivationOwnership,
       acquireStartupLock: async () => startup,
@@ -1090,6 +1129,11 @@ function lock(name, events) {
       events.push(`${name}:release`);
     },
   };
+}
+
+
+function activateWithPreflight(options = {}) {
+  return activatePersistentRuntime({ preflightRestartability: async () => {}, ...options });
 }
 
 function silentServiceLock() {
