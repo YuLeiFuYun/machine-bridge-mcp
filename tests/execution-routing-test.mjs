@@ -22,6 +22,25 @@ assert(durable.routes.some((route) => route.id === "shell"), "durable routing in
 assert(durable.recommended_tools.includes("start_job") && durable.recommended_tools.includes("exec_command"),
   "durable routing did not expose both the safe primary route and shell alternative");
 
+const interruptedMultiProject = buildExecutionRouting("继续处理 Fovea、Akashic及ImageCraft 三个项目；刚才中断了，请恢复并完成剩余构建与验证", {
+  policy: policyProfile("full"),
+});
+assert(interruptedMultiProject.primary_route?.id === "managed-job",
+  "interrupted multi-project execution did not prefer durable managed-job ownership");
+assert(interruptedMultiProject.recommended_tools.includes("start_job")
+  && interruptedMultiProject.routes.some((route) => route.id === "shell"),
+"interrupted multi-project routing did not recommend start_job while retaining direct shell as a fallback");
+assert(interruptedMultiProject.recovery_guidance.some((item) => item.includes("same durable job") && item.includes("relay interruption")),
+  "interrupted multi-project routing omitted same-job recovery guidance");
+
+const diagnoseInterruptedMultiProject = buildExecutionRouting("处理「Fovea、Akashic及ImageCraft」项目时又出现了中断，查明原因", {
+  policy: policyProfile("full"),
+});
+assert(diagnoseInterruptedMultiProject.routes.some((route) => route.id === "managed-job")
+  && diagnoseInterruptedMultiProject.routes.some((route) => route.id === "diagnostics")
+  && diagnoseInterruptedMultiProject.recommended_tools.includes("start_job"),
+"diagnosing an observed multi-project interruption omitted the durable recovery route or diagnostics route");
+
 const operatorDurable = buildExecutionRouting("Run a long background multi-step migration that must survive disconnects and always clean up", {
   policy: policyProfile("agent"),
   availableTools: accountRoleToolNames("operator"),
@@ -153,6 +172,8 @@ assert(ambiguous.ranked_tools.length <= 12 && ambiguous.recommended_tools.length
   "routing output exceeded its bounded context budget");
 assert(ambiguous.recovery_guidance.some((item) => item.includes("ambiguous mutation")),
   "routing result omitted failure-aware recovery guidance");
+assert(ambiguous.recovery_guidance.some((item) => item.includes("same durable job") && item.includes("one managed job")),
+  "routing result omitted durable compound-work recovery guidance");
 assert(ambiguous.enforcement.startsWith("advisory_only") && ambiguous.enforcement.includes("effective authority")
   && !ambiguous.enforcement.includes("effective policy"),
 "routing result did not state its account-attenuated non-enforcement boundary");

@@ -1,13 +1,17 @@
 # Changelog
 
-## 3.0.0-beta.174 - 2026-09-09
+## 3.0.0-beta.179 - 2026-09-10
 
-- Harden brief same-daemon relay interruptions after a live beta.173 incident showed WebSocket close `1006` on the application-proxy route and one reconnect attempt returning HTTP `502`, while local daemon, filesystem/process, resource-admission, event-loop, and sleep evidence remained healthy. The evidence locates the failure at the relay/proxy transport boundary but does not identify a specific upstream provider.
-- Preserve an in-memory pending result owner for up to 15 additional seconds after its original Worker settlement deadline when the same daemon reconnects, capped by the tool's existing maximum settlement lifetime. This delivery-only grace lets an already-executed terminal result settle the original request instead of turning a short transport outage into a user-visible timeout.
-- Keep execution authority separate from result delivery: transparent redelivery after `resume_calls_ack.missing_ids` still uses the original daemon execution deadline, so the longer settlement owner cannot authorize a new execution, duplicate a side effect, or create client-visible MCP replay state. Repeated same-instance handovers cannot cumulatively extend the absolute delivery deadline.
-- Add deterministic coverage for late terminal-result delivery, reconnect-expiry classification, repeated handover, the existing 50-second ordinary settlement ceiling, and the negative case where the original execution budget has expired but the result owner is still intentionally retained.
-- Keep relay recovery observability content-free: normal logs and public diagnostics do not gain call IDs, arguments, results, credentials, proxy endpoints, raw socket errors, or personal paths from this recovery path.
-- Advance package, Worker, and browser-extension identity to `3.0.0-beta.174`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
+- Supersede the unaccepted beta.178 candidate after owner-machine recovery exposed post-verification lifecycle gaps. A recurring external launchd migration helper repeatedly stopped the Machine Bridge daemon and then exited before restart when the destination profile was populated; that helper is removed and is not an accepted migration mechanism. The evidence supports a runaway recovery task, not malicious intent.
+- Retain the compound-task continuity repair from beta.175/beta.176: coherent long-running, multi-step, multi-project, and interruption-sensitive non-interactive work routes toward durable managed-job ownership, same-job recovery is preferred after reconnect, and direct shell remains available as a fallback.
+- Add `machine-mcp workspace migrate OLD NEW` as the supported offline workspace-profile relocation path. It accepts an already-missing OLD path only when the retained profile proves that exact historical path/hash; accepts a destination only when absent or provably unpopulated; and refuses active providers, managed jobs, state locks, populated or ambiguous destination collisions, malformed/mismatched state, and ambiguous service-owner identity.
+- Verify provider inactivity and source-profile job/lock quiescence before pruning even a proven-empty destination shell. Empty-shell pruning uses only empty-directory removal, so a concurrent population race fails closed rather than recursively deleting state.
+- Make targetless `machine-mcp service stop` provider-global and workspace-state-free: with no explicit workspace/state target it stops the installed provider without resolving or loading the selected workspace. Explicit targeted stop retains verified daemon-ownership checks.
+- Move the complete profile rather than copying only `state.json`, preserving retained jobs and security-audit state. A crash-recovery marker makes the profile-directory rename/state-envelope rewrite resumable without guessing or merging state.
+- Retire a machine-service owner only when its raw committed record exactly matches the historical workspace and state root. A historical entry script that has already disappeared with an archived worktree is tolerated; an entry that still exists must be a real regular file. Canonical path comparison tolerates operating-system aliases through `realpath` when available.
+- Include `HOME` in macOS launchd daemon service `EnvironmentVariables` together with the controlled `PATH` so headless/non-interactive service startup has a stable user-home boundary.
+- Document that workspace migration must remain inside the supported CLI lifecycle or one bounded handoff. Do not install recurring launchd/cron helpers that repeatedly stop the daemon around migration retries.
+- Advance package, Worker, and browser-extension identity to `3.0.0-beta.179`; hosted tool schema generation remains 27 because no MCP tool argument/result contract changes in this release.
 
 ## Historical releases
 

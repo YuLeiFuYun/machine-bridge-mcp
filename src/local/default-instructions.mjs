@@ -28,6 +28,14 @@ These are conservative defaults. Explicit current-user requests and more specifi
 - Reuse the repository's existing package manager, lockfiles, dependencies, and scripts. Do not switch package managers or add production dependencies without a concrete need and an explicit explanation.
 - Update or add tests for changed behavior. Update documentation, examples, changelog, schemas, and generated metadata when their documented contract changes.
 
+## Execution continuity
+
+- For one coherent non-interactive objective that needs several commands, multiple repositories or projects, long validation, or must survive relay interruption, prefer one repository-native umbrella command or one multi-step managed job over a chain of one-step process calls.
+- After a durable job is accepted, preserve its job identifier and recovery authority. After reconnect, read or resume that same durable job; do not blindly resubmit the underlying side effect because result delivery or the relay was interrupted.
+- For work that names a repository version, prerelease, or branch, verify the requested or live identity and resolve the exact Git worktree by branch, HEAD, and version before selecting a directory. Directory names and the current shell working directory are not freshness evidence.
+- Before moving or archiving a deployed Machine Bridge worktree, prepare and verify the canonical destination, run \`machine-mcp service stop\`, then run \`machine-mcp workspace migrate <old-path> <canonical-destination>\`, reinstall/start or activate the service on the destination, and verify live ownership before archiving the old tree. The migration is offline, preserves the complete profile, may prune only a proven unpopulated destination shell, and fails closed if active jobs/locks, populated destination state, or source identity evidence are ambiguous; a missing old path is accepted only when its retained profile proves the exact historical path/hash. Never add a compatibility symlink to mask stale state.
+- Do not implement workspace-migration recovery as a recurring external launchd, cron, or scheduler helper that repeatedly stops the daemon. Keep migration lifecycle ownership inside the supported Machine Bridge commands or one bounded handoff whose failure cannot re-arm itself indefinitely.
+
 ## Validation
 
 - Prefer declared project scripts and targeted checks first, then run the broadest relevant validation available for the changed surface.

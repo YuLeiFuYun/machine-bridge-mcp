@@ -218,9 +218,11 @@ export function buildServiceSpec({ workspace, stateRoot, entryScript, platform =
   const resolvedEntryScript = path.resolve(entryScript);
   const pathEnv = String(environment?.PATH ?? "");
   const node = stableNodeExecutable({ platform, execPath, pathEnv });
+  const home = String(environment?.HOME || os.homedir());
   const spec = { workspace, stateRoot: root, entryScript: resolvedEntryScript, node,
     pathEnv: serviceEnvironmentPath({ platform, node, entryScript: resolvedEntryScript, pathEnv }),
-    stdout: path.join(logs, "daemon.out.log"), stderr: path.join(logs, "daemon.err.log") };
+    stdout: path.join(logs, "daemon.out.log"), stderr: path.join(logs, "daemon.err.log"),
+    home };
   return Object.freeze({ ...spec, daemonArgs: Object.freeze(daemonArgs(spec)) });
 }
 export function prepareServiceSpecFilesystem(spec) {
@@ -232,6 +234,7 @@ export function previewAutostartDefinition(spec, options = {}) {
   const platform = String(options.platform || process.platform);
   if (platform === "darwin") return Object.freeze({ provider: "launchd", content: launchdPlist({
     args: [spec.node, ...spec.daemonArgs], pathEnv: spec.pathEnv, stdout: spec.stdout, stderr: spec.stderr,
+    home: spec.home || options.home || process.env.HOME || os.homedir(),
   }) });
   if (platform === "win32") {
     const launcher = windowsLauncherPath(spec.stateRoot);
@@ -531,7 +534,8 @@ async function statusLaunchd() {
   return launchdStatusSummary({ installed: existsSync(plistPath), definition: LABEL, result });
 }
 
-export function launchdPlist({ args, pathEnv, stdout, stderr }) {
+export function launchdPlist({ args, pathEnv, stdout, stderr, home }) {
+  const homeXml = home ? `\n    <key>HOME</key><string>${escapeXml(home)}</string>` : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -543,7 +547,7 @@ ${args.map(arg => `    <string>${escapeXml(arg)}</string>`).join("\n")}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>${escapeXml(pathEnv)}</string>
+    <key>PATH</key><string>${escapeXml(pathEnv)}</string>${homeXml}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>

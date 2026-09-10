@@ -37,7 +37,7 @@ assert(versionFlag.status === 0 && versionFlag.stdout.trim() === `${pkg.name} ${
 const help = run(["help"]);
 assert(help.status === 0, `help command failed: ${help.stderr}`);
 assert(help.stdout.includes("Usage:") && help.stdout.includes("--log-format") && help.stdout.includes("activate          Deploy/update Worker")
-  && help.stdout.includes("idle-sleep show|set MODE"), "help output omitted current CLI options");
+  && help.stdout.includes("idle-sleep show|set MODE") && help.stdout.includes("workspace migrate OLD NEW"), "help output omitted current CLI options");
 assert(help.stdout.includes("newly generated account passwords are included once"), "help output incorrectly claims JSON can never contain a generated password");
 
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-state-"));
@@ -100,6 +100,13 @@ try {
   const removedApprovalCommand = run(["approval", "list", "--workspace", workspaceRoot, "--state-dir", stateRoot]);
   assert(removedApprovalCommand.status === 2 && removedApprovalCommand.stderr.includes("Unknown command"),
     "obsolete approval/lease CLI remained user-accessible");
+
+  const missingMigrationDestination = run(["workspace", "migrate", workspaceRoot, "--state-dir", stateRoot]);
+  assert(missingMigrationDestination.status !== 0 && missingMigrationDestination.stderr.includes("requires OLD and NEW"),
+    "workspace migrate accepted an incomplete source/destination pair");
+  const excessiveMigrationArgs = run(["workspace", "migrate", workspaceRoot, workspaceRoot, workspaceRoot, "--state-dir", stateRoot]);
+  assert(excessiveMigrationArgs.status !== 0 && excessiveMigrationArgs.stderr.includes("too many positional arguments"),
+    "workspace migrate positional validation accepted an ambiguous extra path");
 
   const reset = run(["workspace", "reset", "--state-dir", stateRoot]);
   assert(reset.status === 0 && reset.stdout.includes("selection reset"), `workspace reset failed: ${reset.stderr}`);

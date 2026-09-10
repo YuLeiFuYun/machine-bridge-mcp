@@ -49,7 +49,8 @@ const ACCOUNT_POSITIONAL_LIMITS = new Map(Object.entries({ list: 1, clients: 1, 
 const ACTION_POSITIONAL_RULES = new Map(Object.entries({
   workspace(args) {
     const action = String(args._[0] || "show");
-    return { max: action === "set" || action === "select" ? 2 : 1, tooMany: `workspace ${action} received too many positional arguments`, workspaceConflictAfter: 1 };
+    const max = action === "migrate" ? 3 : action === "set" || action === "select" ? 2 : 1;
+    return { max, tooMany: `workspace ${action} received too many positional arguments`, workspaceConflictAfter: action === "set" || action === "select" ? 1 : undefined };
   },
   "idle-sleep"(args) {
     const action = String(args._[0] || "show");

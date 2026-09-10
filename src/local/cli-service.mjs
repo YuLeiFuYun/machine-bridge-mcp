@@ -139,7 +139,9 @@ async function serviceRestartAction({ args, context }) {
 
 async function serviceStopAction({ args, stateRoot, service, context }) {
   const logger = context.structuredLogger(Boolean(args.quiet));
-  const state = optionalServiceState(args, stateRoot, context);
+  const state = hasExplicitServiceTarget(args)
+    ? optionalServiceState(args, stateRoot, context)
+    : null;
   const status = await service.autostartStatus();
   const before = state ? context.inspectWorkspaceDaemon(state) : null;
   assertExplicitStopTarget(args, status, before);

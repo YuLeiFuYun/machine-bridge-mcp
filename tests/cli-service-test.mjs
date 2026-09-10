@@ -197,6 +197,32 @@ assert(calls.includes("restart-scheduled"), "restart bypassed the handoff schedu
 assert(!calls.some((entry) => Array.isArray(entry) && entry[0] === "service-lock" && entry[1] === "service-restart"),
   "restart parent held the lock instead of the detached mutation helper");
 
+const globalStopOutputs = [];
+let globalProviderStops = 0;
+const globalStop = createServiceCommand({
+  chooseWorkspace: async () => { throw new Error("targetless stop must not choose a workspace"); },
+  stateRootFromArgs: () => "/synthetic-state",
+  acquireMachineServiceLockWithWait: acquireTestServiceLock,
+  structuredLogger: () => ({}), currentPackageVersion: () => "3.0.0-test",
+  service: {
+    ...service,
+    async autostartStatus() { return { ok: true, active: true, provider: "test" }; },
+    async stopAutostart() { globalProviderStops += 1; return { ok: true, active_before: true, active: false, provider: "test" }; },
+  },
+  selectedWorkspace: () => { throw new Error("targetless stop must not read selected workspace"); },
+  resolveWorkspace: () => { throw new Error("targetless stop must not resolve a workspace"); },
+  loadState: () => { throw new Error("targetless stop must not load or create workspace state"); },
+  inspectWorkspaceDaemon: () => { throw new Error("targetless stop must not inspect a workspace daemon"); },
+  stopWorkspaceServiceDaemon: async () => { throw new Error("targetless stop must not stop a workspace daemon through workspace state"); },
+  print: value => globalStopOutputs.push(JSON.parse(value)),
+});
+await globalStop({ _: ["stop"] });
+assert(globalProviderStops === 1, "targetless service stop did not stop the installed provider exactly once");
+assert(globalStopOutputs.at(-1).workspace === null
+  && globalStopOutputs.at(-1).workspace_daemon?.found === false
+  && globalStopOutputs.at(-1).workspace_daemon?.reason === "workspace_not_selected",
+"targetless service stop fabricated workspace state or daemon ownership");
+
 await command({ _: ["stop"], workspace: "/synthetic-workspace" });
 assert(outputs.at(-1).ok === true && outputs.at(-1).workspace_daemon.stopped === true, "stop did not combine lifecycle results");
 assert(calls.some((entry) => Array.isArray(entry) && entry[0] === "daemon-stop" && entry[1].reason === "service stop"), "stop bypassed verified daemon shutdown");
@@ -238,7 +264,7 @@ const mismatchedStop = createServiceCommand({
     async autostartStatus() { return { ok: true, active: true, provider: "test" }; },
     async stopAutostart() { mismatchedStopCalls.push("provider-stop"); return { ok: true }; },
   },
-  loadState: () => ({ workspace: { path: "/other-workspace" }, worker: {} }),
+  loadState: () => { mismatchedStopCalls.push("state-load"); return { workspace: { path: "/other-workspace" }, worker: {} }; },
   resolveWorkspace: (value) => value,
   selectedWorkspace: () => null,
   inspectWorkspaceDaemon: () => ({ alive: false, verified_service_daemon: false, identity_reason: "not_running" }),
@@ -247,7 +273,8 @@ await expectReject(
   () => mismatchedStop({ _: ["stop"], workspace: "/other-workspace", stateDir: "/other-state" }),
   "does not own its verified daemon",
 );
-assert(mismatchedStopCalls.length === 0, "mismatched targeted stop reached the machine service manager");
+assert(mismatchedStopCalls.includes("state-load"), "explicit targeted stop no longer loaded its requested workspace state for ownership verification");
+assert(!mismatchedStopCalls.includes("provider-stop"), "mismatched targeted stop reached the machine service manager");
 
 for (const malformedLock of [{ acquired: false, release() {} }, { acquired: true }]) {
   let providerCalls = 0;

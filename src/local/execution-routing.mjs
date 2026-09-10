@@ -31,9 +31,11 @@ const ROUTES = Object.freeze([
   ]),
   route("managed-job", "Durable managed job", [
     "stage_job", "start_job", "read_job", "list_jobs", "cancel_job",
-  ], "Use a durable job for long-running or multi-step work that must survive relay interruption and still attempt cleanup.", [
+  ], "Use a durable job for coherent long-running, multi-step, multi-project, or interruption-sensitive work that must survive relay interruption and still attempt cleanup.", [
     "background", "detached", "durable", "long running", "resume", "cleanup", "finally", "overnight", "continuous", "retry",
-    "后台", "持久", "断线", "恢复", "清理", "长时间", "持续", "重试", "多步骤",
+    "interruption", "disconnect", "reconnect", "multi-project", "multi-repository", "multiple projects", "batch",
+    "后台", "持久", "断线", "中断", "掉线", "断开", "重连", "恢复", "续跑", "清理", "长时间", "持续", "重试", "多步骤",
+    "多个项目", "多个仓库", "跨项目", "批量",
   ]),
   route("workspace-edit", "Workspace files", [
     "search_text", "read_file", "list_files", "list_dir", "edit_file", "apply_patch", "write_file", "view_image",
@@ -174,6 +176,7 @@ export function buildExecutionRouting(task, options = {}) {
     recommended_tools: recommendedTools,
     recovery_guidance: [
       "Diagnose policy, relay, or runtime failures before changing execution surfaces.",
+      "For coherent compound work that must survive relay interruption, put the non-interactive sequence in one managed job and resume the same durable job after reconnect instead of replaying one-step side effects.",
       "After an ambiguous mutation failure, inspect stable state before retrying; do not assume the side effect did not occur.",
       "A fallback route is an alternative execution surface, not permission to bypass host or effective-authority denial.",
     ],
@@ -235,7 +238,22 @@ function scoreRoute(definition, task, availableNames, scoreByTool, options, fall
 }
 
 function managedJobCreationIntent(task) {
-  return /background|detached|durable|long[- ]?running|overnight|continuous|multi[- ]?step|后台|持久|长时间|持续|多步骤/i.test(String(task || ""));
+  const text = String(task || "");
+  return /background|detached|durable|long[- ]?running|overnight|continuous|multi[- ]?step|后台|持久|长时间|持续|多步骤/i.test(text)
+    || interruptionContinuityIntent(text)
+    || compoundExecutionIntent(text);
+}
+
+function interruptionContinuityIntent(task) {
+  return /interruption|disconnect(?:ed|ion)?|drop(?:ped)?|reconnect|resume|中断|断线|掉线|断开|重连|续跑|恢复执行/i.test(String(task || ""));
+}
+
+function compoundExecutionIntent(task) {
+  const text = String(task || "");
+  const executionVerb = /process|handle|continue|resume|run|build|test|verify|migrate|repair|implement|处理|继续|续跑|运行|构建|测试|验证|迁移|修复|实现/i.test(text);
+  const explicitCompound = /multi[- ]?(?:project|repo|repository)|multiple (?:projects|repos|repositories)|cross[- ]project|batch|多个项目|多个仓库|跨项目|批量/i.test(text);
+  const enumeratedCompound = /[、,，].*(?:及|和|与|and)/i.test(text);
+  return executionVerb && (explicitCompound || enumeratedCompound);
 }
 
 function dynamicBoost(id, task, options) {
@@ -249,13 +267,17 @@ function dynamicBoost(id, task, options) {
   if (id === "computer-use" && /computer use|gui agent|screen grounding|电脑操作|界面操作|视觉定位/.test(lower)) add(18, "computer_use_intent");
   if (id === "browser" && options.browserAvailable === true && /browser|chrome|edge|brave|网页|浏览器|表单|网站|登录/.test(lower)) add(14, "browser_intent");
   if (id === "application-discovery" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(8, "installed_application_inventory_match");
-  if (id === "managed-job" && /background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent");
+  if (id === "managed-job") {
+    if (/background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent");
+    if (interruptionContinuityIntent(task)) add(12, "interruption_continuity_intent");
+    if (compoundExecutionIntent(task)) add(12, "compound_execution_intent");
+  }
   if (id === "process-session" && /interactive|stdin|repl|watch|tail|stream|dev server|交互|实时日志|输入|常驻进程/.test(lower)) add(12, "interactive_process_intent");
   if (id === "shell" && /bash|shell|terminal|cli|command|script|debug|diagnos|benchmark|audit|probe|命令|终端|脚本|排查|调试|基准|审查|测试|构建/.test(lower)) add(10, "shell_or_cli_intent");
   if (id === "workspace-edit" && /file|source|code|edit|write|patch|refactor|repository|文件|源码|代码|修改|写入|补丁|重构|仓库/.test(lower)) add(10, "workspace_change_intent");
   if (id === "git-review" && /git|commit|diff|branch|history|revision|提交|分支|差异|历史|版本/.test(lower)) add(12, "git_intent");
   if (id === "protected-resource" && /credential|secret|token|private key|ssh key|password|凭据|密钥|令牌|密码/.test(lower)) add(14, "protected_data_intent");
-  if (id === "diagnostics" && /status|health|diagnos|runtime|relay|policy|authorization|状态|健康|诊断|运行时|权限|连接/.test(lower)) add(10, "runtime_diagnostic_intent");
+  if (id === "diagnostics" && /status|health|diagnos|runtime|relay|policy|authorization|root cause|failure|error|incident|why|状态|健康|诊断|运行时|权限|连接|查明|原因|故障|异常/.test(lower)) add(10, "runtime_diagnostic_intent");
   return { score, reasons };
 }
 
