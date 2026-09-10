@@ -2,6 +2,8 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import { getProxyForUrl } from "proxy-from-env";
 
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
+const RELAY_HTTP_PROXY_AGENT_CACHE_LIMIT = 4;
+const relayHttpProxyAgents = new Map();
 export const RELAY_PROXY_ENVIRONMENT_KEY = "MBM_RELAY_PROXY";
 export const RELAY_FALLBACK_PROXY_ENVIRONMENT_KEY = "MBM_RELAY_FALLBACK_PROXY";
 
@@ -19,23 +21,24 @@ export function proxyAgentForWebSocket(webSocketUrl, proxyResolver = getProxyFor
 export function proxyAgentForRelayHttp(httpUrl, proxyResolver = getProxyForUrl, environment = process.env) {
   const target = new URL(String(httpUrl));
   if (!HTTP_PROTOCOLS.has(target.protocol)) throw new Error("relay HTTP URL must use http or https");
+  const options = { reuseRelayHttpAgent: true };
   if (Object.hasOwn(environment || {}, RELAY_FALLBACK_PROXY_ENVIRONMENT_KEY)) {
     const fallbackProxy = String(environment[RELAY_FALLBACK_PROXY_ENVIRONMENT_KEY] ?? "").trim();
     if (fallbackProxy) {
       return proxyAgentForValue(fallbackProxy, {
         errorCode: "relay_proxy_configuration",
         subject: "relay fallback proxy",
-      });
+      }, options);
     }
     return proxyAgentForLookup(target, proxyResolver, {
       errorCode: "relay_proxy_configuration",
       subject: "relay fallback proxy",
-    });
+    }, options);
   }
   return proxyAgentForRelayLookup(target, proxyResolver, environment, {
     errorCode: "relay_proxy_configuration",
     subject: "relay proxy",
-  });
+  }, options);
 }
 
 export function proxyAgentForHttp(httpUrl, proxyResolver = getProxyForUrl) {
@@ -47,21 +50,21 @@ export function proxyAgentForHttp(httpUrl, proxyResolver = getProxyForUrl) {
   });
 }
 
-function proxyAgentForRelayLookup(lookupUrl, proxyResolver, environment, context) {
+function proxyAgentForRelayLookup(lookupUrl, proxyResolver, environment, context, options = {}) {
   const explicitProxy = Object.hasOwn(environment || {}, RELAY_PROXY_ENVIRONMENT_KEY)
     ? String(environment[RELAY_PROXY_ENVIRONMENT_KEY] ?? "").trim()
     : "";
-  if (explicitProxy) return proxyAgentForValue(explicitProxy, context);
-  return proxyAgentForLookup(lookupUrl, proxyResolver, context);
+  if (explicitProxy) return proxyAgentForValue(explicitProxy, context, options);
+  return proxyAgentForLookup(lookupUrl, proxyResolver, context, options);
 }
 
-function proxyAgentForLookup(lookupUrl, proxyResolver, context) {
+function proxyAgentForLookup(lookupUrl, proxyResolver, context, options = {}) {
   const proxyValue = String(proxyResolver(lookupUrl.href) || "").trim();
   if (!proxyValue) return { agent: null, mode: "direct" };
-  return proxyAgentForValue(proxyValue, context);
+  return proxyAgentForValue(proxyValue, context, options);
 }
 
-function proxyAgentForValue(proxyValue, context) {
+function proxyAgentForValue(proxyValue, context, options = {}) {
   let proxyUrl;
   try {
     proxyUrl = new URL(proxyValue);
@@ -73,12 +76,33 @@ function proxyAgentForValue(proxyValue, context) {
   }
   try {
     return {
-      agent: new HttpsProxyAgent(proxyUrl),
+      agent: options.reuseRelayHttpAgent === true
+        ? reusableRelayHttpProxyAgent(proxyUrl)
+        : new HttpsProxyAgent(proxyUrl),
       mode: "proxy",
     };
   } catch {
     throw proxyConfigurationError(`${context.subject} configuration could not be initialized`, context.errorCode);
   }
+}
+
+function reusableRelayHttpProxyAgent(proxyUrl) {
+  const key = proxyUrl.href;
+  const existing = relayHttpProxyAgents.get(key);
+  if (existing) {
+    relayHttpProxyAgents.delete(key);
+    relayHttpProxyAgents.set(key, existing);
+    return existing;
+  }
+  const agent = new HttpsProxyAgent(proxyUrl, { keepAlive: true });
+  relayHttpProxyAgents.set(key, agent);
+  while (relayHttpProxyAgents.size > RELAY_HTTP_PROXY_AGENT_CACHE_LIMIT) {
+    const oldestKey = relayHttpProxyAgents.keys().next().value;
+    const oldest = relayHttpProxyAgents.get(oldestKey);
+    relayHttpProxyAgents.delete(oldestKey);
+    try { oldest?.destroy?.(); } catch { /* Bounded cache eviction must not turn proxy selection into a transport failure. */ }
+  }
+  return agent;
 }
 
 function proxyConfigurationError(message, code) {

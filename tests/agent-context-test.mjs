@@ -152,6 +152,16 @@ Follow the sample workflow.
       && context.builtin_instructions.content.includes("verify live ownership before archiving the old tree")
       && context.builtin_instructions.content.includes("Do not implement workspace-migration recovery as a recurring external launchd"),
     "default working agreements omitted durable continuity, exact-worktree identity, offline workspace-profile migration ordering, or recurring-helper prohibition guidance");
+    assert(context.builtin_instructions?.content.includes("continuation.task_supervisor=true")
+      && context.builtin_instructions.content.includes("continuation_mode=task_supervisor")
+      && context.builtin_instructions.content.includes("single umbrella job shape")
+      && context.builtin_instructions.content.includes("Job Monitor is status and ownership evidence")
+      && context.builtin_instructions.content.includes("not by itself a reason to hand off unfinished task ownership")
+      && context.builtin_instructions.content.includes("continuation.continue_same_response=true")
+      && context.builtin_instructions.content.includes("actual host/tool boundary")
+      && context.builtin_instructions.content.includes("server_info, diagnose_runtime, read_file, search_text, and git_status surfaces directly")
+      && context.builtin_instructions.content.includes("Do not wrap each diagnostic in a managed process job"),
+    "default working agreements omitted machine-readable task-supervisor ownership, same-response continuation, bounded stop conditions, or direct read-only diagnostic guidance");
     assert(context.builtin_instructions?.content.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && context.builtin_instructions.content.includes("stop and report the boundary"), "default working agreements omitted the fail-closed local GitHub control-plane rule");
     assert(context.automatic_project_context?.content.includes("npm run check"), "automatic project context omitted declared package scripts");
     assert(context.automatic_project_context?.content.includes("package-lock.json") && context.automatic_project_context?.content.includes(".github/workflows/ci.yml"), "automatic project context omitted lockfile or CI facts");

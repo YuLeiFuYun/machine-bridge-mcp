@@ -676,6 +676,20 @@ async function testRuntimeCapabilities() {
     "capability routing removed the direct shell escape hatch");
   assert(resolutions.length === 1, "capability routing observation was not recorded");
 
+  const projectContinuation = await resolveTaskCapabilities({
+    agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },
+    appAutomationManager: { listApplications: async () => ({ applications: [
+      { name: "Image Capture", id: "com.apple.Image_Capture" },
+      { name: "Image Playground", id: "com.apple.GenerativePlaygroundApp" },
+    ] }) }, capabilityObserver: { recordResolution() {} }, policy: policyProfile("full"),
+  }, { task: "处理 Fovea、Akashic 及 ImageCraft 项目时又出现了中断。继续完成剩余的非交互工作；除非遇到真实 host/tool 边界、需要外部输入或授权，否则不要停下。" }, {});
+  assert(projectContinuation.application_matches.length === 0, "ImageCraft weak-matched an unrelated installed Image application");
+  assert(projectContinuation.execution_routing?.primary_route?.id === "managed-job"
+    && projectContinuation.execution_routing?.continuation?.task_supervisor === true
+    && projectContinuation.execution_routing?.continuation?.continue_same_response === true
+    && !projectContinuation.execution_routing?.continuation?.reasons?.includes("interactive_process_excluded"),
+  "live Fovea/Akashic/ImageCraft continuation wording did not resolve to durable task supervision");
+
   const degradedFull = await resolveTaskCapabilities({
     agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },
     appAutomationManager: { listApplications: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); } },

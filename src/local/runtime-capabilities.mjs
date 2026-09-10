@@ -94,6 +94,6 @@ function applicationMatchScore(task, application) {
   const id = String(application.id || "").toLowerCase();
   if (!name) return 0;
   if (task.includes(name)) return 10 + Math.min(name.length, 20);
-  const words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
-  return words.reduce((score, word) => score + (task.includes(word) ? 2 : 0), id && task.includes(id) ? 5 : 0);
+  const taskTokens = new Set(task.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2)), words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
+  return words.reduce((score, word) => score + (taskTokens.has(word) ? 2 : 0), id && task.includes(id) ? 5 : 0);
 }
