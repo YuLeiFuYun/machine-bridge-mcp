@@ -2,6 +2,11 @@
 
 import { relevanceScore } from "./capability-ranking.mjs";
 import { toolDefinition, toolNamesForPolicy } from "./policy.mjs";
+import {
+  buildContinuationContract, compoundExecutionIntent, durableExecutionIntent, existingManagedJobContinuationIntent,
+  interactiveProcessIntent, interruptionContinuityIntent, keepWorkingIntent, managedJobCommandExecutionIntent,
+  managedJobCreationIntent, nonExecutionIntent, readOnlyDiagnosticIntent,
+} from "./execution-routing-intent.mjs";
 
 const MAX_ROUTES = 6;
 const MAX_RANKED_TOOLS = 12;
@@ -31,9 +36,11 @@ const ROUTES = Object.freeze([
   ]),
   route("managed-job", "Durable managed job", [
     "stage_job", "start_job", "read_job", "list_jobs", "cancel_job",
-  ], "Use a durable job for long-running or multi-step work that must survive relay interruption and still attempt cleanup.", [
+  ], "Use a durable job for non-interactive process execution that must survive relay interruption. Do not wrap read-only server_info, diagnose_runtime, read_file, search_text, or git_status inspection in a managed job.", [
     "background", "detached", "durable", "long running", "resume", "cleanup", "finally", "overnight", "continuous", "retry",
-    "后台", "持久", "断线", "恢复", "清理", "长时间", "持续", "重试", "多步骤",
+    "interruption", "disconnect", "reconnect", "multi-project", "multi-repository", "multiple projects", "batch",
+    "后台", "持久", "断线", "中断", "掉线", "断开", "重连", "恢复", "续跑", "清理", "长时间", "持续", "重试", "多步骤",
+    "多个项目", "多个仓库", "跨项目", "批量",
   ]),
   route("workspace-edit", "Workspace files", [
     "search_text", "read_file", "list_files", "list_dir", "edit_file", "apply_patch", "write_file", "view_image",
@@ -74,7 +81,7 @@ const ROUTES = Object.freeze([
   ]),
   route("diagnostics", "Runtime diagnostics", [
     "server_info", "project_overview", "diagnose_runtime",
-  ], "Use fixed diagnostics to distinguish authorization, relay, filesystem, process, shell, and runtime failures.", [
+  ], "Call structured diagnostics directly for read-only authorization, relay, filesystem, process, shell, and runtime inspection; do not create a managed process job merely to call server_info or diagnose_runtime.", [
     "status", "health", "diagnose", "runtime", "relay", "policy", "authorization", "状态", "健康", "诊断", "运行时", "权限", "连接",
   ]),
 ]);
@@ -95,20 +102,7 @@ const ROUTE_FALLBACKS = Object.freeze({
   diagnostics: ["shell"],
 });
 
-/**
- * Build advisory, set-level routing for the current task. It never hides tools,
- * changes policy, or makes shell execution conditional on the recommendation.
- * @param {unknown} task
- * @param {{
- *   policy?: Record<string, unknown>,
- *   availableTools?: Iterable<unknown> | null,
- *   seedTools?: unknown[],
- *   commandRelevant?: boolean,
- *   skillRelevant?: boolean,
- *   applicationMatches?: unknown[],
- *   browserAvailable?: boolean,
- * }} [options]
- */
+/** Build bounded advisory routing without changing effective authority. */
 export function buildExecutionRouting(task, options = {}) {
   const text = String(task || "");
   const availableNames = options.availableTools === null || options.availableTools === undefined
@@ -137,9 +131,12 @@ export function buildExecutionRouting(task, options = {}) {
   }
 
   const availableRouteIds = new Set(ROUTES
-    .filter((definition) => routeUsable(definition, text, availableNames))
+    .filter((definition) => routeUsable(definition, text, availableNames, options))
     .map((definition) => definition.id));
-  const routes = selectRoutes(scoredRoutes, availableRouteIds);
+  const continuation = buildContinuationContract(text, availableNames, options);
+  const selectedRoutes = selectRoutes(scoredRoutes, availableRouteIds);
+  const managedPrimary = continuation.task_supervisor ? scoredRoutes.find((routeValue) => routeValue.id === "managed-job") : null;
+  const routes = managedPrimary ? [managedPrimary, ...selectedRoutes.filter((routeValue) => routeValue.id !== "managed-job")].slice(0, MAX_ROUTES) : selectedRoutes;
   const primary = routes[0] || null;
   const second = routes[1] || null;
   const scoreGap = primary && second ? primary.score - second.score : primary ? primary.score : 0;
@@ -152,9 +149,8 @@ export function buildExecutionRouting(task, options = {}) {
         : "low";
 
   const recommendedTools = unique([
-    ...routes.slice(0, 3).flatMap((item) => rankedRouteTools(item, scoreByTool, 5)),
-    ...(Array.isArray(options.seedTools) ? options.seedTools : []),
-    ...toolScores.slice(0, MAX_RANKED_TOOLS).map((item) => item.tool),
+    ...(continuation.task_supervisor ? ["start_job", "read_job"] : []), ...routes.slice(0, 3).flatMap((item) => rankedRouteTools(item, scoreByTool, 5)),
+    ...(Array.isArray(options.seedTools) ? options.seedTools : []), ...toolScores.slice(0, MAX_RANKED_TOOLS).map((item) => item.tool),
   ]).filter((tool) => availableNames.has(tool)).slice(0, MAX_RECOMMENDED_TOOLS);
 
   return {
@@ -172,8 +168,10 @@ export function buildExecutionRouting(task, options = {}) {
       competing_routes: ambiguity === "none" ? [] : routes.slice(0, ambiguity === "high" ? 3 : 2).map((item) => item.id),
     },
     recommended_tools: recommendedTools,
+    continuation,
     recovery_guidance: [
       "Diagnose policy, relay, or runtime failures before changing execution surfaces.",
+      "For coherent compound work that must survive relay interruption, put the non-interactive sequence in one managed job and resume the same durable job after reconnect instead of replaying one-step side effects.",
       "After an ambiguous mutation failure, inspect stable state before retrying; do not assume the side effect did not occur.",
       "A fallback route is an alternative execution surface, not permission to bypass host or effective-authority denial.",
     ],
@@ -202,14 +200,14 @@ function route(id, title, tools, guidance, keywords) {
   return Object.freeze({ id, title, tools: Object.freeze(tools), guidance, keywords: Object.freeze(keywords) });
 }
 
-function routeUsable(definition, task, availableNames) {
+function routeUsable(definition, task, availableNames, options = {}) {
   if (!definition.tools.some((tool) => availableNames.has(tool))) return false;
-  return definition.id !== "managed-job" || !managedJobCreationIntent(task)
+  return definition.id !== "managed-job" || !managedJobCreationIntent(task, options)
     || availableNames.has("start_job") || availableNames.has("stage_job");
 }
 
 function scoreRoute(definition, task, availableNames, scoreByTool, options, fallbackScore = 0) {
-  if (!routeUsable(definition, task, availableNames)) return null;
+  if (!routeUsable(definition, task, availableNames, options)) return null;
   const tools = definition.tools.filter((tool) => availableNames.has(tool));
   let score = relevanceScore(task, `${definition.title} ${definition.guidance} ${definition.keywords.join(" ")}`, definition.id);
   const reasons = [];
@@ -234,10 +232,6 @@ function scoreRoute(definition, task, availableNames, scoreByTool, options, fall
   };
 }
 
-function managedJobCreationIntent(task) {
-  return /background|detached|durable|long[- ]?running|overnight|continuous|multi[- ]?step|后台|持久|长时间|持续|多步骤/i.test(String(task || ""));
-}
-
 function dynamicBoost(id, task, options) {
   const lower = String(task || "").toLowerCase();
   const reasons = [];
@@ -249,26 +243,22 @@ function dynamicBoost(id, task, options) {
   if (id === "computer-use" && /computer use|gui agent|screen grounding|电脑操作|界面操作|视觉定位/.test(lower)) add(18, "computer_use_intent");
   if (id === "browser" && options.browserAvailable === true && /browser|chrome|edge|brave|网页|浏览器|表单|网站|登录/.test(lower)) add(14, "browser_intent");
   if (id === "application-discovery" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(8, "installed_application_inventory_match");
-  if (id === "managed-job" && /background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent");
-  if (id === "process-session" && /interactive|stdin|repl|watch|tail|stream|dev server|交互|实时日志|输入|常驻进程/.test(lower)) add(12, "interactive_process_intent");
+  if (id === "managed-job") {
+    if (interactiveProcessIntent(task)) add(-20, "interactive_process_preferred");
+    else if (!nonExecutionIntent(task) && !existingManagedJobContinuationIntent(task)) { if (managedJobCommandExecutionIntent(task, options)) add(30, "managed_command_execution_intent"); if (durableExecutionIntent(task) || /resume|continuous|断线|持续|重试/.test(lower)) add(14, "durability_or_cleanup_intent"); if (keepWorkingIntent(task)) add(24, "explicit_keep_working_intent"); if (interruptionContinuityIntent(task)) add(12, "interruption_continuity_intent"); if (compoundExecutionIntent(task)) add(12, "compound_execution_intent"); }
+  }
+  if (id === "process-session" && interactiveProcessIntent(task)) add(18, "interactive_process_intent");
   if (id === "shell" && /bash|shell|terminal|cli|command|script|debug|diagnos|benchmark|audit|probe|命令|终端|脚本|排查|调试|基准|审查|测试|构建/.test(lower)) add(10, "shell_or_cli_intent");
   if (id === "workspace-edit" && /file|source|code|edit|write|patch|refactor|repository|文件|源码|代码|修改|写入|补丁|重构|仓库/.test(lower)) add(10, "workspace_change_intent");
   if (id === "git-review" && /git|commit|diff|branch|history|revision|提交|分支|差异|历史|版本/.test(lower)) add(12, "git_intent");
   if (id === "protected-resource" && /credential|secret|token|private key|ssh key|password|凭据|密钥|令牌|密码/.test(lower)) add(14, "protected_data_intent");
-  if (id === "diagnostics" && /status|health|diagnos|runtime|relay|policy|authorization|状态|健康|诊断|运行时|权限|连接/.test(lower)) add(10, "runtime_diagnostic_intent");
+  if (id === "diagnostics" && /status|health|diagnos|runtime|relay|policy|authorization|root cause|failure|error|incident|why|状态|健康|诊断|运行时|权限|连接|查明|原因|故障|异常/.test(lower)) add(10, "runtime_diagnostic_intent");
+  if (id === "diagnostics" && readOnlyDiagnosticIntent(task)) add(18, "direct_read_only_diagnostic_intent");
   return { score, reasons };
 }
 
 function publicRoute(routeValue, availableRouteIds) {
-  return {
-    id: routeValue.id,
-    title: routeValue.title,
-    score: routeValue.score,
-    tools: [...routeValue.tools],
-    guidance: routeValue.guidance,
-    reasons: [...routeValue.reasons],
-    fallback_routes: (ROUTE_FALLBACKS[routeValue.id] || []).filter((id) => availableRouteIds.has(id)),
-  };
+  return { id: routeValue.id, title: routeValue.title, score: routeValue.score, tools: [...routeValue.tools], guidance: routeValue.guidance, reasons: [...routeValue.reasons], fallback_routes: (ROUTE_FALLBACKS[routeValue.id] || []).filter((id) => availableRouteIds.has(id)) };
 }
 
 function unique(values) {

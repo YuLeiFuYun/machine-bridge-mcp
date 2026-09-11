@@ -250,6 +250,8 @@ export class AgentContextManager {
       argv: [...command.argv, ...extraArgs],
       cwd: command.cwd,
       timeoutSeconds: command.timeoutSeconds,
+      executionMode: command.executionMode,
+      managedJobTimeoutSeconds: command.managedJobTimeoutSeconds,
       source: command.source,
     };
   }
@@ -363,6 +365,8 @@ export class AgentContextManager {
         cwd,
         timeoutSeconds: definition.timeoutSeconds,
         allowExtraArgs: definition.allowExtraArgs,
+        executionMode: definition.executionMode,
+        managedJobTimeoutSeconds: definition.managedJobTimeoutSeconds,
         source: configPath,
       });
     }

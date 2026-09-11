@@ -11,6 +11,7 @@ import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkR
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
 import { projectApplicationCapabilities } from "../src/local/application-capability-projection.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
+import { applicationMatchScore, applicationOperationIntent } from "../src/local/application-capability-match.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-inspection.mjs";
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
@@ -605,6 +606,13 @@ async function testGitServiceDiscoveryBoundary() {
 }
 
 async function testRuntimeCapabilities() {
+  assert(applicationOperationIntent("Open Notes and inspect the window") === true
+    && applicationOperationIntent("review machine-bridge-mcp beta.182 source") === false
+    && applicationOperationIntent("inspect machine-bridge-mcp source") === false,
+  "application operation intent confused source/version wording with UI work");
+  assert(applicationMatchScore("open time machine settings", { name: "Time Machine", id: "com.apple.TimeMachine" }) > 0
+    && applicationMatchScore("review machine-bridge-mcp source", { name: "Time Machine", id: "com.apple.TimeMachine" }) === 0,
+  "application matching did not preserve exact UI intent while rejecting incidental repository tokens");
   const rawApplicationCapabilities = {
     discovery: true,
     open: true,
@@ -675,6 +683,46 @@ async function testRuntimeCapabilities() {
   assert(full.execution_routing?.routes?.some((route) => route.id === "shell"),
     "capability routing removed the direct shell escape hatch");
   assert(resolutions.length === 1, "capability routing observation was not recorded");
+
+  const projectContinuation = await resolveTaskCapabilities({
+    agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },
+    appAutomationManager: { listApplications: async () => ({ applications: [
+      { name: "Image Capture", id: "com.apple.Image_Capture" },
+      { name: "Image Playground", id: "com.apple.GenerativePlaygroundApp" },
+    ] }) }, capabilityObserver: { recordResolution() {} }, policy: policyProfile("full"),
+  }, { task: "处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 项目时又出现了中断。继续完成剩余的非交互工作；除非遇到真实 host/tool 边界、需要外部输入或授权，否则不要停下。" }, {});
+  assert(projectContinuation.application_matches.length === 0, "synthetic project token weak-matched an unrelated installed application");
+  assert(projectContinuation.execution_routing?.primary_route?.id === "managed-job"
+    && projectContinuation.execution_routing?.continuation?.task_supervisor === true
+    && projectContinuation.execution_routing?.continuation?.continue_same_response === true
+    && !projectContinuation.execution_routing?.continuation?.reasons?.includes("interactive_process_excluded"),
+  "live synthetic multi-project continuation wording did not resolve to durable task supervision");
+
+  const repositoryReview = await resolveTaskCapabilities({
+    agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: ["read_file"], command_matches: [], skill_matches: [] }) },
+    appAutomationManager: { listApplications: async () => ({ applications: [
+      { name: "Time Machine", id: "com.apple.TimeMachine" },
+      { name: "Xcode-beta", id: "com.example.XcodeBeta" },
+    ] }) }, capabilityObserver: { recordResolution() {} }, policy: policyProfile("full"),
+  }, { task: "Review the machine-bridge-mcp beta.182 source and tests without opening applications" }, {});
+  assert(repositoryReview.application_matches.length === 0,
+    "repository/version tokens weak-matched Time Machine or Xcode-beta without application-operation intent");
+  assert(repositoryReview.execution_routing?.primary_route?.id !== "application",
+    "incidental installed-application tokens stole a source-review task from repository tools");
+
+  const foregroundOutranksManaged = await resolveTaskCapabilities({
+    agentContextManager: { resolveTaskCapabilities: async () => ({
+      recommended_tools: ["run_local_command"], skill_matches: [],
+      command_matches: [
+        { name: "package.release-test", score: 12, execution_mode: "foreground" },
+        { name: "package.release", score: 8, execution_mode: "managed_job", managed_job_timeout_seconds: 3600 },
+      ],
+    }) },
+    appAutomationManager: { listApplications: async () => ({ applications: [] }) },
+    capabilityObserver: { recordResolution() {} }, policy: policyProfile("full"),
+  }, { task: "Run the release test command" }, {});
+  assert(foregroundOutranksManaged.execution_routing?.continuation?.task_supervisor === false,
+    "a weaker managed-job command match stole execution from the highest-ranked foreground command");
 
   const degradedFull = await resolveTaskCapabilities({
     agentContextManager: { resolveTaskCapabilities: async () => ({ recommended_tools: [] }) },

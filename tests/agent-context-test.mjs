@@ -30,6 +30,9 @@ assert(fingerprintBase !== capabilityFingerprint({ ...fingerprintState, instruct
   "capability fingerprint did not bind instruction provenance");
 assert(fingerprintBase !== capabilityFingerprint({ ...fingerprintState, commands: new Map([["check", { ...fingerprintState.commands.get("check"), cwd: "/workspace/subdir" }]]) }, []),
   "capability fingerprint did not bind registered-command cwd");
+assert(fingerprintBase !== capabilityFingerprint({ ...fingerprintState, commands: new Map([["check", {
+  ...fingerprintState.commands.get("check"), executionMode: "managed_job", managedJobTimeoutSeconds: 3600,
+}]]) }, []), "capability fingerprint did not bind registered-command execution mode or managed-job timeout");
 
 const windowsPackageCommand = packageScriptCommand("npm", "test", "win32", "cmd.exe");
 if (JSON.stringify(windowsPackageCommand) !== JSON.stringify(["cmd.exe", "/d", "/s", "/c", "npm run test"])) {
@@ -111,6 +114,14 @@ Follow the sample workflow.
         cwd: ".",
         timeout_seconds: 5,
       },
+      "long-release": {
+        description: "Run a synthetic long release fixture.",
+        argv: [process.execPath, "-e", "process.stdout.write('release')"],
+        cwd: ".",
+        timeout_seconds: 10,
+        execution_mode: "managed_job",
+        managed_job_timeout_seconds: 3600,
+      },
     },
   }, null, 2), "utf8");
 
@@ -144,6 +155,24 @@ Follow the sample workflow.
     const context = await runtime.executeTool("agent_context", { path: "packages/example" });
     assert(context.scope_root === ".", `unexpected scope root: ${context.scope_root}`);
     assert(context.builtin_instructions?.content.includes("Make the smallest coherent change"), "default working agreements were not injected");
+    assert(context.builtin_instructions?.content.includes("one multi-step managed job")
+      && context.builtin_instructions.content.includes("same durable job")
+      && context.builtin_instructions.content.includes("Directory names and the current shell working directory are not freshness evidence"),
+    "default working agreements omitted durable continuity or exact-worktree identity guidance");
+    assert(context.builtin_instructions?.content.includes("continuation.task_supervisor=true")
+      && context.builtin_instructions.content.includes("continuation_mode=task_supervisor")
+      && context.builtin_instructions.content.includes("single umbrella job shape")
+      && context.builtin_instructions.content.includes("Job Monitor is status and ownership evidence")
+      && context.builtin_instructions.content.includes("not by itself a reason to hand off unfinished task ownership")
+      && context.builtin_instructions.content.includes("continuation.continue_same_response=true")
+      && context.builtin_instructions.content.includes("actual host/tool boundary")
+      && context.builtin_instructions.content.includes("server_info, diagnose_runtime, read_file, search_text, and git_status surfaces directly")
+      && context.builtin_instructions.content.includes("Do not wrap each diagnostic in a managed process job")
+      && context.builtin_instructions.content.includes("execution_mode=managed_job")
+      && context.builtin_instructions.content.includes("launch it through `start_job`")
+      && !context.builtin_instructions.content.includes("npm run prerelease:release")
+      && !context.builtin_instructions.content.includes("machine-mcp workspace migrate"),
+    "default working agreements omitted generic managed-command ownership or retained project-specific release/migration workflow");
     assert(context.builtin_instructions?.content.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && context.builtin_instructions.content.includes("stop and report the boundary"), "default working agreements omitted the fail-closed local GitHub control-plane rule");
     assert(context.automatic_project_context?.content.includes("npm run check"), "automatic project context omitted declared package scripts");
     assert(context.automatic_project_context?.content.includes("package-lock.json") && context.automatic_project_context?.content.includes(".github/workflows/ci.yml"), "automatic project context omitted lockfile or CI facts");
@@ -161,6 +190,9 @@ Follow the sample workflow.
     assert(contextCommandNames.has("echo-args") && contextCommandNames.has("package.check") && contextCommandNames.has("package.test") && contextCommandNames.has("package.probe") && contextCommandNames.has("package.constructor"), "automatic and explicit command discovery is incomplete");
     assert(!contextCommandNames.has("fixed"), "nearest manifest command deletion failed");
     assert(context.commands.find((command) => command.name === "echo-args")?.cwd === "packages/example", "registered command cwd was not resolved relative to its config scope");
+    const longRelease = context.commands.find((command) => command.name === "long-release");
+    assert(longRelease?.execution_mode === "managed_job" && longRelease.managed_job_timeout_seconds === 3600,
+      "registered managed-job command metadata was not projected to callers");
     assert(context.commands.find((command) => command.name === "package.check")?.source_type === "automatic-package-script", "automatic package command provenance is missing");
     assert(context.metadata_authority?.capability_metadata === "project-or-user-provided-planning-context"
       && context.metadata_authority?.execution_authority === "machine-bridge-policy-account-and-operation-gates"

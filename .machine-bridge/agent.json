@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "commands": {
+    "package.prerelease-release": {
+      "description": "Create or reconcile the accepted prerelease Git tag, GitHub Prerelease, and exact release asset through the repository release gates.",
+      "argv": ["npm", "run", "prerelease:release"],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "execution_mode": "managed_job",
+      "managed_job_timeout_seconds": 21600
+    },
+    "package.prerelease-publish": {
+      "description": "Publish an explicitly authorized accepted prerelease package through the complete repository publication gates.",
+      "argv": ["npm", "run", "prerelease:publish"],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "allow_extra_args": true,
+      "execution_mode": "managed_job",
+      "managed_job_timeout_seconds": 21600
+    },
+    "package.stable-publish": {
+      "description": "Publish an explicitly authorized accepted stable package through the complete repository publication gates.",
+      "argv": ["npm", "run", "stable:publish"],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "allow_extra_args": true,
+      "execution_mode": "managed_job",
+      "managed_job_timeout_seconds": 21600
+    }
+  }
+}

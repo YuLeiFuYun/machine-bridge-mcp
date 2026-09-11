@@ -30,6 +30,8 @@ import { createHash } from "node:crypto";
  * @property {string} cwd
  * @property {number} timeoutSeconds
  * @property {boolean} allowExtraArgs
+ * @property {"foreground" | "managed_job"} [executionMode]
+ * @property {number | null} [managedJobTimeoutSeconds]
  * @property {string} source
  * @property {string} [sourceType]
  * @property {string} [script]
@@ -66,7 +68,8 @@ export function capabilityFingerprint(state, skills) {
     commands: [...state.commands.values()]
       .map((command) => [
         command.name, command.description, command.argv, command.cwd, command.timeoutSeconds,
-        command.allowExtraArgs, command.source, command.sourceType || "", command.script || "",
+        command.allowExtraArgs, command.executionMode || "foreground", command.managedJobTimeoutSeconds || 0,
+        command.source, command.sourceType || "", command.script || "",
       ])
       .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
   }));
@@ -130,6 +133,10 @@ export function publicCommands(commands, displayPath) {
       cwd: displayPath(command.cwd),
       timeout_seconds: command.timeoutSeconds,
       allow_extra_args: command.allowExtraArgs,
+      execution_mode: command.executionMode || "foreground",
+      ...((command.executionMode || "foreground") === "managed_job"
+        ? { managed_job_timeout_seconds: command.managedJobTimeoutSeconds || 600 }
+        : {}),
       source: displayPath(command.source),
       source_type: command.sourceType || "agent-config",
       ...(command.script ? { package_script: command.script } : {}),

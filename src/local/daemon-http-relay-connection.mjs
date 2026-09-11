@@ -120,6 +120,8 @@ export class DaemonHttpRelayConnection {
       authenticated: this.authenticated,
       ready: this.ready,
       closed: this.closed,
+      standby: this.standby === true,
+      takeover_pending: this.takeoverWebSocket === true && this.ready !== true,
       network_route: this.networkRoute,
       application_heartbeat_interval_ms: this.pollIntervalMs,
       application_heartbeat_timeout_ms: this.livenessTimeoutMs,

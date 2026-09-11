@@ -1397,9 +1397,9 @@ async function serviceSelfTest() {
         || syntheticWindowsPath.includes(String.raw`c:\repo\node_modules\.bin`)) {
       throw new Error("synthetic Windows service PATH retained npm lifecycle injection or an inactive candidate runtime");
     }
-    const plist = launchdPlist({ args: [nodeAlias, entryScript], pathEnv: servicePath, stdout: "/tmp/out", stderr: "/tmp/err" });
-    if (!plist.includes("<key>EnvironmentVariables</key>") || !plist.includes(`<key>PATH</key><string>${servicePath}</string>`)) {
-      throw new Error("launchd definition omitted the explicit service PATH");
+    const plist = launchdPlist({ args: [nodeAlias, entryScript], pathEnv: servicePath, stdout: "/tmp/out", stderr: "/tmp/err", home: "/home/user" });
+    if (!plist.includes("<key>EnvironmentVariables</key>") || !plist.includes(`<key>PATH</key><string>${servicePath}</string>`) || !plist.includes("<key>HOME</key><string>/home/user</string>")) {
+      throw new Error("launchd definition omitted the explicit service PATH or HOME");
     }
     const unit = systemdUnit({ node: nodeAlias, entryScript, workspace: "/workspace", stateRoot: "/state", pathEnv: servicePath, stdout: "/tmp/out", stderr: "/tmp/err" });
     if (!unit.includes(`Environment=${systemdQuote(`PATH=${servicePath}`)}`)) throw new Error("systemd definition omitted the explicit service PATH");

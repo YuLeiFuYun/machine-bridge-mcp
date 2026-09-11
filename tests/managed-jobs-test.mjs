@@ -2641,6 +2641,61 @@ try {
   assert(!(await exists(join(jobRoot, accepted.job_id, "runtime"))), "job runtime resource copies and temporary files were not removed");
   assert(!(await exists(join(jobRoot, accepted.job_id, "plan.json"))), "finished job retained scripts, stdin, argv, or resource source paths in plan.json");
 
+  const boundarySecret = `managed-boundary-${"q".repeat(32)}`;
+  const boundarySecretFile = join(root, "boundary-secret.txt");
+  await writeFile(boundarySecretFile, boundarySecret, { mode: 0o600 });
+  if (process.platform !== "win32") await chmod(boundarySecretFile, 0o600);
+  const boundaryManager = createManagedJobTestManager({
+    jobRoot: join(root, "boundary-jobs"),
+    workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
+    resources: { boundary: inspectResourceFile(boundarySecretFile) },
+  });
+  const boundaryPrefixLength = 12;
+  const boundaryScript = (stream) => [
+    `const stream=process.${stream};`,
+    `stream.write('x'.repeat(${64 * 1024 - boundaryPrefixLength}));`,
+    "stream.write(process.env.MBM_BOUNDARY_SECRET);",
+  ].join("");
+  for (const stream of ["stdout", "stderr"]) {
+    const boundaryJob = boundaryManager.start({
+      name: `${stream} resource truncation redaction`,
+      steps: [{
+        argv: [process.execPath, "-e", boundaryScript(stream)],
+        env_resources: { MBM_BOUNDARY_SECRET: "boundary" },
+        timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+      }],
+    });
+    const boundaryResult = await waitForJob(boundaryManager, boundaryJob.job_id);
+    const boundaryStep = boundaryResult.result.steps[0];
+    const captured = String(boundaryStep[stream] || "");
+    assert(boundaryStep[`${stream}_truncated_bytes`] > 0, `${stream} truncation fixture did not cross the capture boundary`);
+    assert(!captured.includes(boundarySecret.slice(0, boundaryPrefixLength)), `${stream} exposed a resource prefix across the capture boundary`);
+  }
+
+  const aggregateBoundary = boundaryManager.start({
+    name: "aggregate resource truncation redaction",
+    steps: [
+      ...Array.from({ length: 3 }, (_, index) => ({
+        name: `fill-${index}`,
+        argv: [process.execPath, "-e", `process.stdout.write('a'.repeat(${64 * 1024}))`],
+        timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+      })),
+      {
+        name: "cross aggregate capture boundary",
+        argv: [process.execPath, "-e", boundaryScript("stdout")],
+        env_resources: { MBM_BOUNDARY_SECRET: "boundary" },
+        timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+      },
+    ],
+  });
+  const aggregateBoundaryResult = await waitForJob(boundaryManager, aggregateBoundary.job_id, null, MANAGED_JOB_MULTI_STEP_WAIT_MS);
+  const aggregateBoundaryStep = aggregateBoundaryResult.result.steps[3];
+  assert(aggregateBoundaryResult.result.capture_remaining_bytes === 0 && aggregateBoundaryStep.stdout_truncated_bytes > 0,
+    "aggregate truncation fixture did not exhaust the shared capture budget at the resource boundary");
+  assert(!aggregateBoundaryStep.stdout.includes(boundarySecret.slice(0, boundaryPrefixLength)),
+    "aggregate capture boundary exposed a resource prefix before redaction");
+
   const changingResource = join(root, "changing-resource.txt");
   await writeFile(changingResource, "first-value", { mode: 0o600 });
   if (process.platform !== "win32") await chmod(changingResource, 0o600);

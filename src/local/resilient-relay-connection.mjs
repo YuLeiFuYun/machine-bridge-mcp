@@ -9,6 +9,7 @@ export class ResilientRelayConnection {
     this.onDisconnect = typeof options.onDisconnect === "function" ? options.onDisconnect : () => {};
     this.scheduler = options.scheduler || { setTimeout, clearTimeout };
     this.fallbackDelayMs = positiveInteger(options.fallbackDelayMs, relayContract.httpFallbackActivationDelayMs);
+    this.standbyDelayMs = positiveInteger(options.standbyDelayMs, relayContract.httpFallbackStandbyRetryIntervalMs);
     this.activeTransport = "";
     this.closed = true;
     this.startResolve = null;
@@ -81,6 +82,7 @@ export class ResilientRelayConnection {
         websocket_outage_duration_ms: Number(websocket.outage_duration_ms) || 0,
         websocket_reconnect_attempt: Number(websocket.reconnect_attempt) || 0,
         https_fallback_warming: false,
+        https_fallback_standby: false,
         https_fallback_last_takeover_ms: this.lastFallbackTakeoverMs,
       };
     }
@@ -88,7 +90,8 @@ export class ResilientRelayConnection {
       ...websocket,
       transport: "websocket",
       https_fallback_active: false,
-      https_fallback_warming: http.closed === false && http.ready !== true,
+      https_fallback_warming: http.closed === false && http.ready !== true && http.standby !== true,
+      https_fallback_standby: http.standby === true,
       https_fallback: http,
       https_fallback_last_takeover_ms: this.lastFallbackTakeoverMs,
     };
@@ -142,19 +145,26 @@ export class ResilientRelayConnection {
 
   handleReady(transport, event) {
     if (this.closed) return;
+    const bridgeWasReady = this.activeTransport === "websocket" || this.activeTransport === "https";
     if (transport === "websocket") {
       this.activeTransport = "websocket";
       this.fallbackRecoveredOutageMs = 0;
       this.http.stop();
       this.clearFallbackTimer();
+      this.armFallback(0, "", true);
     } else {
-      if (this.websocket.status().ready === true) { this.http.stop(); return; }
+      if (this.websocket.status().ready === true) {
+        this.http.stop();
+        this.armFallback(this.standbyDelayMs, "", true);
+        return;
+      }
       this.fallbackRecoveredOutageMs = Math.max(0, Number(this.websocket.status().outage_duration_ms) || 0);
       this.lastFallbackTakeoverMs = this.fallbackRecoveredOutageMs;
       this.activeTransport = "https";
     }
     this.startResolve?.(true);
     this.startResolve = null;
+    if (bridgeWasReady) return;
     try { this.onReady({ ...event, transport }); }
     catch { /* Transport readiness is already committed; observer failure must not tear down the usable channel. */ }
   }
@@ -179,8 +189,7 @@ export class ResilientRelayConnection {
 
   handleRecovered() {
     if (this.closed || this.activeTransport !== "websocket") return;
-    this.clearFallbackTimer();
-    if (this.http.status().ready !== true) this.http.stop();
+    if (this.http.status().closed === true) this.armFallback(0, "", true);
   }
 
   armFallback(delay, takeoverWebSocketConnectionId = "", allowReadyWebSocket = false) {

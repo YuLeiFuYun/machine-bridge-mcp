@@ -28,6 +28,17 @@ These are conservative defaults. Explicit current-user requests and more specifi
 - Reuse the repository's existing package manager, lockfiles, dependencies, and scripts. Do not switch package managers or add production dependencies without a concrete need and an explicit explanation.
 - Update or add tests for changed behavior. Update documentation, examples, changelog, schemas, and generated metadata when their documented contract changes.
 
+## Execution continuity
+
+- For one coherent non-interactive objective that needs several commands, multiple repositories or projects, long validation, or must survive relay interruption, prefer one repository-native umbrella command or one multi-step managed job over a chain of one-step process calls.
+- When execution routing reports continuation.task_supervisor=true, put all known remaining non-interactive work into one start_job with continuation_mode=task_supervisor and a single umbrella job shape. Do not fragment that work into one-step calls merely because a host deadline is assumed.
+- After a durable job is accepted, preserve its job identifier and recovery authority. After reconnect, read or resume that same durable job; do not blindly resubmit the underlying side effect because result delivery or the relay was interrupted.
+- An active task-supervisor job or Job Monitor is status and ownership evidence, not by itself a reason to hand off unfinished task ownership. When continuation.continue_same_response=true and the terminal result is still needed, continue bounded read_job follow-up while tool calls remain accepted.
+- Stop or hand off unfinished work only at an actual host/tool boundary, when external input or authorization is required, or when the user explicitly requested a checkpoint.
+- For read-only inspection, call structured server_info, diagnose_runtime, read_file, search_text, and git_status surfaces directly. Do not wrap each diagnostic in a managed process job; reserve managed jobs for process execution that actually needs durable ownership.
+- When a project-provided registered command declares \`execution_mode=managed_job\`, preserve its fixed argv/cwd contract and launch it through \`start_job\`; use its advertised managed-job timeout rather than a shorter foreground carrier ceiling.
+- For work that names a repository version, prerelease, or branch, verify the requested or live identity and resolve the exact Git worktree by branch, HEAD, and version before selecting a directory. Directory names and the current shell working directory are not freshness evidence.
+
 ## Validation
 
 - Prefer declared project scripts and targeted checks first, then run the broadest relevant validation available for the changed surface.

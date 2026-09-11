@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { assertManagedJobPlanIntegrity } from "./managed-job-plan-integrity.mjs";
 import { readRequiredJson, resourceErrorClass } from "./managed-job-storage.mjs";
-import { ACTIVE_JOB_STATES } from "./managed-job-terminal.mjs";
+import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
 
 export function managedJobDependencyProtection(entries, logger, extraProtectedIds) {
   const ids = new Set(extraProtectedIds || []);
@@ -21,6 +21,13 @@ export function managedJobDependencyProtection(entries, logger, extraProtectedId
         ids.add(jobId);
       }
     } catch (error) {
+      try {
+        const current = readRequiredJson(join(item.dir, "status.json"), 256 * 1024, "job status");
+        if (current?.job_id === item.status.job_id && isTerminalManagedJobStatus(current.status)) continue;
+      } catch {
+        // Preserve fail-closed behavior when current state cannot prove the stale active/staged
+        // snapshot has reached a terminal state.
+      }
       complete = false;
       logger.warn?.("managed job pruning could not determine active dependency protection; retaining terminal state", {
         error_class: resourceErrorClass(error),

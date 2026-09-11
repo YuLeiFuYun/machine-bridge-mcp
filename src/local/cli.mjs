@@ -12,6 +12,7 @@ import { createLocalAdminCommands } from "./cli-local-admin.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
 import { createActivateCommand } from "./cli-activate.mjs";
 import { idleSleepCommand } from "./cli-idle-sleep.mjs";
+import { createWorkspaceCommand } from "./workspace-profile-migration.mjs";
 import { generateAccountPassword } from "./account-admin.mjs";
 import { accountAdminClient, createAccountCommand } from "./cli-account-admin.mjs";
 export { resolvePolicy } from "./cli-policy.mjs";
@@ -43,14 +44,12 @@ import {
   ensureWorkerSecrets,
   ensureWorkspaceDirectory,
   expandHome,
-  loadGlobalConfig,
   loadState,
   readDaemonLockOwner,
   redactState,
   removeStateRoot,
   validateStateRootForRemoval,
   resolveWorkspace,
-  saveGlobalConfig,
   saveState,
   selectedWorkspace,
   setSelectedWorkspace,
@@ -67,6 +66,7 @@ const activateCommand = createActivateCommand({
   assertNodeVersion,
   structuredLogger,
 });
+const workspaceCommand = createWorkspaceCommand({ stateRootFromArgs, ask });
 
 const COMMAND_HANDLERS = new Map([
   ["start", startCommand],
@@ -134,39 +134,6 @@ async function chooseWorkspace(args, { promptOnFirstRun, save, allowPositional =
     : resolveWorkspace(answer.trim() || fallback);
   if (save) setSelectedWorkspace(workspace, stateRoot);
   return workspace;
-}
-
-async function workspaceCommand(args) {
-  const action = String(args._[0] || "show");
-  const stateRoot = stateRootFromArgs(args);
-  if (action === "show") {
-    const workspace = selectedWorkspace(stateRoot);
-    console.log(workspace || "No workspace selected yet. Run `machine-mcp workspace set` or `mbm workspace set`.");
-    return;
-  }
-  if (action === "set" || action === "select") {
-    const raw = args.workspace || args._[1];
-    let workspace;
-    if (raw && raw !== true) workspace = resolveWorkspace(String(raw));
-    else {
-      const current = selectedWorkspace(stateRoot) || process.cwd();
-      const answer = process.stdin.isTTY ? await ask(`Workspace path [${current}]: `) : current;
-      workspace = resolveWorkspace(String(answer || current));
-    }
-    setSelectedWorkspace(workspace, stateRoot);
-    console.log(`Selected workspace: ${workspace}`);
-    console.log("Run `machine-mcp` (or `mbm`) to use this workspace.");
-    return;
-  }
-  if (action === "reset") {
-    const config = loadGlobalConfig(stateRoot);
-    delete config.selectedWorkspace;
-    delete config.selectedWorkspaceHash;
-    saveGlobalConfig(config, stateRoot);
-    console.log("Workspace selection reset. Next start will ask again.");
-    return;
-  }
-  throw new Error(`Unknown workspace action: ${action}`);
 }
 
 async function ask(prompt) {
@@ -836,6 +803,7 @@ Commands:
   client-config     Print stdio client configuration snippets
   workspace show    Show remembered workspace
   workspace set     Re-select workspace; prompts with current/default path
+  workspace migrate OLD NEW  Offline-migrate deployed profile/state identity before archiving or after an accidental move
   idle-sleep show|set MODE  Show/set activity, ac-continuous, or continuous; restart after set
   service status    Show autostart status
   service install   Install login autostart for remembered/current workspace

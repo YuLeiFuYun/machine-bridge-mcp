@@ -15,7 +15,10 @@ const CONFIG_KEYS = new Set([
   "version", "builtin_instructions", "automatic_project_context", "model_instructions_file",
   "instruction_files", "instruction_max_bytes", "skill_roots", "commands",
 ]);
-const COMMAND_KEYS = new Set(["description", "argv", "cwd", "timeout_seconds", "allow_extra_args"]);
+const COMMAND_KEYS = new Set([
+  "description", "argv", "cwd", "timeout_seconds", "allow_extra_args",
+  "execution_mode", "managed_job_timeout_seconds",
+]);
 
 /**
  * @typedef {{
@@ -24,6 +27,8 @@ const COMMAND_KEYS = new Set(["description", "argv", "cwd", "timeout_seconds", "
  *   cwd: string,
  *   timeoutSeconds: number,
  *   allowExtraArgs: boolean,
+ *   executionMode: "foreground" | "managed_job",
+ *   managedJobTimeoutSeconds: number | null,
  * }} NormalizedCommand
  */
 
@@ -188,12 +193,27 @@ function normalizeCommand(value, name, configPath) {
   if (value.allow_extra_args !== undefined && typeof value.allow_extra_args !== "boolean") {
     throw new Error(`registered command '${name}' allow_extra_args must be boolean: ${configPath}`);
   }
+  const executionMode = value.execution_mode === undefined ? "foreground" : requiredString(value.execution_mode, `commands.${name}.execution_mode`);
+  if (executionMode !== "foreground" && executionMode !== "managed_job") {
+    throw new Error(`registered command '${name}' execution_mode must be foreground or managed_job: ${configPath}`);
+  }
+  if (value.managed_job_timeout_seconds !== undefined && executionMode !== "managed_job") {
+    throw new Error(`registered command '${name}' managed_job_timeout_seconds requires execution_mode=managed_job: ${configPath}`);
+  }
+  const managedJobTimeoutSeconds = executionMode === "managed_job"
+    ? clampInteger(value.managed_job_timeout_seconds, 600, 1, 21_600)
+    : null;
+  if (value.managed_job_timeout_seconds !== undefined && managedJobTimeoutSeconds !== value.managed_job_timeout_seconds) {
+    throw new Error(`registered command '${name}' managed_job_timeout_seconds must be an integer from 1 to 21600: ${configPath}`);
+  }
   return {
     description,
     argv,
     cwd,
     timeoutSeconds,
     allowExtraArgs: value.allow_extra_args === true,
+    executionMode,
+    managedJobTimeoutSeconds,
   };
 }
 

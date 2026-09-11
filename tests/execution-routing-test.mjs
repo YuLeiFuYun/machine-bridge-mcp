@@ -1,4 +1,5 @@
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
+import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 import { accountRoleToolNames } from "../src/local/account-access.mjs";
 import { buildExecutionRouting } from "../src/local/execution-routing.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
@@ -13,6 +14,8 @@ assert(shell.recommended_tools.includes("exec_command") && shell.recommended_too
   "shell route omitted the convenient Bash or direct-argv surfaces");
 assert(shell.routes.some((route) => route.id === "workspace-edit"), "set-level routing omitted the supporting workspace tool set");
 assert(shell.primary_route?.fallback_routes?.includes("process-session"), "shell route omitted its interactive-process fallback");
+assert(shell.continuation.task_supervisor === false && shell.continuation.preferred_surface === null,
+  "ordinary short Bash work was mislabeled as durable task-supervisor work");
 
 const durable = buildExecutionRouting("Run a long background multi-step migration that must survive disconnects and always clean up", {
   policy: policyProfile("full"),
@@ -21,6 +24,93 @@ assert(durable.primary_route?.id === "managed-job", "durable multi-step work did
 assert(durable.routes.some((route) => route.id === "shell"), "durable routing incorrectly removed the shell escape hatch");
 assert(durable.recommended_tools.includes("start_job") && durable.recommended_tools.includes("exec_command"),
   "durable routing did not expose both the safe primary route and shell alternative");
+
+const interruptedMultiProject = buildExecutionRouting("继续处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 三个项目；刚才中断了，请恢复并完成剩余构建与验证", {
+  policy: policyProfile("full"),
+});
+assert(interruptedMultiProject.primary_route?.id === "managed-job",
+  "interrupted multi-project execution did not prefer durable managed-job ownership");
+assert(interruptedMultiProject.recommended_tools.includes("start_job")
+  && interruptedMultiProject.routes.some((route) => route.id === "shell"),
+"interrupted multi-project routing did not recommend start_job while retaining direct shell as a fallback");
+assert(interruptedMultiProject.recovery_guidance.some((item) => item.includes("same durable job") && item.includes("relay interruption")),
+  "interrupted multi-project routing omitted same-job recovery guidance");
+
+const explicitKeepWorking = buildExecutionRouting("改进 machine-bridge-mcp 流程，除非时间或上下文预算已经耗尽，否则不要停下", { policy: policyProfile("full") });
+assert(explicitKeepWorking.primary_route?.id === "managed-job" && explicitKeepWorking.recommended_tools[0] === "start_job"
+  && explicitKeepWorking.continuation.task_supervisor === true && explicitKeepWorking.continuation.preferred_surface === "start_job"
+  && explicitKeepWorking.continuation.continuation_mode === "task_supervisor" && explicitKeepWorking.continuation.job_shape === "single_umbrella"
+  && explicitKeepWorking.continuation.continue_same_response === true,
+"explicit Chinese keep-working intent did not expose the deterministic task-supervisor continuation contract");
+assert(explicitKeepWorking.continuation.stop_conditions.includes("actual_host_or_tool_boundary")
+  && explicitKeepWorking.continuation.stop_conditions.includes("external_input_or_authorization_required")
+  && explicitKeepWorking.continuation.stop_conditions.includes("explicit_user_checkpoint"),
+"task-supervisor continuation omitted its bounded stop conditions");
+
+const keepGoing = buildExecutionRouting("不要停，一直继续实现并验证剩余修改", { policy: policyProfile("full") });
+assert(keepGoing.primary_route?.id === "managed-job" && keepGoing.continuation.task_supervisor === true && keepGoing.continuation.continue_same_response === true,
+  "short Chinese keep-going wording did not request durable same-response task supervision");
+const managedReleaseMatch = { name: "package.synthetic-release", score: 18, execution_mode: "managed_job", managed_job_timeout_seconds: 3600 };
+const prereleaseRelease = buildExecutionRouting("Run the registered synthetic release command for the accepted candidate", {
+  policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch,
+});
+assert(prereleaseRelease.primary_route?.id === "managed-job" && prereleaseRelease.continuation.task_supervisor === true
+  && prereleaseRelease.continuation.preferred_surface === "start_job" && prereleaseRelease.continuation.continue_same_response === true,
+"long GitHub prerelease lifecycle did not route to a durable task supervisor");
+const prereleasePublish = buildExecutionRouting("Execute the registered synthetic publication command after authorization", {
+  policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch,
+});
+assert(prereleasePublish.primary_route?.id === "managed-job" && prereleasePublish.continuation.task_supervisor === true
+  && prereleasePublish.continuation.preferred_surface === "start_job" && prereleasePublish.continuation.continue_same_response === true,
+"long npm prerelease publication lifecycle did not route to a durable task supervisor");
+const liveContinuation = buildExecutionRouting("处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 项目时又出现了中断。继续完成剩余的非交互工作；除非遇到真实 host/tool 边界、需要外部输入或授权，否则不要停下。", { policy: policyProfile("full") });
+assert(liveContinuation.primary_route?.id === "managed-job" && liveContinuation.continuation.task_supervisor === true
+  && liveContinuation.continuation.preferred_surface === "start_job" && liveContinuation.continuation.continue_same_response === true
+  && !liveContinuation.continuation.reasons.includes("interactive_process_excluded"),
+"live non-interactive continuation wording did not retain durable task-supervisor ownership");
+const interactiveKeepWorking = buildExecutionRouting("不要停，一直继续读取交互式 REPL 输出", { policy: policyProfile("full") });
+assert(interactiveKeepWorking.primary_route?.id === "process-session" && interactiveKeepWorking.continuation.task_supervisor === false
+  && interactiveKeepWorking.continuation.reasons.includes("interactive_process_excluded"),
+"keep-working wording stole an explicitly interactive process away from the retained process-session route");
+const directDiagnostics = buildExecutionRouting("直接检查 server_info 和 diagnose_runtime 的 relay 状态", { policy: policyProfile("full") });
+assert(directDiagnostics.primary_route?.id === "diagnostics" && directDiagnostics.continuation.task_supervisor === false
+  && directDiagnostics.primary_route.guidance.includes("Call structured diagnostics directly")
+  && directDiagnostics.primary_route.guidance.includes("do not create a managed process job"),
+"read-only runtime inspection was not kept on the direct structured diagnostics surface");
+
+for (const text of [
+  "只读审查中断原因，不运行任务，只给建议",
+  "不要执行 synthetic:publish，只解释它",
+  "The docs mention synthetic:publish; review the wording only",
+  "Explain why the synthetic release command can take a long time; do not run it",
+]) {
+  const readOnly = buildExecutionRouting(text, { policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch });
+  assert(readOnly.continuation.task_supervisor === false && readOnly.continuation.reasons.includes("non_execution_intent"),
+    `non-execution wording created a task supervisor: ${text}`);
+}
+const executeAndExplain = buildExecutionRouting("Run the synthetic release command and explain why it failed", {
+  policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch,
+});
+assert(executeAndExplain.continuation.task_supervisor === true
+  && !executeAndExplain.continuation.reasons.includes("non_execution_intent"),
+"explanatory follow-up wording incorrectly cancelled an explicit execution request");
+const currentConversationTask = buildExecutionRouting("继续当前任务并运行剩余测试", { policy: policyProfile("full") });
+assert(!currentConversationTask.continuation.reasons.includes("existing_managed_job_continuation"),
+  "generic current-task wording was mistaken for continuation of an already accepted managed job");
+const existingJobContinuation = buildExecutionRouting("持续读取现有任务直到完成", { policy: policyProfile("full") });
+assert(existingJobContinuation.continuation.task_supervisor === false
+  && existingJobContinuation.continuation.preferred_surface === "read_job"
+  && existingJobContinuation.continuation.continue_same_response === true
+  && existingJobContinuation.continuation.reasons.includes("existing_managed_job_continuation"),
+"existing managed-job continuation was confused with interactive input or new task-supervisor creation");
+
+const diagnoseInterruptedMultiProject = buildExecutionRouting("处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 项目时又出现了中断，查明原因", {
+  policy: policyProfile("full"),
+});
+assert(diagnoseInterruptedMultiProject.routes.some((route) => route.id === "managed-job")
+  && diagnoseInterruptedMultiProject.routes.some((route) => route.id === "diagnostics")
+  && diagnoseInterruptedMultiProject.recommended_tools.includes("start_job"),
+"diagnosing an observed multi-project interruption omitted the durable recovery route or diagnostics route");
 
 const operatorDurable = buildExecutionRouting("Run a long background multi-step migration that must survive disconnects and always clean up", {
   policy: policyProfile("agent"),
@@ -153,9 +243,17 @@ assert(ambiguous.ranked_tools.length <= 12 && ambiguous.recommended_tools.length
   "routing output exceeded its bounded context budget");
 assert(ambiguous.recovery_guidance.some((item) => item.includes("ambiguous mutation")),
   "routing result omitted failure-aware recovery guidance");
+assert(ambiguous.recovery_guidance.some((item) => item.includes("same durable job") && item.includes("one managed job")),
+  "routing result omitted durable compound-work recovery guidance");
 assert(ambiguous.enforcement.startsWith("advisory_only") && ambiguous.enforcement.includes("effective authority")
   && !ambiguous.enforcement.includes("effective policy"),
 "routing result did not state its account-attenuated non-enforcement boundary");
+
+const routingMetadata = serverMetadata.instructions.find((item) => item.startsWith("Use resolve_task_capabilities only"));
+assert(routingMetadata?.includes("execution_routing.continuation") && routingMetadata.includes("continuation_mode=task_supervisor")
+  && routingMetadata.includes("Job Monitor") && routingMetadata.includes("actual host/tool boundary")
+  && routingMetadata.includes("server_info, diagnose_runtime, read_file, search_text, or git_status directly"),
+"hosted server metadata omitted the task-supervisor, no-premature-handoff, or direct-diagnostics contract");
 
 const descriptions = new Map(catalog.map((tool) => [tool.name, tool.description]));
 assert(descriptions.get("exec_command")?.includes("pipelines") && descriptions.get("exec_command")?.includes("general escape hatch"),

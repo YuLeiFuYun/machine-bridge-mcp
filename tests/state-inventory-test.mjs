@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { pruneRetiredManagedJobDirectories } from "../src/local/managed-job-directory-generation.mjs";
-import { acquireDaemonLock, acquireStartupLock, loadState, saveState } from "../src/local/state.mjs";
+import { acquireDaemonLock, acquireStartupLock, loadState, saveState, selectedWorkspace, setSelectedWorkspace } from "../src/local/state.mjs";
+import { historicalWorkspaceHash, isUnpopulatedProfileShell, migrateWorkspaceProfile, retireMatchingServiceOwner } from "../src/local/workspace-profile-migration.mjs";
+import { beginServiceOwnerUpdate, serviceOwnerPath } from "../src/local/service-owner.mjs";
 import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "../src/local/managed-job-lock.mjs";
 
@@ -371,10 +374,311 @@ try {
   await rm(oversizedRecoveryLock, { force: true });
 
   assert.deepEqual(activeStateJobs(stateRoot), []);
-  console.log("state inventory test ok");
+  await testWorkspaceProfileMigration();
+await testWorkspaceMigrationOwnerRetirement();
+console.log("state inventory test ok");
 } finally {
   await rm(stateRoot, { recursive: true, force: true });
   await rm(workspace, { recursive: true, force: true });
 }
 
 async function readFileSafe(file) { return await (await import("node:fs/promises")).readFile(file); }
+
+
+async function testWorkspaceProfileMigration() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-state-"));
+  const source = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-source-"));
+  const destination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-destination-"));
+  const archived = `${source}-archived`;
+  try {
+    const state = loadState(source, { stateDir: stateRoot });
+    state.worker.url = "https://migration.example.invalid";
+    state.worker.name = "mbm-migration-test";
+    saveState(state);
+    setSelectedWorkspace(source, stateRoot);
+    await mkdir(join(state.paths.profileDir, "jobs"), { recursive: true, mode: 0o700 });
+    await writeFile(join(state.paths.profileDir, "security-audit.json"), "retained-audit\n", { mode: 0o600 });
+    const sourceProfile = state.paths.profileDir;
+    await rename(source, archived);
+
+    const migratedResult = await migrateWorkspaceProfile({
+      sourceWorkspace: source,
+      destinationWorkspace: destination,
+      stateRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: true, version: "3.0.0-beta.174" }),
+    });
+    const migrated = loadState(destination, { stateDir: stateRoot });
+    assert.equal(migrated.worker.url, "https://migration.example.invalid");
+    assert.equal(migrated.workspace.hash, migratedResult.destination_profile_hash);
+    assert.equal(selectedWorkspace(stateRoot), await realpath(destination));
+    assert.equal(await lstat(sourceProfile).then(() => true, () => false), false,
+      "workspace migration left the historical profile directory behind");
+    assert.equal(await readFile(join(migrated.paths.profileDir, "security-audit.json"), "utf8"), "retained-audit\n",
+      "workspace migration did not preserve profile-owned audit state");
+    assert.equal(await lstat(join(migrated.paths.profileDir, "workspace-migration.json")).then(() => true, () => false), false,
+      "workspace migration left its transaction marker after successful completion");
+    assert.equal(migratedResult.service_owner_retired, true);
+  } finally {
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+    await rm(archived, { recursive: true, force: true });
+    await rm(destination, { recursive: true, force: true });
+  }
+
+  const collisionRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-collision-state-"));
+  const collisionSource = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-collision-source-"));
+  const collisionDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-collision-destination-"));
+  const providerDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-provider-destination-"));
+  const jobDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-job-destination-"));
+  const lockDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-lock-destination-"));
+  try {
+    const sourceState = loadState(collisionSource, { stateDir: collisionRoot });
+    sourceState.worker.url = "https://source.example.invalid";
+    saveState(sourceState);
+    const destinationState = loadState(collisionDestination, { stateDir: collisionRoot });
+    destinationState.worker.url = "https://destination.example.invalid";
+    saveState(destinationState);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: collisionSource, destinationWorkspace: collisionDestination, stateRoot: collisionRoot,
+      readProvider: async () => ({ active: false }), listActiveJobs: () => [], listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /destination workspace profile already exists/);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: collisionSource,
+      destinationWorkspace: providerDestination,
+      stateRoot: collisionRoot,
+      readProvider: async () => ({ active: true }), listActiveJobs: () => [], listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /provider to be stopped/);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: collisionSource,
+      destinationWorkspace: jobDestination,
+      stateRoot: collisionRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [{ profile: sourceState.workspace.hash, status: "running" }], listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /managed job/);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: collisionSource,
+      destinationWorkspace: lockDestination,
+      stateRoot: collisionRoot,
+      readProvider: async () => ({ active: false }), listActiveJobs: () => [],
+      listActiveLocks: () => [{ path: join(sourceState.paths.profileDir, "security-audit.lock") }],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /state lock/);
+  } finally {
+    await rm(collisionRoot, { recursive: true, force: true });
+    await rm(collisionSource, { recursive: true, force: true });
+    await rm(collisionDestination, { recursive: true, force: true });
+    await rm(providerDestination, { recursive: true, force: true });
+    await rm(jobDestination, { recursive: true, force: true });
+    await rm(lockDestination, { recursive: true, force: true });
+  }
+
+  const unpopulatedRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-unpopulated-state-"));
+  const unpopulatedSource = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-unpopulated-source-"));
+  const unpopulatedDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-unpopulated-destination-"));
+  try {
+    const sourceState = loadState(unpopulatedSource, { stateDir: unpopulatedRoot });
+    sourceState.worker.url = "https://unpopulated.example.invalid";
+    saveState(sourceState);
+    const dstHash = historicalWorkspaceHash(unpopulatedDestination);
+    const dstProfile = join(unpopulatedRoot, "profiles", dstHash);
+    await mkdir(join(dstProfile, "jobs"), { recursive: true, mode: 0o700 });
+    assert.equal(isUnpopulatedProfileShell(dstProfile), true);
+    if (process.platform === "darwin") {
+      const aliasSuffix = `mbm-alias-probe-${process.pid}-${Date.now()}`;
+      assert.equal(historicalWorkspaceHash(join("/tmp", aliasSuffix)), historicalWorkspaceHash(join("/private/tmp", aliasSuffix)),
+        "historical workspace hashing did not canonicalize the macOS /tmp alias");
+    }
+
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: unpopulatedSource,
+      destinationWorkspace: unpopulatedDestination,
+      stateRoot: unpopulatedRoot,
+      readProvider: async () => ({ active: true }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /provider to be stopped/);
+    assert.equal(isUnpopulatedProfileShell(dstProfile), true,
+      "workspace migration pruned a destination shell before provider inactivity was proven");
+
+    const migratedResult = await migrateWorkspaceProfile({
+      sourceWorkspace: unpopulatedSource,
+      destinationWorkspace: unpopulatedDestination,
+      stateRoot: unpopulatedRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    });
+    assert.equal(migratedResult.ok, true);
+    const migrated = loadState(unpopulatedDestination, { stateDir: unpopulatedRoot });
+    assert.equal(migrated.worker.url, "https://unpopulated.example.invalid");
+    assert.equal(migrated.workspace.hash, dstHash);
+    const populatedShell = join(unpopulatedRoot, "profiles", "aaaaaaaaaaaaaaaaaaaaaaaa");
+    await mkdir(join(populatedShell, "jobs"), { recursive: true, mode: 0o700 });
+    await writeFile(join(populatedShell, "security-audit.json"), "retained\n", { mode: 0o600 });
+    assert.equal(isUnpopulatedProfileShell(populatedShell), false,
+      "profile shell classification ignored retained audit state");
+  } finally {
+    await rm(unpopulatedRoot, { recursive: true, force: true });
+    await rm(unpopulatedSource, { recursive: true, force: true });
+    await rm(unpopulatedDestination, { recursive: true, force: true });
+  }
+
+  const resumeRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-state-"));
+  const resumeSource = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-source-"));
+  const resumeDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-destination-"));
+  const resumeAliasParent = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-alias-"));
+  const resumeRootAlias = join(resumeAliasParent, "state-root");
+  try {
+    await symlink(resumeRoot, resumeRootAlias, process.platform === "win32" ? "junction" : "dir");
+    const sourceState = loadState(resumeSource, { stateDir: resumeRoot });
+    sourceState.worker.url = "https://resume.example.invalid";
+    const srcHash = sourceState.workspace.hash;
+    sourceState.paths.profileDir = join(resumeRootAlias, "profiles", srcHash);
+    sourceState.paths.statePath = join(sourceState.paths.profileDir, "state.json");
+    saveState(sourceState);
+    const dstHash = historicalWorkspaceHash(resumeDestination);
+    const srcProfile = join(resumeRoot, "profiles", srcHash);
+    const dstProfile = join(resumeRoot, "profiles", dstHash);
+    const stateBuf = await readFile(join(srcProfile, "state.json"));
+    const marker = {
+      schemaVersion: 1,
+      sourceWorkspace: resumeSource,
+      sourceHash: srcHash,
+      destinationWorkspace: resumeDestination,
+      destinationHash: dstHash,
+      stateRoot: resumeRoot,
+      stateSha256: createHash("sha256").update(stateBuf).digest("hex"),
+      createdAt: new Date().toISOString(),
+    };
+    await writeFile(join(srcProfile, "workspace-migration.json"), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
+    await rename(srcProfile, dstProfile);
+    const resumedResult = await migrateWorkspaceProfile({
+      sourceWorkspace: resumeSource,
+      destinationWorkspace: resumeDestination,
+      stateRoot: resumeRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    });
+    assert.equal(resumedResult.ok, true);
+    const migrated = loadState(resumeDestination, { stateDir: resumeRoot });
+    assert.equal(migrated.worker.url, "https://resume.example.invalid");
+    assert.equal(migrated.workspace.hash, dstHash);
+    assert.equal(await lstat(join(dstProfile, "workspace-migration.json")).then(() => true, () => false), false);
+  } finally {
+    await rm(resumeAliasParent, { recursive: true, force: true });
+    await rm(resumeRoot, { recursive: true, force: true });
+    await rm(resumeSource, { recursive: true, force: true });
+    await rm(resumeDestination, { recursive: true, force: true });
+  }
+
+  const mismatchRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-mismatch-state-"));
+  const mismatchSource = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-mismatch-source-"));
+  const mismatchDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-mismatch-destination-"));
+  const foreignRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-foreign-root-"));
+  try {
+    const sourceState = loadState(mismatchSource, { stateDir: mismatchRoot });
+    const srcHash = sourceState.workspace.hash;
+    const dstHash = historicalWorkspaceHash(mismatchDestination);
+    const srcProfile = join(mismatchRoot, "profiles", srcHash);
+    const dstProfile = join(mismatchRoot, "profiles", dstHash);
+    sourceState.paths.profileDir = join(foreignRoot, "profiles", srcHash);
+    sourceState.paths.statePath = join(sourceState.paths.profileDir, "state.json");
+    await writeFile(join(srcProfile, "state.json"), `${JSON.stringify(sourceState, null, 2)}\n`, { mode: 0o600 });
+    const stateBuf = await readFile(join(srcProfile, "state.json"));
+    const marker = {
+      schemaVersion: 1,
+      sourceWorkspace: mismatchSource,
+      sourceHash: srcHash,
+      destinationWorkspace: mismatchDestination,
+      destinationHash: dstHash,
+      stateRoot: mismatchRoot,
+      stateSha256: createHash("sha256").update(stateBuf).digest("hex"),
+      createdAt: new Date().toISOString(),
+    };
+    await writeFile(join(srcProfile, "workspace-migration.json"), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
+    await rename(srcProfile, dstProfile);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: mismatchSource,
+      destinationWorkspace: mismatchDestination,
+      stateRoot: mismatchRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /relocated workspace migration state no longer proves its historical profile path/,
+    "relocated workspace migration accepted a historical profile rooted under another canonical ancestor");
+  } finally {
+    await rm(mismatchRoot, { recursive: true, force: true });
+    await rm(mismatchSource, { recursive: true, force: true });
+    await rm(mismatchDestination, { recursive: true, force: true });
+    await rm(foreignRoot, { recursive: true, force: true });
+  }
+}
+
+async function testWorkspaceMigrationOwnerRetirement() {
+  const controlRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-owner-control-"));
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-owner-state-"));
+  const source = await mkdtemp(join(tmpdir(), "mbm-workspace-owner-source-"));
+  const other = await mkdtemp(join(tmpdir(), "mbm-workspace-owner-other-"));
+  const archived = `${source}-archived`;
+  try {
+    const historicalEntryScript = join(source, "bin", "machine-mcp.mjs");
+    await mkdir(join(source, "bin"), { recursive: true });
+    await writeFile(historicalEntryScript, "// initial entry\n", { mode: 0o755 });
+    const transaction = beginServiceOwnerUpdate({
+      workspace: source, stateRoot, entryScript: historicalEntryScript, version: "3.0.0-beta.174",
+    }, { controlRoot });
+    transaction.commit();
+    await rename(source, archived);
+    const retired = retireMatchingServiceOwner({ sourceWorkspace: source, stateRoot }, { controlRoot });
+    assert.equal(retired.retired, true, "matching unavailable historical service owner was not retired");
+    assert(retired.entryScript.endsWith(join("bin", "machine-mcp.mjs")), "retired entry script path preserved");
+    assert.equal(await lstat(serviceOwnerPath({ controlRoot })).then(() => true, () => false), false,
+      "retired service-owner file remained present");
+
+    await mkdir(source, { recursive: true });
+    const symlinkEntry = join(source, "entry-link.mjs");
+    await symlink(process.execPath, symlinkEntry);
+    const now = new Date().toISOString();
+    await writeFile(serviceOwnerPath({ controlRoot }), `${JSON.stringify({
+      schemaVersion: 1,
+      status: "committed",
+      transactionId: "AAAAAAAAAAAAAAAAAAAAAAAA",
+      workspace: source,
+      stateRoot,
+      entryScript: symlinkEntry,
+      version: "3.0.0-beta.174",
+      createdAt: now,
+      committedAt: now,
+    }, null, 2)}\n`, { mode: 0o600 });
+    assert.throws(() => retireMatchingServiceOwner({ sourceWorkspace: source, stateRoot }, { controlRoot }), /regular file when present/,
+      "workspace migration accepted a present symlink as a historical service entry script");
+    await rm(serviceOwnerPath({ controlRoot }), { force: true });
+
+    const mismatch = beginServiceOwnerUpdate({
+      workspace: other, stateRoot, entryScript: process.execPath, version: "3.0.0-beta.174",
+    }, { controlRoot });
+    mismatch.commit();
+    assert.throws(() => retireMatchingServiceOwner({
+      sourceWorkspace: source, stateRoot,
+    }, { controlRoot }), /does not match/);
+    assert.equal(await lstat(serviceOwnerPath({ controlRoot })).then(() => true, () => false), true,
+      "service-owner mismatch check removed unrelated ownership evidence");
+  } finally {
+    await rm(controlRoot, { recursive: true, force: true });
+    await rm(stateRoot, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+    await rm(archived, { recursive: true, force: true });
+    await rm(other, { recursive: true, force: true });
+  }
+}
