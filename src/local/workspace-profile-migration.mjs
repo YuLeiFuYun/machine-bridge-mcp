@@ -527,16 +527,26 @@ export function pruneUnpopulatedProfileShell(profileDir) {
 
 function samePath(left, right, platform = process.platform) {
   if (typeof left !== "string" || typeof right !== "string") return false;
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  if (platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b) return true;
+  const a = lexicalPathIdentity(left, platform);
+  const b = lexicalPathIdentity(right, platform);
+  if (a === b) return true;
   try {
-    const realA = realpathSync.native ? realpathSync.native(a) : realpathSync(a);
-    const realB = realpathSync.native ? realpathSync.native(b) : realpathSync(b);
-    return platform === "win32" ? realA.toLowerCase() === realB.toLowerCase() : realA === realB;
+    const realA = realpathSync.native ? realpathSync.native(left) : realpathSync(left);
+    const realB = realpathSync.native ? realpathSync.native(right) : realpathSync(right);
+    return lexicalPathIdentity(realA, platform) === lexicalPathIdentity(realB, platform);
   } catch {
     return false;
   }
+}
+
+function lexicalPathIdentity(value, platform) {
+  const pathApi = platform === "win32" ? path.win32 : path;
+  let resolved = pathApi.resolve(value);
+  if (platform !== "win32") return resolved;
+  resolved = resolved.toLowerCase();
+  if (resolved.startsWith("\\\\?\\unc\\")) return `\\\\${resolved.slice(8)}`;
+  if (resolved.startsWith("\\\\?\\")) return resolved.slice(4);
+  return resolved;
 }
 
 function digest(buffer) { return createHash("sha256").update(buffer).digest("hex"); }
