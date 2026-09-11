@@ -1,12 +1,14 @@
 # Changelog
 
-## 3.0.0-beta.181 - 2026-09-10
+## 3.0.0-beta.183 - 2026-09-11
 
-- Supersede the activated-but-unaccepted beta.180 candidate after the owner-machine routing canary exposed two semantic false positives: `非交互工作`/`外部输入或授权` were interpreted as current interactive-process intent, and `ImageCraft` weak-matched unrelated installed applications containing the token `Image`.
-- Make the machine-readable continuation contract authoritative for route priority: when `continuation.task_supervisor=true`, the durable managed-job route is primary instead of being displaced by incidental capability relevance. Keep genuine REPL/interactive work on the retained process-session route.
-- Match partial installed-application names only on lexical task tokens while preserving exact installed-application-name routing. Add direct and resolver-level regressions for the exact Fovea/Akashic/ImageCraft continuation wording.
-- Preserve beta.180 warm signed-HTTPS standby, bounded exact-generation takeover, no-replay relay safety, and default continuity agreements unchanged.
-- Advance package, Worker, and browser-extension identity to `3.0.0-beta.181`. npm publication remains separately gated and is not part of this candidate.
+- Let project manifests mark registered commands with `execution_mode=managed_job` plus an explicit managed-job timeout. Capability routing uses that structured metadata for long repository workflows instead of hard-coding this repository's release script names; read-only, negated, hypothetical, interactive, ordinary foreground, and existing-job continuation requests retain their own routes.
+- Separate Worker execution/redelivery authority from terminal-result settlement after reconnect. The original execution deadline remains unchanged, while the same in-memory result owner may receive one non-cumulative 15-second delivery-only extension beyond the original settlement deadline, including when that deadline was already at the ordinary tool ceiling.
+- Redact managed-job resource bytes before text decoding and make truncated capture fail closed at protected-value boundaries, preventing stdout, stderr, or aggregate capture limits from returning a resource/path prefix that ordinary exact-value replacement cannot recognize.
+- Keep saturated managed-job retention available during an active-to-terminal dependency-scan race: if a stale active/staged snapshot loses `plan.json`, re-read status and treat only a same-job terminal transition as resolved; genuinely active or unreadable dependency state still fails closed.
+- Expand architecture dependency extraction to multiline static imports/re-exports and add repository-local, fail-closed prerelease worktree resolution so public maintenance guidance no longer depends on a maintainer-home helper. Routing fixtures use synthetic project names and documented retention/process-tree timings match implementation.
+- Preserve beta.182 as the reviewed predecessor identity with distinct packaged bytes, and retain its controlled relay A/B evidence without broadening the causal claim: the induced WSS application-proxy failure exercised signed HTTPS standby and durable execution, but does not identify the cause of spontaneous historical 1006 resets.
+- Advance package, Worker, and browser-extension identity to `3.0.0-beta.183`. npm publication remains separately gated and is not part of this candidate.
 
 ## Historical releases
 

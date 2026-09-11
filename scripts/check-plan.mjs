@@ -44,6 +44,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "architecture:test",
   "markdown:test",
   "project-metadata:test",
+  "worktree-resolver:test",
   "numbers:test",
   "records:test",
   "state-inventory:test",

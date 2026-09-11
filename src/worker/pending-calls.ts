@@ -4,6 +4,7 @@ import { type PendingCallOutcome, type PendingCallRecord, type PendingCallSettle
 import { boundedPendingDelayMs, PendingCallDeadlines, type PendingCallDeadlineOptions } from "./pending-call-deadlines.ts";
 import { pendingReadJobCallsForAccount, pendingRegistrySnapshot } from "./pending-call-capacity.ts";
 import { assertPendingCallRegistration, pendingCallTimeoutMaximumMs } from "./pending-call-registration.ts";
+import { pendingCallReconnectSettlement } from "./pending-call-reconnect-settlement.ts";
 import { recordMatchesAuthorityRevocation, type AuthorityRevocation } from "../shared/authority-revocation.mjs";
 import type { DaemonChannel } from "./daemon-channel.ts";
 type PendingCallRegistryOptions = PendingCallDeadlineOptions & {
@@ -135,10 +136,7 @@ export class PendingCallRegistry {
 
   private expireOperation(id: string): Promise<boolean> { return this.expireRecord(this.byId.get(id)); }
   private extendSettlementForReconnect(record: PendingCallRecord): void {
-    const maximumDeadlineAt = record.startedAt + pendingCallTimeoutMaximumMs(record.tool);
-    const recoveryDeadlineAt = Math.min(maximumDeadlineAt, record.originalDeadlineAt + relayContract.reconnectResultDeliveryGraceMs);
-    if (recoveryDeadlineAt > record.deadlineAt) record.deadlineAt = recoveryDeadlineAt;
-    record.remainingTimeoutMs = Math.max(1, Math.ceil(record.deadlineAt - this.deadlines.now()));
+    Object.assign(record, pendingCallReconnectSettlement(record, this.deadlines.now()));
   }
   private expireReconnect(id: string): Promise<boolean> {
     const record = this.byId.get(id); return record && !record.socket ? this.expireRecord(record) : Promise.resolve(false);

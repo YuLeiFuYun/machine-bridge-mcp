@@ -180,7 +180,7 @@ npm run github:push
 
 Create/update the pull request, satisfy required checks, squash-merge, fetch, and fast-forward local `main`.
 
-After exact-commit checks pass, repository automation creates the annotated prerelease tag, GitHub Prerelease, and exact tarball asset through the local control plane without another conversational approval:
+After exact-commit checks pass, repository automation creates the annotated prerelease tag, GitHub Prerelease, and exact tarball asset through the local control plane without another conversational approval. Because this lifecycle can transitively run full verification for longer than the remote one-step 600-second process-carrier ceiling, hosted automation must launch `npm run prerelease:release` inside a durable `start_job` step with a timeout sized for the complete lifecycle; `run_process` and `exec_command` are not valid outer carriers for this command. The same rule applies to `npm run prerelease:publish -- --owner-confirm` after explicit npm-publication authorization and to other release lifecycle commands whose credible gate duration exceeds the one-step ceiling.
 
 ```sh
 npm run prerelease:release

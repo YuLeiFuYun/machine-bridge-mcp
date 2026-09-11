@@ -2,6 +2,11 @@
 
 import { relevanceScore } from "./capability-ranking.mjs";
 import { toolDefinition, toolNamesForPolicy } from "./policy.mjs";
+import {
+  buildContinuationContract, compoundExecutionIntent, durableExecutionIntent, existingManagedJobContinuationIntent,
+  interactiveProcessIntent, interruptionContinuityIntent, keepWorkingIntent, managedJobCommandExecutionIntent,
+  managedJobCreationIntent, nonExecutionIntent, readOnlyDiagnosticIntent,
+} from "./execution-routing-intent.mjs";
 
 const MAX_ROUTES = 6;
 const MAX_RANKED_TOOLS = 12;
@@ -126,9 +131,9 @@ export function buildExecutionRouting(task, options = {}) {
   }
 
   const availableRouteIds = new Set(ROUTES
-    .filter((definition) => routeUsable(definition, text, availableNames))
+    .filter((definition) => routeUsable(definition, text, availableNames, options))
     .map((definition) => definition.id));
-  const continuation = buildContinuationContract(text, availableNames);
+  const continuation = buildContinuationContract(text, availableNames, options);
   const selectedRoutes = selectRoutes(scoredRoutes, availableRouteIds);
   const managedPrimary = continuation.task_supervisor ? scoredRoutes.find((routeValue) => routeValue.id === "managed-job") : null;
   const routes = managedPrimary ? [managedPrimary, ...selectedRoutes.filter((routeValue) => routeValue.id !== "managed-job")].slice(0, MAX_ROUTES) : selectedRoutes;
@@ -195,14 +200,14 @@ function route(id, title, tools, guidance, keywords) {
   return Object.freeze({ id, title, tools: Object.freeze(tools), guidance, keywords: Object.freeze(keywords) });
 }
 
-function routeUsable(definition, task, availableNames) {
+function routeUsable(definition, task, availableNames, options = {}) {
   if (!definition.tools.some((tool) => availableNames.has(tool))) return false;
-  return definition.id !== "managed-job" || !managedJobCreationIntent(task)
+  return definition.id !== "managed-job" || !managedJobCreationIntent(task, options)
     || availableNames.has("start_job") || availableNames.has("stage_job");
 }
 
 function scoreRoute(definition, task, availableNames, scoreByTool, options, fallbackScore = 0) {
-  if (!routeUsable(definition, task, availableNames)) return null;
+  if (!routeUsable(definition, task, availableNames, options)) return null;
   const tools = definition.tools.filter((tool) => availableNames.has(tool));
   let score = relevanceScore(task, `${definition.title} ${definition.guidance} ${definition.keywords.join(" ")}`, definition.id);
   const reasons = [];
@@ -227,37 +232,6 @@ function scoreRoute(definition, task, availableNames, scoreByTool, options, fall
   };
 }
 
-function managedJobCreationIntent(task) {
-  const text = String(task || "");
-  return !interactiveProcessIntent(text) && (/background|detached|durable|long[- ]?running|overnight|continuous|multi[- ]?step|后台|持久|长时间|持续|多步骤/i.test(text)
-    || keepWorkingIntent(text) || interruptionContinuityIntent(text) || compoundExecutionIntent(text));
-}
-function keepWorkingIntent(task) { return /keep\s+(?:going|working)|do\s+not\s+stop|don't\s+stop|continue\s+(?:working|until)|不要停(?:下)?|别停(?:下)?|一直继续|除非[^。\n]{0,120}否则不要停(?:下)?/i.test(String(task || "")); }
-function interactiveProcessIntent(task) { return /interactive|stdin|repl|watch|tail|stream(?:ing)?(?: output)?|dev server|实时日志|持续读取|读取.*输出|常驻进程|标准输入|用户输入|键盘输入|等待(?:用户|键盘|终端|标准)?输入|需要(?:用户|键盘|终端|标准)输入|(?<!非)交互(?:式)?(?:输入|进程|会话|终端|模式)/i.test(String(task || "")); }
-function durableExecutionIntent(task) { return /background|detached|durable|long[- ]?running|overnight|multi[- ]?step|cleanup|finally|后台|持久|长时间|多步骤|清理/i.test(String(task || "")); }
-function supervisorCompoundIntent(task) { return /multi[- ]?(?:step|project|repo|repository)|multiple (?:steps|projects|repos|repositories)|cross[- ]project|batch|多个(?:步骤|项目|仓库)|跨项目|批量/i.test(String(task || "")); }
-function terminalResultRequiredIntent(task) { return keepWorkingIntent(task) || interruptionContinuityIntent(task) || /finish|complete|until done|until complete|verify|validate|deliver|完成|做完|直到完成|验证|交付|收尾/i.test(String(task || "")); }
-function readOnlyDiagnosticIntent(task) { return /server_info|diagnose_runtime|read_file|search_text|git_status|read[- ]?only|只读|检查.*(?:状态|健康|诊断)|查看.*(?:状态|诊断)/i.test(String(task || "")); }
-function buildContinuationContract(task, availableNames) {
-  const interactive = interactiveProcessIntent(task);
-  const reasons = [keepWorkingIntent(task) && "explicit_keep_working_intent", interruptionContinuityIntent(task) && "interruption_continuity_intent", supervisorCompoundIntent(task) && "compound_execution_intent", durableExecutionIntent(task) && "durable_process_intent", interactive && "interactive_process_excluded"].filter(Boolean);
-  const requested = !interactive && reasons.length > 0, taskSupervisor = requested && availableNames.has("start_job");
-  if (requested && !taskSupervisor) reasons.push("start_job_unavailable");
-  return { task_supervisor: taskSupervisor, preferred_surface: taskSupervisor ? "start_job" : null, continuation_mode: taskSupervisor ? "task_supervisor" : null, job_shape: taskSupervisor ? "single_umbrella" : null, continue_same_response: taskSupervisor && terminalResultRequiredIntent(task), stop_conditions: ["actual_host_or_tool_boundary", "external_input_or_authorization_required", "explicit_user_checkpoint"], reasons: unique(reasons) };
-}
-
-function interruptionContinuityIntent(task) {
-  return /interruption|disconnect(?:ed|ion)?|drop(?:ped)?|reconnect|resume|中断|断线|掉线|断开|重连|续跑|恢复执行/i.test(String(task || ""));
-}
-
-function compoundExecutionIntent(task) {
-  const text = String(task || "");
-  const executionVerb = /process|handle|continue|resume|run|build|test|verify|migrate|repair|implement|处理|继续|续跑|运行|构建|测试|验证|迁移|修复|实现/i.test(text);
-  const explicitCompound = /multi[- ]?(?:project|repo|repository)|multiple (?:projects|repos|repositories)|cross[- ]project|batch|多个项目|多个仓库|跨项目|批量/i.test(text);
-  const enumeratedCompound = /[、,，].*(?:及|和|与|and)/i.test(text);
-  return executionVerb && (explicitCompound || enumeratedCompound);
-}
-
 function dynamicBoost(id, task, options) {
   const lower = String(task || "").toLowerCase();
   const reasons = [];
@@ -271,7 +245,7 @@ function dynamicBoost(id, task, options) {
   if (id === "application-discovery" && Array.isArray(options.applicationMatches) && options.applicationMatches.length > 0) add(8, "installed_application_inventory_match");
   if (id === "managed-job") {
     if (interactiveProcessIntent(task)) add(-20, "interactive_process_preferred");
-    else { if (/background|detached|durable|long[- ]?running|resume|cleanup|finally|overnight|continuous|后台|持久|断线|清理|长时间|持续|重试|多步骤/.test(lower)) add(14, "durability_or_cleanup_intent"); if (keepWorkingIntent(task)) add(24, "explicit_keep_working_intent"); if (interruptionContinuityIntent(task)) add(12, "interruption_continuity_intent"); if (compoundExecutionIntent(task)) add(12, "compound_execution_intent"); }
+    else if (!nonExecutionIntent(task) && !existingManagedJobContinuationIntent(task)) { if (managedJobCommandExecutionIntent(task, options)) add(30, "managed_command_execution_intent"); if (durableExecutionIntent(task) || /resume|continuous|断线|持续|重试/.test(lower)) add(14, "durability_or_cleanup_intent"); if (keepWorkingIntent(task)) add(24, "explicit_keep_working_intent"); if (interruptionContinuityIntent(task)) add(12, "interruption_continuity_intent"); if (compoundExecutionIntent(task)) add(12, "compound_execution_intent"); }
   }
   if (id === "process-session" && interactiveProcessIntent(task)) add(18, "interactive_process_intent");
   if (id === "shell" && /bash|shell|terminal|cli|command|script|debug|diagnos|benchmark|audit|probe|命令|终端|脚本|排查|调试|基准|审查|测试|构建/.test(lower)) add(10, "shell_or_cli_intent");

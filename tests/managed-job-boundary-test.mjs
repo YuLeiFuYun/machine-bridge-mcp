@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { managedJobCancellationRequested, writeManagedJobCancellation } from "../src/local/managed-job-cancellation.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/managed-job-directory.mjs";
 import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories, removeManagedJobDirectoryIfCurrent, retiredManagedJobDirectories } from "../src/local/managed-job-directory-generation.mjs";
+import { managedJobDependencyProtection } from "../src/local/managed-job-dependency-retention.mjs";
 import { confirmRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-managed-job-boundary-"));
@@ -118,6 +119,24 @@ try {
   pruneRetiredManagedJobDirectories(jobs, { warn() {} });
   assert.equal(existsSync(malformedRetired), true, "malformed reserved managed-job retirement residue was deleted");
   rmSync(malformedRetired, { recursive: true, force: true });
+
+  const staleActiveId = `job_${"T".repeat(24)}`;
+  const staleActiveDir = join(jobs, staleActiveId);
+  mkdirSync(staleActiveDir);
+  const staleActiveSnapshot = { job_id: staleActiveId, status: "running" };
+  writeFileSync(join(staleActiveDir, "status.json"), JSON.stringify({ job_id: staleActiveId, status: "succeeded" }));
+  const racedProtection = managedJobDependencyProtection([
+    { dir: staleActiveDir, status: staleActiveSnapshot, mtime: Date.now() },
+  ], { warn() { assert.fail("terminalized stale dependency snapshot emitted a fail-closed warning"); } }, new Set());
+  assert.equal(racedProtection.complete, true,
+    "dependency retention treated an active-to-terminal plan deletion race as globally incomplete protection");
+  writeFileSync(join(staleActiveDir, "status.json"), JSON.stringify(staleActiveSnapshot));
+  const genuinelyMissingPlan = managedJobDependencyProtection([
+    { dir: staleActiveDir, status: staleActiveSnapshot, mtime: Date.now() },
+  ], { warn() {} }, new Set());
+  assert.equal(genuinelyMissingPlan.complete, false,
+    "dependency retention stopped failing closed when an actually active job plan was unavailable");
+  rmSync(staleActiveDir, { recursive: true, force: true });
 
   const marker = join(dir, "cancel");
   assert.equal(managedJobCancellationRequested(marker), false);

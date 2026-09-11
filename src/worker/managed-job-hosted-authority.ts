@@ -49,9 +49,12 @@ export async function projectHostedManagedJobResult(
     issueManagedJobCapability(keyMaterial, authorized, jobId, "read"),
     issueManagedJobCapability(keyMaterial, authorized, jobId, "control"),
   ]);
-  const recovery = result.recovery && typeof result.recovery === "object" && !Array.isArray(result.recovery)
-    ? result.recovery as Record<string, unknown>
+  const recovery: Record<string, unknown> = result.recovery && typeof result.recovery === "object" && !Array.isArray(result.recovery)
+    ? { ...(result.recovery as Record<string, unknown>) }
     : { tool: "read_job", job_id: jobId };
+  // Hosted list_jobs is intentionally aggregate-only and cannot recover a concrete job. Once this
+  // result is delivered, the issued read capability is the authoritative hosted recovery handle.
+  delete recovery.fallback_tool;
   const projected = {
     ...result,
     recovery_key: recoveryKey,

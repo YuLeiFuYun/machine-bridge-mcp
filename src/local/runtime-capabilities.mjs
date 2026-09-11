@@ -2,6 +2,7 @@ import { classifyOperationalError } from "./log.mjs";
 import { buildExecutionRouting } from "./execution-routing.mjs";
 import { policyAllowsTool } from "./policy.mjs";
 import { projectApplicationCapabilities } from "./application-capability-projection.mjs";
+import { applicationMatchScore } from "./application-capability-match.mjs";
 const APPLICATION_TOOLS = ["list_local_applications", "open_local_application", "inspect_local_application", "operate_local_application"];
 export async function sessionBootstrap({
   agentContextManager,
@@ -77,6 +78,8 @@ export async function resolveTaskCapabilities({
     availableTools,
     seedTools: result.recommended_tools,
     commandRelevant: (result.command_matches?.[0]?.score || 0) >= 3,
+    managedJobCommandMatch: result.command_matches?.[0]?.execution_mode === "managed_job"
+      && Number(result.command_matches[0].score || 0) >= 3 ? result.command_matches[0] : null,
     skillRelevant: (result.skill_matches?.[0]?.score || 0) >= 3,
     applicationMatches: result.application_matches,
     browserAvailable: browserAllowed,
@@ -89,11 +92,3 @@ export async function resolveTaskCapabilities({
 }
 
 function availableToolSet(value) { if (value === null || value === undefined) return null; if (!Array.isArray(value) && !(value instanceof Set)) throw new TypeError("availableTools must be an array or set"); return new Set([...value].map((tool) => String(tool || "")).filter(Boolean)); }
-function applicationMatchScore(task, application) {
-  const name = String(application.name || "").toLowerCase();
-  const id = String(application.id || "").toLowerCase();
-  if (!name) return 0;
-  if (task.includes(name)) return 10 + Math.min(name.length, 20);
-  const taskTokens = new Set(task.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2)), words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
-  return words.reduce((score, word) => score + (taskTokens.has(word) ? 2 : 0), id && task.includes(id) ? 5 : 0);
-}

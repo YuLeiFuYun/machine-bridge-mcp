@@ -1,4 +1,5 @@
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
+import { pendingCallReconnectSettlement } from "../src/worker/pending-call-reconnect-settlement.ts";
 import {
   MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT,
   pendingCapacityProjection,
@@ -562,21 +563,27 @@ async function testDetachedTimeoutPause() {
   await expectReject(handover, "handover operation timeout");
   assert(registry.snapshot().active === 0, "live handover result-delivery grace leaked from the registry");
 
-  const capped = registry.register({
-    id: "maximum-settlement-cap", tool: "browser_action", socket: socketA,
+  const deliveryGrace = registry.register({
+    id: "maximum-settlement-delivery-grace", tool: "browser_action", socket: socketA,
     daemonInstanceId: "daemon_maximum_cap_12345678", timeoutMs: relayContract.maximumOrdinaryRelayToolTimeoutMs,
     onTimeout: () => new Error("maximum settlement timeout"),
   });
   advance(1);
   assert(registry.detachSocket(socketA, relayContract.reconnectGraceMs, () => new Error("maximum reconnect timeout")) === 1,
     "maximum-settlement fixture did not detach its call");
-  assert(registry.rebindInstance("daemon_maximum_cap_12345678", socketB).includes("maximum-settlement-cap"),
+  assert(registry.rebindInstance("daemon_maximum_cap_12345678", socketB).includes("maximum-settlement-delivery-grace"),
     "maximum-settlement fixture did not rebind");
-  assert(registry.nextDeadlineDelayMs() === relayContract.maximumOrdinaryRelayToolTimeoutMs - 1,
-    "reconnect delivery grace exceeded the existing ordinary settlement maximum");
+  assert(registry.nextDeadlineDelayMs() === relayContract.maximumOrdinaryRelayToolTimeoutMs
+      + relayContract.reconnectResultDeliveryGraceMs - 1,
+    "reconnect did not preserve a full one-time result-delivery grace beyond the initial settlement ceiling");
   advance(relayContract.maximumOrdinaryRelayToolTimeoutMs - 1);
-  await expectReject(capped, "maximum settlement timeout");
-  assert(registry.snapshot().active === 0, "maximum settlement cap leaked from the registry");
+  assert(registry.snapshot().active === 1,
+    "rebound call expired at the initial settlement ceiling instead of retaining result-delivery authority");
+  advance(relayContract.reconnectResultDeliveryGraceMs - 1);
+  assert(registry.snapshot().active === 1, "result-delivery grace expired one millisecond early");
+  advance(1);
+  await expectReject(deliveryGrace, "maximum settlement timeout");
+  assert(registry.snapshot().active === 0, "one-time result-delivery grace leaked from the registry");
 }
 
 async function testEventBoundaryDeadlineSweep() {
@@ -1369,6 +1376,28 @@ async function testRelayTimeoutContract() {
   assert(relayContract.reconnectResultDeliveryGraceMs === 15_000
     && relayContract.reconnectResultDeliveryGraceMs < relayContract.reconnectGraceMs,
   "terminal-result reconnect delivery grace drifted from its bounded one-time recovery contract");
+  const firstSettlement = pendingCallReconnectSettlement({
+    tool: "exec_command", startedAt: 0, originalDeadlineAt: 1_000, deadlineAt: 1_000,
+  }, 400);
+  const repeatedSettlement = pendingCallReconnectSettlement({
+    tool: "exec_command", startedAt: 0, originalDeadlineAt: 1_000, deadlineAt: firstSettlement.deadlineAt,
+  }, 1_400);
+  assert(firstSettlement.deadlineAt === 16_000 && firstSettlement.remainingTimeoutMs === 15_600
+    && repeatedSettlement.deadlineAt === firstSettlement.deadlineAt && repeatedSettlement.remainingTimeoutMs === 14_600,
+  "focused reconnect-settlement policy accumulated grace across same-daemon handovers");
+  const cappedSettlement = pendingCallReconnectSettlement({
+    tool: "exec_command", startedAt: 0, originalDeadlineAt: 49_000, deadlineAt: 49_000,
+  }, 49_500);
+  assert(cappedSettlement.deadlineAt === 64_000
+    && cappedSettlement.remainingTimeoutMs === 14_500,
+  "focused reconnect-settlement policy lost the one-time result-delivery grace near the original settlement ceiling");
+  const maximumSettlement = pendingCallReconnectSettlement({
+    tool: "exec_command", startedAt: 0, originalDeadlineAt: relayContract.maximumOrdinaryRelayToolTimeoutMs,
+    deadlineAt: relayContract.maximumOrdinaryRelayToolTimeoutMs,
+  }, relayContract.maximumOrdinaryRelayToolTimeoutMs - 1_000);
+  assert(maximumSettlement.deadlineAt === relayContract.maximumOrdinaryRelayToolTimeoutMs + relayContract.reconnectResultDeliveryGraceMs
+    && maximumSettlement.remainingTimeoutMs === relayContract.reconnectResultDeliveryGraceMs + 1_000,
+  "reconnect result-delivery grace was still capped by the original foreground settlement ceiling");
   assert(relayContract.httpFallbackMinimumRequestIntervalMs >= 750
     && Math.ceil(60_000 / relayContract.httpFallbackMinimumRequestIntervalMs) < 120,
   "HTTPS fallback can consume the full daemon route rate-limit budget without headroom");
@@ -1796,12 +1825,14 @@ async function testRelayTimeoutContract() {
     && wrongCapabilityError.details?.side_effects_started === false,
   "wrong-principal hosted job recovery did not fail before daemon dispatch");
   const acceptedWithCapabilities = await projectHostedManagedJobResult("start_job", {
-    accepted: true, job_id: capabilityJobId, recovery: { tool: "read_job", job_id: capabilityJobId },
+    accepted: true, job_id: capabilityJobId,
+    recovery: { tool: "read_job", job_id: capabilityJobId, fallback_tool: "list_jobs" },
   }, capabilityAuthority, capabilityKeyMaterial);
   assert(acceptedWithCapabilities.recovery_key === recoveryKey && acceptedWithCapabilities.control_key === controlKey
     && acceptedWithCapabilities.recovery?.recovery_key === recoveryKey
-    && acceptedWithCapabilities.recovery?.control_key === controlKey,
-  "hosted managed-job acceptance did not return deterministic recovery/control capabilities");
+    && acceptedWithCapabilities.recovery?.control_key === controlKey
+    && !("fallback_tool" in acceptedWithCapabilities.recovery),
+  "hosted managed-job acceptance did not return deterministic recovery/control capabilities or retained an unusable aggregate-only fallback");
   const activeWithoutUi = await projectHostedManagedJobResult("start_job", {
     accepted: true, job_id: capabilityJobId, status: "running", follow_up_read_required: true,
     host_turn_handoff_recommended: false, same_response_followup_supported: true,

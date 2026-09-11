@@ -25,7 +25,7 @@ assert(durable.routes.some((route) => route.id === "shell"), "durable routing in
 assert(durable.recommended_tools.includes("start_job") && durable.recommended_tools.includes("exec_command"),
   "durable routing did not expose both the safe primary route and shell alternative");
 
-const interruptedMultiProject = buildExecutionRouting("继续处理 Fovea、Akashic及ImageCraft 三个项目；刚才中断了，请恢复并完成剩余构建与验证", {
+const interruptedMultiProject = buildExecutionRouting("继续处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 三个项目；刚才中断了，请恢复并完成剩余构建与验证", {
   policy: policyProfile("full"),
 });
 assert(interruptedMultiProject.primary_route?.id === "managed-job",
@@ -50,7 +50,20 @@ assert(explicitKeepWorking.continuation.stop_conditions.includes("actual_host_or
 const keepGoing = buildExecutionRouting("不要停，一直继续实现并验证剩余修改", { policy: policyProfile("full") });
 assert(keepGoing.primary_route?.id === "managed-job" && keepGoing.continuation.task_supervisor === true && keepGoing.continuation.continue_same_response === true,
   "short Chinese keep-going wording did not request durable same-response task supervision");
-const liveContinuation = buildExecutionRouting("处理 Fovea、Akashic 及 ImageCraft 项目时又出现了中断。继续完成剩余的非交互工作；除非遇到真实 host/tool 边界、需要外部输入或授权，否则不要停下。", { policy: policyProfile("full") });
+const managedReleaseMatch = { name: "package.synthetic-release", score: 18, execution_mode: "managed_job", managed_job_timeout_seconds: 3600 };
+const prereleaseRelease = buildExecutionRouting("Run the registered synthetic release command for the accepted candidate", {
+  policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch,
+});
+assert(prereleaseRelease.primary_route?.id === "managed-job" && prereleaseRelease.continuation.task_supervisor === true
+  && prereleaseRelease.continuation.preferred_surface === "start_job" && prereleaseRelease.continuation.continue_same_response === true,
+"long GitHub prerelease lifecycle did not route to a durable task supervisor");
+const prereleasePublish = buildExecutionRouting("Execute the registered synthetic publication command after authorization", {
+  policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch,
+});
+assert(prereleasePublish.primary_route?.id === "managed-job" && prereleasePublish.continuation.task_supervisor === true
+  && prereleasePublish.continuation.preferred_surface === "start_job" && prereleasePublish.continuation.continue_same_response === true,
+"long npm prerelease publication lifecycle did not route to a durable task supervisor");
+const liveContinuation = buildExecutionRouting("处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 项目时又出现了中断。继续完成剩余的非交互工作；除非遇到真实 host/tool 边界、需要外部输入或授权，否则不要停下。", { policy: policyProfile("full") });
 assert(liveContinuation.primary_route?.id === "managed-job" && liveContinuation.continuation.task_supervisor === true
   && liveContinuation.continuation.preferred_surface === "start_job" && liveContinuation.continuation.continue_same_response === true
   && !liveContinuation.continuation.reasons.includes("interactive_process_excluded"),
@@ -65,7 +78,33 @@ assert(directDiagnostics.primary_route?.id === "diagnostics" && directDiagnostic
   && directDiagnostics.primary_route.guidance.includes("do not create a managed process job"),
 "read-only runtime inspection was not kept on the direct structured diagnostics surface");
 
-const diagnoseInterruptedMultiProject = buildExecutionRouting("处理「Fovea、Akashic及ImageCraft」项目时又出现了中断，查明原因", {
+for (const text of [
+  "只读审查中断原因，不运行任务，只给建议",
+  "不要执行 synthetic:publish，只解释它",
+  "The docs mention synthetic:publish; review the wording only",
+  "Explain why the synthetic release command can take a long time; do not run it",
+]) {
+  const readOnly = buildExecutionRouting(text, { policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch });
+  assert(readOnly.continuation.task_supervisor === false && readOnly.continuation.reasons.includes("non_execution_intent"),
+    `non-execution wording created a task supervisor: ${text}`);
+}
+const executeAndExplain = buildExecutionRouting("Run the synthetic release command and explain why it failed", {
+  policy: policyProfile("full"), managedJobCommandMatch: managedReleaseMatch,
+});
+assert(executeAndExplain.continuation.task_supervisor === true
+  && !executeAndExplain.continuation.reasons.includes("non_execution_intent"),
+"explanatory follow-up wording incorrectly cancelled an explicit execution request");
+const currentConversationTask = buildExecutionRouting("继续当前任务并运行剩余测试", { policy: policyProfile("full") });
+assert(!currentConversationTask.continuation.reasons.includes("existing_managed_job_continuation"),
+  "generic current-task wording was mistaken for continuation of an already accepted managed job");
+const existingJobContinuation = buildExecutionRouting("持续读取现有任务直到完成", { policy: policyProfile("full") });
+assert(existingJobContinuation.continuation.task_supervisor === false
+  && existingJobContinuation.continuation.preferred_surface === "read_job"
+  && existingJobContinuation.continuation.continue_same_response === true
+  && existingJobContinuation.continuation.reasons.includes("existing_managed_job_continuation"),
+"existing managed-job continuation was confused with interactive input or new task-supervisor creation");
+
+const diagnoseInterruptedMultiProject = buildExecutionRouting("处理 SyntheticAlpha、SyntheticBravo 及 SyntheticCedar 项目时又出现了中断，查明原因", {
   policy: policyProfile("full"),
 });
 assert(diagnoseInterruptedMultiProject.routes.some((route) => route.id === "managed-job")

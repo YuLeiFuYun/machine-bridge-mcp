@@ -157,7 +157,16 @@ A project manifest lives at `.machine-bridge/agent.json`:
       "argv": ["npm", "run", "check"],
       "cwd": ".",
       "timeout_seconds": 600,
-      "allow_extra_args": false
+      "allow_extra_args": false,
+      "execution_mode": "foreground"
+    },
+    "long-release": {
+      "description": "Run a repository-defined long lifecycle.",
+      "argv": ["npm", "run", "release:lifecycle"],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "execution_mode": "managed_job",
+      "managed_job_timeout_seconds": 21600
     }
   }
 }
@@ -190,13 +199,13 @@ description: Review a release without publishing it.
 
 The entrypoint requires non-empty `name` and `description`. Invalid bundles are skipped with bounded warnings. Symlinked skill directories are followed after canonical policy validation; symbolic-link entrypoint files are rejected. Traversal, depth, entries, summaries, content, and inventory are bounded.
 
-No persistent skill or project-context index is trusted as authoritative. `session_bootstrap`, `agent_context`, and `resolve_task_capabilities` rebuild the relevant context; skill-list/load calls rescan effective roots. The refresh fingerprint binds the target/scope, configuration paths, instruction source/precedence/content identity, skill source identity, and complete registered-command definition including cwd and timeout. A matching `known_refresh_fingerprint` permits response compaction only; task ranking, effective-policy filtering, installed-application matching, and route scoring still run. Newly created or edited files are visible without restarting the daemon or changing the MCP tool catalog.
+No persistent skill or project-context index is trusted as authoritative. `session_bootstrap`, `agent_context`, and `resolve_task_capabilities` rebuild the relevant context; skill-list/load calls rescan effective roots. The refresh fingerprint binds the target/scope, configuration paths, instruction source/precedence/content identity, skill source identity, and complete registered-command definition including cwd, foreground timeout, execution mode, and managed-job timeout. A matching `known_refresh_fingerprint` permits response compaction only; task ranking, effective-policy filtering, installed-application matching, and route scoring still run. Newly created or edited files are visible without restarting the daemon or changing the MCP tool catalog.
 
 ## Progressive disclosure and task selection
 
 `agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions, command names/descriptions/argv, and public tool definitions, then scores compatible execution surfaces as sets. It returns a schema-versioned envelope with the primary route, alternatives, ambiguity, fallback routes, ranked tools, and failure-aware guidance. Scores are relative within the current response, not probabilities or values to compare across package versions. Registered commands, direct Bash/argv, interactive sessions, durable jobs, files/Git, browser, applications, protected resources, and diagnostics remain separate choices; the advice does not hide or disable any effective-policy-visible tool.
 
-The resolver compares the task with cached installed-application names for every authenticated policy profile. This is an intentional read-only inventory surface: delegated roles may see application names and launcher/bundle identifiers, while external paths remain projected. Action routes are still filtered through the authenticated account/daemon policy intersection, so a delegated reviewer connected to a full daemon can discover an installed application without acquiring launch, Accessibility, browser, shell, or write authority.
+The resolver compares the task with cached installed-application names for every authenticated policy profile. An exact full application name may match directly; weaker lexical name fragments require an application-operation intent such as opening, inspecting, focusing, or operating an application. Repository/version words that merely overlap an installed application name are therefore not application intent. This is an intentional read-only inventory surface: delegated roles may see application names and launcher/bundle identifiers, while external paths remain projected. Action routes are still filtered through the authenticated account/daemon policy intersection, so a delegated reviewer connected to a full daemon can discover an installed application without acquiring launch, Accessibility, browser, shell, or write authority.
 
 Matching remains deterministic and local. Hyphens, underscores, dots, and whitespace are normalized; common English inflections are reduced to a small canonical form; and a bounded Chinese/English workflow vocabulary covers creation, improvement, installation, search, current/official documentation, verification, testing, frontend/design, browser/web, email, performance, and security intents. Capability-name token matches receive more weight than incidental words in a long description. This lets Chinese tasks select English-metadata skills such as `skill-creator`, `web-research-cli`, and `skill-installer`, while avoiding the prior tie where generic “create” wording could select `frontend-design`. An explicitly named skill or registered command still receives the strongest deterministic boost.
 
@@ -204,7 +213,7 @@ This ranking is deterministic local assistance, not semantic certainty. Weak pos
 
 ## Registered and automatic package commands
 
-`run_local_command` spawns the registered argv directly rather than parsing caller text through a Machine Bridge shell. Manifest commands control working directory, timeout ceiling, and whether caller arguments are accepted. A caller may reduce but not increase the timeout.
+`run_local_command` spawns the registered argv directly rather than parsing caller text through a Machine Bridge shell. Manifest commands control working directory, foreground timeout ceiling, whether caller arguments are accepted, and execution mode. `execution_mode` defaults to `foreground`. A command whose complete lifecycle may exceed the foreground carrier ceiling can declare `execution_mode: "managed_job"` plus `managed_job_timeout_seconds` from 1 through 21,600; capability resolution then recommends `start_job` for a positive request to execute that matched command. Negated, quoted, explanatory, or read-only references to the same command do not create a task supervisor. The registered command metadata remains planning context rather than extra execution authority.
 
 When the project root has a valid, non-symbolic-link `package.json`, safe script names are exposed automatically as `package.<normalized-name>` commands. The manager is selected from the validated `packageManager` field or one unambiguous lockfile; npm is used only when no manager signal exists. Conflicting lockfiles suppress automatic commands until the ambiguity is resolved. Only script names and bounded built-in workflow-intent terms are exposed. Script bodies and dependency values are not injected. Automatic commands accept no caller-supplied extra arguments, use the project root as cwd, and have a bounded timeout. Explicit manifests are applied afterward, so they can override or delete an automatic command by name.
 
