@@ -80,6 +80,29 @@ for (const id of ["project-native:npm:check:fast", "project-native:npm:check:ful
     throw new Error(`${id} must remain a tracked local_ready gate with required Seatbelt containment`);
   }
 }
+const agentManifestPath = ".machine-bridge/agent.json";
+if (!trackedRepositoryFiles.has(agentManifestPath)) {
+  throw new Error("repository release-carrier metadata must remain tracked");
+}
+const agentManifest = JSON.parse(readFileSync(join(root, agentManifestPath), "utf8"));
+const fullVerificationTimeoutSeconds = Number(lifecycleById.get("project-native:npm:check:full")?.command?.timeout_seconds);
+if (!Number.isSafeInteger(fullVerificationTimeoutSeconds) || fullVerificationTimeoutSeconds <= 600) {
+  throw new Error("tracked full verification lifecycle must retain a long explicit timeout budget");
+}
+for (const [name, argv] of [
+  ["package.prerelease-release", ["npm", "run", "prerelease:release"]],
+  ["package.prerelease-publish", ["npm", "run", "prerelease:publish"]],
+  ["package.stable-publish", ["npm", "run", "stable:publish"]],
+]) {
+  const command = agentManifest.commands?.[name];
+  if (!command
+      || command.execution_mode !== "managed_job"
+      || JSON.stringify(command.argv) !== JSON.stringify(argv)
+      || !Number.isSafeInteger(command.managed_job_timeout_seconds)
+      || command.managed_job_timeout_seconds < fullVerificationTimeoutSeconds) {
+    throw new Error(`${name} must use its fixed argv through a managed job whose timeout covers the tracked full verification lifecycle`);
+  }
+}
 if ((packageJson.files || []).some((entry) => {
   const normalized = String(entry).replace(/^\.\//, "").replace(/\/$/, "");
   return normalized === "tests" || normalized.startsWith("tests/");
