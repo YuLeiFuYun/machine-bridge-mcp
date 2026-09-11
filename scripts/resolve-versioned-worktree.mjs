@@ -35,8 +35,12 @@ export function referenceMatches(value, requested) {
   if (typeof value !== "string" || !value) return false;
   const identity = String(requested || "").toLowerCase().match(/(?:^|-)(dev|beta|rc)[._-]?(\d+)$/);
   if (identity) {
-    const pattern = new RegExp(`(?:^|[^a-z0-9])${identity[1]}[._-]?${identity[2]}(?![0-9])`, "i");
-    return pattern.test(value);
+    const wantedKind = identity[1];
+    const wantedNumber = identity[2];
+    for (const match of value.toLowerCase().matchAll(/(?:^|[^a-z0-9])(dev|beta|rc)[._-]?(\d+)(?![0-9])/g)) {
+      if (match[1] === wantedKind && match[2] === wantedNumber) return true;
+    }
+    return false;
   }
   const token = normalizeToken(requested);
   return Boolean(token && normalizeToken(value).includes(token));

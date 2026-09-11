@@ -8,6 +8,10 @@ assert(parseWorktrees("worktree /tmp/a\nHEAD abc\nbranch refs/heads/main\n\nwork
   "worktree porcelain parser lost records");
 assert(versionMatches("3.0.0-beta.182", "beta.182") && referenceMatches("fix/beta182-continuity", "beta.182"),
   "versioned worktree matcher lost prerelease identity normalization");
+assert(!referenceMatches("fix/beta1820-continuity", "beta.182")
+    && !referenceMatches("fix/alphabeta182-continuity", "beta.182")
+    && referenceMatches("fix/rc7-beta182-continuity", "beta.182"),
+  "versioned worktree matcher lost exact prerelease token boundaries");
 
 const root = await mkdtemp(join(tmpdir(), "mbm-worktree-resolver-"));
 try {

@@ -43,7 +43,7 @@ const KNOWN_PROFILE_LOCKS = Object.freeze([
 ]);
 
 export function historicalWorkspaceHash(workspace, options = {}) {
-  const normalized = normalizeHistoricalWorkspace(workspace, options);
+  const normalized = normalizeHistoricalWorkspace(workspace);
   const identity = String(options.platform || process.platform) === "win32" ? normalized.toLowerCase() : normalized;
   return createHash("sha256").update(identity).digest("hex").slice(0, 24);
 }
@@ -479,7 +479,9 @@ function removeReclaimableProfileLocks(profileDir) {
 }
 
 function pathInside(root, candidate) {
-  const relative = path.relative(root, path.resolve(candidate));
+  const canonicalRoot = canonicalizePotentialPath(root);
+  const canonicalCandidate = canonicalizePotentialPath(candidate);
+  const relative = path.relative(canonicalRoot, canonicalCandidate);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
