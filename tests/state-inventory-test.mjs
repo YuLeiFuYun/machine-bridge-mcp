@@ -534,11 +534,16 @@ async function testWorkspaceProfileMigration() {
   const resumeRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-state-"));
   const resumeSource = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-source-"));
   const resumeDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-destination-"));
+  const resumeAliasParent = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-resume-alias-"));
+  const resumeRootAlias = join(resumeAliasParent, "state-root");
   try {
+    await symlink(resumeRoot, resumeRootAlias, process.platform === "win32" ? "junction" : "dir");
     const sourceState = loadState(resumeSource, { stateDir: resumeRoot });
     sourceState.worker.url = "https://resume.example.invalid";
-    saveState(sourceState);
     const srcHash = sourceState.workspace.hash;
+    sourceState.paths.profileDir = join(resumeRootAlias, "profiles", srcHash);
+    sourceState.paths.statePath = join(sourceState.paths.profileDir, "state.json");
+    saveState(sourceState);
     const dstHash = historicalWorkspaceHash(resumeDestination);
     const srcProfile = join(resumeRoot, "profiles", srcHash);
     const dstProfile = join(resumeRoot, "profiles", dstHash);
@@ -570,9 +575,53 @@ async function testWorkspaceProfileMigration() {
     assert.equal(migrated.workspace.hash, dstHash);
     assert.equal(await lstat(join(dstProfile, "workspace-migration.json")).then(() => true, () => false), false);
   } finally {
+    await rm(resumeAliasParent, { recursive: true, force: true });
     await rm(resumeRoot, { recursive: true, force: true });
     await rm(resumeSource, { recursive: true, force: true });
     await rm(resumeDestination, { recursive: true, force: true });
+  }
+
+  const mismatchRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-mismatch-state-"));
+  const mismatchSource = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-mismatch-source-"));
+  const mismatchDestination = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-mismatch-destination-"));
+  const foreignRoot = await mkdtemp(join(tmpdir(), "mbm-workspace-migration-foreign-root-"));
+  try {
+    const sourceState = loadState(mismatchSource, { stateDir: mismatchRoot });
+    const srcHash = sourceState.workspace.hash;
+    const dstHash = historicalWorkspaceHash(mismatchDestination);
+    const srcProfile = join(mismatchRoot, "profiles", srcHash);
+    const dstProfile = join(mismatchRoot, "profiles", dstHash);
+    sourceState.paths.profileDir = join(foreignRoot, "profiles", srcHash);
+    sourceState.paths.statePath = join(sourceState.paths.profileDir, "state.json");
+    await writeFile(join(srcProfile, "state.json"), `${JSON.stringify(sourceState, null, 2)}\n`, { mode: 0o600 });
+    const stateBuf = await readFile(join(srcProfile, "state.json"));
+    const marker = {
+      schemaVersion: 1,
+      sourceWorkspace: mismatchSource,
+      sourceHash: srcHash,
+      destinationWorkspace: mismatchDestination,
+      destinationHash: dstHash,
+      stateRoot: mismatchRoot,
+      stateSha256: createHash("sha256").update(stateBuf).digest("hex"),
+      createdAt: new Date().toISOString(),
+    };
+    await writeFile(join(srcProfile, "workspace-migration.json"), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
+    await rename(srcProfile, dstProfile);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: mismatchSource,
+      destinationWorkspace: mismatchDestination,
+      stateRoot: mismatchRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /relocated workspace migration state no longer proves its historical profile path/,
+    "relocated workspace migration accepted a historical profile rooted under another canonical ancestor");
+  } finally {
+    await rm(mismatchRoot, { recursive: true, force: true });
+    await rm(mismatchSource, { recursive: true, force: true });
+    await rm(mismatchDestination, { recursive: true, force: true });
+    await rm(foreignRoot, { recursive: true, force: true });
   }
 }
 

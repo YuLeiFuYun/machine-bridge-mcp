@@ -410,7 +410,8 @@ function assertWorkspaceStateEnvelope(state, { workspace, hash, stateRoot, profi
   if (!allowRelocatedProfile && !samePath(state.paths.statePath, expectedState)) throw new Error("workspace migration state path does not match its state envelope");
   if (allowRelocatedProfile) {
     const historicalProfile = path.join(stateRoot, "profiles", hash);
-    if (!samePath(state.paths.profileDir, historicalProfile) || !samePath(state.paths.statePath, path.join(historicalProfile, "state.json"))) {
+    if (!sameRelocatedHistoricalPath(state.paths.profileDir, historicalProfile)
+        || !sameRelocatedHistoricalPath(state.paths.statePath, path.join(historicalProfile, "state.json"))) {
       throw new Error("relocated workspace migration state no longer proves its historical profile path");
     }
   }
@@ -520,6 +521,18 @@ export function pruneUnpopulatedProfileShell(profileDir) {
     }
     rmdirSync(profileDir);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function sameRelocatedHistoricalPath(left, right, platform = process.platform) {
+  if (samePath(left, right, platform)) return true;
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  try {
+    const historicalLeft = canonicalizePotentialPath(left);
+    const historicalRight = canonicalizePotentialPath(right);
+    return lexicalPathIdentity(historicalLeft, platform) === lexicalPathIdentity(historicalRight, platform);
   } catch {
     return false;
   }
