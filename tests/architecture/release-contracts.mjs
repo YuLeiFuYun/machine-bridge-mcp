@@ -1935,6 +1935,7 @@ if (!architecture.includes("State schema version 6") || !architecture.includes("
 }
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
 const managedJobReadTimeoutSource = readFileSync(join(root, "src", "worker", "managed-job-read-timeout.ts"), "utf8");
+const daemonToolRedeliverySource = readFileSync(join(root, "src", "worker", "daemon-tool-redelivery.ts"), "utf8");
 const workerRuntimeSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const processSessionReadSource = readFileSync(join(root, "src", "local", "process-session-read.mjs"), "utf8");
 if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutionTimeoutMs")) {
@@ -1988,8 +1989,12 @@ if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || !managedJobReadTimeoutSource.includes("executionMs - relayContract.managedJobReadExecutionHeadroomMs")
     || !managedJobReadTimeoutSource.includes("relayContract.workerSettlementOverheadMs")
     || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, dispatchBudget.executionTimeoutMs)")
-    || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)")
-    || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 3
+    || !workerRuntimeSource.includes("daemonToolRedeliveryArguments(name, args, remainingExecutionMs)")
+    || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 2
+    || !daemonToolRedeliverySource.includes("managedJobReadArgumentsWithinExecutionBudget")
+    || !daemonToolRedeliverySource.includes("managedJobReadExecutionBudgetHasHeadroom")
+    || !daemonToolRedeliverySource.includes("remainingExecutionMs < 1_000")
+    || !daemonToolRedeliverySource.includes("wait_ms: 0")
     || !workerRuntimeSource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
   throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / sixty-second public maximum / thirty-second progress coalescing contract");
 }

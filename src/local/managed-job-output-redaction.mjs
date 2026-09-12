@@ -11,23 +11,10 @@ export function managedJobResourcePathVariants(value, platform = process.platfor
 
 export function redactManagedJobOutput(buffer, context, runtimeDir, platform = process.platform, truncatedBytes = 0) {
   const safeBuffer = discardUnsafeTruncationTail(buffer, context, runtimeDir, platform, truncatedBytes);
-  let redactedBytes = safeBuffer;
-  for (const [name, value] of Object.entries(context.bytes || {})) {
-    redactedBytes = replaceBuffer(redactedBytes, value, Buffer.from(`<redacted-resource:${name}>`));
-  }
+  const redactedBytes = replaceBufferEntries(safeBuffer, byteRedactionEntries(context, runtimeDir));
   let text = new TextDecoder("utf-8").decode(redactedBytes);
-  for (const [name, path] of Object.entries(context.paths)) {
-    text = replacePathText(text, path, `<resource:${name}>`, platform);
-  }
-  for (const [name, paths] of Object.entries(context.sourcePaths || {})) {
-    for (const path of paths) text = replacePathText(text, path, `<resource-source:${name}>`, platform);
-  }
-  for (const [name, path] of Object.entries(context.temporaryPaths)) {
-    text = replacePathText(text, path, `<temp:${name}>`, platform);
-  }
-  text = replacePathText(text, runtimeDir, "<job-runtime>", platform);
-  for (const [name, patterns] of Object.entries(context.redactions)) {
-    for (const value of patterns) text = text.split(value).join(`<redacted-resource:${name}>`);
+  for (const entry of textRedactionEntries(context, runtimeDir, platform)) {
+    text = replaceTextEntry(text, entry, platform);
   }
   return text;
 }
@@ -57,12 +44,60 @@ function protectedBytePatterns(context, runtimeDir, platform) {
   }
   for (const path of Object.values(context.temporaryPaths || {})) values.push(...managedJobResourcePathVariants(path, platform).map((value) => Buffer.from(value)));
   values.push(...managedJobResourcePathVariants(runtimeDir, platform).map((value) => Buffer.from(value)));
-  for (const patterns of Object.values(context.redactions || {})) {
-    for (const value of patterns || []) if (value) values.push(Buffer.from(value));
-  }
+  for (const [, value] of literalRedactionEntries(context)) values.push(Buffer.from(value));
   const unique = new Map();
   for (const value of values) if (value.length) unique.set(value.toString("hex"), value);
   return [...unique.values()].sort((left, right) => right.length - left.length);
+}
+
+function literalRedactionEntries(context) {
+  const entries = [];
+  for (const [name, patterns] of Object.entries(context.redactions || {})) {
+    if (!Array.isArray(patterns)) continue;
+    for (const value of patterns) {
+      if (typeof value === "string" && value.length > 0) entries.push([name, value]);
+    }
+  }
+  return entries.sort((left, right) => right[1].length - left[1].length);
+}
+
+function pathRedactionEntries(context, runtimeDir) {
+  const entries = [];
+  const add = (value, replacement) => {
+    for (const variant of pathTextVariants(value)) {
+      if (variant) entries.push({ value: variant, replacement, caseInsensitive: true });
+    }
+  };
+  for (const [name, path] of Object.entries(context.paths || {})) add(path, `<resource:${name}>`);
+  for (const [name, paths] of Object.entries(context.sourcePaths || {})) {
+    for (const path of paths || []) add(path, `<resource-source:${name}>`);
+  }
+  for (const [name, path] of Object.entries(context.temporaryPaths || {})) add(path, `<temp:${name}>`);
+  add(runtimeDir, "<job-runtime>");
+  return entries;
+}
+
+function textRedactionEntries(context, runtimeDir, platform) {
+  if (platform !== "win32") return [];
+  return pathRedactionEntries(context, runtimeDir)
+    .map((entry) => ({ ...entry, caseInsensitive: true }))
+    .sort((left, right) => right.value.length - left.value.length);
+}
+
+function byteRedactionEntries(context, runtimeDir) {
+  const entries = [];
+  for (const [name, value] of Object.entries(context.bytes || {})) {
+    if (Buffer.isBuffer(value) && value.length > 0) {
+      entries.push({ pattern: value, replacement: Buffer.from(`<redacted-resource:${name}>`) });
+    }
+  }
+  for (const entry of pathRedactionEntries(context, runtimeDir)) {
+    entries.push({ pattern: Buffer.from(entry.value), replacement: Buffer.from(entry.replacement) });
+  }
+  for (const [name, value] of literalRedactionEntries(context)) {
+    entries.push({ pattern: Buffer.from(value), replacement: Buffer.from(`<redacted-resource:${name}>`) });
+  }
+  return entries.sort((left, right) => right.pattern.length - left.pattern.length);
 }
 
 function partialSuffixLength(buffer, pattern) {
@@ -80,19 +115,22 @@ function partialSuffixLength(buffer, pattern) {
   return 0;
 }
 
-function replaceBuffer(buffer, pattern, replacement) {
-  if (!Buffer.isBuffer(pattern) || pattern.length === 0 || buffer.length < pattern.length) return buffer;
-  let offset = 0;
-  let match = buffer.indexOf(pattern, offset);
-  if (match < 0) return buffer;
+function replaceBufferEntries(buffer, entries) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0 || entries.length === 0) return buffer;
   const parts = [];
-  while (match >= 0) {
-    if (match > offset) parts.push(buffer.subarray(offset, match));
-    parts.push(replacement);
-    offset = match + pattern.length;
-    match = buffer.indexOf(pattern, offset);
+  let cursor = 0;
+  let literalStart = 0;
+  while (cursor < buffer.length) {
+    const entry = entries.find(({ pattern }) => cursor + pattern.length <= buffer.length
+      && buffer.subarray(cursor, cursor + pattern.length).equals(pattern));
+    if (!entry) { cursor += 1; continue; }
+    if (cursor > literalStart) parts.push(buffer.subarray(literalStart, cursor));
+    parts.push(entry.replacement);
+    cursor += entry.pattern.length;
+    literalStart = cursor;
   }
-  if (offset < buffer.length) parts.push(buffer.subarray(offset));
+  if (literalStart === 0) return buffer;
+  if (literalStart < buffer.length) parts.push(buffer.subarray(literalStart));
   return Buffer.concat(parts);
 }
 
@@ -101,14 +139,12 @@ function pathTextVariants(value) {
   return [...new Set([path, path.replaceAll("\\", "/"), path.replaceAll("/", "\\")])];
 }
 
-function replacePathText(text, value, replacement, platform) {
-  let output = text;
-  for (const variant of pathTextVariants(value)) {
-    if (!variant) continue;
-    if (platform === "win32") output = output.replace(new RegExp(escapeRegExp(variant), "gi"), replacement);
-    else output = output.split(variant).join(replacement);
+function replaceTextEntry(text, entry, platform) {
+  if (!entry.value) return text;
+  if (platform === "win32" && entry.caseInsensitive) {
+    return text.replace(new RegExp(escapeRegExp(entry.value), "gi"), entry.replacement);
   }
-  return output;
+  return text.split(entry.value).join(entry.replacement);
 }
 
 function escapeRegExp(value) {

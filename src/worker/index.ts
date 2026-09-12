@@ -18,6 +18,7 @@ import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { handleDaemonHttpRelay } from "./daemon-http-controller.ts";
 import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
+import { beginDaemonResumeReconciliation } from "./daemon-resume-reconciliation.ts";
 import { McpController } from "./mcp-controller.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { removedProtocolResponse } from "./mcp-removed-protocol.ts";
@@ -51,11 +52,12 @@ import { MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
 import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
 import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./managed-job-read-timeout.ts";
+import { daemonToolRedeliveryArguments } from "./daemon-tool-redelivery.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./managed-job-hosted-authority.ts";
 import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.185";
+const SERVER_VERSION = "3.0.0-beta.186";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -332,6 +334,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const fallbackSocket = previousSockets.find((socket) => this.daemonRegistry.readyAttachment(socket)?.instanceId === daemonInstanceId);
       const fallbackHttp = previousHttpChannels.find((channel) => this.daemonRegistry.readyAttachment(channel)?.instanceId === daemonInstanceId);
       const reboundCallIds = this.pending.rebindInstance(daemonInstanceId, ws);
+      beginDaemonResumeReconciliation(ws, reboundCallIds);
       if (reboundCallIds.length > 0) {
         this.observability.event("info", "daemon.calls.rebound", { rebound_calls: reboundCallIds.length });
       }
@@ -375,6 +378,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       beginDrain: (channel) => this.daemonRegistry.beginDrain(channel),
     });
     if (!handled.ok) {
+      this.observability.socketProtocolError(handled.errorCode ?? "unknown_message_type");
       rejectDaemonMessage(ws, handled.errorCode ?? "unknown_message_type", 1002, handled.errorMessage ?? "invalid daemon message");
       return;
     }
@@ -578,11 +582,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         redeliverAfterProvenMissing: (record, channel) => {
           const remainingExecutionMs = Math.min(dispatchBudget.executionTimeoutMs,
             Math.floor(record.startedAt + dispatchBudget.executionTimeoutMs - performance.now()));
-          if (remainingExecutionMs < 1_000) return false;
-          if (name === "read_job" && !managedJobReadExecutionBudgetHasHeadroom(remainingExecutionMs)) return false;
-          const redeliveryArgs = name === "read_job"
-            ? managedJobReadArgumentsWithinExecutionBudget(args, remainingExecutionMs)
-            : args;
+          const redeliveryArgs = daemonToolRedeliveryArguments(name, args, remainingExecutionMs);
+          if (!redeliveryArgs) return false;
           return trySendDaemonChannel(channel, {
             type: "tool_call", id: record.id, tool: name, arguments: redeliveryArgs, timeout_ms: remainingExecutionMs,
             authorization: {

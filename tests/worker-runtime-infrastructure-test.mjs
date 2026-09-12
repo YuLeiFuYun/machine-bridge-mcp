@@ -6,6 +6,7 @@ import {
 } from "../src/worker/pending-call-capacity.ts";
 import { DaemonSocketRegistry } from "../src/worker/daemon-sockets.ts";
 import { DaemonRegistry } from "../src/worker/daemon-registry.ts";
+import { settleDaemonProvenMissingCalls } from "../src/worker/daemon-ready-messages.ts";
 import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../src/worker/daemon-ready-waiters.ts";
 import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "../src/worker/daemon-ready-dispatch.ts";
 import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../src/worker/daemon-recovery-budget.ts";
@@ -19,6 +20,7 @@ import {
 } from "../src/worker/worker-edge-guard.ts";
 import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../src/worker/tool-timeout.ts";
 import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../src/worker/managed-job-read-timeout.ts";
+import { daemonToolRedeliveryArguments } from "../src/worker/daemon-tool-redelivery.ts";
 import { issueManagedJobCapability, verifyManagedJobCapability } from "../src/worker/managed-job-capability.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../src/worker/managed-job-hosted-authority.ts";
 import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
@@ -428,6 +430,7 @@ async function testTerminalPaths() {
 async function testReconnectRebinding() {
   const socketA = {};
   const socketB = {};
+  const socketC = {};
   const registry = new PendingCallRegistry(2);
   const resumed = registry.register({
     id: "reconnect", tool: "exec_command", socket: socketA, daemonInstanceId: "daemon_same_instance_1234",
@@ -445,22 +448,49 @@ async function testReconnectRebinding() {
   const notReceived = registry.register({
     id: "not-received", tool: "list_dir", socket: socketA, daemonInstanceId: "daemon_same_instance_1234",
     timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
-    redeliverAfterProvenMissing: () => true,
+    redeliverAfterProvenMissing: () => { redeliveryAttempts += 1; return true; },
   });
+  let redeliveryAttempts = 0;
   registry.detachSocket(socketA, 1000, () => new Error("reconnect timeout"));
   assert(registry.rebindInstance("daemon_same_instance_1234", socketB).includes("not-received"),
     "daemon-proven non-delivery fixture did not rebind the pending call");
-  let redelivered = 0;
-  assert(await registry.rejectSocketIds(["not-received", "unknown"], socketB,
-    () => daemonCallNotReceivedAfterReconnectError(), undefined, (record) => {
-      const handled = record.redeliverAfterProvenMissing?.(record, socketB) === true;
-      if (handled) redelivered += 1;
-      return handled;
-    }) === 0 && redelivered === 1,
+  const observability = new WorkerObservability();
+  const firstMissing = await settleDaemonProvenMissingCalls({
+    ids: ["not-received", "unknown"], channel: socketB, pending: registry, observability,
+  });
+  const duplicateMissing = await settleDaemonProvenMissingCalls({
+    ids: ["not-received"], channel: socketB, pending: registry, observability,
+  });
+  assert(firstMissing.rejected === 0 && firstMissing.redelivered === 1
+    && duplicateMissing.rejected === 0 && duplicateMissing.redelivered === 0
+    && redeliveryAttempts === 1,
   "daemon-proven non-delivery did not preserve a safely redelivered pending call");
   assert(await registry.resolve("not-received", socketB, { redelivered: true }),
     "redelivered pending call no longer accepted its replacement-channel result");
   assert((await notReceived).redelivered === true, "safe redelivery lost the original pending settlement");
+
+  const missingTwice = registry.register({
+    id: "missing-twice", tool: "list_dir", socket: socketA, daemonInstanceId: "daemon_same_instance_1234",
+    timeoutMs: 10_000, onTimeout: () => new Error("timeout"),
+    redeliverAfterProvenMissing: () => true,
+  });
+  registry.detachSocket(socketA, 1000, () => new Error("reconnect timeout"));
+  assert(registry.rebindInstance("daemon_same_instance_1234", socketB).includes("missing-twice"),
+    "first redelivery reconnect did not rebind the pending call");
+  const firstRedelivery = await settleDaemonProvenMissingCalls({
+    ids: ["missing-twice"], channel: socketB, pending: registry, observability,
+  });
+  assert(firstRedelivery.redelivered === 1 && firstRedelivery.rejected === 0,
+    "first daemon-proven non-delivery did not allow its one transport redelivery");
+  registry.detachSocket(socketB, 1000, () => new Error("second reconnect timeout"));
+  assert(registry.rebindInstance("daemon_same_instance_1234", socketC).includes("missing-twice"),
+    "second reconnect did not rebind the once-redelivered pending call");
+  const secondRedelivery = await settleDaemonProvenMissingCalls({
+    ids: ["missing-twice"], channel: socketC, pending: registry, observability,
+  });
+  assert(secondRedelivery.redelivered === 0 && secondRedelivery.rejected === 1,
+    "a second daemon-proven non-delivery replayed a call that had already used its one transport redelivery");
+  await expectReject(missingTwice, "daemon reconnect confirmed the tool call was not received");
 
   const expiring = registry.register({
     id: "expire", tool: "read_file", socket: socketA, daemonInstanceId: "daemon_expiring_instance_1",
@@ -2053,6 +2083,21 @@ async function testRelayTimeoutContract() {
     && managedJobReadExecutionBudgetHasHeadroom(9_999) === false
     && managedJobReadExecutionBudgetHasHeadroom(Number.NaN) === false,
   "read_job recovery accepted a dispatch window that cannot cover its bounded reconciliation headroom");
+  const lowHeadroomReadRedelivery = daemonToolRedeliveryArguments("read_job", { wait_ms: 20_000 }, 9_999);
+  const minimumReadRedelivery = daemonToolRedeliveryArguments("read_job", { wait_ms: 20_000 }, 1_000);
+  const exactHeadroomReadArgs = { wait_ms: 0 };
+  assert(lowHeadroomReadRedelivery?.wait_ms === 0
+    && minimumReadRedelivery?.wait_ms === 0
+    && daemonToolRedeliveryArguments("read_job", exactHeadroomReadArgs, 10_000) === exactHeadroomReadArgs
+    && daemonToolRedeliveryArguments("read_job", { wait_ms: 0 }, 999) === null
+    && daemonToolRedeliveryArguments("read_job", { wait_ms: 0 }, Number.NaN) === null
+    && daemonToolRedeliveryArguments("read_job", { wait_ms: 0 }, Number.POSITIVE_INFINITY) === null
+    && daemonToolRedeliveryArguments("read_job", { wait_ms: 0 }, 1_000.5) === null,
+  "daemon-proven read_job non-delivery did not degrade a sub-headroom recovery window to one immediate checkpoint");
+  const ordinaryRedeliveryArgs = { path: "." };
+  assert(daemonToolRedeliveryArguments("list_dir", ordinaryRedeliveryArgs, 9_999) === ordinaryRedeliveryArgs
+    && daemonToolRedeliveryArguments("list_dir", ordinaryRedeliveryArgs, 999) === null,
+    "ordinary daemon redelivery was rewritten while sufficient protocol execution time remained");
   const remoteStartProcess = workspaceTools.find((tool) => tool.name === "start_process");
   const remoteStartProcessDescription = String(remoteStartProcess?.description || "");
   assert(remoteStartProcessDescription.includes("interactive stdin or incremental-output")

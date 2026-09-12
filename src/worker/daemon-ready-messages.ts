@@ -1,7 +1,7 @@
 import { acknowledgeAuthorityRevocation, authorityRevocationAckId } from "./authority-revocations.ts";
 import type { DaemonChannel } from "./daemon-channel.ts";
 import { settleDaemonPlannedDrain } from "./daemon-planned-drain.ts";
-import { daemonResumeMissingCallIds } from "./websocket-protocol.ts";
+import { daemonResumeAcknowledgement } from "./daemon-resume-reconciliation.ts";
 import { daemonCallNotReceivedAfterReconnectError, daemonToolError } from "./errors.ts";
 import type { PendingCallOutcome } from "./pending-call-contract.ts";
 import type { PendingCallRegistry } from "./pending-calls.ts";
@@ -24,9 +24,9 @@ export async function handleReadyDaemonMessage(input: {
 }): Promise<ReadyMessageDisposition> {
   const { channel, body, pending, storage, observability, beginDrain } = input;
   if (body.type === "resume_calls_ack") {
-    const missingIds = daemonResumeMissingCallIds(body.missing_ids);
-    if (!missingIds) return invalid("invalid_resume_calls_ack", "invalid resume calls acknowledgement");
-    await settleDaemonProvenMissingCalls({ ids: missingIds, channel, pending, observability });
+    const acknowledgement = daemonResumeAcknowledgement(channel, body.missing_ids);
+    if (!acknowledgement) return invalid("invalid_resume_calls_ack", "invalid resume calls acknowledgement");
+    if (!acknowledgement.duplicate) await settleDaemonProvenMissingCalls({ ids: acknowledgement.missingIds, channel, pending, observability });
     return { ok: true };
   }
   if (body.type === "authority_revoke_ack") {
@@ -62,7 +62,9 @@ export async function settleDaemonProvenMissingCalls(input: {
   const rejected = await input.pending.rejectSocketIds(
     input.ids, input.channel, (record) => daemonCallNotReceivedAfterReconnectError(record.recovery), undefined,
     (record) => {
+      if (record.provenMissingRedeliveryChannel) return record.provenMissingRedeliveryChannel === input.channel;
       if (record.redeliverAfterProvenMissing?.(record, input.channel) !== true) return false;
+      record.provenMissingRedeliveryChannel = input.channel;
       redelivered += 1; return true;
     },
   );

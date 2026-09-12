@@ -25,6 +25,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "github-backlog:test",
   "workflow-policy:test",
   "managed-job-boundary:test",
+  "managed-job-output-redaction:test",
   "secure-file:test",
   "worker-secret-file:test",
   "device-auth:test",
