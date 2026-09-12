@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
@@ -44,6 +44,18 @@ const prototypePackageCommands = automaticPackageCommands({
 if (prototypePackageCommands.get("package.constructor")?.searchTerms !== "") {
   throw new Error("prototype-shaped package script inherited intent metadata");
 }
+
+const repositoryAgentManifest = JSON.parse(await readFile(new URL("../.machine-bridge/agent.json", import.meta.url), "utf8"));
+const repositoryWorkflowBundle = JSON.parse(await readFile(new URL("../workflow-bundle.json", import.meta.url), "utf8"));
+const fullVerificationLifecycle = repositoryWorkflowBundle.lifecycle?.find((stage) => stage.id === "project-native:npm:check:full");
+const fullVerificationCommand = repositoryAgentManifest.commands?.["verification.full"];
+assert(fullVerificationCommand?.execution_mode === "managed_job"
+  && JSON.stringify(fullVerificationCommand.argv) === JSON.stringify(["npm", "run", "check:full"])
+  && fullVerificationCommand.cwd === "."
+  && fullVerificationCommand.timeout_seconds === 600
+  && Number.isSafeInteger(fullVerificationCommand.managed_job_timeout_seconds)
+  && fullVerificationCommand.managed_job_timeout_seconds >= Number(fullVerificationLifecycle?.command?.timeout_seconds),
+"repository full verification is not pinned to managed-job ownership with enough lifecycle budget");
 
 try {
   await mkdir(join(workspace, ".git"), { recursive: true });
@@ -288,6 +300,29 @@ description: 审查部署流程并验证发布配置。
     assert(chineseSearch.selected_skill?.name === "web-research-cli", "Chinese search intent did not select web-research-cli");
     const chineseInstall = await runtime.executeTool("resolve_task_capabilities", { path: "packages/example", task: "安装一个适合处理 PDF 的 skill" });
     assert(chineseInstall.selected_skill?.name === "skill-installer", "Chinese skill-install intent did not select skill-installer");
+
+    const managedJobCountBefore = await managedJobDirectoryCount(jobs);
+    const originalCollectDirectoryInstruction = runtime.agentContextManager.collectDirectoryInstruction.bind(runtime.agentContextManager);
+    runtime.agentContextManager.collectDirectoryInstruction = async (...input) => {
+      if (input[3] === "global") throw new Error("direct managed-job carrier matching touched user-global AgentContext");
+      return originalCollectDirectoryInstruction(...input);
+    };
+    try {
+      await expectReject(() => runtime.executeTool("run_process", {
+        argv: longRelease.argv, cwd: longRelease.cwd, idempotency_key: "managed-command-direct-carrier-rejection",
+      }), "requires start_job");
+    } finally {
+      runtime.agentContextManager.collectDirectoryInstruction = originalCollectDirectoryInstruction;
+    }
+    await expectReject(() => runtime.executeTool("run_local_command", { path: ".", name: "long-release" }), "requires start_job");
+    assert(await managedJobDirectoryCount(jobs) === managedJobCountBefore,
+      "managed-job-only carrier rejection created a durable job before returning the routing error");
+    const ordinaryDirect = await runtime.executeTool("run_process", {
+      argv: [process.execPath, "-e", "process.stdout.write('ordinary-direct-ok')"], cwd: ".",
+    });
+    assert(ordinaryDirect.stdout === "ordinary-direct-ok", "unregistered run_process was incorrectly blocked by managed-command enforcement");
+    const ordinaryRegistered = await runtime.executeTool("run_local_command", { path: ".", name: "fixed" });
+    assert(ordinaryRegistered.stdout === "fixed", "foreground registered command was incorrectly blocked by managed-command enforcement");
 
     const commands = await runtime.executeTool("list_local_commands", { path: "packages/example" });
     assert(commands.commands.find((item) => item.name === "echo-args")?.timeout_seconds === 7, "list_local_commands did not apply nearest manifest precedence");
@@ -564,6 +599,11 @@ Use the linked workflow.
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function managedJobDirectoryCount(jobRoot) {
+  const entries = await readdir(jobRoot, { withFileTypes: true }).catch((error) => error?.code === "ENOENT" ? [] : Promise.reject(error));
+  return entries.filter((entry) => entry.isDirectory() && entry.name.startsWith("job_")).length;
 }
 
 async function expectReject(callback, expected) {

@@ -43,6 +43,7 @@ export interface PendingCallRecord {
   remainingTimeoutMs: number;
   onTimeout: (record: PendingCallRecord) => Error;
   redeliverAfterProvenMissing?: (record: PendingCallRecord, channel: DaemonChannel) => boolean;
+  provenMissingRedeliveryChannel?: DaemonChannel;
   settlement: PendingCallSettlement;
   signal?: AbortSignal;
   abortHandler?: () => void;

@@ -256,7 +256,30 @@ export class AgentContextManager {
     };
   }
 
-  async discoverState(inputPath, context = {}) {
+  async managedJobCommandForLocalInvocation(args = {}, context = {}) {
+    const command = await this.resolveLocalCommand(args, context);
+    return command.executionMode === "managed_job" ? managedJobCommandSummary(command) : null;
+  }
+
+  async managedJobCommandForDirectInvocation(args = {}, context = {}) {
+    const argv = args.argv;
+    if (!Array.isArray(argv) || argv.length === 0 || argv.some((value) => typeof value !== "string")) return null;
+    const state = await this.discoverState(args.cwd || ".", context, { includeUserGlobalContext: false });
+    if (state.target !== state.targetDir) return null;
+    for (const command of state.commands.values()) {
+      if (command.executionMode !== "managed_job" || !sameArgv(command.argv, argv)) continue;
+      let commandCwd;
+      try { commandCwd = await realpath(command.cwd); }
+      catch (error) {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR") continue;
+        throw error;
+      }
+      if (commandCwd === state.target) return managedJobCommandSummary(command);
+    }
+    return null;
+  }
+
+  async discoverState(inputPath, context = {}, options = {}) {
     this.throwIfCancelled(context);
     const effectivePolicy = this.policyForContext(context);
     this.workspace = await realpath(this.workspace);
@@ -269,14 +292,14 @@ export class AgentContextManager {
       unrestricted: effectivePolicy.unrestrictedPaths === true,
     });
     const directories = directoriesBetween(scopeRoot, targetDir);
-    const userGlobalContextAllowed = allowsUserGlobalContext(context, effectivePolicy);
+    const userGlobalContextAllowed = options.includeUserGlobalContext !== false && allowsUserGlobalContext(context, effectivePolicy);
     const state = {
       target,
       targetDir,
       scopeRoot,
       instructionFiles: [...DEFAULT_INSTRUCTION_FILES],
       instructionMaxBytes: DEFAULT_INSTRUCTION_MAX_BYTES,
-      skillRoots: defaultSkillRoots(directories, this.home, this.codexHome, effectivePolicy.unrestrictedPaths === true),
+      skillRoots: defaultSkillRoots(directories, this.home, this.codexHome, userGlobalContextAllowed && effectivePolicy.unrestrictedPaths === true),
       commands: new Map(),
       builtinInstructionsEnabled: true,
       automaticProjectContextEnabled: true,
@@ -426,6 +449,14 @@ export class AgentContextManager {
       throwIfCancelled: this.throwIfCancelled,
     });
   }
+}
+
+function sameArgv(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function managedJobCommandSummary(command) {
+  return Object.freeze({ name: command.name, managedJobTimeoutSeconds: command.managedJobTimeoutSeconds });
 }
 
 async function findScopeRoot({ targetDir, workspace, unrestricted }) {

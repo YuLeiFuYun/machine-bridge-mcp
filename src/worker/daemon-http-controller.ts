@@ -6,6 +6,7 @@ import type { DaemonHttpChannel } from "./daemon-http-channel.ts";
 import { normalizeDaemonHttpExchange } from "./daemon-http-protocol.ts";
 import type { DaemonRegistry } from "./daemon-registry.ts";
 import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
+import { beginDaemonResumeReconciliation } from "./daemon-resume-reconciliation.ts";
 import { notifyReadyDaemon } from "./daemon-ready-waiters.ts";
 import { HttpError, json, readBoundedBytes } from "./http.ts";
 import type { WorkerObservability } from "./observability.ts";
@@ -77,6 +78,7 @@ export async function handleDaemonHttpRelay(input: {
     const queuedRevocations = await authorityRevocations(input.storage);
     input.registry.http.activate(exchange.sessionId, channel.activationToken, now);
     const rebound = input.pending.rebindInstance(exchange.instanceId, channel);
+    beginDaemonResumeReconciliation(channel, rebound);
     channel.send(JSON.stringify({ type: "resume_calls", ids: rebound }));
     for (const revocation of queuedRevocations) channel.send(JSON.stringify(authorityRevocationWireMessage(revocation)));
     channel.send(JSON.stringify({ type: "ready_ack", server: input.server, version: input.version }));
@@ -147,6 +149,7 @@ export async function handleDaemonHttpRelay(input: {
 async function invalidate(channel: DaemonHttpChannel, input: Parameters<typeof handleDaemonHttpRelay>[0], code: string): Promise<Response> {
   await input.detachChannel(channel, `HTTPS fallback protocol failure: ${code}`);
   input.registry.http.close(channel);
+  input.observability.socketProtocolError(code);
   input.observability.event("warn", "daemon.https_fallback.invalidated", { error_class: code });
   await input.scheduleAlarm();
   return json({ error: code }, 409);

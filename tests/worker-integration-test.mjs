@@ -1570,6 +1570,55 @@ try {
     && missingOwnershipResult.body.result?.structuredContent?.proven_non_delivery_redelivered === true,
   "daemon-proven non-delivery did not recover transparently through one safe same-id transport redelivery");
 
+  const lowHeadroomReadRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  const lowHeadroomReadCall = toolCallRequest(base, ownerAccessToken, 88042, "read_job", {
+    job_id: plannedDrainJobId, recovery_key: plannedDrainRecoveryKey, wait_ms: 0,
+  });
+  const lowHeadroomReadRelay = await lowHeadroomReadRelayPromise;
+  assert(lowHeadroomReadRelay.tool === "read_job"
+    && lowHeadroomReadRelay.arguments?.job_id === plannedDrainJobId
+    && lowHeadroomReadRelay.arguments?.wait_ms === 0
+    && lowHeadroomReadRelay.timeout_ms === 10_000,
+  "immediate managed-job checkpoint did not start with the expected ten-second execution budget");
+  const lowHeadroomPreviousSocket = candidateDaemon;
+  const lowHeadroomPreviousClosed = waitForWsClose(lowHeadroomPreviousSocket);
+  lowHeadroomPreviousSocket.terminate();
+  await lowHeadroomPreviousClosed;
+  candidateDaemon = await connectDaemon(base);
+  daemonSockets.push(candidateDaemon);
+  const lowHeadroomResume = await sendDaemonHello(candidateDaemon, candidateTools, candidatePolicy, candidateInstanceId);
+  assert(lowHeadroomResume.ids.includes(lowHeadroomReadRelay.id),
+    "same-instance reconnect did not retain the immediate read_job for resume reconciliation");
+  const lowHeadroomRedeliveryPromise = waitForWsMessage(candidateDaemon, "tool_call");
+  candidateDaemon.send(JSON.stringify({
+    type: "resume_calls_ack", missing_ids: [lowHeadroomReadRelay.id],
+  }));
+  const lowHeadroomRedelivery = await lowHeadroomRedeliveryPromise;
+  assert(lowHeadroomRedelivery.id === lowHeadroomReadRelay.id
+    && lowHeadroomRedelivery.tool === "read_job"
+    && lowHeadroomRedelivery.arguments?.job_id === plannedDrainJobId
+    && lowHeadroomRedelivery.arguments?.wait_ms === 0
+    && Number.isInteger(lowHeadroomRedelivery.timeout_ms)
+    && lowHeadroomRedelivery.timeout_ms >= 1_000
+    && lowHeadroomRedelivery.timeout_ms < lowHeadroomReadRelay.timeout_ms,
+  "daemon-proven immediate read_job non-delivery was not salvaged as a zero-wait checkpoint inside the remaining budget");
+  const duplicateMissingMessages = captureWsMessageTypes(candidateDaemon);
+  candidateDaemon.send(JSON.stringify({
+    type: "resume_calls_ack", missing_ids: [lowHeadroomReadRelay.id],
+  }));
+  await sleep(250);
+  assert(!duplicateMissingMessages.stop().includes("tool_call"),
+    "duplicate missing acknowledgement replayed a call that had already used its one transport redelivery");
+  candidateDaemon.send(JSON.stringify({
+    type: "tool_result", id: lowHeadroomReadRelay.id, ok: true,
+    result: { job_id: plannedDrainJobId, status: "succeeded", result: { low_headroom_redelivery: true } },
+  }));
+  const lowHeadroomReadResult = await lowHeadroomReadCall;
+  assert(lowHeadroomReadResult.response.status === 200
+    && lowHeadroomReadResult.body.result?.isError !== true
+    && lowHeadroomReadResult.body.result?.structuredContent?.status === "succeeded",
+  "low-headroom read_job redelivery did not settle the original MCP request");
+
   const expiredRedeliveryRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const expiredRedeliveryCall = toolCallRequest(base, ownerAccessToken, 88041, "session_bootstrap", { path: "." });
   const expiredRedeliveryRelay = await expiredRedeliveryRelayPromise;
