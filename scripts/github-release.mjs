@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { runNetworkCommand } from "./network-retry.mjs";
-import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";
+import { waitForSuccessfulWorkflowRun } from "./release-ci.mjs";
 import { tagSyncError } from "./release-state.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs";
@@ -30,6 +30,8 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const git = resolveTrustedGitExecutable({ workspace: root });
 const gh = resolveTrustedGithubCli({ workspace: root });
+const RELEASE_CI_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+const RELEASE_CI_POLL_INTERVAL_MS = 15_000;
 process.chdir(root);
 
 function fail(message) {
@@ -158,7 +160,7 @@ function remoteTagCommit(tag) {
   return (peeled ?? direct)?.[0] ?? null;
 }
 
-function assertSuccessfulCi(head) {
+async function waitForSuccessfulCi(head) {
   const required = [
     [".github/workflows/ci.yml", "CI"],
     [".github/workflows/codeql.yml", "CodeQL"],
@@ -166,34 +168,32 @@ function assertSuccessfulCi(head) {
     [".github/workflows/scorecard.yml", "OpenSSF Scorecard"],
     [".github/workflows/workflow-policy.yml", "Workflow Policy Gate"],
   ];
+  const deadlineMs = performance.now() + RELEASE_CI_WAIT_TIMEOUT_MS;
   const verified = [];
   for (const [workflow, name] of required) {
-    const text = outputNetwork(gh, [
-      "run",
-      "list",
-      "--workflow",
-      workflow,
-      "--commit",
-      head,
-      "--event",
-      "push",
-      "--limit",
-      "20",
-      "--json",
-      "databaseId,status,conclusion,headSha,event,createdAt,url",
-    ]);
-    let runs;
-    try { runs = JSON.parse(text); }
-    catch { fail(`GitHub Actions did not return valid JSON for ${name}`); }
+    const loadRuns = () => {
+      const text = outputNetwork(gh, [
+        "run", "list", "--workflow", workflow, "--commit", head, "--event", "push",
+        "--limit", "20", "--json", "databaseId,status,conclusion,headSha,event,createdAt,url",
+      ]);
+      try { return JSON.parse(text); }
+      catch { fail(`GitHub Actions did not return valid JSON for ${name}`); }
+    };
     let run;
-    try { run = requireSuccessfulWorkflowRun(runs, head, name); }
-    catch (error) { fail(String(error?.message || error)); }
+    try {
+      run = await waitForSuccessfulWorkflowRun(loadRuns, head, name, {
+        deadlineMs,
+        pollIntervalMs: RELEASE_CI_POLL_INTERVAL_MS,
+        now: () => performance.now(),
+      });
+    } catch (error) {
+      fail(String(error?.message || error));
+    }
     console.log(`GitHub Actions ${name} succeeded for ${head} (run ${run.databaseId}).`);
     verified.push(run);
   }
   return verified;
 }
-
 function releaseInfo(tag) {
   const args = ["api", githubReleaseByTagEndpoint(tag)];
   const result = runNetwork(gh, args, { capture: true, allowFailure: true });
@@ -230,7 +230,7 @@ async function assertCoreSync({ requireReleaseAsset }) {
   if (head !== originMain) {
     fail(`HEAD ${head} does not match origin/main ${originMain}`);
   }
-  assertSuccessfulCi(head);
+  await waitForSuccessfulCi(head);
 
   const localCommit = localTagCommit(tag);
   const localTagError = tagSyncError({ scope: "local", tag, head, commit: localCommit });
@@ -387,7 +387,7 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
     if (head !== originMain) {
       fail("HEAD does not match origin/main; local acceptance must be committed, pushed through npm run github:push, reviewed, and merged before release publication");
     }
-    assertSuccessfulCi(head);
+    await waitForSuccessfulCi(head);
 
     const existingLocal = localTagCommit(tag);
     if (existingLocal && existingLocal !== head) {

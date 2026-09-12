@@ -1832,13 +1832,16 @@ if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(joi
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
-if (!releaseSource.includes('import { requireSuccessfulWorkflowRun } from "./release-ci.mjs";')
+if (!releaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./release-ci.mjs";')
     || !releaseSource.includes('import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";')
     || !releaseSource.includes('import { verifyCurrentStableSoak } from "./release-soak.mjs";')
     || !releaseSource.includes("--publish-prerelease")
     || !releaseSource.includes("--prerelease")
     || !releaseSource.includes("--latest=false")
-    || (releaseSource.match(/assertSuccessfulCi\(head\);/g) || []).length !== 2
+    || (releaseSource.match(/await waitForSuccessfulCi\(head\);/g) || []).length !== 2
+    || !releaseSource.includes("RELEASE_CI_WAIT_TIMEOUT_MS = 30 * 60 * 1000")
+    || !releaseSource.includes("RELEASE_CI_POLL_INTERVAL_MS = 15_000")
+    || !releaseSource.includes("deadlineMs")
     || !releaseSource.includes(".github/workflows/codeql.yml")
     || !releaseSource.includes(".github/workflows/scorecard.yml")
     || !releaseSource.includes(".github/workflows/governance.yml")
