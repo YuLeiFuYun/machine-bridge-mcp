@@ -16,12 +16,13 @@ import { openDirectoryIfExists, pathEntryIfExists } from "../src/local/path-insp
 import { RuntimeResourceService } from "../src/local/runtime-resource-service.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { settleDurableProcessAcceptance } from "../src/local/durable-process-initial-settlement.mjs";
-import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, parseSystemSleepIntervals } from "../src/local/system-sleep-diagnostics.mjs";
+import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, parseSystemSleepIntervals, systemSleepDiagnostic } from "../src/local/system-sleep-diagnostics.mjs";
 
 await testRuntimeReporting();
 testProcessSessionStatusAuthority();
 await testDurableProcessInitialSettlement();
 testSystemSleepDiagnostics();
+await testSystemSleepDiagnosticAvailability();
 await testRuntimeDiagnostics();
 testDoctorReportingScope();
 await testGitServiceDiscoveryBoundary();
@@ -110,6 +111,28 @@ function testSystemSleepDiagnostics() {
   }, { supported: true, available: true, recent_sleep_intervals: intervals });
   assert(activeOutage.classification === "relay_outage_active" && activeOutage.outage_ended_at === null,
     "active relay outage was misrepresented as a completed sleep correlation");
+}
+
+async function testSystemSleepDiagnosticAvailability() {
+  const timeout = Object.assign(new Error("pmset timed out"), { code: "ETIMEDOUT" });
+  const unavailable = await systemSleepDiagnostic({
+    platform: "darwin",
+    context: {},
+    workspace: "/tmp",
+    runFixedInternal: async (command, args, timeoutMs, capture, maxBytes) => {
+      assert(command === "/bin/sh" && args[0] === "-c" && timeoutMs === 5_000
+        && capture === true && maxBytes === 128 * 1024,
+      "macOS sleep diagnostic no longer uses the bounded fixed power-history probe");
+      throw timeout;
+    },
+  });
+  assert(unavailable.snapshot.supported === true && unavailable.snapshot.available === false
+    && unavailable.snapshot.source === "macos_pmset" && unavailable.snapshot.error_class === "timeout"
+    && unavailable.snapshot.recent_sleep_intervals.length === 0,
+  "unavailable macOS sleep history lost its explicit evidence boundary");
+  assert(unavailable.check.ok === false && unavailable.check.skipped === true
+    && unavailable.check.error_class === "timeout",
+  "unavailable macOS sleep history still acts as a fatal runtime-health check");
 }
 
 async function testDurableProcessInitialSettlement() {
@@ -474,6 +497,46 @@ async function testRuntimeDiagnostics() {
     }
     assert(shell.ok === false, "unavailable local resource was hidden from diagnostic result");
 
+    const healthyWithAuxiliarySleepUnavailable = await diagnoseRuntime({
+      policy: policyProfile("full"),
+      runtimeDir,
+      workspace: runtimeDir,
+      runFixedInternal: async (command) => {
+        if (command === process.execPath) return { code: 0, stdout: "ok", stderr: "" };
+        if (command === "/sbin/route") return { code: 0, stdout: "   interface: en0\n", stderr: "" };
+        if (command === "/bin/sh") throw Object.assign(new Error("pmset timed out"), { code: "ETIMEDOUT" });
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      probeShell: async () => ({ code: 0, stdout: "", stderr: "" }),
+      managedJobManager: {
+        diagnoseStorage: () => ({ ok: true }),
+        listResources: () => ({ count: 0, resources: [] }),
+      },
+      relayStatus: () => ({
+        ready: true, network_route: "application-http-proxy", network_route_scope: "application-proxy-selection-only",
+        outage_active: false, outage_count: 0, last_close_category: null, last_close_code: 0,
+        last_transport_error_class: null, last_disconnected_at: null, last_ready_at: null,
+        last_ready_duration_ms: 0, next_reconnect_in_ms: 0,
+      }),
+      controlPlaneState: { lifecycle: { state: "running", operational: true } },
+      throwIfCancelled() {},
+    });
+    const auxiliarySleepCheck = healthyWithAuxiliarySleepUnavailable.checks
+      .find((check) => check.layer === "system-sleep-history");
+    assert(healthyWithAuxiliarySleepUnavailable.ok === true,
+      "auxiliary sleep-history unavailability still made otherwise healthy runtime diagnostics fail");
+    assert(auxiliarySleepCheck?.ok === false && auxiliarySleepCheck.skipped === true,
+      "auxiliary sleep-history failure was hidden instead of retained as a skipped check");
+    if (process.platform === "darwin") {
+      assert(auxiliarySleepCheck.error_class === "timeout"
+        && healthyWithAuxiliarySleepUnavailable.runtime.system_sleep.available === false
+        && healthyWithAuxiliarySleepUnavailable.runtime.system_sleep.error_class === "timeout",
+      "macOS end-to-end diagnostics lost bounded sleep-history timeout evidence");
+    } else {
+      assert(auxiliarySleepCheck.error_class === "unsupported_platform",
+        "non-macOS end-to-end diagnostics changed the existing unsupported sleep-history boundary");
+    }
+
     const review = await diagnoseRuntime({
       policy: policyProfile("review"),
       runtimeDir,
@@ -510,6 +573,7 @@ async function testRuntimeDiagnostics() {
       }),
       throwIfCancelled() {},
     });
+    assert(failed.ok === false, "core runtime diagnostic failures were weakened by the auxiliary sleep-history refactor");
     assert(failed.checks.some((check) => check.layer === "local-process-spawn" && !check.ok), "process failure was not classified");
     const failedRelay = failed.checks.find((check) => check.layer === "remote-relay");
     assert(failedRelay?.outage_active === true && failedRelay.network_route === "unknown"
