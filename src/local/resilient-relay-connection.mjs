@@ -17,6 +17,8 @@ export class ResilientRelayConnection {
     this.fallbackTimer = null;
     this.fallbackRecoveredOutageMs = 0;
     this.lastFallbackTakeoverMs = 0;
+    this.lastFallbackTakeoverOutageNumber = 0;
+    this.fallbackTakeoversByOutage = new Map();
     const WebSocketRelayClass = options.WebSocketRelayClass || RelayConnection;
     const HttpRelayClass = options.HttpRelayClass || DaemonHttpRelayConnection;
     this.websocket = new WebSocketRelayClass({
@@ -53,13 +55,15 @@ export class ResilientRelayConnection {
     this.activeTransport = "";
     this.fallbackRecoveredOutageMs = 0;
     this.lastFallbackTakeoverMs = 0;
+    this.lastFallbackTakeoverOutageNumber = 0;
+    this.fallbackTakeoversByOutage.clear();
     this.startResolve?.(false);
     this.startResolve = null;
     this.startPromise = null;
   }
 
   status() {
-    const websocket = this.websocket.status();
+    const websocket = this.projectWebSocketStatus(this.websocket.status());
     const http = this.http.status();
     if (this.activeTransport === "https" && http.ready) {
       return {
@@ -84,6 +88,7 @@ export class ResilientRelayConnection {
         https_fallback_warming: false,
         https_fallback_standby: false,
         https_fallback_last_takeover_ms: this.lastFallbackTakeoverMs,
+        https_fallback_last_takeover_outage_number: this.lastFallbackTakeoverOutageNumber,
       };
     }
     return {
@@ -94,6 +99,7 @@ export class ResilientRelayConnection {
       https_fallback_standby: http.standby === true,
       https_fallback: http,
       https_fallback_last_takeover_ms: this.lastFallbackTakeoverMs,
+      https_fallback_last_takeover_outage_number: this.lastFallbackTakeoverOutageNumber,
     };
   }
 
@@ -153,13 +159,15 @@ export class ResilientRelayConnection {
       this.clearFallbackTimer();
       this.armFallback(0, "", true);
     } else {
-      if (this.websocket.status().ready === true) {
+      const websocket = this.websocket.status();
+      if (websocket.ready === true) {
         this.http.stop();
         this.armFallback(this.standbyDelayMs, "", true);
         return;
       }
-      this.fallbackRecoveredOutageMs = Math.max(0, Number(this.websocket.status().outage_duration_ms) || 0);
-      this.lastFallbackTakeoverMs = this.fallbackRecoveredOutageMs;
+      this.fallbackRecoveredOutageMs = Math.max(0, Number(websocket.outage_duration_ms) || 0);
+      this.lastFallbackTakeoverMs = boundedFallbackTakeoverMs(this.fallbackRecoveredOutageMs);
+      this.recordFallbackTakeover(websocket);
       this.activeTransport = "https";
     }
     this.startResolve?.(true);
@@ -192,6 +200,46 @@ export class ResilientRelayConnection {
     if (this.http.status().closed === true) this.armFallback(0, "", true);
   }
 
+  recordFallbackTakeover(websocket = {}) {
+    const outageNumber = relayOutageNumber(websocket.outage_count);
+    if (websocket.outage_active !== true || outageNumber === 0) return;
+    this.lastFallbackTakeoverOutageNumber = outageNumber;
+    this.fallbackTakeoversByOutage.set(outageNumber, this.lastFallbackTakeoverMs);
+    this.pruneFallbackTakeovers(websocket);
+  }
+
+  projectWebSocketStatus(websocket = {}) {
+    this.pruneFallbackTakeovers(websocket);
+    const recentOutages = Array.isArray(websocket.recent_outages) ? websocket.recent_outages : [];
+    return {
+      ...websocket,
+      recent_outages: recentOutages.map((entry) => {
+        const outageNumber = relayOutageNumber(entry?.outage_number);
+        const hasTakeover = outageNumber > 0 && this.fallbackTakeoversByOutage.has(outageNumber);
+        return {
+          ...entry,
+          https_fallback_taken_over: hasTakeover,
+          https_fallback_takeover_ms: hasTakeover ? this.fallbackTakeoversByOutage.get(outageNumber) : 0,
+        };
+      }),
+    };
+  }
+
+  pruneFallbackTakeovers(websocket = {}) {
+    const retained = new Set();
+    const activeOutageNumber = websocket.outage_active === true ? relayOutageNumber(websocket.outage_count) : 0;
+    if (activeOutageNumber > 0) retained.add(activeOutageNumber);
+    if (Array.isArray(websocket.recent_outages)) {
+      for (const entry of websocket.recent_outages) {
+        const outageNumber = relayOutageNumber(entry?.outage_number);
+        if (outageNumber > 0) retained.add(outageNumber);
+      }
+    }
+    for (const outageNumber of this.fallbackTakeoversByOutage.keys()) {
+      if (!retained.has(outageNumber)) this.fallbackTakeoversByOutage.delete(outageNumber);
+    }
+  }
+
   armFallback(delay, takeoverWebSocketConnectionId = "", allowReadyWebSocket = false) {
     if (this.closed) return;
     const takeoverWebSocket = /^connection_[A-Za-z0-9_-]{43}$/.test(String(takeoverWebSocketConnectionId || ""));
@@ -213,6 +261,17 @@ export class ResilientRelayConnection {
     this.scheduler.clearTimeout(this.fallbackTimer);
     this.fallbackTimer = null;
   }
+}
+
+function relayOutageNumber(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 && number <= 1_000_000_000 ? number : 0;
+}
+
+function boundedFallbackTakeoverMs(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.min(10 * 60_000, Math.round(number));
 }
 
 function positiveInteger(value, fallback) {

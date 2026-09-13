@@ -44,7 +44,7 @@ export async function diagnoseRuntime({
     last_transport_error_class: relay.last_transport_error_class || null,
     last_disconnected_at: relay.last_disconnected_at || null,
     last_ready_at: relay.last_ready_at || null, last_ready_duration_ms: Number(relay.last_ready_duration_ms) || 0,
-    https_fallback_last_takeover_ms: Number(relay.https_fallback_last_takeover_ms) || 0, next_reconnect_in_ms: Number(relay.next_reconnect_in_ms) || 0,
+    https_fallback_last_takeover_ms: Number(relay.https_fallback_last_takeover_ms) || 0, https_fallback_last_takeover_outage_number: Number(relay.https_fallback_last_takeover_outage_number) || 0, next_reconnect_in_ms: Number(relay.next_reconnect_in_ms) || 0,
     heartbeat: relay.heartbeat || null,
   } : {
     layer: "remote-relay", ok: false, skipped: true, transport: "stdio-or-local",

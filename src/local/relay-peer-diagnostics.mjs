@@ -70,6 +70,7 @@ export function relayHandshakeDiagnostics(value = {}) {
     previous_ready_duration_ms: clampInteger(status.last_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
     previous_ready_inbound_silence_ms: clampInteger(status.last_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
     https_fallback_last_takeover_ms: clampInteger(status.https_fallback_last_takeover_ms, 0, 0, 10 * 60_000),
+    https_fallback_last_takeover_outage_number: clampInteger(status.https_fallback_last_takeover_outage_number, 0, 0, 1_000_000_000),
   };
 }
 
@@ -80,12 +81,16 @@ function recentOutages(value) {
     if (!isPlainRecord(candidate)) continue;
     const outageNumber = Number(candidate.outage_number);
     if (!Number.isSafeInteger(outageNumber) || outageNumber < 1 || outageNumber > 1_000_000_000) continue;
+    const fallbackTakenOver = candidate.https_fallback_taken_over === true;
     result.push({
       outage_number: outageNumber,
       disconnected_at: boundedTimestamp(candidate.disconnected_at),
       last_disconnect_at: boundedTimestamp(candidate.last_disconnect_at),
       ready_at: boundedTimestamp(candidate.ready_at),
       duration_ms: clampInteger(candidate.duration_ms, 0, 0, 31 * 24 * 60 * 60_000),
+      https_fallback_taken_over: fallbackTakenOver,
+      https_fallback_takeover_ms: fallbackTakenOver
+        ? clampInteger(candidate.https_fallback_takeover_ms, 0, 0, 10 * 60_000) : 0,
       attempts: clampInteger(candidate.attempts, 0, 0, 1_000_000),
       close_category: typeof candidate.close_category === "string" ? candidate.close_category.slice(0, 128) : null,
       close_code: Number.isSafeInteger(candidate.close_code) && candidate.close_code >= 0 && candidate.close_code <= 4999

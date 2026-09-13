@@ -1,10 +1,10 @@
 # Changelog
 
-## 3.0.0-beta.188 - 2026-09-12
+## 3.0.0-beta.189 - 2026-09-13
 
-- Refactor runtime diagnostics so bounded macOS `pmset` sleep-history collection is explicit auxiliary causality evidence rather than a core health gate: timeout/unavailability remains visible as `runtime.system_sleep.available=false` with `error_class` and a skipped `system-sleep-history` check, while relay, filesystem, process, shell, managed-job storage, resource-admission, and registered-resource failures remain fail-closed.
-- Add direct forced-macOS and end-to-end regression/negative coverage for the auxiliary sleep-history boundary, and document the distinction between unavailable causal evidence and unhealthy runtime state.
-- Advance package, Worker, and browser-extension prerelease identity to `3.0.0-beta.188`; beta.187 remains the immutable accepted GitHub prerelease. npm publication still requires explicit owner authorization.
+- Bind signed HTTPS fallback takeover evidence to the exact WebSocket outage number at the ResilientRelay ownership boundary, retain multiple takeover/no-takeover episodes independently in the bounded recent-outage ring, and keep transport behavior unchanged.
+- Carry privacy-bounded per-outage `https_fallback_taken_over` / `https_fallback_takeover_ms` through daemon, Worker synthesized recovery, runtime diagnostics, and compact summary correlation; add stale-attribution and invalid-input negative coverage plus documentation contracts.
+- Advance package, Worker, and browser-extension prerelease identity to `3.0.0-beta.189`; beta.188 remains the immutable accepted GitHub prerelease. npm publication still requires explicit owner authorization.
 
 ## Historical releases
 

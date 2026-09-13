@@ -6,9 +6,12 @@ import { DaemonHttpRelayConnection } from "../src/local/daemon-http-relay-connec
 import { postDaemonHttpRelay } from "../src/local/daemon-http-relay-request.mjs";
 import { RelayInboundSequence, RelayOutboundSequence } from "../src/local/daemon-http-relay-sequence.mjs";
 import { proxyAgentForRelayHttp } from "../src/local/network-proxy.mjs";
+import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import { ResilientRelayConnection } from "../src/local/resilient-relay-connection.mjs";
+import { compactRuntimeRelay } from "../src/local/runtime-info-relay-projection.mjs";
 import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
 import { DaemonHttpChannel } from "../src/worker/daemon-http-channel.ts";
+import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 
 const ORIGIN = "https://relay.example.invalid";
 const SERVER = "machine-bridge-mcp";
@@ -624,6 +627,164 @@ async function testPrimaryFallbackHandover() {
 }
 
 
+async function testFallbackOutageAttributionHistory() {
+  const scheduler = new ManualScheduler();
+  FakeWebSocketRelay.instances.length = 0;
+  FakeHttpRelay.instances.length = 0;
+  const relay = new ResilientRelayConnection({
+    scheduler, fallbackDelayMs: 1500, standbyDelayMs: 5000,
+    WebSocketRelayClass: FakeWebSocketRelay,
+    HttpRelayClass: FakeHttpRelay,
+    websocket: {}, http: {},
+  });
+  const started = relay.start();
+  const ws = FakeWebSocketRelay.instances[0];
+  const http = FakeHttpRelay.instances[0];
+  ws.emitReady();
+  assert.equal(await started, true);
+  scheduler.advance(0);
+  http.markStandby();
+
+  ws.outageCount = 1; ws.outageActive = true; ws.outageDurationMs = 1100; ws.recentOutages = [];
+  ws.emitDisconnect();
+  http.emitReady();
+  assert.equal(relay.status().https_fallback_last_takeover_outage_number, 1,
+    "fallback takeover was not bound to the active WebSocket outage number");
+  ws.outageActive = false; ws.recentOutages = [{ outage_number: 1 }];
+  ws.emitReady();
+  let history = relay.status().recent_outages;
+  assert.deepEqual(history.map((entry) => [entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms]),
+    [[1, true, 1100]], "completed outage lost its fallback takeover evidence");
+
+  scheduler.advance(0);
+  http.markStandby();
+  ws.outageCount = 2; ws.outageActive = true; ws.outageDurationMs = 900;
+  ws.emitDisconnect();
+  ws.outageActive = false; ws.recentOutages = [{ outage_number: 2 }, { outage_number: 1 }];
+  ws.emitReady();
+  history = relay.status().recent_outages;
+  assert.deepEqual(history.map((entry) => [entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms]),
+    [[2, false, 0], [1, true, 1100]],
+    "prior fallback evidence was either lost or misattributed to a later no-takeover outage");
+
+  scheduler.advance(0);
+  http.markStandby();
+  ws.outageCount = 3; ws.outageActive = true; ws.outageDurationMs = 700;
+  ws.emitDisconnect();
+  http.emitReady();
+  ws.outageActive = false; ws.recentOutages = [{ outage_number: 3 }, { outage_number: 2 }, { outage_number: 1 }];
+  ws.emitReady();
+  history = relay.status().recent_outages;
+  assert.deepEqual(history.map((entry) => [entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms]),
+    [[3, true, 700], [2, false, 0], [1, true, 1100]],
+    "multiple takeover episodes were not retained independently in recent outage history");
+  assert.equal(relay.status().https_fallback_last_takeover_outage_number, 3,
+    "last takeover outage identity did not advance with the newest takeover");
+  relay.stop();
+}
+
+function testFallbackDiagnosticProjectionContract() {
+  const local = relayHandshakeDiagnostics({
+    outage_count: 8,
+    outage_active: true,
+    outage_started_at: "2026-09-13T00:00:00.000Z",
+    outage_duration_ms: 8000,
+    outage_attempts: 2,
+    last_disconnected_at: "2026-09-13T00:00:07.000Z",
+    https_fallback_last_takeover_ms: 1350,
+    https_fallback_last_takeover_outage_number: 8,
+    recent_outages: [{
+      outage_number: 7,
+      disconnected_at: "2026-09-12T23:59:00.000Z",
+      last_disconnect_at: "2026-09-12T23:59:01.000Z",
+      ready_at: "2026-09-12T23:59:02.000Z",
+      duration_ms: 2000,
+      https_fallback_taken_over: true,
+      https_fallback_takeover_ms: 700,
+      private_connection_id: "must-not-survive",
+    }, {
+      outage_number: 6,
+      duration_ms: 1000,
+      https_fallback_taken_over: false,
+      https_fallback_takeover_ms: 999,
+      private_proxy_url: "must-not-survive",
+    }],
+  });
+  assert.equal(local.https_fallback_last_takeover_outage_number, 8,
+    "local relay sanitizer lost the latest takeover outage identity");
+  assert.deepEqual(local.recent_outages.map((entry) => [
+    entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms,
+  ]), [[7, true, 700], [6, false, 0]],
+  "local relay sanitizer did not preserve exact takeover/no-takeover episode semantics");
+  assert.equal(local.recent_outages[0].private_connection_id, undefined);
+  assert.equal(local.recent_outages[1].private_proxy_url, undefined);
+
+  const worker = sanitizeDaemonRelayDiagnostics(local);
+  assert(worker, "Worker sanitizer rejected the bounded local relay diagnostic schema");
+  assert.equal(worker.https_fallback_last_takeover_outage_number, 8);
+  assert.deepEqual(worker.recent_outages.map((entry) => [
+    entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms,
+  ]), [[7, true, 700], [6, false, 0]],
+  "Worker sanitizer changed bounded per-outage fallback attribution");
+
+  const recovered = relayDiagnosticsAfterReady(worker, "2026-09-13T00:00:09.000Z");
+  assert(recovered && recovered.recent_outages[0].outage_number === 8
+    && recovered.recent_outages[0].https_fallback_taken_over === true
+    && recovered.recent_outages[0].https_fallback_takeover_ms === 1350,
+  "Worker synthesized recovery did not bind the matching latest takeover to outage 8");
+  const stale = relayDiagnosticsAfterReady({
+    ...worker, https_fallback_last_takeover_outage_number: 7,
+  }, "2026-09-13T00:00:09.000Z");
+  assert(stale && stale.recent_outages[0].outage_number === 8
+    && stale.recent_outages[0].https_fallback_taken_over === false
+    && stale.recent_outages[0].https_fallback_takeover_ms === 0,
+  "Worker synthesized recovery misattributed an older fallback takeover to outage 8");
+
+  const compact = compactRuntimeRelay({
+    authenticated: true, ready: true, closed: false, transport: "https",
+    network_route: "system-network-stack", outage_count: 8,
+    https_fallback_active: true, websocket_ready: false,
+    https_fallback_last_takeover_ms: 1350,
+    https_fallback_last_takeover_outage_number: 8,
+    https_fallback: { private_proxy_url: "must-not-survive" },
+  });
+  assert(compact?.https_fallback_last_takeover_ms === 1350
+    && compact.https_fallback_last_takeover_outage_number === 8
+    && !("https_fallback" in compact),
+  "compact relay summary lost bounded takeover correlation or leaked fallback internals");
+
+  const invalidLocal = relayHandshakeDiagnostics({
+    https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
+    https_fallback_last_takeover_outage_number: Number.POSITIVE_INFINITY,
+    recent_outages: [{
+      outage_number: 1, https_fallback_taken_over: false,
+      https_fallback_takeover_ms: 999, private_value: "must-not-survive",
+    }],
+  });
+  assert.equal(invalidLocal.https_fallback_last_takeover_ms, 0);
+  assert.equal(invalidLocal.https_fallback_last_takeover_outage_number, 0);
+  assert.equal(invalidLocal.recent_outages[0].https_fallback_taken_over, false);
+  assert.equal(invalidLocal.recent_outages[0].https_fallback_takeover_ms, 0);
+  assert.equal(invalidLocal.recent_outages[0].private_value, undefined);
+
+  const invalidWorker = sanitizeDaemonRelayDiagnostics({
+    schema_version: 1,
+    https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
+    https_fallback_last_takeover_outage_number: Number.POSITIVE_INFINITY,
+    recent_outages: [{
+      outage_number: 1, https_fallback_taken_over: true,
+      https_fallback_takeover_ms: Number.POSITIVE_INFINITY, private_value: "must-not-survive",
+    }],
+  });
+  assert(invalidWorker
+    && invalidWorker.https_fallback_last_takeover_ms === 0
+    && invalidWorker.https_fallback_last_takeover_outage_number === 0
+    && invalidWorker.recent_outages[0].https_fallback_taken_over === true
+    && invalidWorker.recent_outages[0].https_fallback_takeover_ms === 0
+    && invalidWorker.recent_outages[0].private_value === undefined,
+  "Worker sanitizer accepted unbounded or private fallback diagnostic metadata");
+}
+
 async function testPrimaryFallbackHandoverStress() {
   const cycles = 128;
   const scheduler = new ManualScheduler();
@@ -799,7 +960,9 @@ class FakeRelayBase {
   stop() { this.stopped = true; this.ready = false; this.standby = false; }
   status() { return {
     ready: this.ready, closed: !this.started || this.stopped, transport: this.kind, standby: this.standby,
+    outage_count: this.outageCount || 0, outage_active: this.outageActive === true,
     outage_duration_ms: this.outageDurationMs || 0,
+    recent_outages: Array.isArray(this.recentOutages) ? structuredClone(this.recentOutages) : [],
     last_transport_error_class: this.lastErrorClass,
     last_transport_error_reason: this.lastErrorReason,
     last_transport_error_ready: this.lastErrorReady,
@@ -843,5 +1006,7 @@ await testStandbyAndFailureBackoff();
 await testTakeoverTimeoutFitsNewCallRecoveryWindow();
 testAuthenticationRefreshInterruptsBothTransports();
 await testPrimaryFallbackHandover();
+await testFallbackOutageAttributionHistory();
+testFallbackDiagnosticProjectionContract();
 await testPrimaryFallbackHandoverStress();
 console.log("relay HTTP fallback reliability test ok");
