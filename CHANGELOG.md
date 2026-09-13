@@ -1,9 +1,10 @@
 # Changelog
 
-## 3.0.0-beta.187 - 2026-09-12
+## 3.0.0-beta.188 - 2026-09-12
 
-- Make exact-main GitHub release CI readiness a bounded continuation state instead of an outer-orchestration failure: `prerelease:release` now waits for missing, queued, or in-progress required push workflows under one shared 30-minute monotonic deadline with 15-second polling, while preserving newest exact-SHA run selection, immediate fail-closed handling for unsuccessful completed runs, and the rule that no tag or GitHub Release mutation occurs before all required workflows succeed. This changes GitHub release orchestration only; npm publication still requires explicit owner authorization.
-- Advance package, Worker, and browser-extension prerelease identity to `3.0.0-beta.187`; beta.186 remains the immutable accepted GitHub prerelease.
+- Refactor runtime diagnostics so bounded macOS `pmset` sleep-history collection is explicit auxiliary causality evidence rather than a core health gate: timeout/unavailability remains visible as `runtime.system_sleep.available=false` with `error_class` and a skipped `system-sleep-history` check, while relay, filesystem, process, shell, managed-job storage, resource-admission, and registered-resource failures remain fail-closed.
+- Add direct forced-macOS and end-to-end regression/negative coverage for the auxiliary sleep-history boundary, and document the distinction between unavailable causal evidence and unhealthy runtime state.
+- Advance package, Worker, and browser-extension prerelease identity to `3.0.0-beta.188`; beta.187 remains the immutable accepted GitHub prerelease. npm publication still requires explicit owner authorization.
 
 ## Historical releases
 

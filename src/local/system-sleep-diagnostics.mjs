@@ -20,11 +20,15 @@ export async function systemSleepDiagnostic({ runFixedInternal, context, workspa
       check: { layer: "system-sleep-history", ok: true, recent_sleep_intervals: intervals.length },
     };
   } catch (error) {
-    return {
-      snapshot: { supported: true, available: false, source: "macos_pmset", recent_sleep_intervals: [], error_class: classifyOperationalError(error) },
-      check: { layer: "system-sleep-history", ok: false, error_class: classifyOperationalError(error) },
-    };
+    return unavailableSystemSleepHistory(classifyOperationalError(error));
   }
+}
+
+function unavailableSystemSleepHistory(errorClass) {
+  return {
+    snapshot: { supported: true, available: false, source: "macos_pmset", recent_sleep_intervals: [], error_class: errorClass },
+    check: { layer: "system-sleep-history", ok: false, skipped: true, error_class: errorClass },
+  };
 }
 
 export function parseSystemSleepIntervals(text, limit = 8) {
