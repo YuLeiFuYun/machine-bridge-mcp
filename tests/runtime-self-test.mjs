@@ -9,7 +9,9 @@ import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs"
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 
-const SUCCESS_PROCESS_TIMEOUT_SECONDS = 30;
+// Test-harness-only success budget: loaded hosted Windows runners can exceed 30s without changing production process deadlines.
+// run_process.timeout_seconds is schema-bounded to 60, so the Windows fixture uses that maximum rather than an invalid larger value.
+const SUCCESS_PROCESS_TIMEOUT_SECONDS = process.platform === "win32" ? 60 : 30;
 const SELF_TEST_RESOURCE_WAIT_MS = 10_000;
 const RUNTIME_GIT_FIXTURE_TIMEOUT_MS = 30_000;
 // Detached runner startup is OS-scheduled and can exceed ten seconds on loaded shared CI hosts.

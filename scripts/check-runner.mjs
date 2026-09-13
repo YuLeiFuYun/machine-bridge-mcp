@@ -10,6 +10,82 @@ const SPARSE_PROGRESS_TASKS = new Map([
   ["self-test", ["local self-test phase started:", "local self-test phase completed:"]],
 ]);
 
+export const COVERAGE_FIXTURE_TESTS = Object.freeze([
+  "tests/policy-test.mjs",
+  "tests/runtime-infrastructure-test.mjs",
+  "tests/control-plane-resilience-test.mjs",
+  "tests/process-output-continuation-test.mjs",
+  "tests/process-nonreplayable-test.mjs",
+  "tests/runtime-boundaries-test.mjs",
+  "tests/git-commit-test.mjs",
+  "tests/privacy-test.mjs",
+  "tests/worker-runtime-infrastructure-test.mjs",
+  "tests/mcp-protocol-test.mjs",
+  "tests/mcp-controller-test.mjs",
+  "tests/mcp-response-proxy-test.mjs",
+  "tests/tool-argument-validation-test.mjs",
+  "tests/worker-oauth-controller-test.mjs",
+  "tests/logging-structure-test.mjs",
+  "tests/runtime-handler-matrix-test.mjs",
+  "tests/cli-entrypoint-test.mjs",
+  "tests/cli-service-test.mjs",
+  "tests/service-restart-handoff-test.mjs",
+  "tests/service-platform-test.mjs",
+  "tests/process-lock-test.mjs",
+  "tests/secure-file-test.mjs",
+  "tests/worker-secret-file-test.mjs",
+  "tests/atomic-fs-test.mjs",
+  "tests/coverage-range-merge-test.mjs",
+  "tests/coverage-generation-test.mjs",
+  "tests/check-runner-test.mjs",
+  "tests/full-verification-receipt-test.mjs",
+  "tests/resource-admission-test.mjs",
+  "tests/resource-build-root-test.mjs",
+  "tests/runtime-activation-test.mjs",
+  "tests/prerelease-activation-test.mjs",
+  "tests/release-publication-guard-test.mjs",
+  "tests/local-self-test.mjs",
+  "tests/numbers-test.mjs",
+  "tests/records-test.mjs",
+  "tests/project-metadata-test.mjs",
+  "tests/state-inventory-test.mjs",
+  "tests/state-root-retirement-test.mjs",
+  "tests/worker-deployment-test.mjs",
+  "tests/hardened-npm-test.mjs",
+  "tests/wrangler-toolchain-test.mjs",
+  "tests/agent-context-test.mjs",
+  "tests/agent-boundaries-test.mjs",
+  "tests/capability-ranking-test.mjs",
+  "tests/execution-routing-test.mjs",
+  "tests/browser-broker-auth-test.mjs",
+  "tests/browser-pairing-launch-test.mjs",
+  "tests/browser-bridge-test.mjs",
+  "tests/browser-request-settlement-test.mjs",
+  "tests/browser-operation-service-test.mjs",
+  "tests/browser-devtools-input-test.mjs",
+  "tests/browser-devtools-observation-test.mjs",
+  "tests/browser-service-worker-test.mjs",
+  "tests/app-automation-test.mjs",
+  "tests/macos-background-input-test.mjs",
+  "tests/computer-use-application-observation-test.mjs",
+  "tests/browser-computer-observation-test.mjs",
+  "tests/computer-use-test.mjs",
+  "tests/computer-use-result-budget-test.mjs",
+  "tests/relay-connection-test.mjs",
+  "tests/relay-http-fallback-test.mjs",
+  "tests/managed-job-boundary-test.mjs",
+  "tests/managed-jobs-test.mjs",
+  "tests/account-admin-test.mjs",
+  "tests/monotonic-deadline-test.mjs",
+  "tests/device-auth-test.mjs",
+  "tests/operation-authorization-test.mjs",
+  "tests/security-audit-log-test.mjs",
+  "tests/delegated-process-sandbox-test.mjs",
+  "tests/dpop-test.mjs",
+  "tests/worker-security-boundaries-test.mjs",
+  "tests/ssh-key-test.mjs"
+]);
+
 export async function runVerificationPlan(options) {
   const {
     mode,
@@ -24,6 +100,7 @@ export async function runVerificationPlan(options) {
     concurrency = 1,
     parallelTaskNames = new Set(),
     packageScripts = null,
+    taskEnvironments = null,
   } = options;
   if (!npmCli) throw new Error("check runner must run through npm so npm_execpath is available");
   const workerCount = normalizeConcurrency(concurrency);
@@ -34,7 +111,7 @@ export async function runVerificationPlan(options) {
   let index = 0;
   while (index < tasks.length) {
     if (!parallel.has(tasks[index]) || workerCount === 1) {
-      const failure = await executeTask({ index, tasks, npmCli, cwd, env, verbose, stdout, spawnProcess, packageScripts });
+      const failure = await executeTask({ index, tasks, npmCli, cwd, env, verbose, stdout, spawnProcess, packageScripts, taskEnvironments });
       if (failure) throwVerificationFailure(failure, stderr);
       index += 1;
       continue;
@@ -54,6 +131,7 @@ export async function runVerificationPlan(options) {
       spawnProcess,
       concurrency: workerCount,
       packageScripts,
+      taskEnvironments,
     });
     if (failure) throwVerificationFailure(failure, stderr);
     index = end;
@@ -83,9 +161,9 @@ async function executeConcurrentRange(options) {
   return failures.sort((a, b) => a.index - b.index)[0] || null;
 }
 
-async function executeTask({ index, tasks, npmCli, cwd, env, verbose, stdout, spawnProcess, packageScripts }) {
+async function executeTask({ index, tasks, npmCli, cwd, env, verbose, stdout, spawnProcess, packageScripts, taskEnvironments }) {
   const task = tasks[index];
-  const invocation = taskInvocation(task, packageScripts, npmCli, cwd, env);
+  const invocation = taskInvocation(task, packageScripts, npmCli, cwd, env, taskEnvironments);
   const taskStartedAt = performance.now();
   stdout.write(`[${index + 1}/${tasks.length}] ${invocation.label}\n`);
   const result = await runTask({
@@ -165,10 +243,24 @@ function sparseLineForwarder(output, prefixes) {
   };
 }
 
-function taskInvocation(task, packageScripts, npmCli, cwd, env) {
+function taskEnvironmentFor(taskEnvironments, task) {
+  if (!taskEnvironments) return null;
+  const value = taskEnvironments instanceof Map
+    ? taskEnvironments.get(task)
+    : taskEnvironments[task];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`verification task environment must be an object: ${task}`);
+  }
+  return value;
+}
+
+function taskInvocation(task, packageScripts, npmCli, cwd, env, taskEnvironments) {
+  const taskEnvironment = taskEnvironmentFor(taskEnvironments, task);
+  const mergedEnvironment = taskEnvironment ? { ...env, ...taskEnvironment } : env;
   const cleanEnvironment = {
-    ...verificationChildEnvironment(env),
-    NO_COLOR: env.NO_COLOR || "1",
+    ...verificationChildEnvironment(mergedEnvironment),
+    NO_COLOR: mergedEnvironment.NO_COLOR || "1",
   };
   const direct = directNodeInvocation(task, packageScripts);
   if (direct) {
@@ -192,7 +284,7 @@ function taskInvocation(task, packageScripts, npmCli, cwd, env) {
   };
 }
 
-function directNodeInvocation(task, packageScripts) {
+export function directNodeInvocation(task, packageScripts) {
   if (!packageScripts || typeof packageScripts !== "object" || Array.isArray(packageScripts)) return null;
   if (packageScripts[`pre${task}`] || packageScripts[`post${task}`]) return null;
   const script = packageScripts[task];

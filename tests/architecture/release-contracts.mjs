@@ -493,6 +493,16 @@ for (const required of ["assertFreshFullVerificationReceipt", "full verification
 if (!localReleaseAcceptanceSource.includes("assertFreshFullVerificationReceipt(root)")) throw new Error("candidate preparation no longer consumes the frozen-tree full verification receipt");
 if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
+const coverageCheckRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
+for (const required of ["MBM_CHECK_FULL_COVERAGE_CONTEXT", "producer_pid", "process.ppid", "completed_tasks", "precollectedCoverageTests", "ownsCoverageDir", "NODE_V8_COVERAGE", "COVERAGE_FIXTURE_TESTS", "directNodeInvocation"]) {
+  if (!coverageRunnerSource.includes(required)) throw new Error(`critical coverage evidence lost full-plan reuse boundary: ${required}`);
+}
+for (const required of ["mkdtempSync", "writeFileSync", "captureCoverageGeneration", "NODE_V8_COVERAGE", "MBM_CHECK_FULL_COVERAGE_CONTEXT", "dispose", "coverageTasksForPlan", "taskEnvironments", "withoutFullCoverageEnvironment"]) {
+  if (!runChecksSource.includes(required)) throw new Error(`full verification lost private coverage collection lifecycle: ${required}`);
+}
+for (const required of ["COVERAGE_FIXTURE_TESTS", "taskEnvironments", "taskEnvironmentFor", "verificationChildEnvironment(mergedEnvironment)", "export function directNodeInvocation"]) {
+  if (!coverageCheckRunnerSource.includes(required)) throw new Error(`check runner lost curated per-task coverage environment boundary: ${required}`);
+}
 for (const required of ['"tests/prerelease-activation-test.mjs"', '"src/shared/activation-recovery.mjs"']) {
   if (!coverageRunnerSource.includes(required)) throw new Error(`critical release recovery coverage lost boundary: ${required}`);
 }
@@ -665,6 +675,8 @@ if (!runtimeProcessRoutingSource.includes("runRuntimeExecCommand(runtime, args, 
 }
 const runtimeSelfTestSource = readFileSync(join(root, "tests", "runtime-self-test.mjs"), "utf8");
 if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
+    || !runtimeSelfTestSource.includes('const SUCCESS_PROCESS_TIMEOUT_SECONDS = process.platform === "win32" ? 60 : 30;')
+    || !runtimeSelfTestSource.includes("Test-harness-only success budget")
     || !runtimeSelfTestSource.includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
     || runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000")
     || !localSelfTestSource.includes("const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 5 * 60_000")
@@ -977,8 +989,9 @@ for (const forbidden of ["assertGithubPublicationAuthorized", "--owner-confirm"]
 }
 for (const required of [
   "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
-  "createHardenedNpmSession", "sourceDependencyTreeInstallArguments", "installSourceDependencyTree", "runNpmScript", "nestedNpmEnvironment",
+  "createHardenedNpmSession", "runNpmScript", "nestedNpmEnvironment",
   "runExecutable", "hardTimeout: true",
+  "exactReleaseHead", "revalidateReleaseHead", "releaseHead",
   "githubReleaseByTagEndpoint", "waitForGithubReleaseAsset", 'gh, ["api"',
   "GitHub release bytes were verified", "mutationError", "remote-state reconciliation",
   "waitForPublishedReleaseState", "defaultReleaseStateWait", "404 Not Found",
@@ -986,13 +999,16 @@ for (const required of [
 ]) {
   if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost exact accepted-asset boundary: ${required}`);
 }
-const githubDependencyInstall = githubReleaseSource.indexOf("await installSourceDependencyTree(npmSession.cli)");
-const githubFullVerification = githubReleaseSource.indexOf('await runNpmScript(npmSession.cli, "check")');
+for (const forbidden of ["installSourceDependencyTree", "sourceDependencyTreeInstallArguments", 'runNpmScript(npmSession.cli, "check")']) {
+  if (githubReleaseSource.includes(forbidden)) throw new Error(`GitHub release regained duplicate post-merge local verification: ${forbidden}`);
+}
+const githubCiProof = githubReleaseSource.indexOf("await waitForSuccessfulCi(releaseHead)");
+const githubVersionCheck = githubReleaseSource.indexOf('await runNpmScript(npmSession.cli, "version:check")');
 const githubAcceptanceVerification = githubReleaseSource.indexOf("assertLocalAcceptance(npmSession.cli)");
-if ([githubDependencyInstall, githubFullVerification, githubAcceptanceVerification].some((value) => value < 0)
-    || githubDependencyInstall > githubFullVerification
-    || githubFullVerification > githubAcceptanceVerification) {
-  throw new Error("GitHub release no longer rebuilds the exact source dependency tree before full verification and acceptance revalidation");
+if ([githubCiProof, githubVersionCheck, githubAcceptanceVerification].some((value) => value < 0)
+    || githubCiProof > githubVersionCheck
+    || githubVersionCheck > githubAcceptanceVerification) {
+  throw new Error("GitHub release no longer proves exact-main provider CI before version and acceptance revalidation");
 }
 if (githubReleaseSource.includes("packReleaseAsset") || githubReleaseSource.includes('["pack", "--silent"')) {
   throw new Error("GitHub release publication regressed to repacking the source directory");
@@ -1009,14 +1025,16 @@ for (const [label, source] of [["release", githubReleaseSource], ["push", readFi
   }
 }
 const githubCandidateStage = githubReleaseSource.indexOf("stageAcceptedCandidateTarball(root, acceptance, { npmCli: npmSession.cli, env: process.env })");
+const githubHeadRevalidation = githubReleaseSource.indexOf("revalidateReleaseHead(releaseHead)", githubCandidateStage);
 const githubRemoteTagRead = githubReleaseSource.indexOf("remoteTagCommit(tag)", githubCandidateStage);
 const githubReleaseUpload = githubReleaseSource.indexOf("ensureRelease(tag, pkg.version, candidate.path", githubCandidateStage);
 const githubAssetVerification = githubReleaseSource.indexOf("releaseAssetInfo(tag, acceptance.metadata.filename, acceptance.artifactSha256)", githubCandidateStage);
-if ([githubCandidateStage, githubRemoteTagRead, githubReleaseUpload, githubAssetVerification].some((value) => value < 0)
-    || githubCandidateStage > githubRemoteTagRead
+if ([githubCandidateStage, githubHeadRevalidation, githubRemoteTagRead, githubReleaseUpload, githubAssetVerification].some((value) => value < 0)
+    || githubCandidateStage > githubHeadRevalidation
+    || githubHeadRevalidation > githubRemoteTagRead
     || githubRemoteTagRead > githubReleaseUpload
     || githubReleaseUpload > githubAssetVerification) {
-  throw new Error("GitHub publication no longer stages accepted bytes before remote mutation and verifies the uploaded asset digest");
+  throw new Error("GitHub publication no longer stages accepted bytes, revalidates exact main before remote mutation, and verifies the uploaded asset digest");
 }
 const githubAssetSource = readFileSync(join(root, "scripts", "github-release-asset.mjs"), "utf8");
 for (const required of ["tag_name", "matches.length !== 1", "sha256:", "expectedSha256", "asset.digest", "waitForGithubReleaseAsset", "defaultAssetWait"]) {
@@ -1838,7 +1856,8 @@ if (!releaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./rel
     || !releaseSource.includes("--publish-prerelease")
     || !releaseSource.includes("--prerelease")
     || !releaseSource.includes("--latest=false")
-    || (releaseSource.match(/await waitForSuccessfulCi\(head\);/g) || []).length !== 2
+    || (releaseSource.match(/await waitForSuccessfulCi\(head\);/g) || []).length !== 1
+    || (releaseSource.match(/await waitForSuccessfulCi\(releaseHead\);/g) || []).length !== 1
     || !releaseSource.includes("RELEASE_CI_WAIT_TIMEOUT_MS = 30 * 60 * 1000")
     || !releaseSource.includes("RELEASE_CI_POLL_INTERVAL_MS = 15_000")
     || !releaseSource.includes("deadlineMs")
@@ -1847,7 +1866,9 @@ if (!releaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./rel
     || !releaseSource.includes(".github/workflows/governance.yml")
     || !releaseSource.includes(".github/workflows/workflow-policy.yml")
     || releaseSource.includes('["push", "origin", "HEAD:main"]')
-    || !releaseSource.includes("HEAD does not match origin/main; local acceptance must be committed")) {
+    || !releaseSource.includes("merge the accepted candidate before release publication")
+    || !releaseSource.includes("release source moved from verified main")
+    || !releaseSource.includes("revalidateReleaseHead(releaseHead)")) {
   throw new Error("GitHub release orchestration lost owner acceptance, exact-commit gates, or the no-main-push boundary");
 }
 const githubPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");

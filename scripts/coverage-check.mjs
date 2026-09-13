@@ -1,16 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { COVERAGE_FIXTURE_TESTS, directNodeInvocation } from "./check-runner.mjs";
 import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { mergeFunctionExecutions } from "./coverage-range-merge.mjs";
 import { verificationChildEnvironment } from "./verification-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs", "scripts/verification-generation-guard.mjs", "scripts/verification-state.mjs"]);
+const FULL_COVERAGE_CONTEXT_ENV = "MBM_CHECK_FULL_COVERAGE_CONTEXT";
+const FULL_COVERAGE_CONTEXT_FILE = ".mbm-full-coverage-context.json";
+const sharedCoverage = loadFullCoverageContext();
 const generationBefore = captureCoverageGeneration(root);
-const coverageDir = mkdtempSync(resolve(tmpdir(), "machine-bridge-coverage-"));
+const coverageDir = sharedCoverage?.coverageDir || mkdtempSync(resolve(tmpdir(), "machine-bridge-coverage-"));
+const ownsCoverageDir = !sharedCoverage;
 const coverageEnvironment = verificationChildEnvironment(process.env);
 const tests = [
   "tests/policy-test.mjs",
@@ -87,9 +92,16 @@ const tests = [
   "tests/worker-security-boundaries-test.mjs",
   "tests/ssh-key-test.mjs",
 ];
+if (JSON.stringify(tests) !== JSON.stringify(COVERAGE_FIXTURE_TESTS)) {
+  throw new Error("coverage fixture population drifted between full-plan reuse and standalone coverage gate");
+}
+const precollectedTests = sharedCoverage
+  ? precollectedCoverageTests(sharedCoverage.completedTasks, tests)
+  : new Set();
 
 try {
   for (const test of tests) {
+    if (precollectedTests.has(test)) continue;
     const run = spawnSync(process.execPath, [test], {
       cwd: root,
       env: { ...coverageEnvironment, NODE_V8_COVERAGE: coverageDir },
@@ -101,6 +113,9 @@ try {
       process.stderr.write(run.stderr || "");
       throw new Error(`coverage fixture failed: ${test}`);
     }
+  }
+  if (precollectedTests.size) {
+    console.log(`reused precollected V8 coverage for ${precollectedTests.size}/${tests.length} coverage fixtures`);
   }
   const generationAfter = captureCoverageGeneration(root);
   if (generationAfter !== generationBefore) {
@@ -344,7 +359,56 @@ try {
   if (failures.length) throw new Error(`coverage thresholds failed:\n- ${failures.join("\n- ")}`);
   console.log("critical-module coverage thresholds passed");
 } finally {
-  rmSync(coverageDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+  if (ownsCoverageDir) rmSync(coverageDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+}
+
+function loadFullCoverageContext() {
+  const rawPath = process.env[FULL_COVERAGE_CONTEXT_ENV];
+  if (!rawPath) return null;
+  const contextPath = resolve(rawPath);
+  const coverageDir = dirname(contextPath);
+  if (contextPath !== resolve(coverageDir, FULL_COVERAGE_CONTEXT_FILE)) {
+    throw new Error("full coverage context path is not the private context filename");
+  }
+  let record;
+  try { record = JSON.parse(readFileSync(contextPath, "utf8")); }
+  catch (error) { throw new Error(`full coverage context is unreadable: ${String(error?.message || error)}`); }
+  if (!record || record.schema_version !== "1.0.0" || !Number.isSafeInteger(record.producer_pid) || record.producer_pid <= 0) {
+    throw new Error("full coverage context metadata is invalid");
+  }
+  if (record.producer_pid !== process.ppid) throw new Error("full coverage context producer is not the verification parent");
+  if (resolve(String(record.coverage_dir || "")) !== coverageDir) throw new Error("full coverage context directory does not match its pathname");
+  if (resolve(String(process.env.NODE_V8_COVERAGE || "")) !== coverageDir) throw new Error("full coverage context does not match NODE_V8_COVERAGE");
+  const directoryStat = lstatSync(coverageDir);
+  const contextStat = lstatSync(contextPath);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || !contextStat.isFile() || contextStat.isSymbolicLink()) {
+    throw new Error("full coverage context must use ordinary private filesystem entries");
+  }
+  if (process.platform !== "win32" && ((directoryStat.mode & 0o077) !== 0 || (contextStat.mode & 0o077) !== 0)) {
+    throw new Error("full coverage context permissions are not private");
+  }
+  if (record.generation !== captureCoverageGeneration(root)) throw new Error("full coverage context generation does not match current coverage inputs");
+  if (!Array.isArray(record.completed_tasks) || record.completed_tasks.some((task) => typeof task !== "string" || !task)) {
+    throw new Error("full coverage context completed task list is invalid");
+  }
+  if (!readdirSync(coverageDir).some((name) => name.startsWith("coverage-") && name.endsWith(".json"))) {
+    throw new Error("full coverage context has no precollected V8 reports");
+  }
+  return { coverageDir, completedTasks: record.completed_tasks };
+}
+
+function precollectedCoverageTests(completedTasks, coverageTests) {
+  const scripts = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).scripts || {};
+  const coverageSet = new Set(coverageTests);
+  const precollected = new Set();
+  for (const task of completedTasks) {
+    const direct = directNodeInvocation(task, scripts);
+    if (!direct || !coverageSet.has(direct.args[0])) {
+      throw new Error(`full coverage context contains a non-curated completed task: ${task}`);
+    }
+    precollected.add(direct.args[0]);
+  }
+  return precollected;
 }
 
 function collectCoverage(directory) {
