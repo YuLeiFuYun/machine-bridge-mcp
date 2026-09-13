@@ -16,7 +16,6 @@ import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs";
 import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "./source-dependency-tree.mjs";
 import { runExecutable } from "../src/local/shell.mjs";
 import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
 import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
@@ -94,17 +93,6 @@ async function runNpmScript(npmCli, task) {
   });
 }
 
-async function installSourceDependencyTree(npmCli) {
-  await runExecutable(process.execPath, [npmCli, ...sourceDependencyTreeInstallArguments(root)], {
-    cwd: root,
-    capture: true,
-    env: nestedNpmEnvironment(process.env),
-    timeoutMs: sourceDependencyTreeInstallTimeoutMs,
-    hardTimeout: true,
-    maxOutputBytes: 8 * 1024 * 1024,
-  });
-  ensureClean();
-}
 
 function packageMetadata() {
   const data = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -349,13 +337,14 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
     fail(`CHANGELOG.md has no section for ${pkg.version}`);
   }
 
+  const releaseHead = exactReleaseHead();
+  await waitForSuccessfulCi(releaseHead);
+
   const npmSession = await createHardenedNpmSession();
   let acceptance;
   let candidate = null;
   let verificationError = null;
   try {
-    await installSourceDependencyTree(npmSession.cli);
-    await runNpmScript(npmSession.cli, "check");
     await runNpmScript(npmSession.cli, "version:check");
     ensureClean();
     acceptance = assertLocalAcceptance(npmSession.cli);
@@ -382,24 +371,19 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
   let primaryError = null;
   let releaseVerified = false;
   try {
-    const head = output(git, ["rev-parse", "HEAD"]);
-    const originMain = output(git, ["rev-parse", "origin/main"]);
-    if (head !== originMain) {
-      fail("HEAD does not match origin/main; local acceptance must be committed, pushed through npm run github:push, reviewed, and merged before release publication");
-    }
-    await waitForSuccessfulCi(head);
+    revalidateReleaseHead(releaseHead);
 
     const existingLocal = localTagCommit(tag);
-    if (existingLocal && existingLocal !== head) {
-      fail(`local ${tag} points to ${existingLocal}, not ${head}`);
+    if (existingLocal && existingLocal !== releaseHead) {
+      fail(`local ${tag} points to ${existingLocal}, not ${releaseHead}`);
     }
     if (!existingLocal) {
       run(git, ["tag", "-a", tag, "-m", `Release ${pkg.version}`]);
     }
 
     const existingRemote = remoteTagCommit(tag);
-    if (existingRemote && existingRemote !== head) {
-      fail(`remote ${tag} points to ${existingRemote}, not ${head}`);
+    if (existingRemote && existingRemote !== releaseHead) {
+      fail(`remote ${tag} points to ${existingRemote}, not ${releaseHead}`);
     }
     if (!existingRemote) {
       runNetwork(git, ["push", "origin", tag]);
@@ -440,6 +424,24 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
 
   fetchRemote();
   await assertCoreSync({ requireReleaseAsset: true });
+}
+
+function exactReleaseHead() {
+  const head = output(git, ["rev-parse", "HEAD"]);
+  const originMain = output(git, ["rev-parse", "origin/main"]);
+  if (head !== originMain) {
+    fail(`HEAD ${head} does not match origin/main ${originMain}; merge the accepted candidate before release publication`);
+  }
+  return head;
+}
+
+function revalidateReleaseHead(expectedHead) {
+  ensureClean();
+  fetchRemote();
+  const currentHead = exactReleaseHead();
+  if (currentHead !== expectedHead) {
+    fail(`release source moved from verified main ${expectedHead} to ${currentHead}; restart publication against the new exact main`);
+  }
 }
 
 function assertStableSoak(npmCli = process.env.npm_execpath) {

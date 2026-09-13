@@ -121,6 +121,8 @@ if (task === "noisy-success") {
       MBM_RELAY_PROXY: "http://127.0.0.1:17891",
       MBM_RELAY_FALLBACK_PROXY: "",
       CHECK_RUNNER_PRESERVED: "yes",
+      NODE_V8_COVERAGE: join(root, "shared-coverage"),
+      MBM_CHECK_FULL_COVERAGE_CONTEXT: join(root, "shared-coverage", ".mbm-full-coverage-context.json"),
     },
     spawnProcess: direct.spawn,
   });
@@ -134,6 +136,10 @@ if (task === "noisy-success") {
     "direct Node verification inherited the owner daemon's relay fallback proxy route");
   assert.equal(direct.invocations[0].options.env.CHECK_RUNNER_PRESERVED, "yes",
     "verification environment isolation removed an unrelated environment value");
+  assert.equal(direct.invocations[0].options.env.NODE_V8_COVERAGE, join(root, "shared-coverage"),
+    "direct verification dropped the full-plan V8 coverage directory");
+  assert.equal(direct.invocations[0].options.env.MBM_CHECK_FULL_COVERAGE_CONTEXT, join(root, "shared-coverage", ".mbm-full-coverage-context.json"),
+    "direct verification dropped the full-plan coverage context");
   direct.finish("direct-test", 0);
   await turn();
   assert(direct.invocations[1].args.includes(fakeNpm) && direct.invocations[1].args.at(-1) === "hooked-test", "package script with lifecycle hooks bypassed npm");
@@ -143,11 +149,57 @@ if (task === "noisy-success") {
     "nested npm verification inherited the owner daemon's relay fallback proxy route");
   assert.equal(direct.invocations[1].options.env.CHECK_RUNNER_PRESERVED, "yes",
     "nested npm verification lost an unrelated environment value");
+  assert.equal(direct.invocations[1].options.env.NODE_V8_COVERAGE, join(root, "shared-coverage"),
+    "nested npm verification dropped the full-plan V8 coverage directory");
+  assert.equal(direct.invocations[1].options.env.MBM_CHECK_FULL_COVERAGE_CONTEXT, join(root, "shared-coverage", ".mbm-full-coverage-context.json"),
+    "nested npm verification dropped the full-plan coverage context");
   direct.finish("hooked-test", 0);
   await turn();
   assert(direct.invocations[2].args.includes(fakeNpm) && direct.invocations[2].args.at(-1) === "compound-test", "compound package script bypassed npm shell semantics");
   direct.finish("compound-test", 0);
   await directRun;
+
+  const scoped = controlledSpawn();
+  const coverageDirectory = join(root, "curated-coverage");
+  const coverageContext = join(coverageDirectory, ".mbm-full-coverage-context.json");
+  const scopedRun = runVerificationPlan({
+    mode: "task-environment-test",
+    tasks: ["coverage-fixture", "unrelated-test", "coverage:test"],
+    npmCli: fakeNpm,
+    cwd: root,
+    stdout: sink(),
+    stderr: sink(),
+    packageScripts: {
+      "coverage-fixture": "node tests/policy-test.mjs",
+      "unrelated-test": "node tests/unrelated-test.mjs",
+      "coverage:test": "node scripts/coverage-check.mjs",
+    },
+    env: { CHECK_RUNNER_PRESERVED: "yes" },
+    taskEnvironments: new Map([
+      ["coverage-fixture", { NODE_V8_COVERAGE: coverageDirectory }],
+      ["coverage:test", { NODE_V8_COVERAGE: coverageDirectory, MBM_CHECK_FULL_COVERAGE_CONTEXT: coverageContext }],
+    ]),
+    spawnProcess: scoped.spawn,
+  });
+  await turn();
+  assert.equal(scoped.invocations[0].options.env.NODE_V8_COVERAGE, coverageDirectory,
+    "curated coverage task did not receive its task-scoped V8 directory");
+  assert.equal(scoped.invocations[0].options.env.MBM_CHECK_FULL_COVERAGE_CONTEXT, undefined,
+    "ordinary curated fixture received the private reuse context reserved for coverage:test");
+  scoped.finish("coverage-fixture", 0);
+  await turn();
+  assert.equal(scoped.invocations[1].options.env.NODE_V8_COVERAGE, undefined,
+    "unrelated verification task was allowed to contaminate curated coverage evidence");
+  assert.equal(scoped.invocations[1].options.env.MBM_CHECK_FULL_COVERAGE_CONTEXT, undefined,
+    "unrelated verification task received the private full-coverage context");
+  scoped.finish("unrelated-test", 0);
+  await turn();
+  assert.equal(scoped.invocations[2].options.env.NODE_V8_COVERAGE, coverageDirectory,
+    "coverage gate did not receive the shared V8 directory");
+  assert.equal(scoped.invocations[2].options.env.MBM_CHECK_FULL_COVERAGE_CONTEXT, coverageContext,
+    "coverage gate did not receive the parent-bound reuse context");
+  scoped.finish("coverage:test", 0);
+  await scopedRun;
 
   const parallel = controlledSpawn();
   const parallelOut = sink();
