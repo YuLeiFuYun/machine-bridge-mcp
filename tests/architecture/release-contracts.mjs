@@ -675,7 +675,7 @@ if (!runtimeProcessRoutingSource.includes("runRuntimeExecCommand(runtime, args, 
 }
 const runtimeSelfTestSource = readFileSync(join(root, "tests", "runtime-self-test.mjs"), "utf8");
 if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
-    || !runtimeSelfTestSource.includes('const SUCCESS_PROCESS_TIMEOUT_SECONDS = process.platform === "win32" ? 90 : 30;')
+    || !runtimeSelfTestSource.includes('const SUCCESS_PROCESS_TIMEOUT_SECONDS = process.platform === "win32" ? 60 : 30;')
     || !runtimeSelfTestSource.includes("Test-harness-only success budget")
     || !runtimeSelfTestSource.includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
     || runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 5 * 60_000")
