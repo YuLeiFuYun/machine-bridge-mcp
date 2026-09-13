@@ -1334,11 +1334,14 @@ function testRelayHandshakeDiagnostics() {
     last_ready_duration_ms: 123456,
     last_ready_inbound_silence_ms: 15000,
     https_fallback_last_takeover_ms: 1350,
+    https_fallback_last_takeover_outage_number: 4,
     recent_outages: Array.from({ length: 10 }, (_, index) => ({
       outage_number: 10 - index,
       disconnected_at: `2026-08-04T11:36:${String(10 + index).padStart(2, "0")}.000Z`,
       ready_at: `2026-08-04T11:36:${String(11 + index).padStart(2, "0")}.000Z`,
       duration_ms: 1000 + index,
+      https_fallback_taken_over: index === 0,
+      https_fallback_takeover_ms: index === 0 ? 1350 : 0,
       attempts: 1,
       close_category: "relay_heartbeat_timeout",
       close_code: 1006,
@@ -1408,7 +1411,12 @@ function testRelayHandshakeDiagnostics() {
     && diagnostics.recent_outages[0].application_inbound_silence_ms_at_start === 4800
     && diagnostics.recent_outages[0].last_connect_milestones_ms.private_stage === undefined
     && diagnostics.recent_outages[0].private_value === undefined
-    && diagnostics.https_fallback_last_takeover_ms === 1350,
+    && diagnostics.recent_outages[0].https_fallback_taken_over === true
+    && diagnostics.recent_outages[0].https_fallback_takeover_ms === 1350
+    && diagnostics.recent_outages[1].https_fallback_taken_over === false
+    && diagnostics.recent_outages[1].https_fallback_takeover_ms === 0
+    && diagnostics.https_fallback_last_takeover_ms === 1350
+    && diagnostics.https_fallback_last_takeover_outage_number === 4,
   "relay handshake diagnostics lost bounded outage evidence");
   const bounded = relayHandshakeDiagnostics({
     outage_count: -1,
@@ -1422,6 +1430,7 @@ function testRelayHandshakeDiagnostics() {
     heartbeat: { last_probe_buffered_bytes: Number.POSITIVE_INFINITY, last_probe_dispatch_ms: -1 },
     last_ready_inbound_silence_ms: Number.POSITIVE_INFINITY,
     https_fallback_last_takeover_ms: Number.POSITIVE_INFINITY,
+    https_fallback_last_takeover_outage_number: Number.POSITIVE_INFINITY,
     recent_outages: [{ outage_number: -1, duration_ms: Number.POSITIVE_INFINITY, private_value: "x" }],
   });
   assert(bounded.outage_count === 0 && bounded.outage_duration_ms === 0
@@ -1435,7 +1444,8 @@ function testRelayHandshakeDiagnostics() {
     && bounded.last_probe_dispatch_ms === 0
     && bounded.previous_ready_inbound_silence_ms === 0
     && bounded.recent_outages.length === 0
-    && bounded.https_fallback_last_takeover_ms === 0,
+    && bounded.https_fallback_last_takeover_ms === 0
+    && bounded.https_fallback_last_takeover_outage_number === 0,
     "relay handshake diagnostics accepted invalid numeric fields");
 }
 
@@ -2784,6 +2794,7 @@ function testRuntimeInfoProjection() {
         reconnect_attempt: 2, outage_active: false, outage_count: 4, outage_duration_ms: 321,
         last_close_category: "relay_connect_timeout", last_close_code: 1006, last_transport_error_class: "network_error",
         https_fallback_active: true, websocket_ready: false, https_fallback_last_takeover_ms: 1350,
+        https_fallback_last_takeover_outage_number: 4,
         https_fallback: { session_id: "must_not_escape_summary", outbound_queue: ["content"] },
         heartbeat: { application_inbound_silence_ms: 999 }, websocket_outage_duration_ms: 888,
       },
@@ -2798,6 +2809,7 @@ function testRuntimeInfoProjection() {
     && summary.runtime.relay?.transport === "https" && summary.runtime.relay?.outage_count === 4
     && summary.runtime.relay?.https_fallback_active === true && summary.runtime.relay?.websocket_ready === false
     && summary.runtime.relay?.https_fallback_last_takeover_ms === 1350
+    && summary.runtime.relay?.https_fallback_last_takeover_outage_number === 4
     && !("https_fallback" in summary.runtime.relay) && !("heartbeat" in summary.runtime.relay)
     && !("websocket_outage_duration_ms" in summary.runtime.relay)
     && summary.runtime.processes.active_processes === 0 && summary.runtime.processes.draining_processes === 0

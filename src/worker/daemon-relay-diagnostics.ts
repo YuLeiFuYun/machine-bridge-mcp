@@ -54,6 +54,8 @@ export interface DaemonRelayOutageDiagnostics {
   last_disconnect_at: string | null;
   ready_at: string | null;
   duration_ms: number;
+  https_fallback_taken_over: boolean;
+  https_fallback_takeover_ms: number;
   attempts: number;
   close_category: string | null;
   close_code: number | null;
@@ -129,6 +131,7 @@ export interface DaemonRelayDiagnostics {
   previous_ready_duration_ms: number;
   previous_ready_inbound_silence_ms: number;
   https_fallback_last_takeover_ms: number;
+  https_fallback_last_takeover_outage_number: number;
 }
 
 export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagnostics | undefined {
@@ -184,6 +187,7 @@ export function sanitizeDaemonRelayDiagnostics(value: unknown): DaemonRelayDiagn
     previous_ready_duration_ms: boundedInteger(candidate.previous_ready_duration_ms, 0, 365 * 24 * 60 * 60_000, 0),
     previous_ready_inbound_silence_ms: boundedInteger(candidate.previous_ready_inbound_silence_ms, 0, 31 * 24 * 60 * 60_000, 0),
     https_fallback_last_takeover_ms: boundedInteger(candidate.https_fallback_last_takeover_ms, 0, 10 * 60_000, 0),
+    https_fallback_last_takeover_outage_number: boundedInteger(candidate.https_fallback_last_takeover_outage_number, 0, 1_000_000_000, 0),
   };
 }
 
@@ -225,12 +229,16 @@ function recoveredOutage(
   readyAt: string,
   durationMs: number,
 ): DaemonRelayOutageDiagnostics {
+  const fallbackTakenOver = value.outage_count > 0
+    && value.https_fallback_last_takeover_outage_number === value.outage_count;
   return {
     outage_number: value.outage_count,
     disconnected_at: value.outage_started_at ?? value.last_disconnected_at,
     last_disconnect_at: value.last_disconnected_at,
     ready_at: readyAt,
     duration_ms: boundedInteger(durationMs, 0, 31 * 24 * 60 * 60_000, 0),
+    https_fallback_taken_over: fallbackTakenOver,
+    https_fallback_takeover_ms: fallbackTakenOver ? value.https_fallback_last_takeover_ms : 0,
     attempts: value.outage_attempts,
     close_category: value.last_close_category,
     close_code: value.last_close_code,
@@ -293,12 +301,16 @@ function recentOutages(value: unknown): DaemonRelayOutageDiagnostics[] {
     const entry = candidate as Record<string, unknown>;
     const outageNumber = Number(entry.outage_number);
     if (!Number.isSafeInteger(outageNumber) || outageNumber < 1 || outageNumber > 1_000_000_000) continue;
+    const fallbackTakenOver = entry.https_fallback_taken_over === true;
     result.push({
       outage_number: outageNumber,
       disconnected_at: timestamp(entry.disconnected_at),
       last_disconnect_at: timestamp(entry.last_disconnect_at),
       ready_at: timestamp(entry.ready_at),
       duration_ms: boundedInteger(entry.duration_ms, 0, 31 * 24 * 60 * 60_000, 0),
+      https_fallback_taken_over: fallbackTakenOver,
+      https_fallback_takeover_ms: fallbackTakenOver
+        ? boundedInteger(entry.https_fallback_takeover_ms, 0, 10 * 60_000, 0) : 0,
       attempts: boundedInteger(entry.attempts, 0, 1_000_000, 0),
       close_category: nullableEnum(entry.close_category, CLOSE_CATEGORIES),
       close_code: nullableInteger(entry.close_code, 0, 4999),
