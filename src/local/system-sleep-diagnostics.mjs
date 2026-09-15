@@ -1,7 +1,7 @@
 import { classifyOperationalError } from "./log.mjs";
 
-const POWER_LOG_COMMAND = "/usr/bin/pmset -g log | /usr/bin/grep -E ' (Sleep|DarkWake|Wake)[[:space:]]' | /usr/bin/tail -n 120";
-const POWER_LOG_TIMEOUT_MS = 5_000;
+const POWER_LOG_COMMAND = "/usr/bin/pmset -g log | /usr/bin/grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}[[:space:]]+Sleep[[:space:]]{2,}' | /usr/bin/tail -n 120";
+const POWER_LOG_TIMEOUT_MS = 15_000;
 const POWER_LOG_MAX_BYTES = 128 * 1024;
 const CORRELATION_TOLERANCE_MS = 30_000;
 

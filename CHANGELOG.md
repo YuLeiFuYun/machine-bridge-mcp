@@ -1,10 +1,10 @@
 # Changelog
 
-## 3.0.0-beta.190 - 2026-09-13
+## 3.0.0-beta.191 - 2026-09-15
 
-- Reuse generation-bound V8 coverage collected during the authoritative full verification plan so the coverage gate only executes fixtures whose evidence is still missing; standalone coverage verification remains self-contained.
-- Make GitHub release publication consume exact-main provider CI instead of repeating a local dependency install and full verification after merge, while retaining synchronized-version checks, accepted-candidate byte and promotion-digest revalidation, exact-main revalidation before remote mutation, and uploaded-asset digest verification.
-- Increase only the Windows runtime self-test success-fixture budget for loaded hosted CI; production process and resource-admission deadlines remain unchanged.
+- Keep durable managed-job execution available across in-place Node package-manager upgrades by falling back from a removed daemon `process.execPath` only to the still-executable absolute Node launcher that originally started the daemon; diagnostics expose provenance/availability without local paths.
+- Make macOS sleep diagnosis retain actual timestamped `Sleep` records with a bounded 15-second power-log probe, avoiding the previous five-second timeout and broad filter that could hide evidence explaining relay suspension.
+- Add regressions for stale runtime launcher recovery and sleep-probe boundaries; relay authentication, replay, duplicate-side-effect prevention, and reconnect policy are unchanged.
 
 ## Historical releases
 

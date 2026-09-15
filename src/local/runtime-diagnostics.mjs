@@ -8,6 +8,7 @@ import { diagnosticControlPlaneState } from "./runtime-diagnostic-state.mjs";
 import { resourceAdmissionDiagnostic } from "./resource-admission-diagnostics.mjs";
 import { diagnosticActivityProjection, diagnosticInterpretation } from "./runtime-diagnostic-projection.mjs";
 import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, systemSleepDiagnostic } from "./system-sleep-diagnostics.mjs";
+import { resolveRuntimeNodeExecutable, runtimeNodeExecutableCheck, runtimeNodeProcessCheck } from "./runtime-node-executable.mjs";
 export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
 export async function diagnoseRuntime({
   policy,
@@ -16,6 +17,7 @@ export async function diagnoseRuntime({
   runFixedInternal,
   probeShell,
   managedJobManager,
+  runtimeNodeOptions = {},
   resourceCoordinatorSnapshot = null,
   relayStatus = () => null,
   controlPlaneState = {},
@@ -31,6 +33,8 @@ export async function diagnoseRuntime({
     ok: policy.execMode === "direct" || policy.execMode === "shell",
     detail: `profile=${policy.profile}; exec_mode=${policy.execMode}; unrestricted_paths=${policy.unrestrictedPaths}`,
   }];
+  const runtimeNode = resolveRuntimeNodeExecutable(runtimeNodeOptions);
+  checks.push(runtimeNodeExecutableCheck(runtimeNode));
   const relay = typeof relayStatus === "function" ? relayStatus() : null;
   checks.push(relay ? {
     layer: "remote-relay",
@@ -61,20 +65,10 @@ export async function diagnoseRuntime({
     await rm(probe, { force: true }).catch(() => { /* Diagnostic scratch cleanup cannot change the already-observed probe result. */ });
   }
   if (policy.execMode === "direct" || policy.execMode === "shell") {
-    const direct = await runFixedInternal(
-      process.execPath,
-      ["-e", "process.stdout.write('ok')"],
-      RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS,
-      true,
-      1024,
-      context,
-      workspace,
-    ).catch((error) => ({ code: 127, stdout: "", stderr: "", error_class: classifyOperationalError(error) }));
-    checks.push({
-      layer: "local-process-spawn",
-      ok: direct.code === 0 && direct.stdout === "ok",
-      error_class: direct.error_class || (direct.code === 0 ? null : classifyOperationalError(direct.stderr || direct.stdout || "execution failed")),
-    });
+    checks.push(await runtimeNodeProcessCheck({
+      runtimeNode, runFixedInternal, timeoutMs: RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS,
+      context, workspace, classifyError: classifyOperationalError,
+    }));
   } else {
     checks.push({ layer: "local-process-spawn", ok: false, skipped: true, error_class: "policy_denied" });
   }
