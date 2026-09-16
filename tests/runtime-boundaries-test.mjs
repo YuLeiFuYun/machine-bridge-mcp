@@ -6,6 +6,7 @@ import { runtimeActivityVisible } from "../src/local/runtime-activity-projection
 import { projectOverviewDetail, projectProjectOverview } from "../src/shared/project-overview-projection.mjs";
 import { GitService } from "../src/local/git-service.mjs";
 import { diagnoseRuntime, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
+import { resolveRuntimeNodeExecutable } from "../src/local/runtime-node-executable.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "../src/local/doctor-reporting.mjs";
 import { classifySystemRouteInterface, inspectSystemNetworkRoute, systemNetworkRouteCheck } from "../src/local/system-network-route.mjs";
 import { resolveTaskCapabilities, sessionBootstrap } from "../src/local/runtime-capabilities.mjs";
@@ -22,6 +23,7 @@ await testRuntimeReporting();
 testProcessSessionStatusAuthority();
 await testDurableProcessInitialSettlement();
 testSystemSleepDiagnostics();
+testRuntimeNodeExecutableResolution();
 await testSystemSleepDiagnosticAvailability();
 await testRuntimeDiagnostics();
 testDoctorReportingScope();
@@ -113,6 +115,29 @@ function testSystemSleepDiagnostics() {
     "active relay outage was misrepresented as a completed sleep correlation");
 }
 
+function testRuntimeNodeExecutableResolution() {
+  const exact = resolveRuntimeNodeExecutable({
+    execPath: "/runtime/node", argv0: "/stable/node", platform: "darwin",
+    isExecutable: (candidate) => candidate === "/runtime/node" || candidate === "/stable/node",
+  });
+  assert(exact.available === true && exact.command === "/runtime/node" && exact.source === "exec_path"
+    && exact.exec_path_available === true && exact.fallback_active === false,
+  "runtime Node resolver did not prefer the still-available concrete executable");
+  const fallback = resolveRuntimeNodeExecutable({
+    execPath: "/opt/homebrew/Cellar/node/removed/bin/node", argv0: "/opt/homebrew/bin/node", platform: "darwin",
+    isExecutable: (candidate) => candidate === "/opt/homebrew/bin/node",
+  });
+  assert(fallback.available === true && fallback.command === "/opt/homebrew/bin/node"
+    && fallback.source === "original_launcher" && fallback.exec_path_available === false
+    && fallback.original_launcher_available === true && fallback.fallback_active === true,
+  "runtime Node resolver did not recover a stale concrete executable through the original absolute launcher");
+  const untrusted = resolveRuntimeNodeExecutable({
+    execPath: "/removed/node", argv0: "node", platform: "darwin", isExecutable: (candidate) => candidate === "node",
+  });
+  assert(untrusted.available === false && untrusted.command === null && untrusted.source === "unavailable",
+    "runtime Node resolver accepted a relative launcher after the concrete executable disappeared");
+}
+
 async function testSystemSleepDiagnosticAvailability() {
   const timeout = Object.assign(new Error("pmset timed out"), { code: "ETIMEDOUT" });
   const unavailable = await systemSleepDiagnostic({
@@ -120,7 +145,8 @@ async function testSystemSleepDiagnosticAvailability() {
     context: {},
     workspace: "/tmp",
     runFixedInternal: async (command, args, timeoutMs, capture, maxBytes) => {
-      assert(command === "/bin/sh" && args[0] === "-c" && timeoutMs === 5_000
+      assert(command === "/bin/sh" && args[0] === "-c" && timeoutMs === 15_000
+        && args[1].includes("[[:space:]]+Sleep[[:space:]]{2,}") && !args[1].includes("DarkWake|Wake")
         && capture === true && maxBytes === 128 * 1024,
       "macOS sleep diagnostic no longer uses the bounded fixed power-history probe");
       throw timeout;
@@ -552,6 +578,40 @@ async function testRuntimeDiagnostics() {
     assert(review.checks.filter((check) => ["local-process-spawn", "local-shell"].includes(check.layer) && check.skipped).length === 2, "review diagnostics executed forbidden process probes");
     assert(review.checks.some((check) => check.layer === "remote-relay" && check.skipped), "stdio/local diagnostics misreported a remote relay");
     assert(review.ok === false, "policy denial was not reflected in diagnostic status");
+
+    const stableLauncher = "/opt/homebrew/bin/node";
+    let fallbackProbeCommand = null;
+    const staleRuntimeRecovered = await diagnoseRuntime({
+      policy: policyProfile("agent"),
+      runtimeDir,
+      workspace: runtimeDir,
+      runtimeNodeOptions: {
+        execPath: "/opt/homebrew/Cellar/node/removed/bin/node",
+        argv0: stableLauncher,
+        platform: "darwin",
+        isExecutable: (candidate) => candidate === stableLauncher,
+      },
+      runFixedInternal: async (command) => {
+        if (command === stableLauncher) { fallbackProbeCommand = command; return { code: 0, stdout: "ok", stderr: "" }; }
+        if (command === "/sbin/route") return { code: 0, stdout: "   interface: en0\n", stderr: "" };
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      probeShell: async () => ({ code: 0, stdout: "", stderr: "" }),
+      managedJobManager: {
+        diagnoseStorage: () => ({ ok: true }),
+        listResources: () => ({ count: 0, resources: [] }),
+      },
+      throwIfCancelled() {},
+    });
+    const runtimeExecutableCheck = staleRuntimeRecovered.checks.find((check) => check.layer === "runtime-node-executable");
+    const recoveredSpawnCheck = staleRuntimeRecovered.checks.find((check) => check.layer === "local-process-spawn");
+    assert(runtimeExecutableCheck?.ok === true && runtimeExecutableCheck.source === "original_launcher"
+      && runtimeExecutableCheck.exec_path_available === false && runtimeExecutableCheck.original_launcher_available === true
+      && runtimeExecutableCheck.fallback_active === true && fallbackProbeCommand === stableLauncher
+      && recoveredSpawnCheck?.ok === true && recoveredSpawnCheck.runtime_executable_source === "original_launcher",
+    "runtime diagnostics did not recover or classify a stale daemon Node executable through the original launcher");
+    assert(!JSON.stringify(runtimeExecutableCheck).includes("/opt/homebrew"),
+      "runtime executable diagnostics exposed a local executable path");
 
     const failed = await diagnoseRuntime({
       policy: policyProfile("agent"),

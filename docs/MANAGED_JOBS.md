@@ -40,7 +40,9 @@ Interpretation:
 | Observation | Likely boundary |
 |---|---|
 | The tool call is rejected before any structured response | MCP host, connector gateway, approval system, or transport |
-| `diagnose_runtime` responds, but `local-process-spawn` fails | Local OS permissions, endpoint security, executable policy, or broken runtime |
+| `runtime-node-executable` reports `source=original_launcher` and `fallback_active=true` | The daemon's concrete Node executable was replaced or removed after startup, but the original absolute Node launcher is still executable. Durable runners continue through that launcher; restart the service to refresh the daemon's concrete runtime identity. |
+| `runtime-node-executable` is available but `local-process-spawn` fails | Local OS permissions, endpoint security, executable policy, or a lower-level process-creation failure |
+| `runtime-node-executable` is unavailable | Neither the daemon's concrete Node executable nor its trusted original absolute Node launcher can be executed; restart Machine Bridge from a valid Node installation |
 | Process spawn passes but `local-shell` fails | Shell configuration or shell-specific local policy |
 | Managed-job storage fails | State-root permissions, disk, filesystem policy, or endpoint security |
 | A job was accepted and later MCP calls are rejected | The detached job continues; inspect it through local CLI |

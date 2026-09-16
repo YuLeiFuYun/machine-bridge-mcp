@@ -4,6 +4,8 @@ import { closeSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyOperationalError } from "./log.mjs";
+import { BridgeError } from "./errors.mjs";
+import { resolveRuntimeNodeExecutable } from "./runtime-node-executable.mjs";
 import { ownerOnlyFile } from "./secure-file.mjs";
 import { openPrivateAppendFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
 import { publishProvisionalRunnerClaim } from "./managed-job-runner-claim.mjs";
@@ -16,6 +18,22 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
   const launchToken = randomBytes(16).toString("hex");
   const args = [RUNNER_PATH, "--job-dir", dir];
   if (recover) args.push("--recover");
+  const logger = options.logger || console;
+  const runtimeNode = resolveRuntimeNodeExecutable({
+    execPath: options.runtimeExecutable ?? process.execPath,
+    argv0: options.runtimeLauncher ?? process.argv0,
+    platform: options.platform ?? process.platform,
+    isExecutable: options.isExecutable,
+  });
+  if (!runtimeNode.available) throw new BridgeError(
+    "unavailable",
+    "managed job runtime executable is unavailable; restart Machine Bridge to refresh its Node launcher",
+    { retryable: true },
+  );
+  if (runtimeNode.fallback_active) logger.warn?.(
+    "managed job runner is using the daemon original Node launcher because its concrete runtime executable is no longer available",
+    { runtime_executable_source: runtimeNode.source, stale_exec_path: true, recovery: recover },
+  );
   const stdoutFile = join(dir, "runner.out.log");
   const stderrFile = join(dir, "runner.err.log");
   trimDiagnosticFile(stdoutFile);
@@ -27,7 +45,7 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
     stdoutFd = openPrivateAppendFile(stdoutFile);
     stderrFd = openPrivateAppendFile(stderrFile);
     const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
-    child = spawnProcess(process.execPath, args, {
+    child = spawnProcess(runtimeNode.command, args, {
       detached: true,
       stdio: ["ignore", stdoutFd, stderrFd],
       windowsHide: true,
@@ -40,7 +58,6 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
   }
   ownerOnlyFile(stdoutFile);
   ownerOnlyFile(stderrFile);
-  const logger = options.logger || console;
   child.once?.("error", (error) => {
     logger.error?.("managed job runner process reported an asynchronous failure", {
       recovery: recover,

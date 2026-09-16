@@ -1886,6 +1886,34 @@ try {
     "provisional runner claim did not preserve its provisional identity shape");
   await rm(provisionalRunnerDir, { recursive: true, force: true });
 
+  const staleRuntimeRunnerDir = join(root, `job_${"S".repeat(24)}`);
+  await mkdir(staleRuntimeRunnerDir, { recursive: true });
+  const staleRuntimeChild = new EventEmitter();
+  staleRuntimeChild.pid = process.pid;
+  staleRuntimeChild.unref = () => {};
+  const stableLauncher = "/opt/homebrew/bin/node";
+  const staleExecutable = "/opt/homebrew/Cellar/node/removed/bin/node";
+  let staleRuntimeSpawnCommand = null;
+  const staleRuntimeWarnings = [];
+  const staleRuntimePid = launchRunner(staleRuntimeRunnerDir, false, "", {
+    runtimeExecutable: staleExecutable,
+    runtimeLauncher: stableLauncher,
+    platform: "darwin",
+    isExecutable: (candidate) => candidate === stableLauncher,
+    spawnProcess: (command) => { staleRuntimeSpawnCommand = command; return staleRuntimeChild; },
+    logger: { warn(message, fields) { staleRuntimeWarnings.push({ message, fields }); }, error() {} },
+  });
+  assert(staleRuntimePid === process.pid && staleRuntimeSpawnCommand === stableLauncher,
+    "managed runner did not recover a removed daemon process.execPath through the original absolute Node launcher");
+  assert(staleRuntimeWarnings.length === 1
+    && staleRuntimeWarnings[0].fields.runtime_executable_source === "original_launcher"
+    && staleRuntimeWarnings[0].fields.stale_exec_path === true,
+  "managed runner stale-runtime fallback was not recorded with bounded provenance");
+  assert(!JSON.stringify(staleRuntimeWarnings).includes(staleExecutable)
+    && !JSON.stringify(staleRuntimeWarnings).includes(stableLauncher),
+  "managed runner stale-runtime warning exposed executable paths");
+  await rm(staleRuntimeRunnerDir, { recursive: true, force: true });
+
   const conflictingRunnerDir = join(root, `job_${"C".repeat(24)}`);
   await mkdir(conflictingRunnerDir, { recursive: true });
   await writeFile(join(conflictingRunnerDir, "runner.pid"), `${JSON.stringify({ pid: process.pid + 1, startedAt: new Date().toISOString(), launchToken: "b".repeat(32) })}\n`, { mode: 0o600 });
