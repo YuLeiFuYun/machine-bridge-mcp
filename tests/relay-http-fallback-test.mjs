@@ -7,6 +7,7 @@ import { postDaemonHttpRelay } from "../src/local/daemon-http-relay-request.mjs"
 import { RelayInboundSequence, RelayOutboundSequence } from "../src/local/daemon-http-relay-sequence.mjs";
 import { proxyAgentForRelayHttp } from "../src/local/network-proxy.mjs";
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
+import { runtimeRelayConnectionOptions } from "../src/local/runtime-relay-connection-options.mjs";
 import { ResilientRelayConnection } from "../src/local/resilient-relay-connection.mjs";
 import { compactRuntimeRelay } from "../src/local/runtime-info-relay-projection.mjs";
 import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
@@ -785,6 +786,76 @@ function testFallbackDiagnosticProjectionContract() {
   "Worker sanitizer accepted unbounded or private fallback diagnostic metadata");
 }
 
+async function testWebSocketHandshakeUsesResilientFallbackDiagnostics() {
+  const now = Date.now();
+  const root = createDeviceIdentity();
+  const session = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, now);
+  const issuedAt = Math.floor(now / 1000);
+  const wrapperStatus = {
+    outage_count: 4,
+    https_fallback_last_takeover_ms: 850,
+    https_fallback_last_takeover_outage_number: 4,
+    recent_outages: [{
+      outage_number: 4,
+      duration_ms: 1900,
+      https_fallback_taken_over: true,
+      https_fallback_takeover_ms: 850,
+      private_proxy_url: "must-not-survive",
+    }],
+  };
+  const rawWebSocketStatus = {
+    outage_count: 4,
+    https_fallback_last_takeover_ms: 0,
+    https_fallback_last_takeover_outage_number: 0,
+    recent_outages: [{ outage_number: 4, duration_ms: 1900 }],
+  };
+  const runtime = {
+    logger: { info() {}, warn() {}, error() {} },
+    relayInstanceId: "instance_runtime_relay_projection_1",
+    tools: () => [],
+    policy: {},
+    relay: { status: () => wrapperStatus },
+    relayOwnedCallIds: () => [],
+    handleRelayDisconnect() {},
+    handleRelayReady() {},
+    async stop() {},
+  };
+  const options = runtimeRelayConnectionOptions(runtime, {
+    workerUrl: ORIGIN,
+    sessionIdentity: session,
+    expectedVersion: VERSION,
+    onMessage() {},
+  });
+  const welcome = {
+    type: "welcome",
+    server: SERVER,
+    version: VERSION,
+    worker_origin: ORIGIN,
+    authentication: {
+      scheme: session.scheme,
+      challenge: `daemon_challenge_${"a".repeat(40)}`,
+      issued_at: issuedAt,
+      expires_at: issuedAt + 60,
+    },
+  };
+  const hello = await options.websocket.helloMessage(welcome, rawWebSocketStatus);
+  assert.equal(hello.relay_diagnostics.https_fallback_last_takeover_outage_number, 4,
+    "WebSocket daemon hello ignored resilient fallback takeover identity");
+  assert.deepEqual(hello.relay_diagnostics.recent_outages.map((entry) => [
+    entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms,
+  ]), [[4, true, 850]],
+  "WebSocket daemon hello lost resilient per-outage fallback takeover attribution");
+  assert.equal(hello.relay_diagnostics.recent_outages[0].private_proxy_url, undefined,
+    "WebSocket daemon hello leaked private relay diagnostic metadata");
+
+  runtime.relay = null;
+  const startupHello = await options.websocket.helloMessage(welcome, rawWebSocketStatus);
+  assert.deepEqual(startupHello.relay_diagnostics.recent_outages.map((entry) => [
+    entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms,
+  ]), [[4, false, 0]],
+  "WebSocket daemon hello lost the raw-status fallback before the resilient wrapper is available");
+}
+
 async function testPrimaryFallbackHandoverStress() {
   const cycles = 128;
   const scheduler = new ManualScheduler();
@@ -1008,5 +1079,6 @@ testAuthenticationRefreshInterruptsBothTransports();
 await testPrimaryFallbackHandover();
 await testFallbackOutageAttributionHistory();
 testFallbackDiagnosticProjectionContract();
+await testWebSocketHandshakeUsesResilientFallbackDiagnostics();
 await testPrimaryFallbackHandoverStress();
 console.log("relay HTTP fallback reliability test ok");
