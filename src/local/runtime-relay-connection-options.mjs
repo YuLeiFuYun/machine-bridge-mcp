@@ -18,7 +18,7 @@ export function runtimeRelayConnectionOptions(runtime, input) {
       helloMessage: async (welcome, relayStatus) => ({
         type: "hello", instance_id: runtime.relayInstanceId, tools: runtime.tools(), policy: runtime.policy,
         protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-        relay_diagnostics: relayHandshakeDiagnostics(relayStatus),
+        relay_diagnostics: relayHandshakeDiagnostics(runtime.relay?.status?.() || relayStatus),
         authentication: await createDaemonAuthentication(currentSessionIdentity(), welcome, runtime.relayInstanceId),
       }),
       onMessage,

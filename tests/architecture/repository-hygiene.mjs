@@ -145,8 +145,19 @@ function validateCurrentMaintenanceDocumentation() {
     throw new Error("CHANGELOG.md must contain only the package-version active release section plus the historical-release pointer");
   }
   const audit = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");
-  if (Buffer.byteLength(audit, "utf8") > 32 * 1024 || !audit.includes("# Current audit status") || !audit.includes("Historical findings")) {
+  if (Buffer.byteLength(audit, "utf8") > 16 * 1024 || !audit.includes("# Current audit status") || !audit.includes("Historical findings")) {
     throw new Error("docs/AUDIT.md must remain a compact current audit summary with a history pointer");
+  }
+  if (!audit.includes("This file is not a release-state authority.")) {
+    throw new Error("docs/AUDIT.md must explicitly deny release-state authority");
+  }
+  for (const [label, pattern] of [
+    ["numbered prerelease chronology", /\bbeta\.\d+\b/i],
+    ["mutable latest acceptance claim", /latest repository acceptance record/i],
+    ["mutable new-candidate claim", /new local source candidate/i],
+    ["mutable prior-byte baseline claim", /accepted prior-byte baseline/i],
+  ]) {
+    if (pattern.test(audit)) throw new Error("docs/AUDIT.md retained " + label + "; move release chronology to Git history/tags or CHANGELOG.md");
   }
   if ((packageJson.files || []).includes("docs") || (packageJson.files || []).includes("scripts")) {
     throw new Error("package manifest regained broad docs/scripts publication");
