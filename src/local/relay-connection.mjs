@@ -335,7 +335,7 @@ export class RelayConnection {
       terminateSocket(socket);
       return true;
     }
-    this.failPermanently("relay_protocol_error");
+    this.failPermanently("relay_protocol_error", { diagnostics: message?.diagnostics || null });
     return true;
   }
 
@@ -521,7 +521,7 @@ export class RelayConnection {
     });
   }
 
-  failPermanently(category, { socketAlreadyClosed = false, wasReady = this.ready } = {}) {
+  failPermanently(category, { socketAlreadyClosed = false, wasReady = this.ready, diagnostics = null } = {}) {
     if (this.closed) return;
     const socket = this.socket;
     this.closed = true;
@@ -550,11 +550,12 @@ export class RelayConnection {
     this.connectedOnceResolve = null;
     this.connectedOnceReject = null;
     this.resetOutage();
+    if (diagnostics) this.logger.error?.(message, diagnostics);
     if (!this.hasConnected && reject) {
       reject(error);
       return;
     }
-    this.logger.error?.(message);
+    if (!diagnostics) this.logger.error?.(message);
     this.logger.debug?.("remote relay fatal details", { category, cause: relayCloseUserCause(category) });
     queueMicrotask(async () => {
       try {

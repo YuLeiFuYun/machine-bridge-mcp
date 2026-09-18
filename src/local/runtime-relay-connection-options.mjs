@@ -40,7 +40,7 @@ export function runtimeRelayConnectionOptions(runtime, input) {
       ownedCallIds: () => runtime.relayOwnedCallIds(),
       onMessage,
     },
-    onDisconnect: () => runtime.handleRelayDisconnect(),
-    onReady: () => runtime.handleRelayReady(),
+    onDisconnect: (event) => runtime.handleRelayDisconnect(event),
+    onReady: (event) => runtime.handleRelayReady(event),
   };
 }

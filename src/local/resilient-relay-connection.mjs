@@ -1,6 +1,7 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { RelayConnection } from "./relay-connection.mjs";
 import { DaemonHttpRelayConnection } from "./daemon-http-relay-connection.mjs";
+import { relayServerErrorReconnectCategory, sanitizeProtocolErrorCode } from "./relay-connection-classification.mjs";
 
 export class ResilientRelayConnection {
   constructor(options = {}) {
@@ -107,6 +108,14 @@ export class ResilientRelayConnection {
     return this.activeTransport === "https" ? this.http.currentSessionId() : this.websocket.currentSessionId();
   }
 
+  isCurrentSession(relayContext = {}) {
+    const sessionId = Number(relayContext?.sessionId) || 0;
+    if (!sessionId) return false;
+    if (relayContext?.transport === "https") return sessionId === this.http.currentSessionId();
+    if (relayContext?.transport === "websocket") return sessionId === this.websocket.currentSessionId();
+    return false;
+  }
+
   send(value) {
     if (this.activeTransport === "websocket") return this.websocket.send(value);
     if (this.activeTransport === "https") return this.http.send(value);
@@ -124,6 +133,13 @@ export class ResilientRelayConnection {
     return this.websocket.interrupt(category);
   }
 
+  interruptForContext(category, relayContext = {}) {
+    if (!this.isCurrentSession(relayContext)) return false;
+    return relayContext?.transport === "https"
+      ? this.http.interrupt(category)
+      : this.websocket.interrupt(category);
+  }
+
   refreshAuthentication() {
     const websocketInterrupted = this.websocket.interrupt("relay_session_rotated");
     const httpInterrupted = this.http.interrupt("relay_session_rotated");
@@ -139,14 +155,40 @@ export class ResilientRelayConnection {
     return this.websocket.acknowledge(message);
   }
   confirmReady(message, relayContext = {}) {
+    if (!this.isCurrentSession(relayContext)) return false;
     return relayContext?.transport === "https" ? this.http.confirmReady(message) : this.websocket.confirmReady(message);
   }
   observeApplicationPong(relayContext = {}) {
     return relayContext?.transport === "https" ? false : this.websocket.observeApplicationPong(relayContext);
   }
   handleServerError(message, relayContext = {}) {
-    if (relayContext?.transport === "https") return this.http.interrupt(message?.error);
-    return this.websocket.handleServerError(message);
+    const sessionId = Number(relayContext?.sessionId) || 0;
+    if (sessionId && !this.isCurrentSession(relayContext)) {
+      this.logger.debug?.("discarded relay error from an ended transport generation", {
+        source_transport: relayTransport(relayContext), connection_generation: "stale",
+        handshake_stage: relayHandshakeStage(relayContext),
+      });
+      return false;
+    }
+    const errorCode = sanitizeProtocolErrorCode(message?.error);
+    const reconnectCategory = relayServerErrorReconnectCategory(errorCode, {
+      authenticated: relayContext?.authenticated === true, ready: relayContext?.ready === true,
+    });
+    const sourceTransport = relayTransport(relayContext);
+    const diagnostics = {
+      error_code: errorCode, source_transport: sourceTransport,
+      connection_generation: sessionId ? "current" : "unbound",
+      handshake_stage: relayHandshakeStage(relayContext),
+    };
+    if (sourceTransport === "https") {
+      if (!reconnectCategory) this.logger.warn?.(
+        "remote HTTPS relay reported a protocol error; restarting the fallback transport",
+        { ...diagnostics, disposition: "retry_transport" },
+      );
+      return this.http.interrupt(errorCode);
+    }
+    return this.websocket.handleServerError(reconnectCategory
+      ? message : { ...message, error: errorCode, diagnostics: { ...diagnostics, disposition: "fatal_runtime" } });
   }
 
   handleReady(transport, event) {
@@ -277,4 +319,15 @@ function boundedFallbackTakeoverMs(value) {
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function relayTransport(relayContext = {}) {
+  const transport = String(relayContext?.transport || "");
+  return transport === "websocket" || transport === "https" ? transport : "unknown";
+}
+
+function relayHandshakeStage(relayContext = {}) {
+  if (relayContext?.ready === true) return "post_ready";
+  if (relayContext?.authenticated === true) return "authenticated_pre_ready";
+  return "pre_authentication";
 }

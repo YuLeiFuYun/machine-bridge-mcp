@@ -41,7 +41,7 @@ import { policyForContext } from "./authority-context.mjs";
 import { createRuntimeRelayConnection, normalizeRelayToolCall } from "./runtime-relay.mjs"; import { relayRecoveryCapacityRejection } from "./relay-recovery-admission.mjs";
 import { runtimeControlPlaneSnapshot } from "./runtime-diagnostic-state.mjs";
 import { shortCallId } from "./short-identifiers.mjs";
-import { handleRuntimeRelayControlMessage } from "./runtime-relay-control.mjs";
+import { handleRuntimeRelayControlMessage, handleRuntimeRelayDisconnect, handleRuntimeRelayProtocolViolation } from "./runtime-relay-control.mjs";
 import { RelayCallRecovery } from "./relay-call-recovery.mjs";
 import { RuntimeRelayShutdownDrain } from "./runtime-relay-shutdown-drain.mjs";
 import { RuntimeResourceService } from "./runtime-resource-service.mjs";
@@ -83,7 +83,7 @@ export class LocalRuntime {
     this.relayInstanceId = `daemon_${randomBytes(18).toString("base64url")}`;
     this.activeRelayCalls = new Map();
     this.suppressedRelayResults = new Map();
-    this.relayResumeSessionId = 0; this.relayResumeMissingIds = [];
+    this.relayResumeStates = new Map();
     this.remoteActivityIdleSleepGuard = new RemoteActivityIdleSleepGuard({ logger: this.logger, mode: idleSleepMode });
     this.callRegistry = new CallRegistry({
       maximum: MAX_CONCURRENT_TOOL_CALLS,
@@ -359,11 +359,7 @@ export class LocalRuntime {
   handleRelayControlMessage(message, relayContext = {}) { return handleRuntimeRelayControlMessage(this, message, relayContext); }
 
   handleRelayProtocolViolation(errorCode, relayContext = {}) {
-    if (this.relay) {
-      this.relay.handleServerError({ type: "error", error: errorCode }, relayContext);
-      return;
-    }
-    this.logger.error?.("remote relay protocol error; upgrade and redeploy both components, then restart the daemon");
+    return handleRuntimeRelayProtocolViolation(this, errorCode, relayContext);
   }
 
   handleRelayProbe(message, relayContext = {}) {
@@ -452,11 +448,7 @@ export class LocalRuntime {
 
   relayOwnedCallIds() { return this.relayCallRecovery?.ownedCallIds?.() ?? [...this.activeRelayCalls.keys()]; }
 
-  handleRelayDisconnect() {
-    this.relayResumeSessionId = 0;
-    this.relayResumeMissingIds = [];
-    this.relayCallRecovery.disconnected();
-  }
+  handleRelayDisconnect(relayContext = {}) { return handleRuntimeRelayDisconnect(this, relayContext); }
 
   handleRelayReady() {
     this.relayCallRecovery.ready();
