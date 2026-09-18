@@ -76,13 +76,28 @@ const directStderr = captureStream();
 const directLogger = createLogger({ level: "debug", format: "json", component: "daemon", stdout: directStdout, stderr: directStderr, color: false });
 directLogger.info("daemon started", { workspace_path: syntheticHomePath, attempts: 1, timestamp: "1970-01-01T00:00:00.000Z", level: "error", component: "caller", message: "forged message" });
 directLogger.warn("relay unavailable", { attempts: 3, token: "must-not-appear" });
-assert(directStdout.lines.length === 1 && directStderr.lines.length === 1, "direct JSON log methods used the wrong streams");
+directLogger.error("remote relay protocol error; upgrade and redeploy both components, then restart the daemon", {
+  error_code: "resume_calls_required",
+  source_transport: "websocket",
+  connection_generation: "current",
+  handshake_stage: "authenticated_pre_ready",
+  disposition: "fatal_runtime",
+});
+assert(directStdout.lines.length === 1 && directStderr.lines.length === 2, "direct JSON log methods used the wrong streams");
 const directInfo = JSON.parse(directStdout.lines[0]);
 const directWarning = JSON.parse(directStderr.lines[0]);
+const directProtocol = JSON.parse(directStderr.lines[1]);
 assert(Number.isFinite(Date.parse(directInfo.timestamp)) && directInfo.level === "info" && directInfo.component === "daemon", "direct info log omitted structured identity");
 assert(directInfo.timestamp !== "1970-01-01T00:00:00.000Z" && directInfo.message === "daemon started", "direct JSON fields overrode authoritative local log metadata");
 assert(directInfo.workspace_path === "<local-path>" && directInfo.attempts === 1, "direct info log omitted safe fields or leaked a path");
 assert(directWarning.level === "warn" && directWarning.attempts === 3 && directWarning.token === "<redacted>", "direct warning log omitted fields or failed redaction");
+assert(directProtocol.level === "error"
+  && directProtocol.error_code === "resume_calls_required"
+  && directProtocol.source_transport === "websocket"
+  && directProtocol.connection_generation === "current"
+  && directProtocol.handshake_stage === "authenticated_pre_ready"
+  && directProtocol.disposition === "fatal_runtime",
+"fatal relay protocol attribution fields were dropped by the default structured logger");
 assert(!directStderr.lines[0].includes("must-not-appear"), "direct JSON warning leaked a sensitive field");
 assert(typeof directLogger.plain === "undefined" && typeof directLogger.json === "undefined",
   "logger exposed ambiguous raw-output method names that can be mistaken for redacted logging");

@@ -925,6 +925,34 @@ async function testPrimaryFallbackHandoverStress() {
   relay.stop();
 }
 
+function testSourceBoundRelaySessionRouting() {
+  FakeWebSocketRelay.instances.length = 0;
+  FakeHttpRelay.instances.length = 0;
+  const relay = new ResilientRelayConnection({
+    scheduler: new ManualScheduler(), WebSocketRelayClass: FakeWebSocketRelay, HttpRelayClass: FakeHttpRelay,
+    websocket: {}, http: {},
+  });
+  const ws = FakeWebSocketRelay.instances[0];
+  const http = FakeHttpRelay.instances[0];
+  ws.ready = true;
+  http.ready = true;
+  http.sessionId = 1_000_000_007;
+  assert.equal(relay.isCurrentSession({ transport: "websocket", sessionId: 7 }), true);
+  assert.equal(relay.isCurrentSession({ transport: "https", sessionId: 1_000_000_007 }), true);
+  assert.equal(relay.isCurrentSession({ transport: "websocket", sessionId: 6 }), false,
+    "ended WebSocket generation was accepted as current");
+  const interrupted = [];
+  ws.interrupt = (category) => { interrupted.push(["websocket", category]); return true; };
+  http.interrupt = (category) => { interrupted.push(["https", category]); return true; };
+  assert.equal(relay.interruptForContext("relay_transport_error",
+    { transport: "https", sessionId: 1_000_000_007 }), true);
+  assert.deepEqual(interrupted, [["https", "relay_transport_error"]],
+    "source-bound interrupt affected the wrong relay transport");
+  assert.equal(relay.interruptForContext("relay_transport_error",
+    { transport: "websocket", sessionId: 6 }), false);
+  assert.equal(interrupted.length, 1, "stale generation interrupt fell through to the active transport");
+}
+
 function testAuthenticationRefreshInterruptsBothTransports() {
   FakeWebSocketRelay.instances.length = 0;
   FakeHttpRelay.instances.length = 0;
@@ -1076,6 +1104,7 @@ await testTakeoverPreemptsStandbyRequest();
 await testStandbyAndFailureBackoff();
 await testTakeoverTimeoutFitsNewCallRecoveryWindow();
 testAuthenticationRefreshInterruptsBothTransports();
+testSourceBoundRelaySessionRouting();
 await testPrimaryFallbackHandover();
 await testFallbackOutageAttributionHistory();
 testFallbackDiagnosticProjectionContract();

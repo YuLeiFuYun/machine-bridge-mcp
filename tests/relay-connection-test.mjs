@@ -1638,11 +1638,24 @@ protocolSockets[0].open();
 protocolConnection.acknowledge({ type: "hello_ack", server: "machine-bridge-mcp", version: "test" });
 completeRelayReadiness(protocolConnection, "test");
 await protocolReady;
-protocolConnection.handleServerError({ type: "error", error: "unknown_message_type" });
+protocolConnection.handleServerError({
+  type: "error", error: "unknown_message_type",
+  diagnostics: {
+    error_code: "unknown_message_type", source_transport: "websocket",
+    connection_generation: "current", handshake_stage: "post_ready", disposition: "fatal_runtime",
+  },
+});
 await Promise.resolve();
 assert(protocolFatalCallback, "server protocol error did not invoke the fatal callback");
 assert(protocolSockets[0].terminated, "server protocol error did not terminate the connection");
-assert(protocolEvents.some((event) => event.level === "error" && event.message.includes("upgrade and redeploy")), "server protocol error was not actionable");
+const fatalProtocolEvent = protocolEvents.find((event) => event.level === "error" && event.message.includes("upgrade and redeploy"));
+assert(fatalProtocolEvent, "server protocol error was not actionable");
+assert(fatalProtocolEvent.fields?.error_code === "unknown_message_type"
+  && fatalProtocolEvent.fields?.source_transport === "websocket"
+  && fatalProtocolEvent.fields?.connection_generation === "current"
+  && fatalProtocolEvent.fields?.handshake_stage === "post_ready"
+  && fatalProtocolEvent.fields?.disposition === "fatal_runtime",
+"fatal relay protocol log omitted privacy-safe source/generation/stage/disposition attribution");
 protocolScheduler.advance(100_000);
 assert(protocolSockets.length === 1, "server protocol error incorrectly entered the reconnect loop");
 protocolConnection.stop();

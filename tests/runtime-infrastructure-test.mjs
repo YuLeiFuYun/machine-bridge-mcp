@@ -1149,9 +1149,9 @@ async function testRelayResumeReconciliation() {
   let revocationInterrupt = null;
   let applicationPongs = 0;
   let recoveryPulses = 0;
+  const currentControlSessions = { websocket: 17, https: 1_000_000_018 };
   const controlRuntime = {
-    relayResumeSessionId: 0,
-    relayResumeMissingIds: [],
+    relayResumeStates: new Map(),
     reconcileRelayCalls(ids) { this.resumed = ids; return ["call_missing_12345678"]; },
     cancelRelayCall(id, reason) { cancelledControlCalls.push({ id, reason }); return true; },
     applyAuthorityRevocation(value) { revokedAuthority = value; },
@@ -1161,6 +1161,9 @@ async function testRelayResumeReconciliation() {
       acknowledge(id) { acknowledged = id; return true; },
     },
     relay: {
+      isCurrentSession(context) {
+        return Number(context?.sessionId) === currentControlSessions[context?.transport];
+      },
       acknowledge() {},
       observeApplicationPong() { applicationPongs += 1; return true; },
       confirmReady() { confirmed += 1; return true; },
@@ -1181,38 +1184,47 @@ async function testRelayResumeReconciliation() {
     "application pong did not separately confirm WSS transport liveness and pulse retained tool results");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
-    { type: "resume_calls", ids: ["call_valid_12345678"] },
+    { type: "resume_calls", ids: ["call_missing_source_12345678"] },
     { sessionId: 17, authenticated: true, ready: false },
   );
-  assert(controlRuntime.relayResumeSessionId === 17 && controlRuntime.resumed[0] === "call_valid_12345678", "valid resume_calls did not establish the reconnect contract");
+  assert(violation === "invalid_resume_calls" && controlRuntime.resumed === undefined,
+    "resume_calls without an originating transport reached reconciliation");
+  violation = "";
+  await LocalRuntime.prototype.handleRelayControlMessage.call(
+    controlRuntime,
+    { type: "resume_calls", ids: ["call_valid_12345678"] },
+    { sessionId: 17, authenticated: true, ready: false, transport: "websocket" },
+  );
+  assert(controlRuntime.relayResumeStates.has("websocket:17") && controlRuntime.resumed[0] === "call_valid_12345678",
+    "valid resume_calls did not establish the reconnect contract");
   assert(resumeAck === undefined
-    && JSON.stringify(controlRuntime.relayResumeMissingIds) === JSON.stringify(["call_missing_12345678"]),
+    && JSON.stringify(controlRuntime.relayResumeStates.get("websocket:17")?.missingIds) === JSON.stringify(["call_missing_12345678"]),
   "resume reconciliation acknowledged missing ownership before local ready_ack completed");
   let failedResumeInterrupt = null;
   const failedResumeRuntime = {
-    relayResumeSessionId: 0,
-    relayResumeMissingIds: [],
+    relayResumeStates: new Map(),
     reconcileRelayCalls() { return []; },
     handleRelayProtocolViolation() {},
     relay: {
+      isCurrentSession(context) { return context?.transport === "websocket" && Number(context?.sessionId) === 18; },
       sendForSession() { return { ok: false }; },
       confirmReady() { return true; },
-      interrupt(category) { failedResumeInterrupt = category; return true; },
+      interruptForContext(category) { failedResumeInterrupt = category; return true; },
     },
   };
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     failedResumeRuntime,
     { type: "resume_calls", ids: [] },
-    { sessionId: 18, authenticated: true, ready: false },
+    { sessionId: 18, authenticated: true, ready: false, transport: "websocket" },
   );
-  assert(failedResumeRuntime.relayResumeSessionId === 18 && failedResumeInterrupt === null,
+  assert(failedResumeRuntime.relayResumeStates.has("websocket:18") && failedResumeInterrupt === null,
     "resume reconciliation attempted acknowledgement before local readiness");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     failedResumeRuntime,
     { type: "ready_ack" },
-    { sessionId: 18, authenticated: true, ready: false },
+    { sessionId: 18, authenticated: true, ready: false, transport: "websocket" },
   );
-  assert(failedResumeRuntime.relayResumeSessionId === 18 && failedResumeInterrupt === "relay_transport_error",
+  assert(failedResumeRuntime.relayResumeStates.has("websocket:18") && failedResumeInterrupt === "relay_transport_error",
     "failed post-readiness resume acknowledgement was treated as a completed relay reconciliation");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
@@ -1220,7 +1232,7 @@ async function testRelayResumeReconciliation() {
       type: "authority_revoke", revocation_id: `revoke_${"r".repeat(43)}`,
       account_id: `acct_${"r".repeat(32)}`, account_version: 4,
     },
-    { sessionId: 17, authenticated: true, ready: false },
+    { sessionId: 17, authenticated: true, ready: false, transport: "websocket" },
   );
   assert(revokedAuthority?.accountVersion === 4
     && revocationAck?.sessionId === 17
@@ -1236,7 +1248,7 @@ async function testRelayResumeReconciliation() {
         type: "authority_revoke", revocation_id: `revoke_${"f".repeat(43)}`,
         account_id: `acct_${"f".repeat(32)}`, account_version: 5,
       },
-      { sessionId: 17, authenticated: true, ready: false },
+      { sessionId: 17, authenticated: true, ready: false, transport: "websocket" },
     );
   } catch (error) { revocationFailure = error; }
   assert(String(revocationFailure?.message || "").includes("synthetic revocation application failure"),
@@ -1248,29 +1260,31 @@ async function testRelayResumeReconciliation() {
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
-    { sessionId: 17, authenticated: true, ready: false },
+    { sessionId: 17, authenticated: true, ready: false, transport: "websocket" },
   );
-  assert(confirmed === 1 && controlRuntime.relayResumeSessionId === 0
+  assert(confirmed === 1 && !controlRuntime.relayResumeStates.has("websocket:17")
     && resumeAck?.sessionId === 17
     && JSON.stringify(resumeAck.message?.missing_ids) === JSON.stringify(["call_missing_12345678"]),
   "ready_ack did not complete local readiness before sending the missing-call proof");
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "tool_result_ack", id: "call_valid_12345678" },
-    { sessionId: 17, authenticated: true, ready: true },
+    { sessionId: 17, authenticated: true, ready: true, transport: "websocket" },
   );
   assert(acknowledged === "call_valid_12345678", "valid Worker result acknowledgement was not applied");
+  currentControlSessions.websocket = 18;
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "ready_ack" },
-    { sessionId: 18, authenticated: true, ready: false },
+    { sessionId: 18, authenticated: true, ready: false, transport: "websocket" },
   );
   assert(violation === "resume_calls_required", "ready_ack without resume_calls was accepted");
   violation = "";
+  currentControlSessions.websocket = 17;
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "cancel_call", id: "call_cancel_12345678" },
-    { sessionId: 17, authenticated: true, ready: false },
+    { sessionId: 17, authenticated: true, ready: false, transport: "websocket" },
   );
   assert(violation === "invalid_cancel_call" && cancelledControlCalls.length === 0,
     "pre-ready relay cancellation bypassed the authenticated ready-generation gate");
@@ -1278,7 +1292,7 @@ async function testRelayResumeReconciliation() {
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "cancel_call", id: "not-a-call-id" },
-    { sessionId: 17, authenticated: true, ready: true },
+    { sessionId: 17, authenticated: true, ready: true, transport: "websocket" },
   );
   assert(violation === "invalid_cancel_call" && cancelledControlCalls.length === 0,
     "malformed relay cancellation reached the call registry");
@@ -1286,12 +1300,103 @@ async function testRelayResumeReconciliation() {
   await LocalRuntime.prototype.handleRelayControlMessage.call(
     controlRuntime,
     { type: "cancel_call", id: "call_cancel_12345678" },
-    { sessionId: 17, authenticated: true, ready: true },
+    { sessionId: 17, authenticated: true, ready: true, transport: "websocket" },
   );
   assert(violation === "" && cancelledControlCalls.length === 1
     && cancelledControlCalls[0].id === "call_cancel_12345678"
     && cancelledControlCalls[0].reason === "caller_cancelled",
   "ready-generation relay cancellation did not reach the call registry exactly once");
+
+  const interleavedAcks = [];
+  const interleavedViolations = [];
+  const interleavedReconciliations = [];
+  const currentSessions = { websocket: 21, https: 1_000_000_022 };
+  const interleavedRuntime = {
+    relayResumeStates: new Map(),
+    logger: { event() {} },
+    reconcileRelayCalls(ids) {
+      interleavedReconciliations.push([...ids]);
+      return [ids[0] === "call_ws_12345678" ? "call_missing_ws_12345678" : "call_missing_http_12345678"];
+    },
+    handleRelayProtocolViolation(reason, context) { interleavedViolations.push({ reason, context }); },
+    relayCallRecovery: { pulse() {}, acknowledge() { return true; } },
+    relayShutdownDrain: { acknowledge() { return false; } },
+    relay: {
+      isCurrentSession(context) {
+        return Number(context?.sessionId) === currentSessions[context?.transport];
+      },
+      confirmReady() { return true; },
+      sendForSession(message, sessionId) {
+        interleavedAcks.push({ message, sessionId });
+        return { ok: true };
+      },
+      interruptForContext() { throw new Error("interleaved handshake unexpectedly interrupted a transport"); },
+    },
+  };
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "resume_calls", ids: ["call_ws_12345678"] },
+    { sessionId: 21, authenticated: true, ready: false, transport: "websocket" });
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "resume_calls", ids: ["call_http_12345678"] },
+    { sessionId: 1_000_000_022, authenticated: true, ready: false, transport: "https" });
+  assert(interleavedRuntime.relayResumeStates.size === 2 && interleavedReconciliations.length === 2,
+    "interleaved relay handshakes overwrote one another or skipped reconciliation");
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "ready_ack" },
+    { sessionId: 21, authenticated: true, ready: false, transport: "websocket" });
+  assert(interleavedAcks[0]?.sessionId === 21
+    && JSON.stringify(interleavedAcks[0]?.message?.missing_ids) === JSON.stringify(["call_missing_ws_12345678"])
+    && interleavedRuntime.relayResumeStates.has("https:1000000022"),
+  "WebSocket ready acknowledgement consumed or answered the HTTPS resume state");
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "ready_ack" },
+    { sessionId: 1_000_000_022, authenticated: true, ready: false, transport: "https" });
+  assert(interleavedAcks[1]?.sessionId === 1_000_000_022
+    && JSON.stringify(interleavedAcks[1]?.message?.missing_ids) === JSON.stringify(["call_missing_http_12345678"])
+    && interleavedRuntime.relayResumeStates.size === 0 && interleavedViolations.length === 0,
+  "HTTPS ready acknowledgement crossed relay generations or produced a false protocol violation");
+
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "resume_calls", ids: ["call_ws_12345678"] },
+    { sessionId: 21, authenticated: true, ready: false, transport: "websocket" });
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "resume_calls", ids: ["call_ws_12345678"] },
+    { sessionId: 21, authenticated: true, ready: false, transport: "websocket" });
+  assert(interleavedReconciliations.length === 3
+    && interleavedViolations.at(-1)?.reason === "invalid_resume_calls"
+    && interleavedViolations.at(-1)?.context?.transport === "websocket",
+  "duplicate resume_calls repeated destructive reconciliation or lost its source transport");
+
+  currentSessions.websocket = 22;
+  const staleViolationCount = interleavedViolations.length;
+  const staleReconcileCount = interleavedReconciliations.length;
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "ready_ack" },
+    { sessionId: 21, authenticated: true, ready: false, transport: "websocket" });
+  assert(interleavedViolations.length === staleViolationCount && interleavedReconciliations.length === staleReconcileCount,
+    "late control message from an ended WebSocket generation reached destructive protocol handling");
+
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "ready_ack" },
+    { sessionId: 1_000_000_022, authenticated: true, ready: false, transport: "https" });
+  assert(interleavedViolations.at(-1)?.reason === "resume_calls_required"
+    && interleavedViolations.at(-1)?.context?.transport === "https",
+  "current HTTPS protocol violation lost its source transport");
+
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "tool_result_ack", id: "bad" },
+    { sessionId: 1_000_000_022, authenticated: true, ready: true, transport: "https" });
+  assert(interleavedViolations.at(-1)?.reason === "invalid_tool_result_ack"
+    && interleavedViolations.at(-1)?.context?.transport === "https",
+  "acknowledgement protocol violation lost its source transport at the relay-control boundary");
+
+  currentSessions.websocket = 22;
+  await LocalRuntime.prototype.handleRelayControlMessage.call(interleavedRuntime,
+    { type: "daemon_draining_ack", drain_id: "bad" },
+    { sessionId: 22, authenticated: true, ready: true, transport: "websocket" });
+  assert(interleavedViolations.at(-1)?.reason === "invalid_daemon_draining_ack"
+    && interleavedViolations.at(-1)?.context?.transport === "websocket",
+  "planned-drain acknowledgement protocol violation lost its source transport");
 }
 
 function testRelayHandshakeDiagnostics() {
@@ -1526,7 +1631,7 @@ function testRuntimeConvenienceMethods() {
   const delegated = [];
   const runtime = {
     relay: null,
-    relayResumeSessionId: 9,
+    relayResumeStates: new Map([["websocket:9", { missingIds: [] }], ["https:1000000009", { missingIds: [] }]]),
     callRegistry: { finish(callId) { finished = callId; } },
     relayCallRecovery: {
       deliver(value) { delegated.push(["deliver", value.id]); return true; },
@@ -1543,9 +1648,10 @@ function testRuntimeConvenienceMethods() {
   assert(finished === "finished-call", "runtime finishCall mutated state for an empty call id");
   assert(LocalRuntime.prototype.deliverRelayToolResult.call(runtime, { id: "delegated-call" }) === true, "runtime did not delegate relay result delivery");
   LocalRuntime.prototype.reconcileRelayCalls.call(runtime, ["call_keep_12345678"]);
-  LocalRuntime.prototype.handleRelayDisconnect.call(runtime);
+  LocalRuntime.prototype.handleRelayDisconnect.call(runtime, { transport: "websocket" });
   LocalRuntime.prototype.handleRelayReady.call(runtime);
-  assert(runtime.relayResumeSessionId === 0, "runtime disconnect did not reset resume-session state");
+  assert(!runtime.relayResumeStates.has("websocket:9") && runtime.relayResumeStates.has("https:1000000009"),
+    "runtime disconnect cleared another transport generation or retained the disconnected transport state");
   assert(JSON.stringify(delegated) === JSON.stringify([
     ["deliver", "delegated-call"],
     ["reconcile", "call_keep_12345678", "function"],
