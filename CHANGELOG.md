@@ -1,11 +1,9 @@
 # Changelog
 
-## 3.0.0-beta.193 - 2026-09-18
+## 3.0.0-beta.194 - 2026-09-18
 
-- Isolate daemon resume-handshake state by relay transport and authenticated connection generation so interleaved WebSocket and HTTPS fallback handshakes cannot overwrite or clear one another; acknowledgements return to the originating generation and duplicate resume reconciliation is rejected before it can repeat call ownership changes.
-- Fence ended-generation control messages before protocol handling and route current-generation protocol violations and transport interruptions to their source channel, preventing a fallback-channel error from falling through to the primary WebSocket fatal path.
-- Persist privacy-safe fatal relay protocol attribution at the default service-log level: sanitized error code, source transport, coarse generation class, handshake stage, and fatal/retry disposition, without raw session IDs, endpoints, credentials, account identity, call IDs, or payload content.
-- Add deterministic regressions for handshake interleavings, stale-generation delivery, source-specific interruption, acknowledgement/drain error routing, and default structured-log field retention; relay identity, version, authorization, readiness, and replay-safety validation remain fail closed.
+- Update the Wrangler development and deployment toolchain from 4.127.1 to 4.131.2 and refresh its resolved dependency graph in the lockfile.
+- Preserve the beta.193 application logic while advancing release identity to beta.194 so the dependency change receives its own candidate verification, live deployment canary, and portable acceptance evidence.
 
 ## Historical releases
 
