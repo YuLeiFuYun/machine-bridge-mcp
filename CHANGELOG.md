@@ -1,9 +1,9 @@
 # Changelog
 
-## 3.0.0-beta.194 - 2026-09-18
+## 3.0.0-beta.195 - 2026-09-18
 
-- Update the Wrangler development and deployment toolchain from 4.127.1 to 4.131.2 and refresh its resolved dependency graph in the lockfile.
-- Preserve the beta.193 application logic while advancing release identity to beta.194 so the dependency change receives its own candidate verification, live deployment canary, and portable acceptance evidence.
+- Update the fast-check development dependency from 4.9.0 to 4.10.0 and refresh its resolved lockfile entry.
+- Preserve the beta.194 Wrangler/toolchain and relay changes while advancing release identity to beta.195 so this dependency update receives independent full verification, live candidate canary, and exact acceptance evidence.
 
 ## Historical releases
 

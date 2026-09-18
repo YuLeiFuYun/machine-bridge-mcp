@@ -1846,7 +1846,7 @@ const processTreeSupervisorSource = readFileSync(join(root, "src", "local", "pro
 for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "processSnapshotTimeoutMs", "processTreeOwnershipStillCurrent"]) {
   if (!processTreeSupervisorSource.includes(required)) throw new Error(`process-tree supervisor lost bounded ownership escalation: ${required}`);
 }
-if (packageJson.devDependencies?.["fast-check"] !== "4.9.0" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
+if (packageJson.devDependencies?.["fast-check"] !== "4.10.0" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
 const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
