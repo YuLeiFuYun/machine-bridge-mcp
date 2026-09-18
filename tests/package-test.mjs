@@ -66,7 +66,7 @@ try {
   ]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
   }
-  if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.127.1") {
+  if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.131.2") {
     throw new Error("Wrangler must remain a development dependency backed by the packaged private toolchain lock");
   }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
