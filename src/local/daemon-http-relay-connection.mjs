@@ -7,6 +7,7 @@ import { classifyRelayTransportError } from "./relay-connection-support.mjs";
 import { createDaemonHttpRelayHeaders } from "./daemon-http-relay-auth.mjs";
 import { classifyRelayTransportErrorReason } from "./relay-transport-error-state.mjs";
 import { postDaemonHttpRelay } from "./daemon-http-relay-request.mjs";
+import { boundedRelayRetryAfterMs, relayFailureBackoffMs } from "./daemon-http-retry-policy.mjs";
 import { RelayInboundSequence, RelayOutboundSequence } from "./daemon-http-relay-sequence.mjs";
 
 const HTTP_SESSION_ID = /^relay_http_[A-Za-z0-9_-]{43}$/;
@@ -65,6 +66,8 @@ export class DaemonHttpRelayConnection {
     this.consecutiveFailures = 0;
     this.standby = false;
     this.lastRequestStartedAt = Number.NEGATIVE_INFINITY;
+    this.retryNotBeforeAt = 0;
+    this.lastRetryStatusCode = null;
     this.takeoverWebSocket = false;
     this.takeoverWebSocketConnectionId = "";
   }
@@ -132,6 +135,8 @@ export class DaemonHttpRelayConnection {
       last_transport_error_ready: this.lastErrorReady,
       last_transport_error_authenticated: this.lastErrorAuthenticated,
       http_poll_failures: this.consecutiveFailures,
+      http_retry_delay_ms: Math.max(0, Math.ceil(this.retryNotBeforeAt - this.now())),
+      http_retry_status_code: this.lastRetryStatusCode,
     };
   }
 
@@ -177,7 +182,7 @@ export class DaemonHttpRelayConnection {
     if (this.closed || this.inFlight) return;
     this.clearPollTimer();
     const now = this.now();
-    const earliest = this.lastRequestStartedAt + this.minimumRequestIntervalMs;
+    const earliest = Math.max(this.lastRequestStartedAt + this.minimumRequestIntervalMs, this.retryNotBeforeAt);
     if (now < earliest) { this.schedulePoll(earliest - now); return; }
     this.lastRequestStartedAt = now;
     const descriptor = this.activationToken ? null : (this.descriptor() || {});
@@ -209,7 +214,7 @@ export class DaemonHttpRelayConnection {
       });
       if (this.inFlight !== controller || this.closed) return;
       this.networkRoute = response.networkRoute || this.networkRoute;
-      await this.handleResponse(response.statusCode, response.body);
+      await this.handleResponse(response.statusCode, response.body, response.retryAfterMs);
     } catch (error) {
       if (this.inFlight !== controller || this.closed) return;
       this.handleFailure(error);
@@ -219,7 +224,8 @@ export class DaemonHttpRelayConnection {
     if (!this.closed) this.schedulePoll(this.nextPollDelay());
   }
 
-  async handleResponse(statusCode, text) {
+  async handleResponse(statusCode, text, retryAfterMs = 0) {
+    this.lastRetryStatusCode = [429, 503].includes(statusCode) ? statusCode : null;
     if (statusCode === 404 || statusCode === 405 || statusCode === 426) {
       this.handleFailure(Object.assign(new Error("daemon HTTP fallback is not supported by the Worker"), { code: "daemon_http_unsupported" }));
       return;
@@ -233,7 +239,9 @@ export class DaemonHttpRelayConnection {
       return;
     }
     if (statusCode < 200 || statusCode >= 300) {
-      this.handleFailure(Object.assign(new Error("daemon HTTP fallback request failed"), { code: "network_error" }));
+      this.handleFailure(Object.assign(new Error("daemon HTTP fallback request failed"), {
+        code: "network_error", retryAfterMs: [429, 503].includes(statusCode) ? boundedRelayRetryAfterMs(retryAfterMs) : 0,
+      }));
       return;
     }
     let body;
@@ -252,7 +260,9 @@ export class DaemonHttpRelayConnection {
     this.lastSuccessAt = this.now();
     this.lastSuccessWallAt = this.wallNow();
     this.consecutiveFailures = 0;
+    this.retryNotBeforeAt = 0;
     this.standby = false;
+    this.lastRetryStatusCode = null;
     if (body.phase === "standby") {
       this.resetSession(this.ready);
       this.standby = true;
@@ -299,7 +309,8 @@ export class DaemonHttpRelayConnection {
 
   handleFailure(error) {
     this.recordFailure(error);
-    if (!this.ready || !this.lastSuccessAt || this.now() - this.lastSuccessAt < this.livenessTimeoutMs) return;
+    if (!this.ready) return;
+    if (Math.max(this.now(), this.retryNotBeforeAt) < this.lastSuccessAt + this.livenessTimeoutMs) return;
     this.resetSession(true);
   }
 
@@ -316,6 +327,8 @@ export class DaemonHttpRelayConnection {
     this.lastErrorAuthenticated = this.authenticated === true;
     this.standby = false;
     this.consecutiveFailures += 1;
+    const backoff = relayFailureBackoffMs(this.consecutiveFailures, this.failureBackoffBaseMs, this.failureBackoffMaximumMs);
+    this.retryNotBeforeAt = Math.max(this.retryNotBeforeAt, this.now() + Math.max(backoff, boundedRelayRetryAfterMs(error?.retryAfterMs)));
   }
 
   resetSession(notify) {
@@ -338,11 +351,7 @@ export class DaemonHttpRelayConnection {
 
   nextPollDelay() {
     if (this.standby) return this.standbyRetryIntervalMs;
-    if (this.consecutiveFailures > 0) {
-      const exponent = Math.min(Math.max(0, this.consecutiveFailures - 1), 16);
-      return Math.min(this.failureBackoffBaseMs * (2 ** exponent),
-        Math.max(this.failureBackoffBaseMs, this.failureBackoffMaximumMs));
-    }
+    if (this.consecutiveFailures > 0) return Math.max(0, this.retryNotBeforeAt - this.now());
     if (!this.authenticated || !this.ready || this.outbound.messages.length > 0) return 0;
     return this.pollIntervalMs;
   }
@@ -350,10 +359,10 @@ export class DaemonHttpRelayConnection {
   schedulePoll(delay) {
     if (this.closed || this.inFlight) return;
     const now = this.now();
-    const earliestDelay = Math.max(0, this.lastRequestStartedAt + this.minimumRequestIntervalMs - now);
+    const earliestDelay = Math.max(0, this.lastRequestStartedAt + this.minimumRequestIntervalMs - now, this.retryNotBeforeAt - now);
     const boundedDelay = Math.max(earliestDelay, Number(delay) || 0);
     const dueAt = now + boundedDelay;
-    if (this.pollTimer && this.pollTimerDueAt <= dueAt) return;
+    if (this.pollTimer && this.pollTimerDueAt <= dueAt && this.pollTimerDueAt >= now + earliestDelay) return;
     this.clearPollTimer();
     this.pollTimerDueAt = dueAt;
     this.pollTimer = this.scheduler.setTimeout(() => {

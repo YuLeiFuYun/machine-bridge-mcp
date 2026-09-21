@@ -1,5 +1,6 @@
 import http from "node:http";
 import https from "node:https";
+import { relayRetryAfterMs } from "./daemon-http-retry-policy.mjs";
 import { proxyAgentForRelayHttp } from "./network-proxy.mjs";
 
 export function postDaemonHttpRelay({ url, headers, body, timeoutMs, maximumResponseBytes, signal, request: requestOverride, selectProxy = proxyAgentForRelayHttp }) {
@@ -42,6 +43,7 @@ export function postDaemonHttpRelay({ url, headers, body, timeoutMs, maximumResp
       });
       response.on("end", () => finish(null, {
         statusCode: Number(response.statusCode) || 0,
+        retryAfterMs: relayRetryAfterMs(Number(response.statusCode), response.headers["retry-after"]),
         body: Buffer.concat(chunks, observed).toString("utf8"),
         networkRoute: proxy.agent ? "application-http-proxy" : "system-network-stack",
       }));

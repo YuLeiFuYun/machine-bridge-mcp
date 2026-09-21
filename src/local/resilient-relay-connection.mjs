@@ -10,7 +10,6 @@ export class ResilientRelayConnection {
     this.onDisconnect = typeof options.onDisconnect === "function" ? options.onDisconnect : () => {};
     this.scheduler = options.scheduler || { setTimeout, clearTimeout };
     this.fallbackDelayMs = positiveInteger(options.fallbackDelayMs, relayContract.httpFallbackActivationDelayMs);
-    this.standbyDelayMs = positiveInteger(options.standbyDelayMs, relayContract.httpFallbackStandbyRetryIntervalMs);
     this.activeTransport = "";
     this.closed = true;
     this.startResolve = null;
@@ -199,12 +198,11 @@ export class ResilientRelayConnection {
       this.fallbackRecoveredOutageMs = 0;
       this.http.stop();
       this.clearFallbackTimer();
-      this.armFallback(0, "", true);
     } else {
       const websocket = this.websocket.status();
       if (websocket.ready === true) {
         this.http.stop();
-        this.armFallback(this.standbyDelayMs, "", true);
+        this.clearFallbackTimer();
         return;
       }
       this.fallbackRecoveredOutageMs = Math.max(0, Number(websocket.outage_duration_ms) || 0);
@@ -239,7 +237,8 @@ export class ResilientRelayConnection {
 
   handleRecovered() {
     if (this.closed || this.activeTransport !== "websocket") return;
-    if (this.http.status().closed === true) this.armFallback(0, "", true);
+    this.clearFallbackTimer();
+    if (this.http.status().closed === false) this.http.stop();
   }
 
   recordFallbackTakeover(websocket = {}) {

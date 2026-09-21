@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+import { testRelayRetryPolicy } from "./relay-http-retry-cases.mjs";
+import { testExecutedIdleRelayBudget } from "./relay-http-budget-cases.mjs";
+import { createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
 import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { DaemonHttpRelayConnection } from "../src/local/daemon-http-relay-connection.mjs";
 import { postDaemonHttpRelay } from "../src/local/daemon-http-relay-request.mjs";
@@ -9,8 +11,10 @@ import { proxyAgentForRelayHttp } from "../src/local/network-proxy.mjs";
 import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
 import { runtimeRelayConnectionOptions } from "../src/local/runtime-relay-connection-options.mjs";
 import { ResilientRelayConnection } from "../src/local/resilient-relay-connection.mjs";
+import { reconnectDelay } from "../src/local/relay-connection-classification.mjs";
 import { compactRuntimeRelay } from "../src/local/runtime-info-relay-projection.mjs";
 import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
+import { consumeDaemonPreflightNonce, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
 import { DaemonHttpChannel } from "../src/worker/daemon-http-channel.ts";
 import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
 
@@ -30,10 +34,27 @@ async function testSignedHttpRelayAuthentication() {
     storage, publicKeyJson, headers, body, workerOrigin: ORIGIN, server: SERVER, version: VERSION,
     now: Math.floor(NOW / 1000),
   }), true, "valid signed daemon HTTP exchange was rejected");
+  assert.equal(storage.putCalls, 1, "accepted HTTP relay authentication did not consume exactly one durable replay-nonce write");
   assert.equal(await verifyDaemonHttpRelayRequest({
     storage, publicKeyJson, headers, body, workerOrigin: ORIGIN, server: SERVER, version: VERSION,
     now: Math.floor(NOW / 1000),
   }), false, "daemon HTTP exchange nonce replay was accepted");
+  assert.equal(storage.putCalls, 1, "rejected HTTP relay replay performed an additional durable nonce write");
+
+  const preflightHeaders = new Headers(createDaemonPreflightHeaders(session, ORIGIN, SERVER, VERSION, NOW));
+  const preflight = await verifyDaemonPreflight({
+    publicKeyJson, headers: preflightHeaders, workerOrigin: ORIGIN, server: SERVER, version: VERSION,
+    now: Math.floor(NOW / 1000),
+  });
+  assert(preflight, "valid signed daemon WebSocket preflight was rejected");
+  assert.equal(await consumeDaemonPreflightNonce(storage, preflight, Math.floor(NOW / 1000)), true,
+    "valid daemon WebSocket preflight nonce was rejected");
+  assert.equal(storage.putCalls, 2,
+    "accepted WebSocket preflight did not consume exactly one durable replay-nonce write");
+  assert.equal(await consumeDaemonPreflightNonce(storage, preflight, Math.floor(NOW / 1000)), false,
+    "daemon WebSocket preflight nonce replay was accepted");
+  assert.equal(storage.putCalls, 2,
+    "rejected WebSocket preflight replay performed an additional durable nonce write");
 
   const tamperedHeaders = new Headers(createDaemonHttpRelayHeaders(session, ORIGIN, SERVER, VERSION, body, NOW));
   assert.equal(await verifyDaemonHttpRelayRequest({
@@ -47,6 +68,24 @@ async function testSignedHttpRelayAuthentication() {
     storage: new MemoryStorage(), publicKeyJson, headers: expiredHeaders, body,
     workerOrigin: ORIGIN, server: SERVER, version: VERSION, now: Math.floor(NOW / 1000),
   }), false, "expired daemon HTTP request replay window was accepted");
+}
+
+function testQuotaSafeRelayCadenceDefaults() {
+  const connection = new DaemonHttpRelayConnection({ workerUrl: ORIGIN });
+  const dayMs = 24 * 60 * 60 * 1000;
+  assert.equal(connection.pollIntervalMs, 5_000,
+    "ready HTTPS fallback default idle cadence drifted from the quota-reviewed five-second budget");
+  assert.equal(connection.standbyRetryIntervalMs, 30_000,
+    "HTTPS standby retry cadence drifted from the quota-reviewed thirty-second budget");
+  const maximumHttpsIdleRequests = Math.ceil(dayMs / connection.pollIntervalMs);
+  let elapsed = 0; let reconnectAttempts = 0; let attempt = 0;
+  while (elapsed < dayMs) {
+    elapsed += reconnectDelay(attempt++, () => 0, 0, 30_000);
+    if (elapsed <= dayMs) reconnectAttempts += 1;
+  }
+  const maintenanceRequestsAndNonceWrites = maximumHttpsIdleRequests + reconnectAttempts;
+  assert(maintenanceRequestsAndNonceWrites < 25_000,
+    `idle polls plus modeled reconnects exceeded their request/nonce-only scenario budget: ${maintenanceRequestsAndNonceWrites}`);
 }
 
 async function testDynamicHttpDeviceSessionProvider() {
@@ -245,7 +284,7 @@ async function testHttpFallbackFailureClassification() {
     "HTTPS fallback lost Happy Eyeballs aggregate network evidence");
 
   const protocolFailure = new DaemonHttpRelayConnection({
-    workerUrl: ORIGIN, failureBackoffBaseMs: 10, failureBackoffMaximumMs: 40,
+    workerUrl: ORIGIN, now: () => 0, failureBackoffBaseMs: 10, failureBackoffMaximumMs: 40,
   });
   await protocolFailure.handleResponse(409, "");
   assert.equal(protocolFailure.status().last_transport_error_class, "conflict",
@@ -548,7 +587,7 @@ async function testPrimaryFallbackHandover() {
   FakeWebSocketRelay.instances.length = 0;
   FakeHttpRelay.instances.length = 0;
   const relay = new ResilientRelayConnection({
-    scheduler, fallbackDelayMs: 1500, standbyDelayMs: 5000,
+    scheduler, fallbackDelayMs: 1500,
     WebSocketRelayClass: FakeWebSocketRelay,
     HttpRelayClass: FakeHttpRelay,
     websocket: {}, http: {},
@@ -563,32 +602,30 @@ async function testPrimaryFallbackHandover() {
   assert.equal(http.started, false, "HTTPS fallback started before primary WSS activation grace elapsed");
   ws.emitReady();
   assert.equal(await started, true);
-  scheduler.advance(0);
-  assert.equal(http.started, true, "verified WSS readiness did not immediately establish HTTPS standby prewarm");
-  assert.equal(http.startOptions?.takeoverWebSocket, false,
-    "healthy WSS standby prewarm incorrectly requested takeover authority");
-  assert.equal(relay.status().https_fallback_warming, true,
-    "new HTTPS standby was not visible while its first standby exchange was pending");
-  http.markStandby();
-  assert.equal(relay.status().https_fallback_standby, true,
-    "verified standby state was not distinguishable from fallback warming");
-  assert.equal(relay.status().https_fallback_warming, false,
-    "verified standby state remained mislabeled as warming");
+  scheduler.advance(24 * 60 * 60 * 1000);
+  assert.equal(http.started, false,
+    "healthy verified WSS generated HTTPS fallback maintenance traffic during a full simulated day");
+  assert.equal(relay.status().https_fallback_warming, false);
+  assert.equal(relay.status().https_fallback_standby, false);
   assert.equal(relay.send({ type: "one" }), true);
   assert.equal(ws.sent.length, 1, "ready WSS was not the preferred send path");
 
   ws.emitDegraded();
   scheduler.advance(0);
+  assert.equal(http.started, true, "WSS liveness suspicion did not make the fallback available for confirmation failure");
   assert.equal(http.startOptions?.takeoverWebSocket, false,
     "WSS liveness suspicion prematurely took ownership away from a WSS still under confirmation");
   ws.emitRecovered();
-  assert.equal(http.stopped, false, "recovered WSS tore down the bounded HTTPS standby path");
-  assert.equal(relay.status().https_fallback_standby, true,
-    "recovered WSS lost the verified HTTPS standby state");
+  assert.equal(http.stopped, true, "recovered WSS left quota-consuming HTTPS fallback polling active");
+  http.emitReady();
+  assert.equal(http.stopped, true,
+    "late HTTPS readiness after verified WSS recovery re-armed quota-consuming fallback polling");
+  assert.equal(relay.status().transport, "websocket",
+    "late HTTPS readiness stole transport ownership back from a recovered WSS generation");
 
   ws.emitDisconnect();
   scheduler.advance(0);
-  assert.equal(http.started, true, "HTTPS standby object was not retained after WSS loss");
+  assert.equal(http.started, true, "verified WSS loss did not start the HTTPS fallback");
   assert.equal(http.startOptions?.takeoverWebSocket, true,
     "established WSS loss did not promote standby into exact-generation HTTPS takeover");
   assert.equal(http.startOptions?.takeoverWebSocketConnectionId, `connection_${"a".repeat(43)}`,
@@ -616,11 +653,9 @@ async function testPrimaryFallbackHandover() {
   assert.equal(relay.status().transport, "websocket", "verified WSS did not reclaim primary transport ownership");
   assert.equal(relay.status().https_fallback_last_takeover_ms, 1350,
     "WSS recovery erased the preceding HTTPS continuity evidence");
-  assert.equal(http.stopped, true, "WSS reclaim did not retire the takeover session before returning it to standby");
-  scheduler.advance(0);
-  assert.equal(http.stopped, false, "WSS reclaim failed to rebuild bounded HTTPS standby immediately");
-  assert.equal(http.startOptions?.takeoverWebSocket, false,
-    "post-reclaim HTTPS standby retained stale takeover authority");
+  assert.equal(http.stopped, true, "WSS reclaim did not retire the takeover session");
+  scheduler.advance(24 * 60 * 60 * 1000);
+  assert.equal(http.stopped, true, "WSS reclaim restarted quota-consuming HTTPS standby polling");
   assert.deepEqual(disconnected, ["websocket"], "transport handover generated a false second runtime disconnect");
   assert.deepEqual(ready, ["websocket", "https"],
     "preferred WSS reclaim emitted a duplicate global bridge-ready notification");
@@ -633,7 +668,7 @@ async function testFallbackOutageAttributionHistory() {
   FakeWebSocketRelay.instances.length = 0;
   FakeHttpRelay.instances.length = 0;
   const relay = new ResilientRelayConnection({
-    scheduler, fallbackDelayMs: 1500, standbyDelayMs: 5000,
+    scheduler, fallbackDelayMs: 1500,
     WebSocketRelayClass: FakeWebSocketRelay,
     HttpRelayClass: FakeHttpRelay,
     websocket: {}, http: {},
@@ -643,11 +678,10 @@ async function testFallbackOutageAttributionHistory() {
   const http = FakeHttpRelay.instances[0];
   ws.emitReady();
   assert.equal(await started, true);
-  scheduler.advance(0);
-  http.markStandby();
 
   ws.outageCount = 1; ws.outageActive = true; ws.outageDurationMs = 1100; ws.recentOutages = [];
   ws.emitDisconnect();
+  scheduler.advance(0);
   http.emitReady();
   assert.equal(relay.status().https_fallback_last_takeover_outage_number, 1,
     "fallback takeover was not bound to the active WebSocket outage number");
@@ -657,10 +691,9 @@ async function testFallbackOutageAttributionHistory() {
   assert.deepEqual(history.map((entry) => [entry.outage_number, entry.https_fallback_taken_over, entry.https_fallback_takeover_ms]),
     [[1, true, 1100]], "completed outage lost its fallback takeover evidence");
 
-  scheduler.advance(0);
-  http.markStandby();
   ws.outageCount = 2; ws.outageActive = true; ws.outageDurationMs = 900;
   ws.emitDisconnect();
+  scheduler.advance(0);
   ws.outageActive = false; ws.recentOutages = [{ outage_number: 2 }, { outage_number: 1 }];
   ws.emitReady();
   history = relay.status().recent_outages;
@@ -668,10 +701,9 @@ async function testFallbackOutageAttributionHistory() {
     [[2, false, 0], [1, true, 1100]],
     "prior fallback evidence was either lost or misattributed to a later no-takeover outage");
 
-  scheduler.advance(0);
-  http.markStandby();
   ws.outageCount = 3; ws.outageActive = true; ws.outageDurationMs = 700;
   ws.emitDisconnect();
+  scheduler.advance(0);
   http.emitReady();
   ws.outageActive = false; ws.recentOutages = [{ outage_number: 3 }, { outage_number: 2 }, { outage_number: 1 }];
   ws.emitReady();
@@ -864,7 +896,7 @@ async function testPrimaryFallbackHandoverStress() {
   FakeWebSocketRelay.instances.length = 0;
   FakeHttpRelay.instances.length = 0;
   const relay = new ResilientRelayConnection({
-    scheduler, fallbackDelayMs: 1500, standbyDelayMs: 5000,
+    scheduler, fallbackDelayMs: 1500,
     WebSocketRelayClass: FakeWebSocketRelay,
     HttpRelayClass: FakeHttpRelay,
     websocket: {}, http: {},
@@ -876,16 +908,14 @@ async function testPrimaryFallbackHandoverStress() {
   const http = FakeHttpRelay.instances[0];
   ws.emitReady();
   assert.equal(await started, true);
-  scheduler.advance(0);
-  http.markStandby();
 
   for (let index = 0; index < cycles; index += 1) {
     const generation = `connection_${String.fromCharCode(65 + (index % 26)).repeat(43)}`;
     ws.takeoverConnectionId = () => generation;
     assert.equal(relay.status().transport, "websocket",
       `stress cycle ${index} did not begin with WSS ownership`);
-    assert.equal(relay.status().https_fallback_standby, true,
-      `stress cycle ${index} did not begin with a warm HTTPS standby`);
+    assert.equal(http.stopped, true,
+      `stress cycle ${index} began with quota-consuming HTTPS standby activity`);
 
     ws.emitDisconnect();
     scheduler.advance(0);
@@ -904,12 +934,8 @@ async function testPrimaryFallbackHandoverStress() {
     ws.emitReady();
     assert.equal(relay.status().transport, "websocket",
       `stress cycle ${index} did not return ownership to WSS`);
-    scheduler.advance(0);
-    assert.equal(http.startOptions?.takeoverWebSocket, false,
-      `stress cycle ${index} retained stale takeover authority after WSS reclaim`);
-    http.markStandby();
-    assert.equal(relay.status().https_fallback_standby, true,
-      `stress cycle ${index} failed to re-establish HTTPS standby`);
+    assert.equal(http.stopped, true,
+      `stress cycle ${index} left HTTPS fallback polling active after WSS reclaim`);
     assert.equal(relay.send({ type: "stress_websocket", index }), true,
       `stress cycle ${index} could not send through reclaimed WSS`);
   }
@@ -1017,9 +1043,9 @@ function fakeHttpRequest(handler) {
 }
 
 class MemoryStorage {
-  constructor() { this.values = new Map(); }
+  constructor() { this.values = new Map(); this.putCalls = 0; }
   async get(key) { return this.values.get(key); }
-  async put(key, value) { this.values.set(key, structuredClone(value)); }
+  async put(key, value) { this.putCalls += 1; this.values.set(key, structuredClone(value)); }
   async transaction(callback) { return callback(this); }
 }
 
@@ -1093,7 +1119,10 @@ class FakeHttpRelay extends FakeRelayBase {
   constructor(options) { super(options); this.kind = "https"; FakeHttpRelay.instances.push(this); }
 }
 
+await testRelayRetryPolicy({ ManualScheduler, runNext, fakeHttpRequest, MemoryStorage, ORIGIN, SERVER, VERSION, NOW });
+await testExecutedIdleRelayBudget();
 await testSignedHttpRelayAuthentication();
+testQuotaSafeRelayCadenceDefaults();
 await testDynamicHttpDeviceSessionProvider();
 testTransportSequences();
 await testDedicatedHttpFallbackProxy();

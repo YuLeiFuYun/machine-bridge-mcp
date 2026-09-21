@@ -36,7 +36,7 @@ export async function verifyDaemonHttpRelayRequest(input: {
   const claimedBodyHash = input.headers.get("X-Bridge-Body-SHA256") || "";
   const signature = decodeBase64Url(input.headers.get("X-Bridge-Device-Signature") || "", 64);
   if (scheme !== DAEMON_HTTP_RELAY_SCHEME || !signature || !/^[A-Za-z0-9_-]{43}$/.test(claimedBodyHash)) return false;
-  if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > DAEMON_HTTP_RELAY_TTL_SECONDS) return false;
+  if (!Number.isSafeInteger(issuedAt) || now >= issuedAt + DAEMON_HTTP_RELAY_TTL_SECONDS || issuedAt - now > DAEMON_HTTP_RELAY_TTL_SECONDS) return false;
   if (!/^[A-Za-z0-9_-]{24,128}$/.test(nonce) || !(await safeEqual(keyId, certificate.sessionKeyId))) return false;
   const digestInput = new Uint8Array(input.body.byteLength);
   digestInput.set(input.body);

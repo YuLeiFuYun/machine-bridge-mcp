@@ -2075,9 +2075,9 @@ if (relayContract.newCallReconnectGraceMs !== 15_000
     || relayContract.transportPingDispatchTimeoutMs <= relayContract.transportPongTimeoutMs
     || relayContract.daemonApplicationHeartbeatIntervalMs !== 25_000
     || relayContract.daemonApplicationHeartbeatTimeoutMs !== 75_000
-    || relayContract.httpFallbackPollIntervalMs !== 1_000
+    || relayContract.httpFallbackPollIntervalMs !== 5_000
     || relayContract.httpFallbackMinimumRequestIntervalMs !== 750
-    || relayContract.httpFallbackStandbyRetryIntervalMs !== 5_000
+    || relayContract.httpFallbackStandbyRetryIntervalMs !== 30_000
     || relayContract.httpFallbackFailureBackoffBaseMs !== 1_000
     || relayContract.httpFallbackFailureBackoffMaximumMs !== 5_000
     || relayContract.httpFallbackActivationDelayMs !== 1_500
