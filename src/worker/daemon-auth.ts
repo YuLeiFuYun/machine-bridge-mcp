@@ -90,7 +90,7 @@ export async function verifyDaemonPreflight(input: {
   const issuedAt = Number(input.headers.get("X-Bridge-Device-Time"));
   const signature = decodeBase64Url(input.headers.get("X-Bridge-Device-Signature") || "", 64);
   if (scheme !== DAEMON_PREFLIGHT_SCHEME || !signature) return null;
-  if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > DAEMON_PREFLIGHT_TTL_SECONDS) return null;
+  if (!Number.isSafeInteger(issuedAt) || now >= issuedAt + DAEMON_PREFLIGHT_TTL_SECONDS || issuedAt - now > DAEMON_PREFLIGHT_TTL_SECONDS) return null;
   if (!/^[A-Za-z0-9_-]{24,128}$/.test(nonce)) return null;
   if (!(await safeEqual(keyId, certificate.sessionKeyId))) return null;
   let transcript: string;
@@ -114,6 +114,7 @@ export async function consumeDaemonPreflightNonce(
   authorization: DaemonPreflightAuthorization,
   now = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
+  if (now >= authorization.expiresAt || now > authorization.certificateExpiresAt) return false;
   return consumeBoundedNonce(storage, {
     key: "daemon-preflight-nonces",
     nonce: authorization.nonce,

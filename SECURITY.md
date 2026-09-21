@@ -247,7 +247,7 @@ Destructive state removal validates marker files, selected workspace, known layo
 
 ## Relay and denial of service
 
-Only one verified daemon is active. Candidates have preflight, hello, readiness, and liveness deadlines. A candidate cannot displace the current daemon before authentication and end-to-end readiness.
+Only one verified daemon is active. Candidates have preflight, hello, readiness, and liveness deadlines. Ordinary replacement requires authentication and end-to-end readiness. A signed same-instance HTTPS takeover naming the exact incumbent connection generation may retire a zombie WebSocket after candidate preconditions pass; the replacement still cannot dispatch ordinary calls until end-to-end readiness is verified.
 
 Pending calls are bounded, socket-generation-bound, request-bound, timed out, cancellable, and recoverable only for the same verified daemon instance during the documented reconnect grace period. Worker transport/liveness invalidation is retryable and cannot by itself stop the daemon process; unknown protocol messages, authentication rejection, and identity/version mismatch remain fatal.
 
@@ -281,9 +281,9 @@ No logging policy prevents data from being returned to an authorized client that
 
 Machine Bridge cannot make arbitrary local executables safe, identify all sensitive data, guarantee cleanup across every power/storage/security failure, override MCP-host or endpoint-security policy, neutralize prompt injection, protect against root or a fully compromised same-user account, or manufacture production signing and governance controls.
 
-See [docs/AUDIT.md](docs/AUDIT.md) for historical findings and residual limitations.
+See [docs/AUDIT.md](docs/AUDIT.md) for current audit conclusions and residual limitations.
 ## Request-scoped Streamable HTTP delivery
 
 MCP `2026-07-28` response streams are request-scoped and non-resumable. SSE frames carry no event IDs, `GET /mcp` is not a recovery channel, and `Mcp-Session-Id` / `Last-Event-ID` do not create protocol-session or replay state. Closing the public response stream cancels that request through a random internal capability that carries neither Authorization nor DPoP credentials.
 
-A brief relay interruption may rebind an already-dispatched pending call only to the same verified daemon instance within the bounded reconnect grace period. That continuity is in memory and remains owned by the initiating HTTP response; it does not persist a terminal result, create client-visible replay state, or authorize retry after the response has ended. Remote compatibility for the declared older initialization dates is likewise stateless and does not restore the removed session model.
+A brief relay interruption may rebind an already-dispatched pending call only to the same verified daemon instance within the bounded reconnect grace period. That continuity is in memory and remains owned by the initiating HTTP response; it does not persist a terminal result, create client-visible replay state, or authorize retry after the response has ended. Both remote HTTP and stdio reject removed initialization and older protocol dates before tool dispatch; neither transport has an initialization compatibility adapter. Transport recovery does not restore the removed session model.
