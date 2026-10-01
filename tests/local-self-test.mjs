@@ -1447,7 +1447,8 @@ async function ciBootstrapSelfTest() {
   const hardenedNpmDownload = await readFile(new URL("../src/local/hardened-npm-download.mjs", import.meta.url), "utf8");
   if (!bootstrap.includes("prepareHardenedNpm")
       || !hardenedNpm.includes("npm-12.0.2.tgz") || !hardenedNpm.includes("sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9Ql")
-      || !hardenedNpm.includes("undici-6.28.0.tgz") || !hardenedNpm.includes("brace-expansion-5.0.9.tgz")
+      || !hardenedNpm.includes("undici-6.28.0.tgz")
+      || !hardenedNpm.includes("HARDENED_NPM_BRACE_EXPANSION_ARTIFACT") || !hardenedNpm.includes("brace-expansion-5.0.12.tgz")
       || !hardenedNpmDownload.includes("proxyAgentForHttp") || !hardenedNpmDownload.includes("status !== 200")
       || !hardenedNpmDownload.includes("downloadHardenedNpmArtifact")) {
     throw new Error("CI npm bootstrap lost its hardened exact tarballs, bounded proxy-aware download, SHA-512 integrity, or redirect rejection");

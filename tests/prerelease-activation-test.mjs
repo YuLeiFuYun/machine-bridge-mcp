@@ -202,19 +202,19 @@ try {
       surface: EXECUTION_SURFACE.managedJob,
       stateRoot: join(root, "managed-auth-state"),
       packageRoot: root,
-      runWrangler: async (args, options) => {
+      runCf: async (args, options) => {
         managedAuthCalls.push({ args, options });
-        return { code: 1, stdout: "", stderr: "not authenticated" };
+        return { code: 0, stdout: JSON.stringify({ authenticated: false }), stderr: "" };
       },
     });
   } catch (error) { managedAuthError = error; }
   assert(managedAuthError?.code === "worker_authentication_required"
       && managedAuthError?.sideEffectsStarted === false,
-  "managed-job activation did not fail closed on missing Wrangler authentication");
-  assert(JSON.stringify(managedAuthCalls.map(call => call.args)) === JSON.stringify([["whoami"]])
+  "managed-job activation did not fail closed on missing cf authentication");
+  assert(JSON.stringify(managedAuthCalls.map(call => call.args)) === JSON.stringify([["auth", "whoami"]])
       && managedAuthCalls[0]?.options?.capture === true
       && managedAuthCalls[0]?.options?.allowFailure === true,
-  "managed-job activation attempted interactive Wrangler login or used an uncaptured auth probe");
+  "managed-job activation attempted interactive cf login or used an uncaptured auth probe");
 
   const localAuthCalls = [];
   let localWhoamiCount = 0;
@@ -222,18 +222,18 @@ try {
     surface: "local",
     stateRoot: join(root, "local-auth-state"),
     packageRoot: root,
-    runWrangler: async (args, options) => {
+    runCf: async (args, options) => {
       localAuthCalls.push({ args, options });
-      if (args[0] === "login") return { code: 0, stdout: "", stderr: "" };
+      if (args[0] === "auth" && args[1] === "login") return { code: 0, stdout: "", stderr: "" };
       localWhoamiCount += 1;
       return localWhoamiCount === 1
         ? { code: 1, stdout: "", stderr: "not authenticated" }
-        : { code: 0, stdout: "authenticated", stderr: "" };
+        : { code: 0, stdout: JSON.stringify({ authenticated: true }), stderr: "" };
     },
   });
   assert(localAuth.authenticated === true && localAuth.login_performed === true,
     "ordinary local activation did not report verified preflight login");
-  assert(JSON.stringify(localAuthCalls.map(call => call.args)) === JSON.stringify([["whoami"], ["login"], ["whoami"]])
+  assert(JSON.stringify(localAuthCalls.map(call => call.args.slice(0, 2))) === JSON.stringify([["auth", "whoami"], ["auth", "login"], ["auth", "whoami"]])
       && localAuthCalls[1]?.options?.capture !== true,
     "ordinary local activation did not complete interactive login before the verification recheck");
 
@@ -244,16 +244,16 @@ try {
       surface: "local",
       stateRoot: join(root, "failed-local-auth-state"),
       packageRoot: root,
-      runWrangler: async (args) => {
+      runCf: async (args) => {
         failedLocalCalls.push(args);
-        return { code: args[0] === "login" ? 0 : 1, stdout: "", stderr: "not authenticated" };
+        return { code: args[0] === "auth" && args[1] === "login" ? 0 : 1, stdout: "", stderr: "not authenticated" };
       },
     });
   } catch (error) { localAuthFailure = error; }
   assert(localAuthFailure?.code === "worker_authentication_required"
       && localAuthFailure?.sideEffectsStarted === false
-      && JSON.stringify(failedLocalCalls) === JSON.stringify([["whoami"], ["login"], ["whoami"]]),
-    "ordinary local activation accepted an unsuccessful Wrangler-login recheck");
+      && JSON.stringify(failedLocalCalls.map(args => args.slice(0, 2))) === JSON.stringify([["auth", "whoami"], ["auth", "login"], ["auth", "whoami"]]),
+    "ordinary local activation accepted an unsuccessful cf-login recheck");
   const recoveryRoot = join(root, "recovery-runtime");
   const workspace = join(recoveryRoot, "workspace");
   const stateRoot = join(recoveryRoot, "state");

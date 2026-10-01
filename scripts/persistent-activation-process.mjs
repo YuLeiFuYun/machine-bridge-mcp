@@ -1,6 +1,7 @@
 import { normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
 import { EXECUTION_SURFACE, executionSurface } from "../src/local/execution-surface.mjs";
-import { runWrangler as defaultRunWrangler } from "../src/local/shell.mjs";
+import { runCf as defaultRunCf } from "../src/local/shell.mjs";
+import { ensureCfAuthenticated } from "../src/local/cf-authentication.mjs";
 
 export function assertPersistentActivationExecutionSurface(environment = process.env) {
   const surface = executionSurface(environment);
@@ -27,31 +28,18 @@ export function persistentActivationSpawnOptions({ cwd, env = process.env } = {}
 }
 
 export async function preflightPersistentActivationWorkerAuth({
-  surface = "local",
-  stateRoot,
-  packageRoot,
-  npmCli,
-  env = process.env,
-  runWrangler = defaultRunWrangler,
+  surface = "local", stateRoot, packageRoot, npmCli, env = process.env, runCf = defaultRunCf,
 } = {}) {
   if (surface !== "local" && surface !== EXECUTION_SURFACE.managedJob) {
-    throw new TypeError("persistent activation Wrangler preflight requires a local or managed-job execution surface");
+    throw new TypeError("persistent activation cf preflight requires a local or managed-job execution surface");
   }
-  if (typeof stateRoot !== "string" || !stateRoot) throw new TypeError("persistent activation Wrangler preflight requires stateRoot");
-  if (typeof packageRoot !== "string" || !packageRoot) throw new TypeError("persistent activation Wrangler preflight requires packageRoot");
-  if (typeof runWrangler !== "function") throw new TypeError("persistent activation Wrangler preflight requires runWrangler");
-  const shared = { stateRoot, packageRoot, npmCli, env };
-  const whoami = await runWrangler(["whoami"], { ...shared, capture: true, allowFailure: true });
-  if (whoami?.code === 0) return { authenticated: true, login_performed: false };
-  if (surface === EXECUTION_SURFACE.managedJob) throw workerAuthenticationRequiredError(
-    "persistent activation cannot start interactive Wrangler login from a detached managed job; authenticate Cloudflare Wrangler in an ordinary owner terminal before retrying",
-  );
-  await runWrangler(["login"], shared);
-  const verified = await runWrangler(["whoami"], { ...shared, capture: true, allowFailure: true });
-  if (verified?.code !== 0) throw workerAuthenticationRequiredError(
-    "Cloudflare Wrangler login completed without a verifiable authenticated session; the persistent activation was not started",
-  );
-  return { authenticated: true, login_performed: true };
+  if (typeof stateRoot !== "string" || !stateRoot) throw new TypeError("persistent activation cf preflight requires stateRoot");
+  if (typeof packageRoot !== "string" || !packageRoot) throw new TypeError("persistent activation cf preflight requires packageRoot");
+  if (typeof runCf !== "function") throw new TypeError("persistent activation cf preflight requires runCf");
+  const auth = await ensureCfAuthenticated({
+    runCf, shared: { stateRoot, packageRoot, npmCli, env }, interactive: surface === "local",
+  });
+  return { authenticated: true, login_performed: auth.login_performed };
 }
 
 export function persistentCandidateFailureMessage(output, { cli, stateRoot, previousRuntime = null } = {}) {
@@ -91,11 +79,4 @@ export function validateActivationRecoveryPayload(value) {
   } catch (error) {
     throw new Error(`persistent ${String(error?.message || "activation recovery metadata is invalid")}`, { cause: error });
   }
-}
-
-function workerAuthenticationRequiredError(message) {
-  const error = new Error(message);
-  error.code = "worker_authentication_required";
-  error.sideEffectsStarted = false;
-  return error;
 }

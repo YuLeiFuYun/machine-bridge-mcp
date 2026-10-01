@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runWrangler } from "./shell.mjs";
+import { runCf } from "./shell.mjs";
+import { ensureCfAuthenticated, cfDeploymentAccount } from "./cf-authentication.mjs";
+import { withCfProject } from "./cf-project.mjs";
 import { saveState } from "./state.mjs";
 import { packageRoot } from "./package-identity.mjs";
 import { withWorkerSecretsFile } from "./worker-secret-file.mjs";
-import { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs";
+import { workerDeploymentFingerprint, workerDeploymentSourceSnapshot } from "./worker-deployment-fingerprint.mjs";
 export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs";
 import {
   normalizeWorkerOrigin,
@@ -15,22 +17,15 @@ import {
 
 const DEFAULT_DEPLOYMENT_HEALTH_ATTEMPTS = 20;
 
-async function ensureWranglerAuthenticated({ args, runWranglerFn, stateRoot, logger }) {
-  const whoami = await runWranglerFn(["whoami"], { capture: true, allowFailure: true, stateRoot });
-  if (whoami.code === 0) return;
-  if (args.json) throw workerAuthenticationRequiredError();
-  logger.info?.("Wrangler is not logged in; opening Cloudflare login");
-  await runWranglerFn(["login"], { stateRoot });
-  const verified = await runWranglerFn(["whoami"], { capture: true, allowFailure: true, stateRoot });
-  if (verified.code !== 0) throw workerAuthenticationRequiredError();
-}
-
 export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const logger = options.logger || console;
   const expectedVersion = options.expectedVersion || currentPackageVersion(options.packageRoot || packageRoot);
-  const desiredHash = workerDeploymentFingerprint(state, { packageRoot: options.packageRoot || packageRoot });
-  const runWranglerFn = options.runWrangler || runWrangler;
-  const wranglerStateRoot = options.stateRoot || state.paths?.stateRoot;
+  const sourceSnapshot = workerDeploymentSourceSnapshot(options.packageRoot || packageRoot);
+  const desiredHash = workerDeploymentFingerprint(state, { sourceSnapshot });
+  const cfOptions = cfDeploymentOptions(state, options);
+  const runCfFn = cfOptions.runCf;
+  const cfStateRoot = cfOptions.stateRoot;
+  const withCfProjectFn = cfOptions.withCfProject;
   const saveStateFn = options.saveState || saveState;
   const retryHealthFn = options.retryHealth || retryWorkerHealth;
   const withSecretsFileFn = options.withSecretsFile || withWorkerSecretsFile;
@@ -58,23 +53,26 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
     logger.warn?.("Recorded Worker is stale; redeploying the same Worker", { reason: workerHealthUserReason(health.error) });
   }
 
-  logger.info?.("Checking Cloudflare Wrangler login");
-  await ensureWranglerAuthenticated({ args, runWranglerFn, stateRoot: wranglerStateRoot, logger });
-
+  logger.info?.("Checking Cloudflare cf login");
+  const environment = cfOptions.env;
+  const auth = await ensureCfAuthenticated({
+    runCf: runCfFn, shared: { stateRoot: cfStateRoot, packageRoot: options.packageRoot || packageRoot, env: environment },
+    interactive: !args.json, logger,
+  });
+  const accountId = cfDeploymentAccount(auth, environment);
   logger.info?.("Deploying Cloudflare Worker");
-  const deploy = await withSecretsFileFn(state, secretFile => runWranglerFn([
-    "deploy",
-    "--name", state.worker.name,
-    "--minify",
-    "--keep-vars",
-    "--secrets-file", secretFile,
-  ], { capture: true, stateRoot: wranglerStateRoot }));
+  const deploy = await withCfProjectFn(sourceSnapshot, state.worker.name,
+    project => withSecretsFileFn(state, secretFile => runCfFn([
+      "deploy", "--prebuilt", "--secrets-file", secretFile,
+    ], { ...project, capture: true, hardTimeout: true, stateRoot: cfStateRoot, packageRoot: options.packageRoot || packageRoot })),
+    { runCf: runCfFn, stateRoot: cfStateRoot, packageRoot: options.packageRoot || packageRoot,
+      env: { ...environment, CLOUDFLARE_ACCOUNT_ID: accountId } });
 
   const detectedUrl = extractWorkerUrl(deploy.stdout, state.worker.name) || extractWorkerUrl(deploy.stderr, state.worker.name);
   const recordedUrl = workerUrlMatchesName(state.worker.url, state.worker.name) ? state.worker.url : "";
   const workerUrl = detectedUrl || recordedUrl;
   if (!workerUrl) {
-    throw new Error("Worker upload returned success, but Wrangler output contained no workers.dev URL and no matching recorded URL exists. The deployment fingerprint was not saved; rerun with --verbose and inspect the Wrangler output before retrying.");
+    throw new Error("Worker upload returned success, but cf output contained no workers.dev URL and no matching recorded URL exists. The deployment fingerprint was not saved; rerun with --verbose and inspect the cf output before retrying.");
   }
 
   state.worker.url = workerUrl.replace(/\/+$/, "");
@@ -101,7 +99,7 @@ export function extractWorkerUrl(text = "", workerName = "") {
     try {
       return normalizeWorkerOrigin(candidate, workerName);
     } catch {
-      // Wrangler output may contain unrelated links; only a canonical matching workers.dev origin is deployment evidence.
+      // cf output may contain unrelated links; only a canonical matching workers.dev origin is deployment evidence.
     }
   }
   return "";
@@ -149,16 +147,12 @@ function workerVerificationGuidance(reason) {
   return "Run machine-mcp doctor and inspect the health endpoint before forcing another deployment.";
 }
 
-function workerAuthenticationRequiredError() {
-  const error = new Error(
-    "Cloudflare Wrangler is not authenticated; JSON mode will not start an interactive login. Complete Wrangler authentication in an ordinary owner terminal before retrying.",
-  );
-  error.code = "worker_authentication_required";
-  error.sideEffectsStarted = false;
-  return error;
-}
-
 function currentPackageVersion(root) {
   const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   return String(pkg.version);
+}
+
+function cfDeploymentOptions(state, options) {
+  return { runCf: options.runCf || runCf, withCfProject: options.withCfProject || withCfProject,
+    stateRoot: options.stateRoot || state.paths?.stateRoot, env: options.env || process.env };
 }

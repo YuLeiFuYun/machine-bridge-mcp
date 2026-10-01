@@ -40,6 +40,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "ci-bootstrap:test",
   "consumer-package-security:test",
   "wrangler-toolchain:test",
+  "cf-network:test",
   "worker-types-generator:test",
   "shell:test",
   "architecture:test",

@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.196",
+  "version": "3.0.0-beta.197",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -86,7 +86,9 @@
     "docs/THREAT_MODEL.md",
     "docs/TOOL_REFERENCE.md",
     "docs/UPGRADING.md",
-    "LICENSE"
+    "LICENSE",
+    "cloudflare.config.ts",
+    "wrangler.config.ts"
   ],
   "scripts": {
     "start": "node bin/machine-mcp.mjs start",
@@ -262,7 +264,8 @@
     "browser-pairing-launch:test": "node tests/browser-pairing-launch-test.mjs",
     "browser-cli-pairing:test": "node tests/browser-cli-pairing-test.mjs",
     "resource-admission:test": "node tests/resource-admission-test.mjs",
-    "resource-build-root:test": "node tests/resource-build-root-test.mjs"
+    "resource-build-root:test": "node tests/resource-build-root-test.mjs",
+    "cf-network:test": "node tests/cf-network-compatibility-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
@@ -275,7 +278,9 @@
     "fast-check": "4.10.0",
     "globals": "17.11.0",
     "typescript": "7.0.2",
-    "wrangler": "4.131.2"
+    "wrangler": "4.144.0",
+    "cf": "1.0.0-beta.5",
+    "undici": "7.29.1"
   },
   "keywords": [
     "mcp",
@@ -307,7 +312,7 @@
     "esbuild@0.28.1": true,
     "fsevents": false,
     "sharp@0.35.4": true,
-    "workerd@1.20260911.1": true
+    "workerd@1.20260926.1": true
   },
   "packageManager": "npm@12.0.2",
   "devEngines": {
@@ -324,7 +329,7 @@
   },
   "overrides": {
     "sharp": "0.35.4",
-    "brace-expansion": "5.0.9",
-    "undici": "7.29.0"
+    "brace-expansion": "5.0.12",
+    "undici": "7.29.1"
   }
 }

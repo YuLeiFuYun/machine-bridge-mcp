@@ -8,7 +8,7 @@ import {
 } from "./private-toolchain-integrity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
-const TOOLCHAIN_SCHEMA_VERSION = 1;
+const TOOLCHAIN_SCHEMA_VERSION = 2;
 const TOOLCHAIN_MARKER = ".machine-bridge-mcp-toolchain.json";
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
 const MAX_TREE_NODES = 20_000;
@@ -27,7 +27,7 @@ export async function verifyWranglerToolchain(descriptor, execute, required = fa
     const versionResult = await execute(["--version"]);
     if (Number(String(versionResult.stdout).trim().split(".")[0]) < 12) throw new Error("Wrangler toolchain requires npm 12 or newer");
     const treeResult = await execute(
-      ["ls", "wrangler", "undici", "sharp", "--workspaces=false", "--all", "--json"],
+      ["ls", "cf", "wrangler", "undici", "--workspaces=false", "--all", "--json"],
       true,
     );
     if (treeResult.code === 124) {
@@ -68,9 +68,9 @@ export function wranglerToolchainMarkerMatches(marker, descriptor) {
   return Boolean(marker)
     && marker.schema_version === TOOLCHAIN_SCHEMA_VERSION
     && marker.digest === descriptor.digest
+    && marker.cf === descriptor.versions.cf
     && marker.wrangler === descriptor.versions.wrangler
     && marker.undici === descriptor.versions.undici
-    && marker.sharp === descriptor.versions.sharp
     && Number.isFinite(Date.parse(String(marker.audited_at || "")));
 }
 
@@ -80,9 +80,9 @@ export function writeWranglerToolchainMarker(descriptor, nowMs) {
   replaceFileAtomicallySync(path.join(descriptor.root, TOOLCHAIN_MARKER), `${JSON.stringify({
     schema_version: TOOLCHAIN_SCHEMA_VERSION,
     digest: descriptor.digest,
+    cf: descriptor.versions.cf,
     wrangler: descriptor.versions.wrangler,
     undici: descriptor.versions.undici,
-    sharp: descriptor.versions.sharp,
     audited_at: auditedAt,
   }, null, 2)}\n`, { mode: 0o600 });
 }
@@ -90,7 +90,7 @@ export function writeWranglerToolchainMarker(descriptor, nowMs) {
 function validateInstalledTree(tree, versions) {
   if (!tree || typeof tree !== "object" || Array.isArray(tree)) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree is invalid");
   if (Array.isArray(tree.problems) && tree.problems.length) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree contains invalid edges");
-  const found = new Map([["wrangler", []], ["undici", []], ["sharp", []]]);
+  const found = new Map([["cf", []], ["wrangler", []], ["undici", []]]);
   const counter = { value: 0 };
   visitDependencyTree(tree.dependencies, found, counter, 0);
   for (const [name, expected] of Object.entries(versions)) {

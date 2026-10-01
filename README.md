@@ -119,7 +119,9 @@ Run the CLI in the workspace to expose:
 machine-mcp --workspace /path/to/project
 ```
 
-On first remote start, Machine Bridge creates workspace-scoped state, signs in to Wrangler when needed, deploys one stable Worker, creates the initial `owner` account, installs user-level autostart unless disabled, starts the outbound daemon connection, and prints the MCP URL and one-time owner password.
+On first remote start, Machine Bridge creates workspace-scoped state, signs in with `cf auth login --scopes account-settings.read user-details.read workers-scripts.read workers-scripts.write workers-scripts.bind workers-routes.read workers-routes.write workers-observability.read workers-observability.write offline` when needed, builds and deploys one stable Worker through `cf`, creates the initial `owner` account, installs user-level autostart unless disabled, starts the outbound daemon connection, and prints the MCP URL and one-time owner password.
+
+Machine Bridge, including Worker deployment, requires Node.js 26 or later. `cf` has its own login, separate from Wrangler. Before unattended activation, complete `cf auth login` in an ordinary owner terminal; for multiple Cloudflare accounts, set `CLOUDFLARE_ACCOUNT_ID` to the existing Worker's account. The pinned deployment tools stay in Machine Bridge's private toolchain, outside the consumer runtime dependencies. Native `cloudflare.config.ts` controls deployment; the retained `wrangler.jsonc` is used for deterministic runtime type generation and legacy maintenance commands.
 
 Use the printed endpoint in the hosted client:
 

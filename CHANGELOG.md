@@ -1,13 +1,15 @@
 # Changelog
 
-## 3.0.0-beta.196 - 2026-09-21
+## 3.0.0-beta.197 - 2026-09-30
 
-- Stop verified-WebSocket operation from maintaining a continuously polled HTTPS standby relay; HTTPS fallback now starts only during startup grace, liveness degradation, or actual WebSocket loss, and verified WebSocket recovery stops it.
-- Raise ready HTTPS fallback idle polling from one second to five seconds and standby retry from five seconds to thirty seconds while preserving the 750 ms minimum path for handshake and queued outbound work, reducing idle request and replay-nonce traffic. Scenario tests separately count recurring Durable Object alarm mutations; these are not a whole-account billing guarantee.
-- Add regression coverage for healthy-day zero fallback polling, direct HTTP and WebSocket-preflight replay-nonce write accounting, daily request/write budgeting, exact-generation failover, late-ready recovery races, and repeated handover behavior.
-- Enforce one monotonic HTTP retry deadline across queued work and lifecycle transitions, honor bounded 429/503 `Retry-After`, and reject exact-expiry authentication and delayed preflight consumption without nonce writes.
-- Correct stale initialization-compatibility and subscription documentation to match the current-only protocol implementation.
-- Independent review removes obsolete `standbyDelayMs` test fixtures and synchronizes README, architecture, operations, logging, testing, privacy, and audit documentation with the quota-bounded fallback behavior and the absence of a checked-in Workers KV binding.
+- Pin source tooling and the integrity-verified hardened npm bootstrap to brace-expansion 5.0.12, fixing the newly disclosed parser denial-of-service advisories. Preserve clean global consumer installs without postinstall hooks; declare the audited private Wrangler build provider and supply its executable runner before native cf builds.
+
+- Migrate Worker builds and deployments to native cf configuration and prebuilt artifacts; preserve the Worker name, SQLite Durable Object export, rate-limit namespaces, existing variables, and secrets.
+- Require structured cf authentication before unattended activation and bind deployment fingerprints to the exact private source snapshot and pinned toolchain.
+
+- Add an isolated, exact cf deployment toolchain with a compatible Wrangler builder and patched Undici.
+- Verify the deterministic compatibility artifact for cf beta.5 before its network factory runs; reject unknown or tampered bundle bytes.
+- Synchronize the package, Worker, and browser extension prerelease version declarations.
 
 ## Historical releases
 

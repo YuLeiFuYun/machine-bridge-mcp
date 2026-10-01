@@ -11,29 +11,41 @@ const REQUIRED_DEPLOYMENT_PATHS = Object.freeze([
   "src/worker",
   "src/shared",
   "wrangler.jsonc",
+  "cloudflare.config.ts",
+  "wrangler.config.ts",
+  "src/local/wrangler-toolchain/package.json",
+  "src/local/wrangler-toolchain/package-lock.json",
   "tsconfig.json",
 ]);
 
 export function workerDeploymentFingerprint(state, options = {}) {
-  const source = workerDeployHashFiles(options.packageRoot || packageRoot);
+  const source = options.sourceSnapshot || workerDeploymentSourceSnapshot(options.packageRoot || packageRoot);
   const keyMaterial = [
     publicDeviceJwkJson(deploymentDeviceIdentity(state)),
     String(state.worker.oauthTokenVersion || ""),
   ].join("\0");
   const fingerprint = createHmac("sha256", keyMaterial);
-  addFingerprintField(fingerprint, "mbm-worker-deploy-v5");
+  addFingerprintField(fingerprint, "mbm-worker-deploy-cf-v6");
   addFingerprintField(fingerprint, String(state.worker.name || ""));
   addFingerprintField(fingerprint, String(source.files.length));
   for (const file of source.files) {
-    addFingerprintField(fingerprint, path.relative(source.root, file).replaceAll(path.sep, "/"));
-    addFingerprintField(fingerprint, readBoundedRegularFileSync(
-      file,
-      MAX_WORKER_DEPLOY_SOURCE_BYTES,
-      "Worker deployment source",
-      { verifyPathIdentity: true, rejectMultipleLinks: true },
-    ));
+    addFingerprintField(fingerprint, file.path);
+    addFingerprintField(fingerprint, file.content);
   }
   return fingerprint.digest("hex");
+}
+
+export function workerDeploymentSourceSnapshot(root = packageRoot) {
+  const source = workerDeployHashFiles(root);
+  let totalBytes = 0;
+  const files = source.files.map(file => {
+    const content = readBoundedRegularFileSync(file, MAX_WORKER_DEPLOY_SOURCE_BYTES,
+      "Worker deployment source", { verifyPathIdentity: true, rejectMultipleLinks: true });
+    totalBytes += content.length;
+    if (totalBytes > 64 * 1024 * 1024) throw new Error("Worker deployment source exceeds 64 MiB");
+    return Object.freeze({ path: path.relative(source.root, file).replaceAll(path.sep, "/"), content });
+  });
+  return Object.freeze({ files: Object.freeze(files) });
 }
 
 function addFingerprintField(hash, value) {
@@ -48,6 +60,7 @@ function workerDeployHashFiles(root) {
   const canonicalRoot = requireRealDeploymentRoot(root);
   const files = [];
   for (const item of REQUIRED_DEPLOYMENT_PATHS) collectRequiredHashPath(canonicalRoot, item, files);
+  if (files.length > 4096) throw new Error("Worker deployment source exceeds 4096 files");
   return Object.freeze({ root: canonicalRoot, files: files.sort() });
 }
 

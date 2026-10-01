@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ensureHardenedNpm,
+  HARDENED_NPM_ARTIFACTS,
+  HARDENED_NPM_BRACE_EXPANSION_ARTIFACT,
   hardenedNpmIdentity,
   prepareHardenedNpm,
   verifyHardenedNpm,
@@ -23,7 +25,7 @@ try {
   const definitions = [
     { name: "npm", version: "12.0.2", maximumBytes: 2 * 1024 * 1024 },
     { name: "undici", version: "6.28.0", maximumBytes: 512 * 1024 },
-    { name: "brace-expansion", version: "5.0.9", maximumBytes: 512 * 1024 },
+    { name: HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.name, version: HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.version, maximumBytes: 512 * 1024 },
   ];
   const bytesByName = new Map();
   const artifacts = definitions.map((definition) => {
@@ -67,7 +69,11 @@ try {
   });
   assert.equal(prepared.version, "12.0.2");
   assert.equal(prepared.undiciVersion, "6.28.0");
-  assert.equal(prepared.braceExpansionVersion, "5.0.9");
+  assert.equal(prepared.braceExpansionVersion, HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.version);
+  assert.equal(HARDENED_NPM_ARTIFACTS[2], HARDENED_NPM_BRACE_EXPANSION_ARTIFACT);
+  assert.equal(HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.url, "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz");
+  assert.equal(HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.integrity, "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==");
+  assert.equal(HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.maximumBytes, 1024 * 1024);
   assert.equal(verifyHardenedNpm(preparedRoot, { artifacts }).cli, prepared.cli);
 
   let downloads = 0;

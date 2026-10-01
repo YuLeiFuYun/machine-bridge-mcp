@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from "node:zlib";
 import { parseWorkerTypesArguments, runWranglerTypes } from "../scripts/generate-worker-types.mjs";
-import { runWorkerDryRun, WRANGLER_DRY_RUN_COMPLETION_MARKER } from "../scripts/run-worker-dry-run.mjs";
+import { runCompletedWranglerCommand } from "../scripts/wrangler-command-lifecycle.mjs";
+
+const WRANGLER_DRY_RUN_COMPLETION_MARKER = "--dry-run: exiting now.";
+const runWranglerFixture = options => runCompletedWranglerCommand({
+  ...options, args: ["deploy", "--dry-run"], label: "wrangler deploy --dry-run",
+  completionMarker: WRANGLER_DRY_RUN_COMPLETION_MARKER,
+});
 
 const root = await mkdtemp(join(tmpdir(), "machine-bridge-wrangler-lifecycle-"));
 const fixture = join(root, "wrangler-fixture.mjs");
@@ -144,13 +150,13 @@ else {
   assert.throws(() => parseWorkerTypesArguments(["--unexpected"]), /unknown worker-types option/);
 
   const normalDryRun = capture();
-  await runWorkerDryRun(commandOptions("normal", normalDryRun));
+  await runWranglerFixture(commandOptions("normal", normalDryRun));
   assert(normalDryRun.stdout.includes(WRANGLER_DRY_RUN_COMPLETION_MARKER), "normal Wrangler dry-run output was not forwarded");
   assert(!normalDryRun.stderr.includes("did not exit"), "normal Wrangler dry-run exit was misclassified as a cleanup hang");
 
   const racedNormalDryRun = capture();
   const cleanupSignals = [];
-  await runWorkerDryRun(commandOptions("normal-cleanup-race", racedNormalDryRun, {
+  await runWranglerFixture(commandOptions("normal-cleanup-race", racedNormalDryRun, {
     completionExitGraceMs: 20,
     terminationGraceMs: 500,
     killChild(child, signal) {
@@ -164,7 +170,7 @@ else {
 
   const racedForceDryRun = capture();
   const forceRaceSignals = [];
-  await runWorkerDryRun(commandOptions("normal-cleanup-race", racedForceDryRun, {
+  await runWranglerFixture(commandOptions("normal-cleanup-race", racedForceDryRun, {
     completionExitGraceMs: 20,
     terminationGraceMs: 40,
     forceSettlementGraceMs: 500,
@@ -177,11 +183,11 @@ else {
   assert(!racedForceDryRun.stderr.includes("did not exit"), "a false force-kill request result overrode the later observed zero exit");
 
   const hangingDryRun = capture();
-  await runWorkerDryRun(commandOptions("hang-after", hangingDryRun));
+  await runWranglerFixture(commandOptions("hang-after", hangingDryRun));
   assert(hangingDryRun.stderr.includes("wrangler deploy --dry-run completed but did not exit", "completed Wrangler dry-run hang was not diagnosed or bounded"));
 
-  await assert.rejects(runWorkerDryRun(commandOptions("fail", capture())), /exit code 7/);
-  await assert.rejects(runWorkerDryRun(commandOptions("hang-before", capture(), { timeoutMs: 80 })), /wrangler deploy --dry-run timed out after 80ms/);
+  await assert.rejects(runWranglerFixture(commandOptions("fail", capture())), /exit code 7/);
+  await assert.rejects(runWranglerFixture(commandOptions("hang-before", capture(), { timeoutMs: 80 })), /wrangler deploy --dry-run timed out after 80ms/);
 } finally {
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }

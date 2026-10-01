@@ -5,6 +5,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { applyCfNetworkCompatibility, CF_NETWORK_COMPATIBILITY } from "./cf-network-compatibility.mjs";
 import { ensureHardenedNpm } from "./hardened-npm.mjs";
 import { withOwnerStateLock } from "./owner-state-lock.mjs";
 import { nestedNpmEnvironment } from "./npm-environment.mjs";
@@ -87,6 +88,19 @@ export async function ensureWranglerToolchain(options = {}) {
     timeoutMs: options.operationLockTimeoutMs,
   });
 }
+export async function ensureCloudflareToolchain(options = {}) {
+  const root = await ensureWranglerToolchain(options);
+  const descriptor = wranglerToolchainDescriptor(options);
+  return withToolchainOperationLock(descriptor.stateRoot, () => withOwnerStateLock(
+    path.dirname(root),
+    async () => { applyCfNetworkCompatibility(root); return root; },
+    {
+      purpose: "wrangler-toolchain", fileName: TOOLCHAIN_LOCK, label: "Cloudflare toolchain",
+      timeoutMs: options.lockTimeoutMs,
+    },
+  ), { controlRoot: options.controlRoot, timeoutMs: options.operationLockTimeoutMs });
+}
+
 export function wranglerToolchainDescriptor(options = {}) {
   const packageRoot = path.resolve(String(options.packageRoot || defaultPackageRoot));
   const stateRoot = path.resolve(String(options.stateRoot || defaultStateRoot()));
@@ -102,7 +116,7 @@ export function wranglerToolchainDescriptor(options = {}) {
   const manifest = parseJsonObject(packageBytes, "Wrangler toolchain package manifest");
   const lock = parseJsonObject(lockBytes, "Wrangler toolchain lockfile");
   validateTemplate(manifest, lock);
-  const digest = createHash("sha256").update(packageBytes).update("\0").update(lockBytes).digest("hex");
+  const digest = createHash("sha256").update(packageBytes).update("\0").update(lockBytes).update("\0").update(CF_NETWORK_COMPATIBILITY.patchedSha256).digest("hex");
   const root = path.join(stateRoot, TOOLCHAIN_DIRECTORY, `wrangler-${manifest.dependencies.wrangler}-${digest.slice(0, 16)}`);
   return Object.freeze({
     packageRoot,
@@ -113,9 +127,9 @@ export function wranglerToolchainDescriptor(options = {}) {
     packageBytes,
     lockBytes,
     versions: Object.freeze({
+      cf: String(manifest.dependencies.cf),
       wrangler: String(manifest.dependencies.wrangler),
       undici: String(manifest.overrides.undici),
-      sharp: String(manifest.overrides.sharp),
     }),
   });
 }
@@ -152,24 +166,26 @@ async function runNpm(npmCli, args, cwd, runCommand, options, timeoutMs, allowFa
 }
 
 function validateTemplate(manifest, lock) {
-  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.131.2") {
-    throw new Error("Wrangler toolchain manifest lost its exact private Wrangler dependency");
+  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.144.0"
+      || manifest.dependencies?.cf !== CF_NETWORK_COMPATIBILITY.version
+      || manifest.dependencies?.undici !== CF_NETWORK_COMPATIBILITY.undici) {
+    throw new Error("Cloudflare toolchain manifest lost its exact private dependencies");
   }
-  if (manifest.overrides?.undici !== "7.29.0" || manifest.overrides?.sharp !== "0.35.4") {
-    throw new Error("Wrangler toolchain manifest lost its security overrides");
+  if (manifest.overrides?.undici !== CF_NETWORK_COMPATIBILITY.undici
+      || Object.keys(manifest.overrides).length !== 1) {
+    throw new Error("Cloudflare toolchain manifest lost its security override");
   }
-  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.4": true, "workerd@1.20260911.1": true };
+  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "workerd@1.20260926.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
-    throw new Error("Wrangler toolchain manifest lost its exact install-script policy");
+    throw new Error("Cloudflare toolchain manifest lost its exact install-script policy");
   }
-  if (lock.lockfileVersion !== 3
-      || lock.packages?.["node_modules/wrangler"]?.version !== manifest.dependencies.wrangler
-      || lock.packages?.["node_modules/undici"]?.version !== manifest.overrides.undici
-      || lock.packages?.["node_modules/sharp"]?.version !== manifest.overrides.sharp) {
-    throw new Error("Wrangler toolchain lockfile does not match the exact security contract");
+  if (lock.lockfileVersion !== 3) throw new Error("Cloudflare toolchain requires lockfile version 3");
+  for (const [name, version] of Object.entries(manifest.dependencies)) {
+    if (lock.packages?.[`node_modules/${name}`]?.version !== version) {
+      throw new Error("Cloudflare toolchain lockfile does not match the exact security contract");
+    }
   }
 }
-
 function parseJsonObject(bytes, label) {
   let value;
   try { value = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new Error(`${label} is not valid JSON`); }

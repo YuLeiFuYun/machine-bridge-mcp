@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { CF_NETWORK_COMPATIBILITY } from "../src/local/cf-network-compatibility.mjs";
 import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 import {
+  ensureCloudflareToolchain,
   ensureWranglerToolchain,
   wranglerToolchainDescriptor,
 } from "../src/local/wrangler-toolchain.mjs";
@@ -123,7 +126,7 @@ try {
       runCommand: vulnerable.run,
       now: () => nowMs,
     }),
-    /undici versions 7\.28\.0 do not match 7\.29\.0/,
+    /undici versions 7\.28\.0 do not match 7\.29\.1/,
   );
 
   const invalidTreeState = toolchainState(root, "invalid-tree-state");
@@ -167,7 +170,17 @@ try {
     /dependency audit failed.*high=1/,
   );
 
-  console.log("Wrangler private toolchain lifecycle test ok");
+  const cfFake = createFakeNpmRunner();
+  const cfOptions = { ...options, stateRoot: toolchainState(root, "cf-state"), runCommand: cfFake.run };
+  const [cfFirst, cfSecond] = await Promise.all([ensureCloudflareToolchain(cfOptions), ensureCloudflareToolchain(cfOptions)]);
+  assert.equal(cfFirst, cfSecond);
+  assert.equal(cfFake.count("ci"), 1, "concurrent cf initialization installed more than once");
+  assert.equal(cfFake.count("signatures"), 1, "cf execution was permitted before signature verification");
+  const cfBundle = join(cfFirst, "node_modules", "cf", CF_NETWORK_COMPATIBILITY.bundle);
+  writeFileSync(cfBundle, "tampered cf bundle");
+  await assert.rejects(ensureCloudflareToolchain(cfOptions), /pinned upstream or patched artifact/);
+  assert.equal(cfFake.count("ci"), 1, "unknown cf bytes triggered destructive reconstruction");
+  console.log("Cloudflare private toolchain lifecycle and tamper test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
@@ -214,8 +227,9 @@ async function withForeignMaintenanceLock(stateRoot, callback) {
 function createFakeNpmRunner(options = {}) {
   const calls = [];
   const versions = {
-    wrangler: options.wrangler || "4.131.2",
-    undici: options.undici || "7.29.0",
+    cf: options.cf || "1.0.0-beta.5",
+    wrangler: options.wrangler || "4.144.0",
+    undici: options.undici || "7.29.1",
     sharp: options.sharp || "0.35.4",
   };
   return {
@@ -234,6 +248,12 @@ function createFakeNpmRunner(options = {}) {
           const directory = join(runOptions.cwd, "node_modules", name);
           mkdirSync(directory, { recursive: true });
           writeFileSync(join(directory, "package.json"), `${JSON.stringify({ name, version })}\n`);
+          if (name === "cf") {
+            const upstreamRoot = dirname(createRequire(import.meta.url).resolve("cf/package.json"));
+            const bundle = join(directory, CF_NETWORK_COMPATIBILITY.bundle);
+            mkdirSync(dirname(bundle), { recursive: true });
+            writeFileSync(bundle, readFileSync(join(upstreamRoot, CF_NETWORK_COMPATIBILITY.bundle)), { mode: 0o600 });
+          }
         }
         return result(0, "installed\n");
       }
@@ -242,6 +262,7 @@ function createFakeNpmRunner(options = {}) {
         return result(Number(options.lsCode || 0), JSON.stringify({
           ...(options.lsProblems ? { problems: options.lsProblems } : {}),
           dependencies: {
+            cf: { version: versions.cf },
             wrangler: {
               version: versions.wrangler,
               dependencies: {
