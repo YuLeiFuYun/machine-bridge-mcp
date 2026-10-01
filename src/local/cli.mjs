@@ -19,7 +19,8 @@ export { resolvePolicy } from "./cli-policy.mjs";
 export { parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.mjs";
 import { formatPolicySummary, printMcpConnection, printStartJson } from "./cli-ready-output.mjs";
-import { runExecutable, runWrangler } from "./shell.mjs";
+import { runCf, runExecutable, runWrangler } from "./shell.mjs";
+import { cfAuthenticationResult } from "./cf-authentication.mjs";
 import { runFullAccessTest } from "./full-access-test.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { stopOwnedPlatformService } from "./service-ownership.mjs";
@@ -488,10 +489,11 @@ async function doctorCommand(args) {
   const npm = await runExecutable(npmCommand.file, npmCommand.args, { capture: true, allowFailure: true, timeoutMs: 10_000 });
   const npmDetail = sanitizeLines(npm.stdout || npm.stderr);
   checks.push({ name: "npm", ok: npm.code === 0 && isSupportedNpmVersion(npmDetail), detail: npmDetail || "unavailable" });
-  const wrangler = await runWrangler(["--version"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
-  checks.push({ name: "wrangler", ok: wrangler.code === 0, detail: (wrangler.stdout || wrangler.stderr).trim() });
-  const whoami = await runWrangler(["whoami"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
-  checks.push({ name: "cloudflare-login", ok: whoami.code === 0, detail: whoami.code === 0 ? "authenticated" : sanitizeLines(whoami.stderr || whoami.stdout) });
+  const cf = await runCf(["--version"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
+  checks.push({ name: "cf", ok: cf.code === 0, detail: sanitizeLines(cf.stdout || cf.stderr) });
+  const whoami = await runCf(["auth", "whoami"], { capture: true, allowFailure: true, stateRoot: state.paths.stateRoot });
+  const authenticated = cfAuthenticationResult(whoami).authenticated;
+  checks.push({ name: "cloudflare-login", ok: authenticated, detail: authenticated ? "authenticated" : "cf authentication required" });
   checks.push({ name: "policy", ok: true, detail: formatPolicySummary(state.policy) });
   checks.push({
     name: "authorization-model",
@@ -812,7 +814,7 @@ Commands:
   service stop      Stop the installed autostart service
   service uninstall Remove only the autostart entry
   status            Print redacted local profile state and Worker health
-  doctor            Check Node, Wrangler, Cloudflare login, Worker health
+  doctor            Check Node, cf, Cloudflare login, Worker health
   full-test         Run real local full-profile capability tests in a temporary sandbox
   rotate-secrets    Rotate account-admin, device identity, and global token-version secrets
   account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove

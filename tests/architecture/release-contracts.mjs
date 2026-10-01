@@ -134,7 +134,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.131.2") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.144.0") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -143,16 +143,23 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.131.2"
-    || toolchainManifest.overrides?.undici !== "7.29.0" || toolchainManifest.overrides?.sharp !== "0.35.4"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.131.2"
-    || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.0"
-    || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.4") {
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.144.0"
+    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.5"
+    || toolchainManifest.dependencies?.undici !== "7.29.1"
+    || toolchainManifest.overrides?.undici !== "7.29.1"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.144.0"
+    || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
+    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.5") {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
+}
+if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.5"
+    || Object.hasOwn(packageJson.scripts || {}, "postinstall")
+    || !FAST_CHECK_TASKS.includes("cf-network:test")) {
+  throw new Error("cf isolation or its verified network compatibility gate drifted");
 }
 const patchedSharpVersion = "0.35.4";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
-if (packageLock.packages?.["node_modules/sharp"]?.version !== patchedSharpVersion) throw new Error("package-lock does not resolve the audited Sharp version");
+if (packageLock.packages?.["node_modules/sharp"] && packageLock.packages["node_modules/sharp"].version !== patchedSharpVersion) throw new Error("package-lock does not resolve the audited Sharp version");
 if (packageJson.allowScripts?.[`sharp@${patchedSharpVersion}`] !== true) throw new Error("the audited Sharp lifecycle-script allowlist entry is missing");
 const resolvedWorkerdVersion = packageLock.packages?.["node_modules/workerd"]?.version;
 if (!/^1\.\d{8}\.\d+$/.test(String(resolvedWorkerdVersion || ""))) throw new Error("package-lock does not resolve an exact workerd build");
@@ -186,7 +193,7 @@ for (const file of ["generate-worker-types.mjs", "run-worker-dry-run.mjs", "wran
   if (!existsSync(join(root, "scripts", file))) throw new Error(`bounded Wrangler command lifecycle file is missing: ${file}`);
 }
 if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-types.mjs") throw new Error("generated Worker types are not isolated behind the cross-platform generator");
-if (packageJson.scripts?.["worker:dry-run"] !== "node scripts/run-worker-dry-run.mjs") throw new Error("Worker deployment dry-run bypasses the bounded Wrangler lifecycle adapter");
+if (packageJson.scripts?.["worker:dry-run"] !== "node scripts/run-worker-dry-run.mjs") throw new Error("Worker deployment dry-run bypasses the bounded cf build and deploy adapter");
 const workerTypesGeneratorSource = readFileSync(join(root, "scripts", "generate-worker-types.mjs"), "utf8");
 const workerToolCatalogSource = readFileSync(join(root, "src", "worker", "tool-catalog.ts"), "utf8");
 const workerHostedManagedJobSchemaSource = readFileSync(join(root, "src", "worker", "managed-job-hosted-schema.ts"), "utf8");
@@ -932,20 +939,20 @@ const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-
 if (!workerDeploymentSource.includes('export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs"')) {
   throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
 }
-const workerAuthProbe = workerDeploymentSource.indexOf('const whoami = await runWranglerFn(["whoami"]');
-const workerJsonAuthGuard = workerDeploymentSource.indexOf("if (args.json) throw workerAuthenticationRequiredError()");
-const workerInteractiveLogin = workerDeploymentSource.indexOf('await runWranglerFn(["login"]');
-const workerAuthRecheck = workerDeploymentSource.indexOf('const verified = await runWranglerFn(["whoami"]');
+const cfAuthenticationSource = readFileSync(join(root, "src", "local", "cf-authentication.mjs"), "utf8");
+const workerAuthProbe = workerDeploymentSource.indexOf("await ensureCfAuthenticated(");
 const workerDeployStart = workerDeploymentSource.indexOf('logger.info?.("Deploying Cloudflare Worker")');
-if ([workerAuthProbe, workerJsonAuthGuard, workerInteractiveLogin, workerAuthRecheck, workerDeployStart].some((value) => value < 0)
-    || workerAuthProbe > workerJsonAuthGuard
-    || workerJsonAuthGuard > workerInteractiveLogin
-    || workerInteractiveLogin > workerAuthRecheck
-    || workerAuthRecheck > workerDeployStart) {
-  throw new Error("Worker deployment regained interactive Wrangler login in JSON mode or lost post-login authentication verification");
+if (workerAuthProbe < 0 || workerDeployStart < workerAuthProbe
+    || !workerDeploymentSource.includes("interactive: !args.json")
+    || !workerDeploymentSource.includes("cfDeploymentAccount(auth, environment)")
+    || !workerDeploymentSource.includes("withCfProjectFn(sourceSnapshot")) {
+  throw new Error("Worker deployment lost cf authentication, unattended-login guard, or private source staging");
 }
-for (const required of ["mbm-worker-deploy-v5", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
-  if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed v5 boundary: ${required}`);
+for (const required of ["cfAuthenticationResult", "value.authenticated !== true", "value.tokenValid === false", '["auth", "whoami"]', '["auth", "login"]', "worker_authentication_required", "sideEffectsStarted = false"]) {
+  if (!cfAuthenticationSource.includes(required)) throw new Error("cf authentication boundary drifted: " + required);
+}
+for (const required of ["mbm-worker-deploy-cf-v6", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
+  if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed cf v6 boundary: ${required}`);
 }
 const workerFingerprintTraversal = workerFingerprintSource.slice(
   workerFingerprintSource.indexOf("function workerDeployHashFiles"),
@@ -1103,16 +1110,16 @@ if ([candidateWorkerAuthPreflight, candidateReleaseRuntimeLock, candidatePersist
     || candidateReleaseRuntimeLock > candidatePersistentPrefix
     || candidatePersistentPrefix > candidateInstallCall
     || candidateInstallCall > candidatePersistentActivationCall) {
-  throw new Error("persistent candidate activation lost pre-handoff Wrangler authentication or escaped the global release-runtime lock");
+  throw new Error("persistent candidate activation lost pre-handoff cf authentication or escaped the global release-runtime lock");
 }
 const candidateWorkerAuthPreflightEnd = candidateStartSource.indexOf("    });", candidateWorkerAuthPreflight);
 const candidateWorkerAuthPreflightSource = candidateStartSource.slice(candidateWorkerAuthPreflight, candidateWorkerAuthPreflightEnd + 7);
 if (candidateWorkerAuthPreflightEnd < 0
     || candidateWorkerAuthPreflightSource.includes("npmCli")) {
-  throw new Error("persistent candidate Wrangler authentication must use the toolchain-owned hardened npm rather than the ephemeral release npm session");
+  throw new Error("persistent candidate cf authentication must use the toolchain-owned hardened npm rather than the ephemeral release npm session");
 }
 const persistentActivationAuthSource = readFileSync(join(root, "scripts", "persistent-activation-process.mjs"), "utf8");
-for (const required of ["preflightPersistentActivationWorkerAuth", "EXECUTION_SURFACE.managedJob", '["whoami"]', '["login"]', "worker_authentication_required", "sideEffectsStarted = false"]) {
+for (const required of ["preflightPersistentActivationWorkerAuth", "EXECUTION_SURFACE.managedJob", "ensureCfAuthenticated", 'interactive: surface === "local"']) {
   if (!persistentActivationAuthSource.includes(required)) throw new Error(`persistent activation Wrangler-auth preflight drifted: ${required}`);
 }
 if (!cliSource.includes("await withReleaseRuntimeLock(stateRoot, () => uninstallStateRoot({ stateRoot, deleteRemote }))")) {
@@ -1307,7 +1314,7 @@ for (const required of ["prepareHardenedNpm", "result = await verifyConsumerTarb
 if (consumerSecuritySource.includes('"--omit=optional"')) throw new Error("consumer package security no longer models an ordinary optional-dependency installation");
 const toolchainSource = readFileSync(join(root, "src", "local", "wrangler-toolchain.mjs"), "utf8");
 const toolchainVerificationSource = readFileSync(join(root, "src", "local", "wrangler-toolchain-verification.mjs"), "utf8");
-for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "7.29.0", "0.35.4"]) {
+for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "CF_NETWORK_COMPATIBILITY", "applyCfNetworkCompatibility"]) {
   if (!toolchainSource.includes(required)) throw new Error(`private Wrangler toolchain lost required boundary: ${required}`);
 }
 for (const required of ["TOOLCHAIN_MARKER", "MAX_TREE_NODES", "throwOperationalOrIntegrity", "privateToolchainIntegrityError"]) {
@@ -1758,7 +1765,7 @@ const hardenedNpmDownloadTimeoutSource = readFileSync(join(root, "src", "local",
 const hardenedNpmVerificationSource = readFileSync(join(root, "src", "local", "hardened-npm-verification.mjs"), "utf8");
 if (!npmBootstrapSource.includes("prepareHardenedNpm")
     || !hardenedNpmSource.includes("npm-12.0.2.tgz") || !hardenedNpmSource.includes("sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9Ql")
-    || !hardenedNpmSource.includes("undici-6.28.0.tgz") || !hardenedNpmSource.includes("brace-expansion-5.0.9.tgz")
+    || !hardenedNpmSource.includes("undici-6.28.0.tgz") || !hardenedNpmSource.includes("brace-expansion-5.0.12.tgz")
     || !hardenedNpmDownloadSource.includes("proxyAgentForHttp") || !hardenedNpmDownloadSource.includes("status !== 200")
     || !hardenedNpmDownloadSource.includes("downloadHardenedNpmArtifact") || !hardenedNpmDownloadSource.includes("DOWNLOAD_ATTEMPTS = 3")
     || !hardenedNpmDownloadSource.includes("createHardenedDownloadTimeout") || !hardenedNpmDownloadSource.includes("timeout.progress()")

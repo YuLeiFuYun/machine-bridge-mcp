@@ -31,7 +31,7 @@ try {
   validatePackagedMarkdownLinks(record.files);
   const sensitive = record.files
     .map((item) => String(item.path || ""))
-    .filter((path) => /(?:^|\/)(?:\.env|\.npmrc|\.dev\.vars|\.privacy-denylist|\.project-local|\.wrangler|node_modules)(?:\/|$)|\.(?:pem|key|sqlite|log)$/.test(path));
+    .filter((path) => /(?:^|\/)(?:\.env|\.npmrc|\.dev\.vars|\.privacy-denylist|\.project-local|\.wrangler|\.cloudflare|node_modules)(?:\/|$)|\.(?:pem|key|sqlite|log)$/.test(path));
   if (sensitive.length) throw new Error(`npm package contains sensitive local artifacts: ${sensitive.join(", ")}`);
   for (const file of ["docs/PRIVACY.md", "docs/AUDIT.md", "docs/UPGRADING.md", "docs/OPERATIONS.md", "docs/TOOL_REFERENCE.md", "docs/POLICY_REFERENCE.md"]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted current consumer guidance ${file}`);
@@ -57,6 +57,11 @@ try {
     "src/local/wrangler-toolchain-verification.mjs",
     "src/local/wrangler-toolchain/package.json",
     "src/local/wrangler-toolchain/package-lock.json",
+    "src/local/cf-authentication.mjs",
+    "src/local/cf-project.mjs",
+    "src/local/cf-network-compatibility.mjs",
+    "cloudflare.config.ts",
+    "wrangler.config.ts",
     "scripts/accepted-candidate-tarball.mjs",
     "scripts/consumer-package-security.mjs",
     "scripts/global-package-installation.mjs",
@@ -66,8 +71,17 @@ try {
   ]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
   }
-  if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.131.2") {
-    throw new Error("Wrangler must remain a development dependency backed by the packaged private toolchain lock");
+  const privateManifest = JSON.parse(readFileSync(join(root, "src/local/wrangler-toolchain/package.json"), "utf8"));
+  const privateLock = JSON.parse(readFileSync(join(root, "src/local/wrangler-toolchain/package-lock.json"), "utf8"));
+  for (const tool of ["cf", "wrangler", "undici", "miniflare", "workerd"]) {
+    if (Object.hasOwn(packageJson.dependencies || {}, tool)) throw new Error(`Consumer dependencies must exclude the private deployment tool ${tool}`);
+  }
+  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.5", wrangler: "4.144.0", undici: "7.29.1" })) {
+    if (packageJson.devDependencies?.[tool] !== version || privateManifest.dependencies?.[tool] !== version
+        || privateLock.packages?.[""]?.dependencies?.[tool] !== version
+        || privateLock.packages?.[`node_modules/${tool}`]?.version !== version) {
+      throw new Error(`The packaged private ${tool} toolchain must retain its exact source development and lockfile pin`);
+    }
   }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [

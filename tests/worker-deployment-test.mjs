@@ -6,7 +6,7 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  ensureWorkerDeployment,
+  ensureWorkerDeployment as ensureWorkerDeploymentActual,
   extractWorkerUrl,
   workerDeploymentFingerprint,
   workerUrlMatchesName,
@@ -26,6 +26,11 @@ import { ensureWorkerSecrets, loadState, saveState } from "../src/local/state.mj
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = "9.8.7";
+import "./cf-project-test.mjs";
+const ensureWorkerDeployment = (state, args, options) => ensureWorkerDeploymentActual(state, args, {
+  ...options, env: {},
+  withCfProject: async (_snapshot, _name, callback, projectOptions) => callback({ cwd: root, env: projectOptions.env }),
+});
 const healthRequests = [];
 const requestFactory = createHealthRequestFactory(healthRequests);
 const proxyRequestCount = () => healthRequests.filter((request) => request.hasProxyAgent).length;
@@ -207,8 +212,8 @@ async function verifyDeploymentPropagationBudget() {
   await ensureWorkerDeployment(state, {}, {
     packageRoot: root,
     expectedVersion: version,
-    runWrangler: async (args) => args[0] === "whoami"
-      ? { code: 0, stdout: "authenticated", stderr: "" }
+    runCf: async (args) => args[0] === "auth" && args[1] === "whoami"
+      ? { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" }
       : { code: 0, stdout: "Deployed https://mbm-propagation-budget-test.account-example.workers.dev", stderr: "" },
     withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
     saveState: () => {},
@@ -232,9 +237,9 @@ async function verifyJsonDeploymentNeverStartsInteractiveLogin() {
     await ensureWorkerDeployment(state, { json: true }, {
       packageRoot: root,
       expectedVersion: version,
-      runWrangler: async (args, options) => {
+      runCf: async (args, options) => {
         calls.push({ args, options });
-        return { code: 1, stdout: "", stderr: "not authenticated" };
+        return { code: 0, stdout: JSON.stringify({ authenticated: false }), stderr: "" };
       },
       saveState: () => {},
       logger: quietLogger(),
@@ -242,7 +247,7 @@ async function verifyJsonDeploymentNeverStartsInteractiveLogin() {
   } catch (failure) { error = failure; }
   assert.equal(error?.code, "worker_authentication_required");
   assert.equal(error?.sideEffectsStarted, false);
-  assert.deepEqual(calls.map(call => call.args), [["whoami"]]);
+  assert.deepEqual(calls.map(call => call.args), [["auth", "whoami"]]);
   assert.equal(calls[0]?.options?.capture, true);
   assert.equal(calls[0]?.options?.allowFailure, true);
 }
@@ -254,15 +259,15 @@ async function verifyInteractiveLoginIsRecheckedBeforeDeploy() {
   await ensureWorkerDeployment(state, {}, {
     packageRoot: root,
     expectedVersion: version,
-    runWrangler: async (args, options) => {
+    runCf: async (args, options) => {
       calls.push({ args, options });
-      if (args[0] === "whoami") {
+      if (args[0] === "auth" && args[1] === "whoami") {
         whoamiCount += 1;
         return whoamiCount === 1
           ? { code: 1, stdout: "", stderr: "not authenticated" }
-          : { code: 0, stdout: "authenticated", stderr: "" };
+          : { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" };
       }
-      if (args[0] === "login") return { code: 0, stdout: "", stderr: "" };
+      if (args[0] === "auth" && args[1] === "login") return { code: 0, stdout: "", stderr: "" };
       return { code: 0, stdout: "Deployed https://mbm-login-recheck-test.account-example.workers.dev", stderr: "" };
     },
     withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
@@ -270,7 +275,7 @@ async function verifyInteractiveLoginIsRecheckedBeforeDeploy() {
     retryHealth: async () => ({ ok: true, version, networkRoute: "direct" }),
     logger: quietLogger(),
   });
-  assert.deepEqual(calls.map(call => call.args[0]), ["whoami", "login", "whoami", "deploy"]);
+  assert.deepEqual(calls.map(call => call.args.slice(0, 2).join(" ")), ["auth whoami", "auth login", "auth whoami", "deploy --prebuilt"]);
   assert.equal(calls[0]?.options?.capture, true);
   assert.notEqual(calls[1]?.options?.capture, true);
   assert.equal(calls[2]?.options?.capture, true);
@@ -286,6 +291,7 @@ function verifyWorkerFingerprintPathBoundaries() {
     writeFileSync(join(fixture, "src", "worker", "index.ts"), "export const worker = true;\n");
     writeFileSync(join(fixture, "src", "shared", "value.ts"), "export const value = true;\n");
     writeFileSync(join(fixture, "wrangler.jsonc"), "{}\n");
+    writeCfFingerprintFixture(fixture);
     writeFileSync(join(fixture, "tsconfig.json"), "{}\n");
     const state = workerState("mbm-fingerprint-boundary");
     const baseline = workerDeploymentFingerprint(state, { packageRoot: fixture });
@@ -299,6 +305,7 @@ function verifyWorkerFingerprintPathBoundaries() {
         mkdirSync(join(target, "src", "shared"), { recursive: true });
         writeFileSync(join(target, "src", "worker", "index.ts"), "export const worker = true;\n");
         writeFileSync(join(target, "wrangler.jsonc"), "{}\n");
+    writeCfFingerprintFixture(target);
         writeFileSync(join(target, "tsconfig.json"), "{}\n");
       }
       writeFileSync(join(collisionA, "src", "shared", "a.ts"), "/b.tsX");
@@ -318,6 +325,7 @@ function verifyWorkerFingerprintPathBoundaries() {
     rmSync(join(fixture, "wrangler.jsonc"));
     assert.throws(() => workerDeploymentFingerprint(state, { packageRoot: fixture }), /required source is missing/);
     writeFileSync(join(fixture, "wrangler.jsonc"), "{}\n");
+    writeCfFingerprintFixture(fixture);
     if (process.platform !== "win32") {
       const ancestorFixture = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-ancestor-"));
       try {
@@ -326,6 +334,7 @@ function verifyWorkerFingerprintPathBoundaries() {
         writeFileSync(join(ancestorFixture, "real-src", "worker", "index.ts"), "export const worker = true;\n");
         writeFileSync(join(ancestorFixture, "real-src", "shared", "value.ts"), "export const value = true;\n");
         writeFileSync(join(ancestorFixture, "wrangler.jsonc"), "{}\n");
+        for (const file of ["cloudflare.config.ts", "wrangler.config.ts"]) writeFileSync(join(ancestorFixture, file), "{}\n");
         writeFileSync(join(ancestorFixture, "tsconfig.json"), "{}\n");
         symlinkSync(join(ancestorFixture, "real-src"), join(ancestorFixture, "src"), "dir");
         assert.throws(() => workerDeploymentFingerprint(state, { packageRoot: ancestorFixture }),
@@ -362,7 +371,7 @@ async function verifyRecordedCurrentDeploymentDoesNotRedeploy() {
         observedAttempts = attempts;
         return { ok: false, error: "version_mismatch:1.0.0!=9.8.7", networkRoute: "direct" };
       },
-      runWrangler: async (args) => {
+      runCf: async (args) => {
         if (args[0] === "deploy") deploys += 1;
         return { code: 0, stdout: "", stderr: "" };
       },
@@ -384,13 +393,13 @@ async function verifyDeploymentIdempotency() {
   let saves = 0;
   const options = {
     packageRoot: root,
-    runWrangler: async (args) => {
-      if (args[0] === "whoami") return { code: 0, stdout: "authenticated", stderr: "" };
+    runCf: async (args) => {
+      if (args[0] === "auth" && args[1] === "whoami") return { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" };
       if (args[0] === "deploy") {
         deploys += 1;
         return { code: 0, stdout: "Deployed https://mbm-health-test.account-example.workers.dev", stderr: "" };
       }
-      throw new Error(`unexpected Wrangler command: ${args.join(" ")}`);
+      throw new Error(`unexpected cf command: ${args.join(" ")}`);
     },
     withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
     saveState: () => { saves += 1; },
@@ -428,13 +437,13 @@ async function verifyPersistedDeploymentIdempotency() {
     let deploys = 0;
     const options = {
       packageRoot: root,
-      runWrangler: async (args) => {
-        if (args[0] === "whoami") return { code: 0, stdout: "authenticated", stderr: "" };
+      runCf: async (args) => {
+        if (args[0] === "auth" && args[1] === "whoami") return { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" };
         if (args[0] === "deploy") {
           deploys += 1;
           return { code: 0, stdout: "Deployed https://mbm-persisted-test.account-example.workers.dev", stderr: "" };
         }
-        throw new Error(`unexpected Wrangler command: ${args.join(" ")}`);
+        throw new Error(`unexpected cf command: ${args.join(" ")}`);
       },
       withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
       saveState,
@@ -482,13 +491,13 @@ async function verifyDefinitiveStalenessRedeploys() {
         ? { ok: false, error: "version_mismatch:1.0.0!=9.8.7" }
         : { ok: true, version, networkRoute: "direct" };
     },
-    runWrangler: async (args) => {
-      if (args[0] === "whoami") return { code: 0, stdout: "authenticated", stderr: "" };
+    runCf: async (args) => {
+      if (args[0] === "auth" && args[1] === "whoami") return { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" };
       if (args[0] === "deploy") {
         deploys += 1;
         return { code: 0, stdout: "Deployed https://mbm-stale-test.account-example.workers.dev", stderr: "" };
       }
-      throw new Error(`unexpected Wrangler command: ${args.join(" ")}`);
+      throw new Error(`unexpected cf command: ${args.join(" ")}`);
     },
     withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
     saveState: () => {},
@@ -505,8 +514,8 @@ async function verifyDeploymentUrlBoundaries() {
     ensureWorkerDeployment(missing, {}, {
       packageRoot: root,
       expectedVersion: version,
-      runWrangler: async (args) => args[0] === "whoami"
-        ? { code: 0, stdout: "authenticated", stderr: "" }
+      runCf: async (args) => args[0] === "auth" && args[1] === "whoami"
+        ? { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" }
         : { code: 0, stdout: "uploaded without a public URL", stderr: "" },
       withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
       saveState: () => { missingSaves += 1; },
@@ -528,8 +537,8 @@ async function verifyDeploymentUrlBoundaries() {
     await assert.rejects(
       ensureWorkerDeployment(poisoned, {}, {
         packageRoot: root, expectedVersion: version,
-        runWrangler: async (args) => args[0] === "whoami"
-          ? { code: 0, stdout: "authenticated", stderr: "" }
+        runCf: async (args) => args[0] === "auth" && args[1] === "whoami"
+          ? { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" }
           : { code: 0, stdout: unrelated, stderr: "" },
         withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
         saveState: () => { poisonedSaves += 1; },
@@ -549,8 +558,8 @@ async function verifyDeploymentUrlBoundaries() {
   await ensureWorkerDeployment(recorded, { forceWorker: true }, {
     packageRoot: root,
     expectedVersion: version,
-    runWrangler: async (args) => args[0] === "whoami"
-      ? { code: 0, stdout: "authenticated", stderr: "" }
+    runCf: async (args) => args[0] === "auth" && args[1] === "whoami"
+      ? { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "11111111111111111111111111111111" }] }), stderr: "" }
       : { code: 0, stdout: "uploaded without a public URL", stderr: "" },
     withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
     saveState: () => { recordedSaves += 1; },
@@ -597,8 +606,6 @@ function verifyWorkerUrlParsing() {
   assert.equal(workerUrlMatchesName("https://mbm-other-test.account-example.workers.dev", "mbm-url-test"), false);
   assert.equal(workerUrlMatchesName("https://example.com", "mbm-url-test"), false);
 }
-
-
 
 function createHealthRequestFactory(calls) {
   return (options) => {
@@ -672,4 +679,10 @@ function quietLogger() {
 
 function recordingLogger(records) {
   return Object.fromEntries(["debug", "info", "warn", "success"].map(level => [level, (message, fields) => records.push({ level, message, fields })]));
+}
+
+function writeCfFingerprintFixture(directory) {
+  for (const file of ["cloudflare.config.ts", "wrangler.config.ts", "src/local/wrangler-toolchain/package.json", "src/local/wrangler-toolchain/package-lock.json"]) {
+    const target = join(directory, file); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, "{}\n");
+  }
 }

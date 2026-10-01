@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { executionEnv, runExecutable, wranglerCommand } from "../src/local/shell.mjs";
+import { cloudflareCommand, executionEnv, runExecutable, wranglerCommand } from "../src/local/shell.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-wrangler-command-"));
 try {
@@ -19,6 +19,11 @@ try {
   if (command.cmd.endsWith(".cmd") || command.argsPrefix.some((value) => value.endsWith(".cmd"))) {
     throw new Error("Wrangler command regressed to a Windows command-shell shim");
   }
+  const cfScript = join(root, "node_modules", "cf", "bin", "cf");
+  await mkdir(join(root, "node_modules", "cf", "bin"), { recursive: true });
+  await writeFile(cfScript, "process.exit(0);\n", "utf8");
+  const cf = cloudflareCommand({ packageRoot: root, node });
+  if (cf.cmd !== node || cf.argsPrefix[0] !== realpathSync(cfScript)) throw new Error("cf did not use its canonical Node entrypoint");
   const previousPassEnv = process.env.MBM_PASS_ENV;
   const previousPrivateValue = process.env.MBM_SHELL_TEST_PRIVATE;
   try {
@@ -58,6 +63,9 @@ try {
     await rm(script);
     await symlink(target, script);
     expectThrow(() => wranglerCommand({ packageRoot: root, node }), "real regular file");
+    await rm(cfScript);
+    await symlink(target, cfScript);
+    expectThrow(() => cloudflareCommand({ packageRoot: root, node }), "real regular file");
   }
   console.log("Wrangler executable boundary test ok");
 } finally {

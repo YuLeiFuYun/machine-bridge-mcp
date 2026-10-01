@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { packageRoot } from "./package-identity.mjs";
-import { ensureWranglerToolchain } from "./wrangler-toolchain.mjs";
+import { ensureCloudflareToolchain, ensureWranglerToolchain } from "./wrangler-toolchain.mjs";
 import { BoundedOutput } from "./bounded-output.mjs";
 import { terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 
@@ -157,6 +157,36 @@ export async function runWrangler(args, options = {}) {
   const timeoutMs = options.timeoutMs ?? (operation === "login" || operation === "deploy" ? 10 * 60 * 1000 : 2 * 60 * 1000);
   const { stateRoot: _stateRoot, packageRoot: _packageRoot, npmCli: _npmCli, runCommand: _runCommand, auditMaxAgeMs: _auditMaxAgeMs, hardenedNpm: _hardenedNpm, node: _node, ...executionOptions } = options;
   return runExecutable(wrangler.cmd, [...wrangler.argsPrefix, ...args], { cwd: packageRoot, timeoutMs, ...executionOptions });
+}
+
+export function cloudflareCommand(options = {}) {
+  const root = realpathSync(path.resolve(String(options.packageRoot || packageRoot)));
+  const script = path.join(root, "node_modules", "cf", "bin", "cf");
+  const info = lstatSync(script);
+  const canonical = realpathSync(script);
+  const relative = path.relative(root, canonical);
+  if (info.isSymbolicLink() || !info.isFile() || Number(info.nlink) !== 1
+      || (process.platform !== "win32" && (Number(info.mode) & 0o022) !== 0)
+      || !relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Cloudflare CLI entrypoint must be a contained private real regular file");
+  }
+  return { cmd: path.resolve(String(options.node || process.execPath)), argsPrefix: [canonical] };
+}
+
+export async function runCf(args, options = {}) {
+  const argv = validateExecutableArgs(args);
+  const toolchainRoot = await ensureCloudflareToolchain({
+    stateRoot: options.stateRoot, packageRoot: options.packageRoot || packageRoot,
+    npmCli: options.npmCli, env: options.env || process.env,
+    runCommand: options.runCommand || runExecutable,
+    auditMaxAgeMs: options.auditMaxAgeMs, hardenedNpm: options.hardenedNpm,
+  });
+  const cf = cloudflareCommand({ packageRoot: toolchainRoot, node: options.node });
+  const longOperation = ["build", "deploy"].includes(argv[0]) || (argv[0] === "auth" && argv[1] === "login");
+  const timeoutMs = options.timeoutMs ?? (longOperation ? 10 * 60 * 1000 : 2 * 60 * 1000);
+  const { stateRoot: _stateRoot, packageRoot: _packageRoot, npmCli: _npmCli, runCommand: _runCommand,
+    auditMaxAgeMs: _auditMaxAgeMs, hardenedNpm: _hardenedNpm, node: _node, ...executionOptions } = options;
+  return runExecutable(cf.cmd, [...cf.argsPrefix, ...argv], { cwd: toolchainRoot, timeoutMs, ...executionOptions });
 }
 
 export function workspaceShellCommand(command) {

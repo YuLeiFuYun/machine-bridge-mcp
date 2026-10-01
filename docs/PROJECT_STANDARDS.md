@@ -202,3 +202,7 @@ This repository currently has one human maintainer. Requiring one independent ap
 ## 10. Exceptions and evolution
 
 A standard may be changed when evidence shows that it creates more risk or cost than it removes. The change must update this document, relevant automation, and the changelog together. Silent exceptions and permanently waived failing checks are prohibited.
+
+### Pinned cf beta compatibility artifact
+
+For cf 1.0.0-beta.5, the repository owns the narrowly scoped network-factory transformation described in ENGINEERING.md. The upstream npm tarball is verified before transformation, and only the reviewed output hash is executable through the private cf toolchain. An npm audit alone does not establish that bundled libraries are patched. This exception does not waive vulnerable behavior, audit/signature failures, or unknown package bytes; its removal condition is an upstream fixed artifact passing the same behavioral check.

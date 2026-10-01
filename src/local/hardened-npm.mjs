@@ -19,6 +19,13 @@ import {
   writeHardenedNpmMarker,
 } from "./hardened-npm-verification.mjs";
 
+export const HARDENED_NPM_BRACE_EXPANSION_ARTIFACT = Object.freeze({
+  name: "brace-expansion",
+  version: "5.0.12",
+  url: "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz",
+  integrity: "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==",
+  maximumBytes: 1024 * 1024,
+});
 export const HARDENED_NPM_ARTIFACTS = Object.freeze([
   Object.freeze({
     name: "npm",
@@ -34,13 +41,7 @@ export const HARDENED_NPM_ARTIFACTS = Object.freeze([
     integrity: "sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA==",
     maximumBytes: 4 * 1024 * 1024,
   }),
-  Object.freeze({
-    name: "brace-expansion",
-    version: "5.0.9",
-    url: "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.9.tgz",
-    integrity: "sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==",
-    maximumBytes: 1024 * 1024,
-  }),
+  HARDENED_NPM_BRACE_EXPANSION_ARTIFACT,
 ]);
 export function hardenedNpmIdentity(artifacts = HARDENED_NPM_ARTIFACTS) {
   const normalized = normalizeArtifacts(artifacts);
