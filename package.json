@@ -280,7 +280,7 @@
     "typescript": "7.0.2",
     "wrangler": "4.144.0",
     "cf": "1.0.0-beta.5",
-    "undici": "7.29.1"
+    "undici": "8.11.2"
   },
   "keywords": [
     "mcp",
@@ -330,6 +330,6 @@
   "overrides": {
     "sharp": "0.35.4",
     "brace-expansion": "5.0.12",
-    "undici": "7.29.1"
+    "undici": "8.11.2"
   }
 }
