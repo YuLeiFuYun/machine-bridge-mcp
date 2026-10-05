@@ -157,6 +157,7 @@ else {
   const valuable = join(root, "valuable.txt");
   await writeFile(valuable, "valuable original", { mode: 0o640 });
   await chmod(valuable, 0o640);
+  const valuableMode = (await readSnapshot(valuable)).mode;
   for (const mode of ["replace-link", "replace-directory", "replace-file"]) {
     await rm(target, { recursive: true, force: true });
     await writeFile(target, priorTarget);
@@ -167,7 +168,7 @@ else {
       assert.match(error.errors[0].message, /exit code 7/);
       return true;
     });
-    await assertSnapshot(valuable, Buffer.from("valuable original"), 0o640, "recovery modified another file");
+    await assertSnapshot(valuable, Buffer.from("valuable original"), valuableMode, "recovery modified another file");
     if (mode === "replace-link") assert((await lstat(target)).isSymbolicLink());
     else if (mode === "replace-directory") assert((await lstat(target)).isDirectory());
     else assert.equal(await readFile(target, "utf8"), "valuable replacement");
