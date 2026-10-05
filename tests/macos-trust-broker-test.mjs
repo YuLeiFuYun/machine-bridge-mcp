@@ -1,6 +1,7 @@
-import { chmodSync, closeSync, constants as fsConstants, fstatSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import fs, { chmodSync, closeSync, constants as fsConstants, fstatSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import {
@@ -12,12 +13,32 @@ import {
 } from "../src/local/macos-trust-broker.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-trust-broker-"));
+const nativeLstatSync = fs.lstatSync;
 try {
   const binary = process.platform === "darwin"
     ? buildDevelopmentTrustBrokerBinary(root)
     : path.join(root, "synthetic-broker");
   if (process.platform !== "darwin") writeFileSync(binary, "synthetic broker; never executed", { mode: 0o700 });
   const canonicalBinary = realpathSync(binary);
+  if (process.platform === "win32") {
+    // Windows mode bits cannot represent an owner-executable POSIX broker.
+    // Keep the native rejection, then simulate only this owned fixture's POSIX metadata.
+    expectThrow(() => inspectProvisionedMacosTrustBroker(binary), "writable by group or other users");
+    let syntheticMode = 0o700;
+    fs.lstatSync = (target, ...args) => {
+      const info = nativeLstatSync(target, ...args);
+      if (target !== binary && target !== canonicalBinary) return info;
+      return Object.assign(Object.create(info), { mode: (info.mode & ~0o777) | syntheticMode });
+    };
+    syncBuiltinESMExports();
+    for (const [mode, message] of [[0o777, "writable by group or other users"], [0o600, "not executable"]]) {
+      syntheticMode = mode;
+      expectThrow(() => inspectProvisionedMacosTrustBroker(binary, {
+        spawnSync() { throw new Error("unsafe broker metadata reached codesign"); },
+      }), message);
+    }
+    syntheticMode = 0o700;
+  }
   if (process.platform === "darwin") {
     const info = statSync(binary);
     assert(info.isFile(), "development trust broker build did not produce a regular file");
@@ -296,6 +317,8 @@ try {
 
   console.log("macOS provisioned trust broker boundary test ok");
 } finally {
+  fs.lstatSync = nativeLstatSync;
+  syncBuiltinESMExports();
   rmSync(root, { recursive: true, force: true });
 }
 
