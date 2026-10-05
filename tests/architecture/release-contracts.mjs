@@ -249,7 +249,7 @@ const mcpJobMonitorClaimsSource = readFileSync(join(root, "src", "worker", "mcp-
 const mcpJobMonitorStoreSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-store.ts"), "utf8");
 const mcpJobMonitorStatusSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-status.ts"), "utf8");
 const mcpJobMonitorToolsSource = readFileSync(join(root, "src", "worker", "mcp-job-monitor-tools.ts"), "utf8");
-const managedJobHostedAuthoritySource = readFileSync(join(root, "src", "worker", "managed-job-hosted-authority.ts"), "utf8");
+const managedJobHostedAuthoritySource = readLfSource("src", "worker", "managed-job-hosted-authority.ts");
 const mcpSubscriptionCapacitySource = readFileSync(join(root, "src", "worker", "mcp-subscription-capacity.ts"), "utf8");
 const mcpSubscriptionRegistrySource = readFileSync(join(root, "src", "worker", "mcp-subscription-registry.ts"), "utf8");
 if (!workerMcpConfigSource.includes("MCP_DISCOVERY_TTL_MS = 0") || !workerMcpConfigSource.includes("MCP_TOOL_LIST_TTL_MS = 0")) {
@@ -703,7 +703,7 @@ if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
     || !localSelfTestSource.includes("function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS)")
     || !localSelfTestSource.includes("return waitForFixtureExit(child, timeoutMs);")
     || !localSelfTestSource.includes("fixtureLifecycleSelfTest")
-    || !readFileSync(join(root, "tests", "fixtures", "child-fixture.mjs"), "utf8").includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
+    || !readLfSource("tests", "fixtures", "child-fixture.mjs").includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
     || !localSelfTestSource.includes("local self-test phase started:")
     || !localSelfTestSource.includes("local self-test phase completed:")) {
   throw new Error("runtime/local self-test lost deterministic host-pressure isolation, child-exit bounds, or phase observability");
