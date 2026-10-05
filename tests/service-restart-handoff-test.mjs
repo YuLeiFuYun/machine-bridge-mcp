@@ -1,3 +1,4 @@
+import { stopSystemdService } from "../src/local/service.mjs";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -253,6 +254,13 @@ async function testServiceOwnershipBoundary() {
     stopPlatformService: async () => ({ ok: false }),
   });
   assert.equal(providerFailure.stopped, false);
+  for (const receipt of [null, undefined, {}, { ok: true }, { ok: true, active: null }, { ok: true, active: true }, { ok: "true", active: false }]) {
+    const result = await stopOwnedPlatformService({
+      state: {}, inspectWorkspaceDaemon: () => ({}), ownsPlatformAutostart: () => true,
+      stopPlatformService: async () => receipt,
+    });
+    assert.equal(result.stopped, false, "unverified provider receipt was reported as stopped");
+  }
   await assert.rejects(() => stopOwnedPlatformService(), /requires state/);
   await assert.rejects(() => stopOwnedPlatformService({ state: {} }), /inspectWorkspaceDaemon/);
   await assert.rejects(() => stopOwnedPlatformService({ state: {}, inspectWorkspaceDaemon() {} }), /ownsPlatformAutostart/);
@@ -276,6 +284,36 @@ async function testServiceConvergenceBranches() {
     { attempts: 3, delayMs: 1 },
   );
   assert.equal(inactive.active, false);
+
+  const unknownStatuses = [{ active: null }, {}, { active: "false" }, { active: false }];
+  let unknownReads = 0;
+  const observedInactive = await waitForInactiveStatus(
+    async () => { unknownReads += 1; return unknownStatuses.shift(); },
+    { attempts: 5, sleep: async () => {} },
+  );
+  assert.equal(observedInactive.active, false);
+  assert.equal(unknownReads, 4, "unknown or malformed service activity ended stop convergence early");
+  let unavailableReads = 0;
+  const unavailable = await waitForInactiveStatus(
+    async () => { unavailableReads += 1; return { active: null }; },
+    { attempts: 3, sleep: async () => {} },
+  );
+  assert.equal(unavailable.active, null);
+  assert.equal(unavailableReads, 3, "unavailable service status bypassed the bounded observation window");
+
+  const providerStatuses = [
+    { installed: true, active: true, state: "active" },
+    { installed: true, active: null, state: "unknown" },
+    { installed: true, active: false, state: "inactive" },
+  ];
+  const providerStop = await stopSystemdService({ info() {}, warn() {} }, {
+    readStatus: async () => providerStatuses.shift(),
+    run: async () => ({ code: 0 }),
+    waitForInactive: (readStatus) => waitForInactiveStatus(readStatus, { attempts: 3, sleep: async () => {} }),
+  });
+  assert.equal(providerStop.ok, true, "transient status loss incorrectly failed a subsequently verified systemd stop");
+  assert.equal(providerStop.active, false);
+  assert.equal(providerStop.restore_required, true);
 
   const custom = await waitForStatus(
     async () => ({ state: "ready" }),

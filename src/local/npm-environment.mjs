@@ -1,37 +1,31 @@
+import { delimiter, isAbsolute } from "node:path";
+
 const NESTED_NPM_MODE_KEYS = new Set([
-  "npm_config_global_style",
-  "npm_config_install_strategy",
-  "npm_config_strict_peer_deps",
-  "npm_config_legacy_peer_deps",
-  "npm_config_force",
-  "npm_config_shrinkwrap",
-  "npm_config_package_lock",
-  "npm_config_parseable",
-  "npm_config_json",
-  "npm_config_if_present",
-  "npm_config_dry_run",
-  "npm_config_global",
-  "npm_config_prefix",
-  "npm_config_workspace",
-  "npm_config_workspaces",
-  "npm_config_ignore_scripts",
-  "npm_config_package_lock_only",
-  "npm_config_omit",
-  "npm_config_include",
-  "npm_config_production",
-  "npm_config_save",
-  "npm_config_save_dev",
-  "npm_config_save_optional",
-  "npm_config_save_peer",
+  "npm_config_global_style", "npm_config_install_strategy",
+  "npm_config_strict_peer_deps", "npm_config_legacy_peer_deps", "npm_config_force",
+  "npm_config_shrinkwrap", "npm_config_package_lock", "npm_config_package_lock_only",
+  "npm_config_parseable", "npm_config_json", "npm_config_if_present", "npm_config_dry_run",
+  "npm_config_global", "npm_config_prefix", "npm_config_workspace", "npm_config_workspaces",
+  "npm_config_ignore_scripts", "npm_config_omit", "npm_config_include", "npm_config_production",
+  "npm_config_save", "npm_config_save_dev", "npm_config_save_optional", "npm_config_save_peer",
 ]);
 
-export function nestedNpmEnvironment(environment = process.env) {
+export function nestedNpmEnvironment(environment = process.env, options = {}) {
   if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
     throw new TypeError("nested npm environment must be an environment record");
   }
   const result = { ...environment };
   for (const key of Object.keys(result)) {
     if (NESTED_NPM_MODE_KEYS.has(key.toLowerCase())) delete result[key];
+  }
+  if (options.bin !== undefined) {
+    if (typeof options.bin !== "string" || !isAbsolute(options.bin) || options.bin.includes(delimiter) || /[\0\r\n]/.test(options.bin)) {
+      throw new TypeError("nested npm launcher directory must be an absolute PATH entry");
+    }
+    const pathKeys = Object.keys(result).filter(key => /^path$/i.test(key));
+    const inherited = pathKeys.map(key => result[key]).filter(value => typeof value === "string" && value);
+    for (const key of pathKeys) delete result[key];
+    result.PATH = [options.bin, ...inherited].join(delimiter);
   }
   return result;
 }

@@ -46,15 +46,24 @@ try {
   try { assert.throws(() => resolveGithubPublicationStateRoot(notRepository), /could not resolve/); }
   finally { await rm(notRepository, { recursive: true, force: true }); }
 
-  let releaseFirst;
-  const first = withGithubPublicationLock(root, async () => {
-    await new Promise((resolvePromise) => { releaseFirst = resolvePromise; });
-    return "first";
-  }, { timeoutMs: 200 });
-  while (typeof releaseFirst !== "function") await new Promise((resolvePromise) => { setTimeout(resolvePromise, 5); });
-  await assert.rejects(() => withGithubPublicationLock(root, async () => "second", { timeoutMs: 30, pollMs: 5 }), /state is busy/);
-  releaseFirst();
-  assert.equal(await first, "first");
+  await withHeldPublicationLock(root, async () => {
+    await assert.rejects(() => withGithubPublicationLock(root, async () => "second", { timeoutMs: 30, pollMs: 5 }), /state is busy/);
+  });
+  await assert.rejects(() => withHeldPublicationLock(root, async () => {
+    throw new Error("synthetic competing assertion failure");
+  }), /synthetic competing assertion failure/);
+  assert.equal(await withGithubPublicationLock(root, async () => "after-fixture-failure"), "after-fixture-failure");
+
+  await assert.rejects(() => withHeldPublicationLock(root, () => {
+    assert.fail("publication contention ran before fixture readiness");
+  }, {
+    readinessTimeoutMs: 10,
+    acquire: async (...args) => {
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 50); });
+      return withGithubPublicationLock(...args);
+    },
+  }), /publication lock fixture did not become ready/);
+  assert.equal(await withGithubPublicationLock(root, async () => "after-late-acquisition"), "after-late-acquisition");
 
   await assert.rejects(() => withGithubPublicationLock(root, async () => {
     throw new Error("synthetic publication failure");
@@ -76,7 +85,10 @@ try {
   const previousPath = process.env.PATH;
   process.env.PATH = "";
   try { assert.equal(resolveGithubPublicationStateRoot(root), stateRoot); }
-  finally { process.env.PATH = previousPath; }
+  finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
 } finally {
   await rm(linkedRoot, { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
@@ -88,4 +100,29 @@ function git(cwd, args) {
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${result.stdout || ""}${result.stderr || ""}`);
   return result;
+}
+
+async function withHeldPublicationLock(root, callback, { acquire = withGithubPublicationLock, readinessTimeoutMs = 1_000 } = {}) {
+  let release, ready, timer;
+  const held = new Promise((resolvePromise) => { release = resolvePromise; });
+  const readiness = new Promise((resolvePromise) => { ready = resolvePromise; });
+  const first = Promise.resolve().then(() => acquire(root, async () => {
+    ready();
+    await held;
+    return "first";
+  }, { timeoutMs: 200 }));
+  try {
+    await Promise.race([
+      readiness,
+      first.then(() => { throw new Error("publication lock fixture settled before readiness"); }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("publication lock fixture did not become ready")), readinessTimeoutMs);
+      }),
+    ]);
+    return await callback();
+  } finally {
+    clearTimeout(timer);
+    release();
+    assert.equal(await first, "first");
+  }
 }

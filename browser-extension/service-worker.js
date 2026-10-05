@@ -15,15 +15,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "machine-bridge-reconnect") void connectFromStorage();
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "machine_bridge_internal_delay") {
+  if (message?.type === "machine_bridge_internal_progress" || message?.type === "machine_bridge_internal_delay") {
     if (sender?.id !== chrome.runtime.id) return false;
-    const delayMs = message.delay_ms;
-    if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 250) {
-      sendResponse({ ok: false });
-      return false;
-    }
-    setTimeout(() => sendResponse({ ok: true }), delayMs);
-    return true;
+    return browserOperations().handleRendererProgressMessage(message, sender, sendResponse);
   }
   if (message?.type !== "pair_bootstrap") return false;
   pairFromBootstrap(message.port, message.grant, { replace: false })
@@ -288,7 +282,7 @@ async function handleMessage(ws, raw, onReady = () => {}) {
   if (message?.type === "pong") return brokerLiveness.handlePong(ws, message, closeSocketQuietly);
   if (message?.type === "cancel" && typeof message.id === "string") {
     const state = activeRequests.get(message.id);
-    if (state) state.cancelled = true;
+    if (state?.socket === ws) state.cancelled = true;
     return;
   }
   if (message?.type !== "request" || typeof message.id !== "string" || typeof message.method !== "string") return;

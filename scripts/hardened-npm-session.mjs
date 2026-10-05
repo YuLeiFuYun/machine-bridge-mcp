@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepareHardenedNpm } from "../src/local/hardened-npm.mjs";
+import { createHardenedNpmLauncher } from "../src/local/hardened-npm-launcher.mjs";
 
 export async function createHardenedNpmSession(options = {}) {
   const parent = resolve(String(options.tempRoot || tmpdir()));
@@ -11,6 +12,7 @@ export async function createHardenedNpmSession(options = {}) {
     const prepared = await prepareHardenedNpm(join(root, "runtime"), options.hardenedNpm || {});
     return Object.freeze({
       cli: prepared.cli,
+      bin: createHardenedNpmLauncher(root, prepared.cli),
       version: prepared.version,
       undiciVersion: prepared.undiciVersion,
       braceExpansionVersion: prepared.braceExpansionVersion,

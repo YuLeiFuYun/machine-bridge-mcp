@@ -35,8 +35,14 @@ await expectReject(() => optionalString(null, "field", 10), "field must be a str
 assert(optionalString("", "field", 10) === "", "empty native string was not preserved");
 assert(JSON.stringify(browserPairingLaunchCommand("http://127.0.0.1/pair", "darwin"))
   === JSON.stringify({ cmd: "open", argv: ["http://127.0.0.1/pair"] }), "macOS pairing launcher command changed");
-assert(JSON.stringify(browserPairingLaunchCommand("http://127.0.0.1/pair", "win32"))
-  === JSON.stringify({ cmd: "cmd.exe", argv: ["/d", "/s", "/c", "start", "", "http://127.0.0.1/pair"] }), "Windows pairing launcher command changed");
+const windowsLaunch = browserPairingLaunchCommand("http://127.0.0.1/pair#broker_port=39393&grant=synthetic", "win32");
+assert(windowsLaunch.cmd === "powershell.exe" && windowsLaunch.argv.length === 4
+  && windowsLaunch.argv.slice(0, 3).join(" ") === "-NoProfile -NonInteractive -Command"
+  && windowsLaunch.argv[3] === "Start-Process -FilePath 'http://127.0.0.1/pair#broker_port=39393&grant=synthetic'",
+"Windows launcher must pass the complete fragment as one quoted URL");
+assert(browserPairingLaunchCommand("http://127.0.0.1/pair#grant=synthetic'&exit", "win32").argv[3]
+  === "Start-Process -FilePath 'http://127.0.0.1/pair#grant=synthetic''&exit'",
+"Windows URL apostrophe must remain inside the literal instead of terminating it");
 assert(JSON.stringify(browserPairingLaunchCommand("http://127.0.0.1/pair", "linux"))
   === JSON.stringify({ cmd: "xdg-open", argv: ["http://127.0.0.1/pair"] }), "Linux pairing launcher command changed");
 const pairingUnknown = publicError(browserPairingLaunchUnknown());

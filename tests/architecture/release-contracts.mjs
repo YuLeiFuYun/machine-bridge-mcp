@@ -1,3 +1,4 @@
+import { COVERAGE_FIXTURE_TESTS } from "../../scripts/check-runner.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
@@ -60,6 +61,56 @@ if ((cliActivateSource.match(/provisionInitialOwner: false/g) || []).length !== 
 }
 
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const expectedPackageScripts = [
+  ["browser-service-worker:test","node tests/browser-service-worker-test.mjs","browser service-worker behavior test is missing"],
+  ["browser-pairing-content:test","node tests/browser-pairing-content-test.mjs","browser pairing content bootstrap behavior test is missing"],
+  ["browser-pairing-launch:test","node tests/browser-pairing-launch-test.mjs","browser ephemeral pairing launch behavior test is missing"],
+  ["browser-cli-pairing:test","node tests/browser-cli-pairing-test.mjs","browser CLI pairing launch regression test is missing"],
+  ["resource-admission:test","node tests/resource-admission-test.mjs","machine-wide resource admission regression test is missing"],
+  ["resource-build-root:test","node tests/resource-build-root-test.mjs","shared build-root regression test is missing"],
+  ["browser-identity:test","node tests/browser-extension-identity-test.mjs","browser extension identity regression test is missing"],
+  ["service-platform:test","node tests/service-platform-test.mjs","cross-platform service quoting test is missing"],
+  ["coverage:test","node scripts/coverage-check.mjs","critical-module coverage gate is missing"],
+  ["check-plan:test","node tests/check-plan-test.mjs","layered check-plan regression test is missing"],
+  ["worker-deployment:test","node tests/worker-deployment-test.mjs","Worker deployment idempotency/proxy regression test is missing"],
+  ["policy-docs:check","node scripts/generate-policy-reference.mjs --check","generated policy documentation gate is missing"],
+  ["markdown:test","node tests/markdown-test.mjs","shared Markdown helper test is missing"],
+  ["project-metadata:test","node tests/project-metadata-test.mjs","project metadata helper test is missing"],
+  ["numbers:test","node tests/numbers-test.mjs","integer normalization helper test is missing"],
+  ["deadline:test","node tests/monotonic-deadline-test.mjs","monotonic deadline regression test is missing"],
+  ["oauth-browser:test","node tests/oauth-browser-navigation-test.mjs","real-browser OAuth navigation regression test is missing"],
+  ["records:test","node tests/records-test.mjs","plain-record helper test is missing"],
+  ["state-inventory:test","node tests/state-inventory-test.mjs","state inventory regression test is missing"],
+  ["worker:types","node scripts/generate-worker-types.mjs","generated Worker types are not isolated behind the cross-platform generator"],
+  ["worker:dry-run","node scripts/run-worker-dry-run.mjs","Worker deployment dry-run bypasses the bounded cf build and deploy adapter"],
+  ["typecheck:local","tsc -p tsconfig.local.json --noEmit","local JavaScript contract typecheck is missing"],
+  ["tool-docs:check","node scripts/generate-tool-reference.mjs --check","generated MCP tool documentation gate is missing"],
+  ["commit-message:test","node tests/commit-message-test.mjs","commit-message policy regression test is missing"],
+  ["logging-structure:test","node tests/logging-structure-test.mjs","structured logging regression test is missing"],
+  ["sarif-security:test","node tests/sarif-security-gate-test.mjs","SARIF security gate regression test is missing"],
+  ["security-properties:test","node tests/security-properties-test.js","security property test suite is missing"],
+  ["shell:test","node tests/shell-test.mjs","Wrangler executable boundary regression test is missing"],
+  ["runtime-handlers:test","node tests/runtime-handler-matrix-test.mjs","runtime handler matrix test is missing"],
+  ["runtime-boundaries:test","node tests/runtime-boundaries-test.mjs","extracted runtime boundary test is missing"],
+  ["release-publication-guard:test","node tests/release-publication-guard-test.mjs","GitHub publication ownership test is missing"],
+  ["release-oauth-canary:test","node tests/release-oauth-canary-test.mjs","deployed OAuth canary regression test is missing"],
+  ["release:oauth-canary","node scripts/release-oauth-canary.mjs","deployed OAuth canary release command is missing"],
+  ["worker-oauth-controller:test","node tests/worker-oauth-controller-test.mjs","Worker OAuth controller state-machine test is missing"],
+  ["cli-entrypoint:test","node tests/cli-entrypoint-test.mjs","CLI entrypoint regression test is missing"],
+  ["cli-service:test","node tests/cli-service-test.mjs","CLI service adapter regression test is missing"],
+  ["service-restart:test","node tests/service-restart-handoff-test.mjs","service restart/status boundary regression test is missing"],
+  ["capability-ranking:test","node tests/capability-ranking-test.mjs","capability ranking regression test is missing"],
+  ["release:acceptance:test","node tests/release-acceptance-test.mjs","local release acceptance regression test is missing"],
+  ["release:candidate","node scripts/local-release-acceptance.mjs --prepare","release candidate command is missing or bypasses exact candidate preparation"],
+  ["release:candidate:start","node scripts/start-release-candidate.mjs","isolated candidate startup command is missing"],
+  ["release","node scripts/github-release.mjs --publish","source release command is missing"],
+  ["release:accept","node scripts/local-release-acceptance.mjs --record","candidate acceptance command is missing"],
+  ["release:acceptance:verify","node scripts/local-release-acceptance.mjs --verify","release acceptance verification command is missing"],
+  ["github:push","node scripts/github-push.mjs","guarded GitHub push command is missing"],
+];
+for (const [name, command, failure] of expectedPackageScripts) {
+  if (packageJson.scripts?.[name] !== command) throw new Error(failure);
+}
 const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
 const workflowBundleLifecycle = JSON.parse(readFileSync(join(root, "workflow-bundle.json"), "utf8"));
 const trackedRepositoryFiles = new Set(
@@ -169,31 +220,10 @@ const allowedWorkerdScripts = Object.entries(packageJson.allowScripts || {})
 if (allowedWorkerdScripts.length !== 1 || allowedWorkerdScripts[0] !== `workerd@${resolvedWorkerdVersion}`) {
   throw new Error("the reviewed workerd lifecycle-script allowlist does not exactly match package-lock");
 }
-if (packageJson.scripts?.["browser-service-worker:test"] !== "node tests/browser-service-worker-test.mjs") throw new Error("browser service-worker behavior test is missing");
-if (packageJson.scripts?.["browser-pairing-content:test"] !== "node tests/browser-pairing-content-test.mjs") throw new Error("browser pairing content bootstrap behavior test is missing");
-if (packageJson.scripts?.["browser-pairing-launch:test"] !== "node tests/browser-pairing-launch-test.mjs") throw new Error("browser ephemeral pairing launch behavior test is missing");
-if (packageJson.scripts?.["browser-cli-pairing:test"] !== "node tests/browser-cli-pairing-test.mjs") throw new Error("browser CLI pairing launch regression test is missing");
-if (packageJson.scripts?.["resource-admission:test"] !== "node tests/resource-admission-test.mjs") throw new Error("machine-wide resource admission regression test is missing");
-if (packageJson.scripts?.["resource-build-root:test"] !== "node tests/resource-build-root-test.mjs") throw new Error("shared build-root regression test is missing");
-if (packageJson.scripts?.["browser-identity:test"] !== "node tests/browser-extension-identity-test.mjs") throw new Error("browser extension identity regression test is missing");
-if (packageJson.scripts?.["service-platform:test"] !== "node tests/service-platform-test.mjs") throw new Error("cross-platform service quoting test is missing");
-if (packageJson.scripts?.["coverage:test"] !== "node scripts/coverage-check.mjs") throw new Error("critical-module coverage gate is missing");
-if (packageJson.scripts?.["check-plan:test"] !== "node tests/check-plan-test.mjs") throw new Error("layered check-plan regression test is missing");
-if (packageJson.scripts?.["worker-deployment:test"] !== "node tests/worker-deployment-test.mjs") throw new Error("Worker deployment idempotency/proxy regression test is missing");
-if (packageJson.scripts?.["policy-docs:check"] !== "node scripts/generate-policy-reference.mjs --check") throw new Error("generated policy documentation gate is missing");
-if (packageJson.scripts?.["markdown:test"] !== "node tests/markdown-test.mjs") throw new Error("shared Markdown helper test is missing");
-if (packageJson.scripts?.["project-metadata:test"] !== "node tests/project-metadata-test.mjs") throw new Error("project metadata helper test is missing");
-if (packageJson.scripts?.["numbers:test"] !== "node tests/numbers-test.mjs") throw new Error("integer normalization helper test is missing");
-if (packageJson.scripts?.["deadline:test"] !== "node tests/monotonic-deadline-test.mjs") throw new Error("monotonic deadline regression test is missing");
-if (packageJson.scripts?.["oauth-browser:test"] !== "node tests/oauth-browser-navigation-test.mjs") throw new Error("real-browser OAuth navigation regression test is missing");
-if (packageJson.scripts?.["records:test"] !== "node tests/records-test.mjs") throw new Error("plain-record helper test is missing");
-if (packageJson.scripts?.["state-inventory:test"] !== "node tests/state-inventory-test.mjs") throw new Error("state inventory regression test is missing");
 if (packageJson.scripts?.["state-root-retirement:test"] !== "node tests/state-root-retirement-test.mjs" || !FAST_CHECK_TASKS.includes("state-root-retirement:test")) throw new Error("state-root generation-removal regression is missing from the fast gate");
 for (const file of ["generate-worker-types.mjs", "run-worker-dry-run.mjs", "wrangler-command-lifecycle.mjs"]) {
   if (!existsSync(join(root, "scripts", file))) throw new Error(`bounded Wrangler command lifecycle file is missing: ${file}`);
 }
-if (packageJson.scripts?.["worker:types"] !== "node scripts/generate-worker-types.mjs") throw new Error("generated Worker types are not isolated behind the cross-platform generator");
-if (packageJson.scripts?.["worker:dry-run"] !== "node scripts/run-worker-dry-run.mjs") throw new Error("Worker deployment dry-run bypasses the bounded cf build and deploy adapter");
 const workerTypesGeneratorSource = readFileSync(join(root, "scripts", "generate-worker-types.mjs"), "utf8");
 const workerToolCatalogSource = readFileSync(join(root, "src", "worker", "tool-catalog.ts"), "utf8");
 const workerHostedManagedJobSchemaSource = readFileSync(join(root, "src", "worker", "managed-job-hosted-schema.ts"), "utf8");
@@ -311,26 +341,10 @@ for (const required of [
 if (wranglerLifecycleSource.includes("killed !== true")) {
   throw new Error("Wrangler lifecycle again treats a kill-request return value as process-settlement proof");
 }
-if (packageJson.scripts?.["typecheck:local"] !== "tsc -p tsconfig.local.json --noEmit") throw new Error("local JavaScript contract typecheck is missing");
 if (!String(packageJson.scripts?.typecheck || "").includes("npm run typecheck:local")) throw new Error("complete typecheck omits local JavaScript contracts");
-if (packageJson.scripts?.["tool-docs:check"] !== "node scripts/generate-tool-reference.mjs --check") throw new Error("generated MCP tool documentation gate is missing");
-if (packageJson.scripts?.["commit-message:test"] !== "node tests/commit-message-test.mjs") throw new Error("commit-message policy regression test is missing");
-if (packageJson.scripts?.["logging-structure:test"] !== "node tests/logging-structure-test.mjs") throw new Error("structured logging regression test is missing");
-if (packageJson.scripts?.["sarif-security:test"] !== "node tests/sarif-security-gate-test.mjs") throw new Error("SARIF security gate regression test is missing");
-if (packageJson.scripts?.["security-properties:test"] !== "node tests/security-properties-test.js") throw new Error("security property test suite is missing");
-if (packageJson.scripts?.["shell:test"] !== "node tests/shell-test.mjs") throw new Error("Wrangler executable boundary regression test is missing");
-if (packageJson.scripts?.["runtime-handlers:test"] !== "node tests/runtime-handler-matrix-test.mjs") throw new Error("runtime handler matrix test is missing");
-if (packageJson.scripts?.["runtime-boundaries:test"] !== "node tests/runtime-boundaries-test.mjs") throw new Error("extracted runtime boundary test is missing");
-if (packageJson.scripts?.["release-publication-guard:test"] !== "node tests/release-publication-guard-test.mjs") throw new Error("GitHub publication ownership test is missing");
-if (packageJson.scripts?.["release-oauth-canary:test"] !== "node tests/release-oauth-canary-test.mjs") throw new Error("deployed OAuth canary regression test is missing");
-if (packageJson.scripts?.["release:oauth-canary"] !== "node scripts/release-oauth-canary.mjs") throw new Error("deployed OAuth canary release command is missing");
 if (packageJson.scripts?.["prerelease:oauth-canary"] || packageJson.scripts?.["postrelease:oauth-canary"]) {
   throw new Error("release OAuth canary must not acquire implicit npm pre/post lifecycle work");
 }
-if (packageJson.scripts?.["worker-oauth-controller:test"] !== "node tests/worker-oauth-controller-test.mjs") throw new Error("Worker OAuth controller state-machine test is missing");
-if (packageJson.scripts?.["cli-entrypoint:test"] !== "node tests/cli-entrypoint-test.mjs") throw new Error("CLI entrypoint regression test is missing");
-if (packageJson.scripts?.["cli-service:test"] !== "node tests/cli-service-test.mjs") throw new Error("CLI service adapter regression test is missing");
-if (packageJson.scripts?.["service-restart:test"] !== "node tests/service-restart-handoff-test.mjs") throw new Error("service restart/status boundary regression test is missing");
 const stateSource = readLfSource("src", "local", "state.mjs");
 const daemonProcessSource = readFileSync(join(root, "src", "local", "daemon-process.mjs"), "utf8");
 const stateInventorySource = readFileSync(join(root, "src", "local", "state-inventory.mjs"), "utf8");
@@ -362,7 +376,6 @@ if (!cliSource.includes('promptOnFirstRun ? defaultFirstRunWorkspace() : process
     || !stateSource.includes('path.join(home, "MachineBridge")')) {
   throw new Error("Windows first-run workspace prompt/default behavior is missing");
 }
-if (packageJson.scripts?.["capability-ranking:test"] !== "node tests/capability-ranking-test.mjs") throw new Error("capability ranking regression test is missing");
 if (packageJson.scripts?.syntax !== "node scripts/syntax-check.mjs") {
   throw new Error("package syntax check is not using the dynamic repository scanner");
 }
@@ -446,7 +459,6 @@ if (!workerTypesGeneratorTestSource.includes("maxRetries: 5")
 for (const required of ["install:test", "oauth-browser:test", "coverage:test", "worker:integration-test", "promotion-digest:test", "published-release:test"]) {
   if (!FULL_CHECK_TASKS.includes(required)) throw new Error(`full check plan omits required task: ${required}`);
 }
-if (packageJson.scripts?.["release:acceptance:test"] !== "node tests/release-acceptance-test.mjs") throw new Error("local release acceptance regression test is missing");
 for (const [name, command] of Object.entries({
   "release-channel:test": "node tests/release-channel-test.mjs",
   "release-candidate-manifest:test": "node tests/release-candidate-manifest-test.mjs",
@@ -485,7 +497,6 @@ for (const lifecycle of ["prepare", "postpack", "prepublish", "publish", "postpu
     throw new Error(`package lifecycle ${lifecycle} is incompatible with exact accepted-tarball publication`);
   }
 }
-if (packageJson.scripts?.["release:candidate"] !== "node scripts/local-release-acceptance.mjs --prepare") throw new Error("release candidate command is missing or bypasses exact candidate preparation");
 const verificationStateSource = readFileSync(join(root, "scripts", "verification-state.mjs"), "utf8");
 const runChecksSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const localReleaseAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
@@ -498,7 +509,6 @@ for (const required of ["assertFreshFullVerificationReceipt", "full verification
   }
 }
 if (!localReleaseAcceptanceSource.includes("assertFreshFullVerificationReceipt(root)")) throw new Error("candidate preparation no longer consumes the frozen-tree full verification receipt");
-if (packageJson.scripts?.["release:candidate:start"] !== "node scripts/start-release-candidate.mjs") throw new Error("isolated candidate startup command is missing");
 const coverageRunnerSource = readFileSync(join(root, "scripts", "coverage-check.mjs"), "utf8");
 const coverageCheckRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 for (const required of ["MBM_CHECK_FULL_COVERAGE_CONTEXT", "producer_pid", "process.ppid", "completed_tasks", "precollectedCoverageTests", "ownsCoverageDir", "NODE_V8_COVERAGE", "COVERAGE_FIXTURE_TESTS", "directNodeInvocation"]) {
@@ -510,21 +520,21 @@ for (const required of ["mkdtempSync", "writeFileSync", "captureCoverageGenerati
 for (const required of ["COVERAGE_FIXTURE_TESTS", "taskEnvironments", "taskEnvironmentFor", "verificationChildEnvironment(mergedEnvironment)", "export function directNodeInvocation"]) {
   if (!coverageCheckRunnerSource.includes(required)) throw new Error(`check runner lost curated per-task coverage environment boundary: ${required}`);
 }
-for (const required of ['"tests/prerelease-activation-test.mjs"', '"src/shared/activation-recovery.mjs"']) {
+for (const required of ['"src/shared/activation-recovery.mjs"']) {
   if (!coverageRunnerSource.includes(required)) throw new Error(`critical release recovery coverage lost boundary: ${required}`);
 }
 if (!coverageRunnerSource.includes("maxRetries") || !coverageRunnerSource.includes("retryDelay")) {
   throw new Error("coverage temporary-directory cleanup lost its concurrent-writer retry boundary");
 }
-for (const fixture of ["tests/secure-file-test.mjs", "tests/worker-secret-file-test.mjs", "tests/atomic-fs-test.mjs", "tests/state-root-retirement-test.mjs"]) {
-  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical filesystem coverage lost direct fault fixture: ${fixture}`);
+for (const fixture of ["tests/prerelease-activation-test.mjs", "tests/secure-file-test.mjs", "tests/worker-secret-file-test.mjs", "tests/atomic-fs-test.mjs", "tests/state-root-retirement-test.mjs"]) {
+  if (!COVERAGE_FIXTURE_TESTS.includes(fixture)) throw new Error(`critical filesystem coverage lost direct fault fixture: ${fixture}`);
 }
 if (!coverageRunnerSource.includes('"src/local/state-root-retirement.mjs"')) throw new Error("critical state-root generation-removal coverage threshold is missing");
 for (const fixture of [
   "tests/process-nonreplayable-test.mjs", "tests/browser-bridge-test.mjs", "tests/browser-request-settlement-test.mjs",
   "tests/browser-operation-service-test.mjs", "tests/browser-computer-observation-test.mjs", "tests/computer-use-test.mjs", "tests/computer-use-result-budget-test.mjs",
 ]) {
-  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical Computer Use settlement coverage lost direct fixture: ${fixture}`);
+  if (!COVERAGE_FIXTURE_TESTS.includes(fixture)) throw new Error(`critical Computer Use settlement coverage lost direct fixture: ${fixture}`);
 }
 for (const threshold of [
   '"src/local/process-nonreplayable-settlement.mjs"',
@@ -541,7 +551,7 @@ for (const required of ["pinDirectoryGeneration", "O_NOFOLLOW", "O_DIRECTORY", "
   if (!stateRootRetirementSource.includes(required)) throw new Error(`state-root retirement lost POSIX descriptor generation pin: ${required}`);
 }
 for (const fixture of ["tests/coverage-range-merge-test.mjs", "tests/coverage-generation-test.mjs"]) {
-  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical coverage evidence lost self-test fixture: ${fixture}`);
+  if (!COVERAGE_FIXTURE_TESTS.includes(fixture)) throw new Error(`critical coverage evidence lost self-test fixture: ${fixture}`);
 }
 for (const required of ["captureCoverageGeneration", "generationBefore", "generationAfter", "mergeFunctionExecutions"]) {
   if (!coverageRunnerSource.includes(required)) throw new Error(`critical coverage evidence lost generation/range contract: ${required}`);
@@ -564,7 +574,7 @@ for (const required of ["managedJobTestRunnerForCoordinatorRoot", 'AGENT_RESOURC
   }
 }
 for (const fixture of ["tests/resource-admission-test.mjs", "tests/resource-build-root-test.mjs"]) {
-  if (!coverageRunnerSource.includes(fixture)) throw new Error(`critical resource coverage lost direct scheduler fixture: ${fixture}`);
+  if (!COVERAGE_FIXTURE_TESTS.includes(fixture)) throw new Error(`critical resource coverage lost direct scheduler fixture: ${fixture}`);
 }
 for (const threshold of [
   '"src/local/resource-admission.mjs"', '"src/local/resource-admission-policy.mjs"',
@@ -691,7 +701,9 @@ if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
     || !localSelfTestSource.includes('[process.execPath, "--version"]')
     || localSelfTestSource.includes("CLI_FIXTURE_WAIT_ATTEMPTS")
     || !localSelfTestSource.includes("function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS)")
-    || !localSelfTestSource.includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
+    || !localSelfTestSource.includes("return waitForFixtureExit(child, timeoutMs);")
+    || !localSelfTestSource.includes("fixtureLifecycleSelfTest")
+    || !readFileSync(join(root, "tests", "fixtures", "child-fixture.mjs"), "utf8").includes('child.once("exit", onExit);\n    if (child.exitCode !== null || child.signalCode !== null) onExit();')
     || !localSelfTestSource.includes("local self-test phase started:")
     || !localSelfTestSource.includes("local self-test phase completed:")) {
   throw new Error("runtime/local self-test lost deterministic host-pressure isolation, child-exit bounds, or phase observability");
@@ -699,19 +711,17 @@ if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
 if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAccessSource.includes("TERMINAL_JOB_STATES")) {
   throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
 }
-const checkRunnerSource = readFileSync(join(root, "scripts", "check-runner.mjs"), "utf8");
 for (const required of ["SPARSE_PROGRESS_TASKS", "local self-test phase started:", "local self-test phase completed:", "sparseLineForwarder"]) {
-  if (!checkRunnerSource.includes(required)) throw new Error(`check runner lost sparse self-test phase observability: ${required}`);
+  if (!coverageCheckRunnerSource.includes(required)) throw new Error(`check runner lost sparse self-test phase observability: ${required}`);
 }
 const verificationEnvironmentSource = readFileSync(join(root, "scripts", "verification-environment.mjs"), "utf8");
-if (!checkRunnerSource.includes("verificationChildEnvironment")
+if (!coverageCheckRunnerSource.includes("verificationChildEnvironment")
     || !coverageRunnerSource.includes("verificationChildEnvironment")
     || !verificationEnvironmentSource.includes("key.toUpperCase()")
     || ["MBM_DEBUG", "MBM_MACOS_BACKGROUND_VISUAL_BACKEND", "MBM_MACOS_TRUST_BROKER", "MBM_RELAY_FALLBACK_PROXY", "MBM_RELAY_PROXY"]
       .some((key) => !verificationEnvironmentSource.includes(`"${key}"`))) {
   throw new Error("verification runners lost case-insensitive isolation from owner runtime configuration");
 }
-const checkEntrypointSource = readFileSync(join(root, "scripts", "run-checks.mjs"), "utf8");
 const verificationIdleSleepGuardSource = readFileSync(join(root, "scripts", "verification-idle-sleep-guard.mjs"), "utf8");
 const macosIdleSleepAssertionSource = readFileSync(join(root, "src", "local", "macos-idle-sleep-assertion.mjs"), "utf8");
 const macosIdleSleepRecoverySource = readFileSync(join(root, "src", "local", "macos-idle-sleep-recovery.mjs"), "utf8");
@@ -849,6 +859,7 @@ if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
     || !runtimeDiagnosticStateSource.includes('idle_sleep_guard: state.idleSleepGuard ?? null')) {
   throw new Error("runtime remote-activity idle-sleep guard lost its bounded fixed-command lifecycle or diagnostic projection");
 }
+const deviceSessionStopIndex = runtimeSource.lastIndexOf("this.deviceSession?.stop();");
 if (!runtimeDeviceSessionSource.includes("DEVICE_SESSION_RENEW_BEFORE_MS = 10 * 60_000")
     || !runtimeDeviceSessionSource.includes("DEVICE_SESSION_RETRY_MS = Object.freeze([1_000, 5_000, 30_000, 5 * 60_000])")
     || !runtimeDeviceSessionSource.includes('this.rotate("authentication_boundary", false)')
@@ -861,16 +872,18 @@ if (!runtimeDeviceSessionSource.includes("DEVICE_SESSION_RENEW_BEFORE_MS = 10 * 
     || !resilientRelayConnectionSource.includes('this.websocket.interrupt("relay_session_rotated")')
     || !resilientRelayConnectionSource.includes('this.http.interrupt("relay_session_rotated")')
     || !runtimeSource.includes("this.deviceSession?.start();")
-    || runtimeSource.lastIndexOf("this.deviceSession?.stop();") > runtimeSource.indexOf("await this.relayShutdownDrain?.begin")) {
+    || deviceSessionStopIndex < 0 || deviceSessionStopIndex > plannedDrainIndex) {
   throw new Error("runtime device-session rollover lost its portable-root renewal, shared transport identity, shutdown, or fail-closed documentation contract");
 }
 const processSessionAdmissionIndex = processSessionsSource.indexOf("const admitted = await acquireProcessResources");
 const processSessionActivityIndex = processSessionsSource.indexOf("beginRemoteProcessSessionActivity(context, this.remoteActivityGuard)");
+const processSessionDrainIndex = runtimeSource.indexOf("await this.processSessionManager.clearAndWait();");
+const remoteActivityStopIndex = runtimeSource.lastIndexOf("this.remoteActivityIdleSleepGuard.stop();");
 if (!processSessionRemoteActivitySource.includes('context?.origin !== "relay"')
     || !runtimeSource.includes('remoteActivityGuard: this.remoteActivityIdleSleepGuard')
     || processSessionAdmissionIndex < 0 || processSessionActivityIndex <= processSessionAdmissionIndex
     || !processSessionsSource.includes('endRemoteProcessSessionActivity(remoteActivityHeld, this.remoteActivityGuard);')
-    || runtimeSource.lastIndexOf("this.remoteActivityIdleSleepGuard.stop();") < runtimeSource.indexOf("await this.processSessionManager.clearAndWait();")) {
+    || processSessionDrainIndex < 0 || remoteActivityStopIndex <= processSessionDrainIndex) {
   throw new Error("remote process-session idle-sleep activity lost its post-admission child-lifetime ownership boundary");
 }
 const managedJobClaimIndex = managedJobRunnerSource.indexOf("await confirmRunnerClaim({");
@@ -883,18 +896,18 @@ if (managedJobClaimIndex < 0 || managedJobRemoteOwnerIndex <= managedJobClaimInd
     || !managedJobRunnerSource.includes("managed job idle-sleep assertion unavailable: error_class=")) {
   throw new Error("managed-job runner idle-sleep assertion lost its confirmed-ownership lifetime or coarse failure logging");
 }
-if (!checkEntrypointSource.includes("runVerificationPlan")
-    || !checkEntrypointSource.includes("runWithStableGeneration")
-    || !checkEntrypointSource.includes("captureVerificationRunGeneration")
-    || !checkEntrypointSource.includes("captureVerifiedSourceGeneration")
+if (!runChecksSource.includes("runVerificationPlan")
+    || !runChecksSource.includes("runWithStableGeneration")
+    || !runChecksSource.includes("captureVerificationRunGeneration")
+    || !runChecksSource.includes("captureVerifiedSourceGeneration")
     || !verificationStateSource.includes("captureCoverageGeneration")
     || !verificationStateSource.includes('"docs"')
     || !verificationStateSource.includes('".github"')
     || !verificationStateSource.includes('"release-acceptance"')
-    || !checkEntrypointSource.includes('value !== undefined && value !== ""')
-    || !checkEntrypointSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
-    || !checkEntrypointSource.includes("Math.min(4, availableParallelism())")
-    || !checkEntrypointSource.includes("rerunVerificationUnderIdleSleepGuard")
+    || !runChecksSource.includes('value !== undefined && value !== ""')
+    || !runChecksSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
+    || !runChecksSource.includes("Math.min(4, availableParallelism())")
+    || !runChecksSource.includes("rerunVerificationUnderIdleSleepGuard")
     || !verificationIdleSleepGuardSource.includes('"/usr/bin/caffeinate"')
     || !verificationIdleSleepGuardSource.includes('["-i", executable, ...argv]')
     || !verificationIdleSleepGuardSource.includes("MBM_CHECK_IDLE_SLEEP_GUARD")
@@ -903,33 +916,32 @@ if (!checkEntrypointSource.includes("runVerificationPlan")
     || !checkRunnerTestSource.includes("non-macOS verification spawned caffeinate")
     || !verificationGenerationGuardSource.includes("if (after !== before)")
     || !verificationGenerationGuardSource.includes("discard this run")
-    || !checkRunnerSource.includes("process.execPath")
-    || !checkRunnerSource.includes("npmCli")
-    || checkRunnerSource.includes("npm.cmd")) {
+    || !coverageCheckRunnerSource.includes("process.execPath")
+    || !coverageCheckRunnerSource.includes("npmCli")
+    || coverageCheckRunnerSource.includes("npm.cmd")) {
   throw new Error("cross-platform check runner, frozen-input guard, or bounded concurrency contract drifted");
 }
-const localAcceptanceSource = readFileSync(join(root, "scripts", "local-release-acceptance.mjs"), "utf8");
 const directCandidateVerifyCommand = "node scripts/start-release-candidate.mjs --install-only";
 const activatedRuntimeCanaryCommand = "node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary";
 for (const required of ["GIT_INDEX_FILE", "resolveTrustedGitExecutable", "createHardenedNpmSession", "runWithHardenedNpm", "packProject(root, candidateDirectory, { npmCli", "verifyCurrentReleaseAcceptance(root, { npmCli", "readReleaseOAuthCanaryEvidence", 'git, ["read-tree", "HEAD"]', 'git, ["add", "--all"', "--print-digest", "package_content_sha256", directCandidateVerifyCommand, activatedRuntimeCanaryCommand, "activation record runtime_entry"]) {
-  if (!localAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest/runtime-canary boundary: ${required}`);
+  if (!localReleaseAcceptanceSource.includes(required)) throw new Error(`local acceptance recorder lost portable digest/runtime-canary boundary: ${required}`);
 }
-for (const file of ["AGENTS.md", "CONTRIBUTING.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md"]) {
-  if (!readFileSync(join(root, file), "utf8").includes(activatedRuntimeCanaryCommand)) {
-    throw new Error(`release workflow documentation lost the activated-runtime OAuth canary command: ${file}`);
-  }
+if (!readFileSync(join(root, "docs/RELEASING.md"), "utf8").includes(activatedRuntimeCanaryCommand)) {
+  throw new Error("canonical release procedure lost the activated-runtime OAuth canary command");
 }
-const releaseOauthCanarySource = readFileSync(join(root, "scripts", "release-oauth-canary.mjs"), "utf8");
+if (!readFileSync(join(root, "docs/ENGINEERING.md"), "utf8").includes("[RELEASING.md](RELEASING.md)")) {
+  throw new Error("engineering guide lost the canonical release procedure link");
+}
 const releaseOauthCanaryCore = readFileSync(join(root, "scripts", "release-oauth-canary-core.mjs"), "utf8");
 const releaseOauthCanaryEvidence = readFileSync(join(root, "scripts", "release-oauth-canary-evidence.mjs"), "utf8");
 for (const required of ["--allow-live-oauth-canary", "assertCandidateMatchesCurrentSource", "readPrereleaseActivation", "runReleaseOAuthCanaryFlow", "writeReleaseOAuthCanaryEvidence"]) {
-  if (!releaseOauthCanarySource.includes(required)) throw new Error(`deployed OAuth canary runner lost candidate/live boundary: ${required}`);
+  if (!releaseControlCanarySource.includes(required)) throw new Error(`deployed OAuth canary runner lost candidate/live boundary: ${required}`);
 }
 for (const required of ["role: \"reviewer\"", "authorization-code token exchange", "refresh-token exchange", "authenticated MCP", "stale client discovery", "stale account discovery", "admin.removeClient", "admin.remove", "temporary state cleanup was incomplete"]) {
   if (!releaseOauthCanaryCore.includes(required)) throw new Error(`deployed OAuth canary core lost flow/cleanup boundary: ${required}`);
 }
 for (const forbidden of ["console.log(password", "console.log(accessToken", "console.log(refreshToken", "account_password:", "access_token:", "refresh_token:"]) {
-  if (releaseOauthCanarySource.includes(forbidden)) throw new Error(`deployed OAuth canary runner may expose credential material: ${forbidden}`);
+  if (releaseControlCanarySource.includes(forbidden)) throw new Error(`deployed OAuth canary runner may expose credential material: ${forbidden}`);
 }
 for (const required of ["readBoundedRegularFileSync", "rejectMultipleLinks: true", "integrity", "promotion_content_sha256", "cleanup_completed"]) {
   if (!releaseOauthCanaryEvidence.includes(required)) throw new Error(`deployed OAuth canary evidence lost binding/privacy boundary: ${required}`);
@@ -939,7 +951,6 @@ const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-
 if (!workerDeploymentSource.includes('export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs"')) {
   throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
 }
-const cfAuthenticationSource = readFileSync(join(root, "src", "local", "cf-authentication.mjs"), "utf8");
 const workerAuthProbe = workerDeploymentSource.indexOf("await ensureCfAuthenticated(");
 const workerDeployStart = workerDeploymentSource.indexOf('logger.info?.("Deploying Cloudflare Worker")');
 if (workerAuthProbe < 0 || workerDeployStart < workerAuthProbe
@@ -948,9 +959,8 @@ if (workerAuthProbe < 0 || workerDeployStart < workerAuthProbe
     || !workerDeploymentSource.includes("withCfProjectFn(sourceSnapshot")) {
   throw new Error("Worker deployment lost cf authentication, unattended-login guard, or private source staging");
 }
-for (const required of ["cfAuthenticationResult", "value.authenticated !== true", "value.tokenValid === false", '["auth", "whoami"]', '["auth", "login"]', "worker_authentication_required", "sideEffectsStarted = false"]) {
-  if (!cfAuthenticationSource.includes(required)) throw new Error("cf authentication boundary drifted: " + required);
-}
+// Cloudflare authentication denial, malformed evidence and unattended-login
+// behavior are covered by cf-project:test rather than expression spelling.
 for (const required of ["mbm-worker-deploy-cf-v6", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
   if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed cf v6 boundary: ${required}`);
 }
@@ -983,20 +993,15 @@ if (!publicationGuardSource.includes("resolveTrustedGitExecutable") || publicati
 if (!releaseSoakSource.includes("resolveTrustedGitExecutable") || releaseSoakSource.includes('run("git"')) {
   throw new Error("release soak evidence regained PATH-resolved Git tag lookup");
 }
-if (packageJson.scripts?.release !== "node scripts/github-release.mjs --publish") throw new Error("source release command is missing");
 if (Object.hasOwn(packageJson.scripts || {}, "release:publish")) throw new Error("removed release:publish alias returned to the live npm command surface");
-if (packageJson.scripts?.["release:accept"] !== "node scripts/local-release-acceptance.mjs --record") throw new Error("candidate acceptance command is missing");
-if (packageJson.scripts?.["release:acceptance:verify"] !== "node scripts/local-release-acceptance.mjs --verify") throw new Error("release acceptance verification command is missing");
-if (packageJson.scripts?.["github:push"] !== "node scripts/github-push.mjs") throw new Error("guarded GitHub push command is missing");
 const githubReleaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
-const githubPublicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
 if (!githubReleaseSource.includes("withGithubPublicationLock")) throw new Error("GitHub release helper lost publication serialization");
 for (const forbidden of ["assertGithubPublicationAuthorized", "--owner-confirm"]) {
   if (githubReleaseSource.includes(forbidden)) throw new Error(`GitHub release helper regained a conversational authorization gate: ${forbidden}`);
 }
 for (const required of [
   "stageAcceptedCandidateTarball", "candidate.path", "artifactSha256",
-  "createHardenedNpmSession", "runNpmScript", "nestedNpmEnvironment",
+  "createHardenedNpmSession", "runNpmScript", "nestedNpmEnvironment(process.env, { bin: npmSession.bin })",
   "runExecutable", "hardTimeout: true",
   "exactReleaseHead", "revalidateReleaseHead", "releaseHead",
   "githubReleaseByTagEndpoint", "waitForGithubReleaseAsset", 'gh, ["api"',
@@ -1006,11 +1011,11 @@ for (const required of [
 ]) {
   if (!githubReleaseSource.includes(required)) throw new Error(`GitHub release helper lost exact accepted-asset boundary: ${required}`);
 }
-for (const forbidden of ["installSourceDependencyTree", "sourceDependencyTreeInstallArguments", 'runNpmScript(npmSession.cli, "check")']) {
+for (const forbidden of ["installSourceDependencyTree", "sourceDependencyTreeInstallArguments", 'runNpmScript(npmSession.cli, "check")', 'runNpmScript(npmSession, "check")']) {
   if (githubReleaseSource.includes(forbidden)) throw new Error(`GitHub release regained duplicate post-merge local verification: ${forbidden}`);
 }
 const githubCiProof = githubReleaseSource.indexOf("await waitForSuccessfulCi(releaseHead)");
-const githubVersionCheck = githubReleaseSource.indexOf('await runNpmScript(npmSession.cli, "version:check")');
+const githubVersionCheck = githubReleaseSource.indexOf('await runNpmScript(npmSession, "version:check")');
 const githubAcceptanceVerification = githubReleaseSource.indexOf("assertLocalAcceptance(npmSession.cli)");
 if ([githubCiProof, githubVersionCheck, githubAcceptanceVerification].some((value) => value < 0)
     || githubCiProof > githubVersionCheck
@@ -1048,10 +1053,10 @@ for (const required of ["tag_name", "matches.length !== 1", "sha256:", "expected
   if (!githubAssetSource.includes(required)) throw new Error(`GitHub release asset verifier lost required boundary: ${required}`);
 }
 for (const required of ["withOwnerStateLock", "--git-common-dir", "github-publication", "github-publication.lock"]) {
-  if (!githubPublicationGuardSource.includes(required)) throw new Error(`GitHub publication guard lost required boundary: ${required}`);
+  if (!publicationGuardSource.includes(required)) throw new Error(`GitHub publication guard lost required boundary: ${required}`);
 }
 for (const forbidden of ["explicit owner authorization", "--owner-confirm", "isTTY"]) {
-  if (githubPublicationGuardSource.includes(forbidden)) throw new Error(`GitHub publication lock regained a conversational/TTY authorization boundary: ${forbidden}`);
+  if (publicationGuardSource.includes(forbidden)) throw new Error(`GitHub publication lock regained a conversational/TTY authorization boundary: ${forbidden}`);
 }
 const publicationLockCall = githubReleaseSource.lastIndexOf("await withGithubPublicationLock");
 const prereleasePublishCall = githubReleaseSource.lastIndexOf("publishCurrent({ prereleaseMode: true })");
@@ -1205,12 +1210,11 @@ if (!npmGlobalPrefixSource.includes("releaseCommandFailure") || npmGlobalPrefixS
   throw new Error("npm global prefix failures again expose raw process output");
 }
 const hardenedNpmSessionSource = readFileSync(join(root, "scripts", "hardened-npm-session.mjs"), "utf8");
-const candidateStartSourceForSettlement = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
 const publishedInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
 if (!hardenedNpmSessionSource.includes("export function settleHardenedNpmSession")
-    || !candidateStartSourceForSettlement.includes("settleHardenedNpmSession(")
+    || !candidateStartSource.includes("settleHardenedNpmSession(")
     || !publishedInstallSource.includes("settleHardenedNpmSession(")
-    || candidateStartSourceForSettlement.includes("new AggregateError([primaryError, cleanupError]")
+    || candidateStartSource.includes("new AggregateError([primaryError, cleanupError]")
     || publishedInstallSource.includes("new AggregateError([primaryError, cleanupError]")) {
   throw new Error("hardened npm session settlement is no longer centralized across owner activation entrypoints");
 }
@@ -1222,21 +1226,20 @@ for (const required of [
 ]) {
   if (!acceptedCandidateSource.includes(required)) throw new Error(`accepted candidate staging lost required boundary: ${required}`);
 }
-const publishedPrereleaseInstallSource = readFileSync(join(root, "scripts", "install-published-prerelease.mjs"), "utf8");
 for (const required of ["createHardenedNpmSession", "resolveNpmGlobalPrefix", "readGithubPrerelease", "expectedArtifactSha256: acceptance.artifactSha256", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--include=prod", "validateActivationRecoveryPayload", "globalInstallAttempted", "globalInstallCompleted", "may have changed the installed package", "withReleaseRuntimeLock", "Browser soak reminder: reload the unpacked Machine Bridge extension"]) {
-  if (!publishedPrereleaseInstallSource.includes(required)) throw new Error(`published prerelease installation lost hardened activation boundary: ${required}`);
+  if (!publishedInstallSource.includes(required)) throw new Error(`published prerelease installation lost hardened activation boundary: ${required}`);
 }
-const publishedAcceptanceCheck = publishedPrereleaseInstallSource.indexOf("verifyCurrentReleaseAcceptance(root");
-const publishedDigestCheck = publishedPrereleaseInstallSource.indexOf("computePromotionContentDigest(root");
-const publishedGithubAssetCheck = publishedPrereleaseInstallSource.indexOf("readGithubPrerelease(prerelease.raw");
-const publishedHardenedNpm = publishedPrereleaseInstallSource.indexOf("npmSession = await createHardenedNpmSession()");
-const publishedRegistryRead = publishedPrereleaseInstallSource.indexOf("readPublishedNpmPrerelease(");
-const publishedReleaseRuntimeLock = publishedPrereleaseInstallSource.indexOf("await withReleaseRuntimeLock(stateRoot");
-const publishedInstallAttempted = publishedPrereleaseInstallSource.indexOf("globalInstallAttempted = true");
-const publishedInstallCall = publishedPrereleaseInstallSource.indexOf('"install", "--dry-run=false"');
-const publishedInstallCompleted = publishedPrereleaseInstallSource.indexOf("globalInstallCompleted = true");
-const publishedActivationCall = publishedPrereleaseInstallSource.indexOf("const activation = runActivation(");
-const publishedActivationRecord = publishedPrereleaseInstallSource.indexOf("const recordPath = writePrereleaseActivation(");
+const publishedAcceptanceCheck = publishedInstallSource.indexOf("verifyCurrentReleaseAcceptance(root");
+const publishedDigestCheck = publishedInstallSource.indexOf("computePromotionContentDigest(root");
+const publishedGithubAssetCheck = publishedInstallSource.indexOf("readGithubPrerelease(prerelease.raw");
+const publishedHardenedNpm = publishedInstallSource.indexOf("npmSession = await createHardenedNpmSession()");
+const publishedRegistryRead = publishedInstallSource.indexOf("readPublishedNpmPrerelease(");
+const publishedReleaseRuntimeLock = publishedInstallSource.indexOf("await withReleaseRuntimeLock(stateRoot");
+const publishedInstallAttempted = publishedInstallSource.indexOf("globalInstallAttempted = true");
+const publishedInstallCall = publishedInstallSource.indexOf('"install", "--dry-run=false"');
+const publishedInstallCompleted = publishedInstallSource.indexOf("globalInstallCompleted = true");
+const publishedActivationCall = publishedInstallSource.indexOf("const activation = runActivation(");
+const publishedActivationRecord = publishedInstallSource.indexOf("const recordPath = writePrereleaseActivation(");
 if ([publishedReleaseRuntimeLock, publishedInstallAttempted, publishedInstallCall, publishedInstallCompleted, publishedActivationCall, publishedActivationRecord].some((value) => value < 0)
     || publishedReleaseRuntimeLock > publishedInstallAttempted
     || publishedInstallAttempted > publishedInstallCall
@@ -1263,7 +1266,7 @@ for (const required of ["ACTIVATION_SCHEMA_VERSION = 2", "ACTIVATION_FIELDS", "g
 for (const removed of ["LEGACY_ACTIVATION_SCHEMA_VERSION", "value.previous", "hasLegacyBaseline", "legacy prerelease activation"]) {
   if (prereleaseActivationSource.includes(removed)) throw new Error(`prerelease activation restored removed schema compatibility: ${removed}`);
 }
-for (const [label, source] of [["candidate", candidateStartSource], ["published prerelease", publishedPrereleaseInstallSource]]) {
+for (const [label, source] of [["candidate", candidateStartSource], ["published prerelease", publishedInstallSource]]) {
   for (const required of ["ACTIVATION_SCHEMA_VERSION", "global_package_rollback_baseline", "activation_recovery_detail"]) {
     if (!source.includes(required)) throw new Error(`${label} activation writer lost the current explicit rollback-baseline contract: ${required}`);
   }
@@ -1271,14 +1274,13 @@ for (const [label, source] of [["candidate", candidateStartSource], ["published 
     throw new Error(`${label} activation writer restored the removed previous rollback-baseline field`);
   }
 }
-if (!publishedPrereleaseInstallSource.includes("persistentActivationSpawnOptions")
-    || (publishedPrereleaseInstallSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
+if (!publishedInstallSource.includes("persistentActivationSpawnOptions")
+    || (publishedInstallSource.match(/killSignal: "SIGKILL"/g) || []).length !== 1) {
   throw new Error("published prerelease installation must hard-bound npm without externally killing the activation transaction");
 }
-const persistentActivationProcessSource = readFileSync(join(root, "scripts", "persistent-activation-process.mjs"), "utf8");
-if (!persistentActivationProcessSource.includes("transactional cleanup")
-    || !persistentActivationProcessSource.includes("validateActivationRecoveryPayload")
-    || /timeout\s*:|killSignal\s*:/.test(persistentActivationProcessSource)) {
+if (!persistentActivationAuthSource.includes("transactional cleanup")
+    || !persistentActivationAuthSource.includes("validateActivationRecoveryPayload")
+    || /timeout\s*:|killSignal\s*:/.test(persistentActivationAuthSource)) {
   throw new Error("persistent activation subprocess regained an outer timeout that can bypass compensation");
 }
 const foregroundRecoverySource = readFileSync(join(root, "scripts", "foreground-daemon-recovery.mjs"), "utf8");
@@ -1379,7 +1381,6 @@ for (const required of ["const PAIRING_SCHEMA_VERSION = 2", "const PAIRING_AUTH_
 if (!readFileSync(join(root, "tests", "browser-extension-identity-test.mjs"), "utf8").includes("beta55AcceptsPairingState")) {
   throw new Error("browser pairing rollback compatibility fixture is missing");
 }
-const managedJobSource = readFileSync(join(root, "src", "local", "managed-jobs.mjs"), "utf8");
 const managedJobRunnerLivenessSource = readFileSync(join(root, "src", "local", "managed-job-runner-liveness.mjs"), "utf8");
 const managedJobHostedReconcileSource = readFileSync(join(root, "src", "local", "managed-job-hosted-reconcile.mjs"), "utf8");
 const runtimeToolHandlersSource = readFileSync(join(root, "src", "local", "runtime-tool-handlers.mjs"), "utf8");
@@ -1416,8 +1417,8 @@ if (!managedJobRunnerLivenessSource.includes("inspectProcessInstanceAsync")
     || !managedJobClaimSource.includes("validRunnerClaim")
     || !managedJobClaimSource.includes("Number.isInteger(claim.pid)")
     || !managedJobClaimSource.includes('typeof claim.committed !== "boolean"')
-    || !managedJobSource.includes("async readHosted")
-    || !managedJobSource.includes("await reconcileManagedJobStatusHosted(this, dir)")
+    || !managedJobsManagerSource.includes("async readHosted")
+    || !managedJobsManagerSource.includes("await reconcileManagedJobStatusHosted(this, dir)")
     || !managedJobHostedReconcileSource.includes("await runnerProcessIsCurrentAsync(initial, dir)")
     || !managedJobHostedReconcileSource.includes("manager.reconcileStatus(dir)")
     || !runtimeToolHandlersSource.includes('context?.authority?.origin === "relay"')
@@ -1434,7 +1435,7 @@ if (!managedJobRunnerSource.includes('current_phase: "resource_admission"')
   throw new Error("managed-job status lost explicit pre-spawn resource-admission observability, phase restoration, or admission-status failure cleanup");
 }
 if (!managedJobProjectionSource.includes("resource_admission_ms: _resourceAdmissionMs")
-    || !managedJobSource.includes("projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false })")
+    || !managedJobsManagerSource.includes("projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false })")
     || !managedJobsIntegrationSource.includes("delegated managed-job read exposed machine-user resource admission timing")
     || !managedJobsIntegrationSource.includes("owner managed-job read lost resource admission timing needed for queue diagnosis")) {
   throw new Error("managed-job admission timing lost its owner-only projection or delegated privacy regression");
@@ -1458,13 +1459,13 @@ if (!coverageRunnerSource.includes('"src/local/managed-job-directory-generation.
 if (!coverageRunnerSource.includes('"src/local/managed-job-retention.mjs"')) {
   throw new Error("critical managed-job retention coverage threshold is missing");
 }
-if (!managedJobSource.includes('retentionClass = "managed"')
-    || !managedJobSource.includes("transientProcessRecoveryStatusFields(retentionClass, context)")
+if (!managedJobsManagerSource.includes('retentionClass = "managed"')
+    || !managedJobsManagerSource.includes("transientProcessRecoveryStatusFields(retentionClass, context)")
     || !managedJobTransientRecoverySource.includes('retentionClass !== "transient_process"')
     || !managedJobTransientRecoverySource.includes('context?.origin === "relay"')
     || !managedJobTransientRecoverySource.includes('context?.authority?.origin === "relay"')
     || !managedJobTransientRecoverySource.includes('transient_recovery_pending: true')
-    || !managedJobSource.includes("incomingRetentionClass: retentionClass")
+    || !managedJobsManagerSource.includes("incomingRetentionClass: retentionClass")
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
     || !managedJobRetentionSource.includes("orderManagedJobTerminalEviction(removable")
     || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_GRACE_MS = 30 * 60 * 1000")
@@ -1500,9 +1501,9 @@ if (!managedJobTransientRecoveryCapacitySource.includes("NON_OWNER_TRANSIENT_PEN
     || !managedJobTransientRecoveryCapacitySource.includes("if (status === null) continue;")
     || !managedJobTransientRecoveryCapacitySource.includes('capacity_scope: "account_pending_transient_recovery"')
     || !managedJobTransientRecoveryCapacitySource.includes("assertTerminalJobEvidence(dir, status)")
-    || !managedJobSource.includes("assertTransientProcessRecoveryAccountCapacity")
-    || !managedJobSource.includes("idempotencyReplayEligible: idempotencyDigest !== null")
-    || !managedJobSource.includes("recoveryAccountCapacity.applies && alreadyExists")
+    || !managedJobsManagerSource.includes("assertTransientProcessRecoveryAccountCapacity")
+    || !managedJobsManagerSource.includes("idempotencyReplayEligible: idempotencyDigest !== null")
+    || !managedJobsManagerSource.includes("recoveryAccountCapacity.applies && alreadyExists")
     || !managedJobModuleBoundariesSource.includes('"src/local/managed-job-transient-recovery-capacity.mjs": 180')
     || !managedJobsIntegrationSource.includes("seventeenth same-account pending recovery was not rejected before durable state publication or process launch")
     || !managedJobsIntegrationSource.includes("full account pending-recovery quota blocked or relaunched a genuine persisted same-key replay")
@@ -1534,14 +1535,14 @@ if (!managedJobDirectoryGenerationSource.includes('startsWith("retired_job_")') 
 for (const forbidden of ["existsSync(dir)", "quarantine could not be restored", "renameSync(quarantine, dir)"]) {
   if (managedJobDirectoryGenerationSource.includes(forbidden)) throw new Error(`managed-job retirement regained unsafe pathname rollback: ${forbidden}`);
 }
-if (!managedJobSource.includes('state_kind: "retired_managed_job"') || !managedJobSource.includes("managedJobCapacitySnapshot")) {
+if (!managedJobsManagerSource.includes('state_kind: "retired_managed_job"') || !managedJobsManagerSource.includes("managedJobCapacitySnapshot")) {
   throw new Error("managed-job retired-state privacy/capacity projection contract is missing");
 }
 for (const removed of ["approve(args", '"pending-local-operator"', "start the staged job through"]) {
-  if (managedJobSource.includes(removed)) throw new Error(`removed staged-job promotion contract returned: ${removed}`);
+  if (managedJobsManagerSource.includes(removed)) throw new Error(`removed staged-job promotion contract returned: ${removed}`);
 }
 for (const required of ["writeManagedJobCancellation", "resolveManagedJobDirectory", "resolveManagedJobRootIfPresent"]) {
-  if (!managedJobSource.includes(required)) throw new Error(`managed job manager lost secure boundary: ${required}`);
+  if (!managedJobsManagerSource.includes(required)) throw new Error(`managed job manager lost secure boundary: ${required}`);
 }
 if (managedJobRunnerSource.includes("existsSync(cancelFile)")
     || !managedJobRunnerSource.includes("managedJobCancellationRequested(cancelFile)")) {
@@ -1638,9 +1639,8 @@ for (const [label, file] of [
     throw new Error(`${label} no longer treats only ENOENT as missing evidence`);
   }
 }
-const githubReleaseDiagnosticSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
-if (!githubReleaseDiagnosticSource.includes("releaseCommandFailure(command, args, result")
-    || githubReleaseDiagnosticSource.includes('args.join(" ")')) {
+if (!githubReleaseSource.includes("releaseCommandFailure(command, args, result")
+    || githubReleaseSource.includes('args.join(" ")')) {
   throw new Error("GitHub release errors again expose complete command arguments");
 }
 const releaseDiagnosticSource = readFileSync(join(root, "scripts", "release-diagnostic.mjs"), "utf8");
@@ -1856,37 +1856,34 @@ for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "proce
 if (packageJson.devDependencies?.["fast-check"] !== "4.10.0" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
-const releaseSource = readFileSync(join(root, "scripts", "github-release.mjs"), "utf8");
-if (!releaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./release-ci.mjs";')
-    || !releaseSource.includes('import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";')
-    || !releaseSource.includes('import { verifyCurrentStableSoak } from "./release-soak.mjs";')
-    || !releaseSource.includes("--publish-prerelease")
-    || !releaseSource.includes("--prerelease")
-    || !releaseSource.includes("--latest=false")
-    || (releaseSource.match(/await waitForSuccessfulCi\(head\);/g) || []).length !== 1
-    || (releaseSource.match(/await waitForSuccessfulCi\(releaseHead\);/g) || []).length !== 1
-    || !releaseSource.includes("RELEASE_CI_WAIT_TIMEOUT_MS = 30 * 60 * 1000")
-    || !releaseSource.includes("RELEASE_CI_POLL_INTERVAL_MS = 15_000")
-    || !releaseSource.includes("deadlineMs")
-    || !releaseSource.includes(".github/workflows/codeql.yml")
-    || !releaseSource.includes(".github/workflows/scorecard.yml")
-    || !releaseSource.includes(".github/workflows/governance.yml")
-    || !releaseSource.includes(".github/workflows/workflow-policy.yml")
-    || releaseSource.includes('["push", "origin", "HEAD:main"]')
-    || !releaseSource.includes("merge the accepted candidate before release publication")
-    || !releaseSource.includes("release source moved from verified main")
-    || !releaseSource.includes("revalidateReleaseHead(releaseHead)")) {
+if (!githubReleaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./release-ci.mjs";')
+    || !githubReleaseSource.includes('import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";')
+    || !githubReleaseSource.includes('import { verifyCurrentStableSoak } from "./release-soak.mjs";')
+    || !githubReleaseSource.includes("--publish-prerelease")
+    || !githubReleaseSource.includes("--prerelease")
+    || !githubReleaseSource.includes("--latest=false")
+    || (githubReleaseSource.match(/await waitForSuccessfulCi\(head\);/g) || []).length !== 1
+    || (githubReleaseSource.match(/await waitForSuccessfulCi\(releaseHead\);/g) || []).length !== 1
+    || !githubReleaseSource.includes("RELEASE_CI_WAIT_TIMEOUT_MS = 30 * 60 * 1000")
+    || !githubReleaseSource.includes("RELEASE_CI_POLL_INTERVAL_MS = 15_000")
+    || !githubReleaseSource.includes("deadlineMs")
+    || !githubReleaseSource.includes(".github/workflows/codeql.yml")
+    || !githubReleaseSource.includes(".github/workflows/scorecard.yml")
+    || !githubReleaseSource.includes(".github/workflows/governance.yml")
+    || !githubReleaseSource.includes(".github/workflows/workflow-policy.yml")
+    || githubReleaseSource.includes('["push", "origin", "HEAD:main"]')
+    || !githubReleaseSource.includes("merge the accepted candidate before release publication")
+    || !githubReleaseSource.includes("release source moved from verified main")
+    || !githubReleaseSource.includes("revalidateReleaseHead(releaseHead)")) {
   throw new Error("GitHub release orchestration lost owner acceptance, exact-commit gates, or the no-main-push boundary");
 }
-const githubPushSource = readFileSync(join(root, "scripts", "github-push.mjs"), "utf8");
 for (const required of ["verifyCurrentReleaseAcceptance", "verifyCurrentStableSoak", "working tree is not clean", "direct pushes to main are prohibited", "--set-upstream", "release-acceptance/v", "release-soak/v"]) {
-  if (!githubPushSource.includes(required)) throw new Error(`guarded GitHub push lost required boundary: ${required}`);
+  if (!githubBacklogPushSource.includes(required)) throw new Error(`guarded GitHub push lost required boundary: ${required}`);
 }
-if (githubPushSource.includes("interactive local candidate")) {
+if (githubBacklogPushSource.includes("interactive local candidate")) {
   throw new Error("guarded GitHub push retained obsolete interactive-acceptance wording");
 }
-const portableAcceptanceVerifier = readFileSync(join(root, ".github", "scripts", "verify-release-acceptance.mjs"), "utf8");
-if (portableAcceptanceVerifier.includes("interactive local candidate")) {
+if (portableAcceptanceSource.includes("interactive local candidate")) {
   throw new Error("portable release-acceptance verification retained obsolete interactive-acceptance wording");
 }
 for (const [name, command] of Object.entries(packageJson.scripts || {})) {
@@ -1933,11 +1930,8 @@ for (const file of [join(root, "README.md"), join(root, "docs", "OPERATIONS.md")
     throw new Error(`pinned npm bootstrap guidance drifted in ${relative(root, file)}`);
   }
 }
-for (const file of [
-  join(root, "AGENTS.md"),
-  join(root, "CONTRIBUTING.md"),
-  join(root, "docs", "ENGINEERING.md"),
-]) {
+// Exact release commands belong to the canonical procedure; other guides link to it.
+for (const file of [join(root, "docs", "RELEASING.md")]) {
   const normalized = readFileSync(file, "utf8").replace(/\s+/g, " ");
   for (const required of [
     directCandidateVerifyCommand,
@@ -1967,13 +1961,11 @@ if (!architecture.includes("State schema version 6") || !architecture.includes("
 const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
 const managedJobReadTimeoutSource = readFileSync(join(root, "src", "worker", "managed-job-read-timeout.ts"), "utf8");
 const daemonToolRedeliverySource = readFileSync(join(root, "src", "worker", "daemon-tool-redelivery.ts"), "utf8");
-const workerRuntimeSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const processSessionReadSource = readFileSync(join(root, "src", "local", "process-session-read.mjs"), "utf8");
 if (!workerToolTimeoutSource.includes("relayContract.processSessionStartExecutionTimeoutMs")) {
   throw new Error("process-session startup timeout drifted out of the shared relay contract");
 }
 const serverInfoToolDeliverySource = readFileSync(join(root, "src", "worker", "server-info-tool-delivery.ts"), "utf8");
-const serverInfoSource = readFileSync(join(root, "src", "worker", "server-info.ts"), "utf8");
 if (!serverInfoToolDeliverySource.includes("remote_process_session_start_execution_max_ms")
     || !serverInfoToolDeliverySource.includes("managed_job_resource_admission_wait_max_ms")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_wait_default_ms")
@@ -1982,8 +1974,8 @@ if (!serverInfoToolDeliverySource.includes("remote_process_session_start_executi
     || !serverInfoToolDeliverySource.includes("compactRemoteToolDeliveryContract")
     || !serverInfoToolDeliverySource.includes("delete compact.remote_managed_job_read_nonterminal_progress_minimum_ms")
     || !serverInfoToolDeliverySource.includes("delete compact.remote_process_blocking_poll_wait_max_ms")
-    || !serverInfoSource.includes("...compactRemoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
-    || !serverInfoSource.includes("...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
+    || !workerServerInfoContinuitySource.includes("...compactRemoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
+    || !workerServerInfoContinuitySource.includes("...remoteToolDeliveryContract(input.serverVersion, input.toolListSubscription)")
     || !serverInfoToolDeliverySource.includes("remote_managed_job_read_concurrency_max_per_account")
     || !serverInfoToolDeliverySource.includes("MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT")
     || !serverInfoToolDeliverySource.includes("tool_schema_generation")
@@ -2019,14 +2011,14 @@ if (relayContract.defaultManagedJobReadWaitMs !== 40_000
     || !managedJobReadTimeoutSource.includes("relayContract.managedJobReadExecutionHeadroomMs")
     || !managedJobReadTimeoutSource.includes("executionMs - relayContract.managedJobReadExecutionHeadroomMs")
     || !managedJobReadTimeoutSource.includes("relayContract.workerSettlementOverheadMs")
-    || !workerRuntimeSource.includes("managedJobReadArgumentsWithinExecutionBudget(args, dispatchBudget.executionTimeoutMs)")
-    || !workerRuntimeSource.includes("daemonToolRedeliveryArguments(name, args, remainingExecutionMs)")
-    || (workerRuntimeSource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 2
+    || !workerIndexContinuitySource.includes("managedJobReadArgumentsWithinExecutionBudget(args, dispatchBudget.executionTimeoutMs)")
+    || !workerIndexContinuitySource.includes("daemonToolRedeliveryArguments(name, args, remainingExecutionMs)")
+    || (workerIndexContinuitySource.match(/managedJobReadExecutionBudgetHasHeadroom/g) || []).length < 2
     || !daemonToolRedeliverySource.includes("managedJobReadArgumentsWithinExecutionBudget")
     || !daemonToolRedeliverySource.includes("managedJobReadExecutionBudgetHasHeadroom")
     || !daemonToolRedeliverySource.includes("remainingExecutionMs < 1_000")
     || !daemonToolRedeliverySource.includes("wait_ms: 0")
-    || !workerRuntimeSource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
+    || !workerIndexContinuitySource.includes("immediateReadyDaemonForDispatch(this.daemonRegistry) ?? await readyDaemonForDispatch")) {
   throw new Error("managed-job hosted long-poll pacing or anti-amplification density bound drifted from the host-safe forty-second default / sixty-second public maximum / thirty-second progress coalescing contract");
 }
 const mcpResponseProxySource = readFileSync(join(root, "src", "worker", "mcp-response-proxy.ts"), "utf8");
@@ -2063,9 +2055,9 @@ if (!workerMcpConfigSource.includes("tools: Object.freeze({ listChanged: true })
     || !mcpSubscriptionRegistrySource.includes('input.requestSignal.addEventListener("abort"')
     || !mcpSubscriptionRegistrySource.includes("this.cancelByRequestKey.set(input.requestKey, cancel)")
     || !mcpSubscriptionRegistrySource.includes("releaseCapacity()")
-    || !workerRuntimeSource.includes("cancelReadyDaemonAuthority(this.daemonRegistry, revocation)")
-    || !workerRuntimeSource.includes("this.mcp.cancelAuthority(revocation)")
-    || !workerRuntimeSource.includes("authority.revocation.pre_dispatch_waiters_cancelled")) {
+    || !workerIndexContinuitySource.includes("cancelReadyDaemonAuthority(this.daemonRegistry, revocation)")
+    || !workerIndexContinuitySource.includes("this.mcp.cancelAuthority(revocation)")
+    || !workerIndexContinuitySource.includes("authority.revocation.pre_dispatch_waiters_cancelled")) {
   throw new Error("current MCP tool-list freshness/capacity no longer serves bounded toolsListChanged subscriptions or retained a removed legacy capability");
 }
 if (!workerToolTimeoutSource.includes('name === "read_process"')
@@ -2108,7 +2100,6 @@ const relayTransportProbeSendSource = readFileSync(join(root, "src", "local", "r
 const relayLivenessActionsSource = readFileSync(join(root, "src", "local", "relay-liveness-actions.mjs"), "utf8");
 const relayConnectionSource = readFileSync(join(root, "src", "local", "relay-connection.mjs"), "utf8");
 const relayTransportConfirmationSource = readFileSync(join(root, "src", "local", "relay-transport-confirmation.mjs"), "utf8");
-const httpRelayConnectionSource = readFileSync(join(root, "src", "local", "daemon-http-relay-connection.mjs"), "utf8");
 const deviceIdentitySource = readFileSync(join(root, "src", "local", "device-identity.mjs"), "utf8");
 const deviceSessionAuthSource = readFileSync(join(root, "src", "shared", "device-session-auth.mjs"), "utf8");
 if (!relayHeartbeatSource.includes("probeDispatch.complete")
@@ -2129,9 +2120,9 @@ if (!relayHeartbeatSource.includes("probeDispatch.complete")
     || !relayConnectionSource.includes("perMessageDeflate: false")
     || !relayTransportConfirmationSource.includes("this.dispatch.cancel(token)")
     || !relayTransportConfirmationSource.includes("transport_confirmation_pending")
-    || !httpRelayConnectionSource.includes("this.standbyRetryIntervalMs")
-    || !httpRelayConnectionSource.includes("this.consecutiveFailures > 0")
-    || !httpRelayConnectionSource.includes("this.pollTimerDueAt <= dueAt")
+    || !daemonHttpRelayConnectionSource.includes("this.standbyRetryIntervalMs")
+    || !daemonHttpRelayConnectionSource.includes("this.consecutiveFailures > 0")
+    || !daemonHttpRelayConnectionSource.includes("this.pollTimerDueAt <= dueAt")
     || !deviceSessionAuthSource.includes("24 * 60 * 60")
     || !deviceIdentitySource.includes('code: "device_session_expired"')
     || !relayConnectionSource.includes("relay_device_session_expired")) {
@@ -2148,7 +2139,6 @@ for (const [source, required] of [
   if (!source.includes(required)) throw new Error(`resource admission lost structural-capacity fail-fast contract: ${required}`);
 }
 const readme = readFileSync(join(root, "README.md"), "utf8");
-const testingDoc = readFileSync(join(root, "docs", "TESTING.md"), "utf8");
 const computerUseDoc = readFileSync(join(root, "docs", "COMPUTER_USE.md"), "utf8");
 const loggingDoc = readFileSync(join(root, "docs", "LOGGING.md"), "utf8");
 const operationsDoc = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
@@ -2178,14 +2168,14 @@ for (const [file, content, stale] of [
   ["docs/ARCHITECTURE.md", architecture, "general host snapshot as fresh for 1.5 seconds"],
   ["docs/ARCHITECTURE.md", architecture, "ordinary daemon tools at 30 seconds"],
   ["docs/ARCHITECTURE.md", architecture, "public maximum remains five minutes"],
-  ["docs/TESTING.md", testingDoc, "hosted timeout projection (30-second ordinary"],
-  ["docs/TESTING.md", testingDoc, "explicit maximum remains five minutes"],
-  ["docs/TESTING.md", testingDoc, "310/315 seconds at the explicit maximum"],
-  ["docs/TESTING.md", testingDoc, "Ordinary daemon tools use at most 30 seconds"],
-  ["docs/TESTING.md", testingDoc, "a 60-second call that spends ten seconds in recovery"],
-  ["docs/TESTING.md", testingDoc, "`full-access:test` exercises the same real-machine wait path with an explicit five-minute cooperative admission budget"],
-  ["docs/TESTING.md", testingDoc, "`local-self-test` uses the same five-minute budget"],
-  ["docs/TESTING.md", testingDoc, "`agent-context-test` uses the same test-only five-minute budget"],
+  ["docs/TESTING.md", testingGuide, "hosted timeout projection (30-second ordinary"],
+  ["docs/TESTING.md", testingGuide, "explicit maximum remains five minutes"],
+  ["docs/TESTING.md", testingGuide, "310/315 seconds at the explicit maximum"],
+  ["docs/TESTING.md", testingGuide, "Ordinary daemon tools use at most 30 seconds"],
+  ["docs/TESTING.md", testingGuide, "a 60-second call that spends ten seconds in recovery"],
+  ["docs/TESTING.md", testingGuide, "`full-access:test` exercises the same real-machine wait path with an explicit five-minute cooperative admission budget"],
+  ["docs/TESTING.md", testingGuide, "`local-self-test` uses the same five-minute budget"],
+  ["docs/TESTING.md", testingGuide, "`agent-context-test` uses the same test-only five-minute budget"],
   ["docs/OPERATIONS.md", operationsDoc, "process timeout above 30 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "Ordinary daemon-backed tools use at most 30 seconds"],
   ["src/shared/server-metadata.json", serverMetadata, "are capped at 30 seconds"],
@@ -2217,12 +2207,12 @@ for (const [file, content, required] of [
   ["docs/ARCHITECTURE.md", architecture, "no possibly executed tool call is automatically replayed"],
   ["docs/ARCHITECTURE.md", architecture, "`previous_ready_inbound_silence_ms`"],
   ["docs/ARCHITECTURE.md", architecture, "`recent_outages`, a newest-first in-memory ring capped at eight completed reconnect episodes"],
-  ["docs/TESTING.md", testingDoc, "compound `computer_observe`/`computer_act` default to 30 seconds"],
-  ["docs/TESTING.md", testingDoc, "five-second protocol-level transport probe"],
-  ["docs/TESTING.md", testingDoc, "thirty-second local sender-dispatch bound, full ten-second response deadline measured only from confirmed probe dispatch"],
-  ["docs/TESTING.md", testingDoc, "same-instance `resume_calls_ack.missing_ids` settlement"],
-  ["docs/TESTING.md", testingDoc, "`previous_ready_inbound_silence_ms` retention"],
-  ["docs/TESTING.md", testingDoc, "`recent_outages` to remain newest-first and capped at eight"],
+  ["docs/TESTING.md", testingGuide, "compound `computer_observe`/`computer_act` default to 30 seconds"],
+  ["docs/TESTING.md", testingGuide, "five-second protocol-level transport probe"],
+  ["docs/TESTING.md", testingGuide, "thirty-second local sender-dispatch bound, full ten-second response deadline measured only from confirmed probe dispatch"],
+  ["docs/TESTING.md", testingGuide, "same-instance `resume_calls_ack.missing_ids` settlement"],
+  ["docs/TESTING.md", testingGuide, "`previous_ready_inbound_silence_ms` retention"],
+  ["docs/TESTING.md", testingGuide, "`recent_outages` to remain newest-first and capped at eight"],
   ["docs/OPERATIONS.md", operationsDoc, "compound `computer_observe` and `computer_act` default to 30 seconds"],
   ["docs/OPERATIONS.md", operationsDoc, "while a confirmed Ping retains its full ten-second Pong deadline"],
   ["docs/OPERATIONS.md", operationsDoc, "`last_connect_milestones_ms` contains only bounded relative timings"],
@@ -2236,8 +2226,8 @@ for (const [file, content, required] of [
   ["docs/OPERATIONS.md", operationsDoc, "`remote_managed_job_initial_settlement_wait_ms`"],
   ["docs/OPERATIONS.md", operationsDoc, "`server_info.daemon.previous_connection` retains only the last verified channel's transport"],
   ["docs/OPERATIONS.md", operationsDoc, "`diagnose_runtime.runtime.idle_sleep_guard`"],
-  ["docs/TESTING.md", testingDoc, "distinct from production ownership"],
-  ["docs/TESTING.md", testingDoc, "full execution lifetime"],
+  ["docs/TESTING.md", testingGuide, "distinct from production ownership"],
+  ["docs/TESTING.md", testingGuide, "full execution lifetime"],
   ["docs/ARCHITECTURE.md", architecture, "fixed thirty-minute inactivity grace begins only after the last handler/process-session activity settles"],
   ["docs/ARCHITECTURE.md", architecture, "Remote account managed-job runners remain independently bound to the runner PID"],
   ["docs/ARCHITECTURE.md", architecture, "fixed 1/5/30-second backoff"],
@@ -2262,26 +2252,26 @@ for (const [file, content, required] of [
   ["docs/ARCHITECTURE.md", architecture, "malformed internal timing cannot become an infinite timer"],
   ["docs/ARCHITECTURE.md", architecture, "Detached managed-job steps use the shared durable-delivery admission ceiling"],
   ["docs/ARCHITECTURE.md", architecture, "`waiters.drain_active`"],
-  ["docs/TESTING.md", testingDoc, "relay-origin `start_process` defaults to zero admission wait"],
-  ["docs/TESTING.md", testingDoc, "shared fifteen-second new-call recovery budget"],
-  ["docs/TESTING.md", testingDoc, "same-ID transparent redelivery only after post-readiness `resume_calls_ack.missing_ids`"],
-  ["docs/TESTING.md", testingDoc, "Ordinary daemon tools default to 20 seconds plus the separate Worker settlement margin"],
-  ["docs/TESTING.md", testingDoc, "explicit stop-before-first-readiness settlement"],
-  ["docs/TESTING.md", testingDoc, "reject non-finite, non-positive, non-integer, and over-contract operation/reconnect delays"],
-  ["docs/TESTING.md", testingDoc, "remote release verification"],
-  ["docs/TESTING.md", testingDoc, "larger explicit step timeout"],
-  ["docs/TESTING.md", testingDoc, "eight-worker fixed request on an idle eight-core interactive host fails immediately"],
-  ["docs/TESTING.md", testingDoc, "privacy-safe `drain_active` fairness signal"],
-  ["docs/TESTING.md", testingDoc, "`read_job.current_phase=resource_admission` distinguishes that state from child execution"],
-  ["docs/TESTING.md", testingDoc, "local/owner completed-step reads expose `resource_admission_ms` alongside total `duration_ms` while delegated non-owner reads omit that machine-user scheduling timing"],
-  ["docs/TESTING.md", testingDoc, "Tests are verification inputs but are not npm tarball entries under the current `package.json.files` manifest"],
-  ["docs/TESTING.md", testingDoc, "defaults to at most four workers and is further bounded by Node's `availableParallelism()`"],
-  ["docs/TESTING.md", testingDoc, "`full-access:test` uses an isolated resource coordinator, a synthetic healthy-host sampler, and an explicit ten-second process-admission budget"],
-  ["docs/TESTING.md", testingDoc, "`local-self-test` keeps process-admission behavior deterministic instead of inheriting shared-host pressure"],
-  ["docs/TESTING.md", testingDoc, "`agent-context-test` likewise uses an isolated coordinator, synthetic healthy-host sampling, and a ten-second test-only resource-admission budget"],
-  ["docs/TESTING.md", testingDoc, "`status_polling_mode=paced_followup`"],
-  ["docs/TESTING.md", testingDoc, "`status_polling_mode=bounded_followup`"],
-  ["docs/TESTING.md", testingDoc, "`host_turn_handoff_recommended=false`"],
+  ["docs/TESTING.md", testingGuide, "relay-origin `start_process` defaults to zero admission wait"],
+  ["docs/TESTING.md", testingGuide, "shared fifteen-second new-call recovery budget"],
+  ["docs/TESTING.md", testingGuide, "same-ID transparent redelivery only after post-readiness `resume_calls_ack.missing_ids`"],
+  ["docs/TESTING.md", testingGuide, "Ordinary daemon tools default to 20 seconds plus the separate Worker settlement margin"],
+  ["docs/TESTING.md", testingGuide, "explicit stop-before-first-readiness settlement"],
+  ["docs/TESTING.md", testingGuide, "reject non-finite, non-positive, non-integer, and over-contract operation/reconnect delays"],
+  ["docs/TESTING.md", testingGuide, "remote release verification"],
+  ["docs/TESTING.md", testingGuide, "larger explicit step timeout"],
+  ["docs/TESTING.md", testingGuide, "eight-worker fixed request on an idle eight-core interactive host fails immediately"],
+  ["docs/TESTING.md", testingGuide, "privacy-safe `drain_active` fairness signal"],
+  ["docs/TESTING.md", testingGuide, "`read_job.current_phase=resource_admission` distinguishes that state from child execution"],
+  ["docs/TESTING.md", testingGuide, "local/owner completed-step reads expose `resource_admission_ms` alongside total `duration_ms` while delegated non-owner reads omit that machine-user scheduling timing"],
+  ["docs/TESTING.md", testingGuide, "Tests are verification inputs but are not npm tarball entries under the current `package.json.files` manifest"],
+  ["docs/TESTING.md", testingGuide, "defaults to at most four workers and is further bounded by Node's `availableParallelism()`"],
+  ["docs/TESTING.md", testingGuide, "`full-access:test` uses an isolated resource coordinator, a synthetic healthy-host sampler, and an explicit ten-second process-admission budget"],
+  ["docs/TESTING.md", testingGuide, "`local-self-test` keeps process-admission behavior deterministic instead of inheriting shared-host pressure"],
+  ["docs/TESTING.md", testingGuide, "`agent-context-test` likewise uses an isolated coordinator, synthetic healthy-host sampling, and a ten-second test-only resource-admission budget"],
+  ["docs/TESTING.md", testingGuide, "`status_polling_mode=paced_followup`"],
+  ["docs/TESTING.md", testingGuide, "`status_polling_mode=bounded_followup`"],
+  ["docs/TESTING.md", testingGuide, "`host_turn_handoff_recommended=false`"],
   ["README.md", readme, "bounded same-response `read_job` follow-up"],
   ["README.md", readme, "`status_polling_mode=paced_followup`"],
   ["README.md", readme, "`status_polling_mode=bounded_followup`"],
@@ -2368,7 +2358,7 @@ for (const [file, content, required] of [
   ["docs/ARCHITECTURE.md", architecture, "owner/caller semantic assertion"],
   ["docs/OPERATIONS.md", operationsDoc, "non-evictable under capacity pruning for the fixed 24-hour undelivered-result grace"],
   ["docs/OPERATIONS.md", operationsDoc, "owner/caller semantic assertion"],
-  ["docs/TESTING.md", testingDoc, "store saturated with 512 such promised terminals returns typed retryable `limit_exceeded`"],
+  ["docs/TESTING.md", testingGuide, "store saturated with 512 such promised terminals returns typed retryable `limit_exceeded`"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted beta.164 independent-review continuity contract: ${required}`);
 }
@@ -2383,14 +2373,14 @@ for (const [file, content, required] of [
   ["docs/ARCHITECTURE.md", architecture, "at most 16 unresolved pending promises for one account ID plus account version"],
   ["docs/OPERATIONS.md", operationsDoc, "capacity_scope=account_pending_transient_recovery"],
   ["docs/OPERATIONS.md", operationsDoc, "statusless partial create must pass quota again"],
-  ["docs/TESTING.md", testingDoc, "seventeenth genuinely new carrier is rejected before state publication or process launch"],
-  ["docs/TESTING.md", testingDoc, "statusless deterministic directory is an incomplete publication rather than replay"],
+  ["docs/TESTING.md", testingGuide, "seventeenth genuinely new carrier is rejected before state publication or process launch"],
+  ["docs/TESTING.md", testingGuide, "statusless deterministic directory is an incomplete publication rather than replay"],
 ]) {
   if (!content.includes(required)) throw new Error(`${file} omitted delegated account pending-recovery security contract: ${required}`);
 }
 for (const [file, content] of [
   ["SECURITY.md", securityDoc], ["README.md", readme], ["docs/MULTI_ACCOUNT.md", multiAccountDoc],
-  ["docs/ARCHITECTURE.md", architecture], ["docs/OPERATIONS.md", operationsDoc], ["docs/TESTING.md", testingDoc],
+  ["docs/ARCHITECTURE.md", architecture], ["docs/OPERATIONS.md", operationsDoc], ["docs/TESTING.md", testingGuide],
 ]) {
   for (const forbidden of ["per-client pending-recovery quota", "client-scoped pending-recovery quota", "directory existence is idempotent replay"]) {
     if (content.includes(forbidden)) throw new Error(`${file} retained unsafe delegated recovery quota guidance: ${forbidden}`);
@@ -2413,7 +2403,7 @@ if (operationsDoc.includes("Use short `read_process` polls")
   || operationsDoc.includes("remaining host budget")) {
   throw new Error("operations guidance can still force one-checkpoint hosted-turn handoff");
 }
-for (const [file, content] of [["README.md", readme], ["docs/TESTING.md", testingDoc]]) {
+for (const [file, content] of [["README.md", readme], ["docs/TESTING.md", testingGuide]]) {
   for (const stale of [
     "single live-session status checkpoint per assistant response",
     "should call it at most once for a live session",
@@ -2430,7 +2420,7 @@ for (const [file, content] of [["README.md", readme], ["docs/TESTING.md", testin
   }
 }
 for (const stale of ["`poll_throttled`", "`next_poll_after_ms`", "`remote_process_poll_wait_max_ms`", "`remote_process_poll_cooldown_ms`"]) {
-  if (readme.includes(stale) || architecture.includes(stale) || operationsDoc.includes(stale) || testingDoc.includes(stale) || serverMetadata.includes(stale)) {
+  if (readme.includes(stale) || architecture.includes(stale) || operationsDoc.includes(stale) || testingGuide.includes(stale) || serverMetadata.includes(stale)) {
     throw new Error(`current hosted documentation retained ambiguous process-poll field name: ${stale}`);
   }
 }
@@ -2455,14 +2445,13 @@ for (const required of [
 for (const stale of ["owner-terminal ceremony", "real TTY streams", "Background agents and managed jobs may verify state but may not publish"]) {
   if (engineering.includes(stale)) throw new Error(`engineering guide retained obsolete terminal-gated publication contract: ${stale}`);
 }
-const architectureGuide = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
-if (architectureGuide.includes("All bridge mutations are serialized in one runtime queue.")
-    || !architectureGuide.includes("Operations touching the same canonical path serialize; independent paths may proceed concurrently")) {
+if (architecture.includes("All bridge mutations are serialized in one runtime queue.")
+    || !architecture.includes("Operations touching the same canonical path serialize; independent paths may proceed concurrently")) {
   throw new Error("architecture mutation model drifted from canonical-path reservation semantics");
 }
 const threatModelGuide = readFileSync(join(root, "docs", "THREAT_MODEL.md"), "utf8");
 for (const [name, guide] of [
-  ["architecture guide", architectureGuide],
+  ["architecture guide", architecture],
   ["threat model", threatModelGuide],
   ["testing guide", testingGuide],
 ]) {
@@ -2486,12 +2475,12 @@ for (const obsolete of [
   "legacy transaction-owner migration check async",
   "retained by current readers",
 ]) {
-  if ([architectureGuide, testingGuide, upgradingGuide].some((source) => source.includes(obsolete))) {
+  if ([architecture, testingGuide, upgradingGuide].some((source) => source.includes(obsolete))) {
     throw new Error(`current documentation restored expired resource-transaction compatibility: ${obsolete}`);
   }
 }
 if (!upgradingGuide.includes("no current reader consumes or migrates the directory format")
-    || !architectureGuide.includes("unsupported legacy transaction-lock directories are retained unchanged and fail closed")
+    || !architecture.includes("unsupported legacy transaction-lock directories are retained unchanged and fail closed")
     || !testingGuide.includes("obsolete directory shape")) {
   throw new Error("current documentation lost the fail-closed obsolete transaction-lock contract");
 }
@@ -2616,11 +2605,10 @@ for (const [name, guide] of [
 for (const stale of ["owner-terminal attempt", "real owner-terminal activation", "The coding agent must stop and present this command", "After the owner command completes"]) {
   if (releasingGuide.includes(stale)) throw new Error(`release guide retained obsolete owner-terminal activation contract: ${stale}`);
 }
-const operationsGuide = readFileSync(join(root, "docs", "OPERATIONS.md"), "utf8");
-if (operationsGuide.includes("failed owner-terminal command")) {
+if (operationsDoc.includes("failed owner-terminal command")) {
   throw new Error("operations guide retained obsolete owner-terminal activation wording");
 }
-if (operationsGuide.includes("cooldown in which another blocking request returns immediate status")) {
+if (operationsDoc.includes("cooldown in which another blocking request returns immediate status")) {
   throw new Error("operations guide reintroduced the rapid process-checkpoint amplification path");
 }
 const toolReference = readFileSync(join(root, "docs", "TOOL_REFERENCE.md"), "utf8");

@@ -23,11 +23,13 @@ export class RelayOutboundSequence {
     }
     return true;
   }
-  snapshot() {
-    const selected = []; let bytes = 0;
+  snapshot(maximumBytes = relayContract.httpFallbackMaximumEnvelopeBytes) {
+    const selected = []; let bytes = 2;
     for (const message of this.messages) {
-      if (selected.length > 0 && bytes + message.bytes > relayContract.httpFallbackMaximumEnvelopeBytes) break;
-      selected.push({ seq: message.seq, payload: message.payload }); bytes += message.bytes;
+      const item = { seq: message.seq, payload: message.payload };
+      const itemBytes = Buffer.byteLength(JSON.stringify(item)) + (selected.length ? 1 : 0);
+      if (bytes + itemBytes > maximumBytes) break;
+      selected.push(item); bytes += itemBytes;
     }
     return selected;
   }

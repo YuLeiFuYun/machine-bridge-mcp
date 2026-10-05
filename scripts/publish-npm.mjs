@@ -53,15 +53,6 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
   const run = options.run || runNpmPublicationProcess;
   const prepublicationTimeout = positiveTimeout(options.prepublicationTimeoutMs, npmPrepublicationTimeoutMs);
   const publicationStageTimeout = positiveTimeout(options.publicationStageTimeoutMs, npmPublicationStageTimeoutMs);
-  const processOptions = {
-    cwd: repository,
-    encoding: "utf8",
-    env: nestedNpmEnvironment(options.env || process.env),
-    stdio: options.capture ? "pipe" : "inherit",
-    timeout: publicationStageTimeout,
-    maxBuffer: 8 * 1024 * 1024,
-    windowsHide: true,
-  };
   let session = null;
   let acceptance = options.acceptance || null;
   let candidate = null;
@@ -70,6 +61,15 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
   try {
     session = explicitNpmCli ? null : await createSession(options);
     const npmCli = explicitNpmCli || session.cli;
+    const processOptions = {
+      cwd: repository,
+      encoding: "utf8",
+      env: nestedNpmEnvironment(options.env || process.env, { bin: session?.bin || options.npmBin }),
+      stdio: options.capture ? "pipe" : "inherit",
+      timeout: publicationStageTimeout,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    };
     await runNpmStage(run, npmCli, sourceDependencyTreeInstallArguments(repository), {
       ...processOptions,
       timeout: sourceDependencyTreeInstallTimeoutMs,
@@ -80,13 +80,13 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
     }
     acceptance ??= verifyAcceptance(repository, {
       npmCli,
-      env: options.env || process.env,
+      env: processOptions.env,
     });
     if (acceptance.required !== true) throw new Error("npm publication requires current local candidate acceptance");
     candidate = prepareCandidate(repository, acceptance, {
       ...options,
       npmCli,
-      env: options.env || process.env,
+      env: processOptions.env,
     });
     if (!candidate?.path) throw new Error("npm publication candidate tarball path is missing");
     await runNpmStage(run, npmCli, [
@@ -101,7 +101,7 @@ export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {
     const preflight = await runNpmStage(run, npmCli, preflightArgs, { ...processOptions, stdio: "pipe" }, "npm publish dry-run");
     validateNpmPublishDryRun(preflight.stdout, acceptance.metadata);
     const readPublished = options.readPublished || ((name, version, tag) => readPublishedNpmPrereleaseIfPresent(
-      name, version, tag, { npmCli, env: options.env || process.env },
+      name, version, tag, { npmCli, env: processOptions.env },
     ));
     const preexisting = await readPublished(acceptance.metadata.package_name, parsed.raw, parsed.npmTag);
     if (preexisting) {

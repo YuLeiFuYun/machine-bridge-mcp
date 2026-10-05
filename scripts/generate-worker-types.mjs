@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
 import {
-  chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, realpathSync, rmSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import process from "node:process";
@@ -8,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import {
   brotliCompressSync, brotliDecompressSync, constants as zlibConstants,
 } from "node:zlib";
+import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { runCompletedWranglerCommand } from "./wrangler-command-lifecycle.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,7 +30,10 @@ export async function runWranglerTypes(options = {}) {
     const generatedRuntime = await generateRuntimeTypes(state, options);
     persistOrVerifyRuntimeSeed(state, generatedRuntime, trustedSeed);
   } catch (error) {
-    restoreWranglerTypesRun(state);
+    try { restoreWranglerTypesRun(state); }
+    catch (recoveryError) {
+      throw new AggregateError([error, recoveryError], "Worker types generation failed and recovery was incomplete");
+    }
     throw error;
   }
 }
@@ -39,6 +43,8 @@ function prepareWranglerTypesRun(options) {
   const targetPath = options.targetPath ? resolve(cwd, options.targetPath) : target;
   const seedPath = options.seedPath ? resolve(cwd, options.seedPath) : seed;
   const targetArgument = wranglerTypesTargetArgument(cwd, targetPath);
+  assertTargetParent(cwd, targetPath);
+  const targetSnapshot = snapshotFile(targetPath);
   return {
     cwd,
     targetPath,
@@ -50,7 +56,8 @@ function prepareWranglerTypesRun(options) {
       configPath: options.configPath || wranglerConfig,
       workerdPackagePath: options.workerdPackagePath || workerdPackage,
     }),
-    targetSnapshot: snapshotFile(targetPath),
+    targetSnapshot,
+    targetWitness: targetSnapshot,
     seedSnapshot: snapshotFile(seedPath),
   };
 }
@@ -66,10 +73,12 @@ function wranglerTypesTargetArgument(cwd, targetPath) {
 function prepareRuntimeSeedInput(state) {
   if (state.refreshRuntimeSeed) {
     rmSync(state.targetPath, { force: true });
+    state.targetWitness = snapshotFile(state.targetPath);
     return null;
   }
   const trustedSeed = decodeRuntimeSeed(state.seedPath, state.expectedHeader);
   seedRuntimeCacheIfNeeded(state.targetPath, trustedSeed);
+  state.targetWitness = snapshotFile(state.targetPath);
   return trustedSeed;
 }
 
@@ -83,7 +92,14 @@ async function generateRuntimeTypes(state, options) {
     completionMarker: WRANGLER_TYPES_COMPLETION_MARKER,
     completionCheck: () => existsSync(state.targetPath),
   });
-  const generated = strictUtf8(readFileSync(state.targetPath), "generated Worker types");
+  assertTargetParent(state.cwd, state.targetPath);
+  const generatedSnapshot = snapshotFile(state.targetPath);
+  if (!generatedSnapshot.exists) throw new Error("generated Worker types are missing");
+  if (state.targetWitness.exists && !sameFile(state.targetWitness, generatedSnapshot)) {
+    throw new Error("Worker types target changed during generation; replacement preserved");
+  }
+  state.targetWitness = generatedSnapshot;
+  const generated = strictUtf8(generatedSnapshot.bytes, "generated Worker types");
   const generatedRuntime = extractRuntimePayload(generated);
   if (generatedRuntime.header !== state.expectedHeader) {
     throw new Error("generated Worker runtime header does not match the current workerd compatibility contract");
@@ -106,8 +122,8 @@ function persistOrVerifyRuntimeSeed(state, generatedRuntime, trustedSeed) {
 }
 
 function restoreWranglerTypesRun(state) {
-  restoreFile(state.targetPath, state.targetSnapshot);
-  if (state.refreshRuntimeSeed) restoreFile(state.seedPath, state.seedSnapshot);
+  assertTargetParent(state.cwd, state.targetPath);
+  restoreFile(state.targetPath, state.targetSnapshot, state.targetWitness);
 }
 
 export function parseWorkerTypesArguments(args = []) {
@@ -123,7 +139,7 @@ function seedRuntimeCacheIfNeeded(targetPath, trustedSeed) {
   }
   let current;
   try {
-    current = extractRuntimePayload(strictUtf8(readFileSync(targetPath), "existing Worker types"));
+    current = extractRuntimePayload(strictUtf8(snapshotFile(targetPath).bytes, "existing Worker types"));
   } catch {
     atomicWriteText(targetPath, trustedSeed.payload, 0o600);
     return;
@@ -132,7 +148,7 @@ function seedRuntimeCacheIfNeeded(targetPath, trustedSeed) {
 }
 
 function decodeRuntimeSeed(seedPath, expectedHeader) {
-  const encoded = strictUtf8(readFileSync(seedPath), "Worker runtime seed");
+  const encoded = strictUtf8(snapshotFile(seedPath).bytes, "Worker runtime seed");
   const compact = encoded.replace(/\n/g, "");
   if (!compact || /[^A-Za-z0-9+/=]/.test(compact) || canonicalBase64(compact) !== encoded) {
     throw new Error("Worker runtime seed is not canonical UTF-8 Base64 text");
@@ -186,41 +202,55 @@ function expectedRuntimeHeader({ configPath, workerdPackagePath }) {
 }
 
 function snapshotFile(filePath) {
-  let descriptor;
   try {
-    descriptor = openSync(filePath, "r");
+    const opened = readBoundedRegularFileWithInfoSync(filePath, 16 * 1024 * 1024, "Worker types state target", {
+      verifyPathIdentity: true, rejectMultipleLinks: true,
+    });
+    return { exists: true, bytes: opened.buffer, mode: opened.info.mode & 0o777, info: opened.identityInfo };
   } catch (error) {
-    if (error?.code === "ENOENT") return { exists: false, bytes: null, mode: null };
+    if (error?.code === "ENOENT") return { exists: false, bytes: null, mode: null, info: null };
     throw error;
-  }
-  try {
-    const status = fstatSync(descriptor);
-    if (!status.isFile()) throw new Error("Worker types state target must be a regular file");
-    return { exists: true, bytes: readFileSync(descriptor), mode: status.mode & 0o777 };
-  } finally {
-    closeSync(descriptor);
   }
 }
 
-function restoreFile(path, snapshot) {
+function restoreFile(path, snapshot, witness) {
+  const current = snapshotFile(path);
+  if (current.exists && (!witness.exists || !sameFile(current, witness))) {
+    throw new Error("Worker types target changed during generation; replacement preserved");
+  }
   if (!snapshot.exists) {
-    rmSync(path, { force: true });
+    if (current.exists) rmSync(path);
     return;
   }
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, snapshot.bytes, { mode: snapshot.mode });
-  chmodSync(path, snapshot.mode);
+  if (current.exists && current.mode === snapshot.mode && current.bytes.equals(snapshot.bytes)) return;
+  atomicWriteText(path, snapshot.bytes, snapshot.mode);
+}
+
+function sameFile(left, right) {
+  return left.info.dev === right.info.dev && left.info.ino === right.info.ino
+    && left.info.birthtimeNs === right.info.birthtimeNs;
 }
 
 function atomicWriteText(path, text, mode) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  try {
-    writeFileSync(temporary, text, { encoding: "utf8", mode, flag: "wx" });
-    renameSync(temporary, path);
-    chmodSync(path, mode);
-  } finally {
-    rmSync(temporary, { force: true });
+  replaceFileAtomicallySync(path, text, { mode });
+}
+
+function assertTargetParent(cwd, targetPath) {
+  const canonicalRoot = realpathSync(cwd);
+  let ancestor = dirname(targetPath);
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) throw new Error("Worker types target parent is unavailable");
+    ancestor = parent;
+  }
+  const canonicalAncestor = realpathSync(ancestor);
+  if (canonicalAncestor !== resolve(canonicalRoot, relative(cwd, ancestor))) {
+    throw new Error("Wrangler types target parent must remain inside its working directory without aliases");
+  }
+  const inside = relative(canonicalRoot, canonicalAncestor);
+  if (isAbsolute(inside) || inside === ".." || inside.startsWith(".." + sep)) {
+    throw new Error("Wrangler types target parent must remain inside its working directory");
   }
 }
 

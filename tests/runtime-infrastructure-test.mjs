@@ -701,6 +701,19 @@ async function testCallRegistry() {
 async function testToolExecutor() {
   const events = [];
   const metrics = new RuntimeObservability({ now: () => 1000 });
+  const boundedMetrics = new RuntimeObservability();
+  for (let index = 0; index < 512; index += 1) {
+    const tool = "synthetic_tool_" + index;
+    boundedMetrics.start(tool);
+    boundedMetrics.finish(tool, { status: "failed", errorCode: "synthetic_error_" + index, durationMs: 1 });
+  }
+  const boundedSnapshot = boundedMetrics.snapshot();
+  assert(Object.keys(boundedSnapshot.tools).length === 128 && Object.keys(boundedSnapshot.errors).length === 64,
+    "runtime metrics exceeded their cardinality limits");
+  assert(boundedSnapshot.active === 0 && boundedSnapshot.calls.started === 512
+    && Object.values(boundedSnapshot.tools).reduce((sum, metric) => sum + metric.failed, 0) === 512
+    && Object.values(boundedSnapshot.errors).reduce((sum, count) => sum + count, 0) === 512,
+  "runtime metric overflow lost or duplicated call/error counts");
   const registry = new CallRegistry({ maximum: 4 });
   const fullPolicy = { profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true };
   const gate = { policy: fullPolicy, assert(name) { if (name === "write_file") throw new BridgeError("policy_denied", "denied"); } };

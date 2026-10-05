@@ -22,7 +22,8 @@ const diagnostic = releaseDiagnostic([
   `client=${clientId}`,
   `family=${familyId}`,
   "line-two",
-].join("\n"), 300);
+].join("\n"), 2000);
+assert(diagnostic.includes("line-two"), "diagnostic fixture tail was truncated before all redaction assertions");
 assert(!diagnostic.includes(npmToken), "npm token was not redacted");
 assert(!diagnostic.includes("synthetic-user:synthetic-password"), "URL credentials were not redacted");
 assert(!diagnostic.includes("owner@example.invalid"), "email was not redacted");

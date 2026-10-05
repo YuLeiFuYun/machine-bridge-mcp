@@ -18,11 +18,15 @@ export function readLoopbackJson(input, options = {}) {
   return new Promise((resolvePromise) => {
     let settled = false;
     let client;
+    let deadlineTimer;
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadlineTimer);
+      client?.destroy();
       resolvePromise(value);
     };
+    deadlineTimer = setTimeout(() => finish(null), timeoutMs);
     try {
       client = request({
         protocol: "http:", hostname: "127.0.0.1", port, path: pathname, method: "GET", agent: false,
@@ -60,6 +64,7 @@ export function readLoopbackJson(input, options = {}) {
       finish(null);
       return;
     }
+    if (settled) { client.destroy(); return; }
     client.setTimeout(timeoutMs, () => client.destroy(new Error("loopback health request timed out")));
     client.on("error", () => finish(null));
     client.end();

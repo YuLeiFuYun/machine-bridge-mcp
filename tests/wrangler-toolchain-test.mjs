@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { CF_NETWORK_COMPATIBILITY } from "../src/local/cf-network-compatibility.mjs";
+import { stopFixtureChild, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 import {
   ensureCloudflareToolchain,
@@ -110,6 +111,23 @@ try {
   assert.equal(fake.count("signatures"), 3, "future-dated audit marker bypassed signature refresh");
   nowMs += 10 * 60_000;
 
+  nowMs += 60_001;
+  const cleanAudit = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
+  for (const vulnerabilities of [
+    ...[null, false, "", [], "0"].map(total => ({ ...cleanAudit, total })),
+    { ...cleanAudit, high: 1 }, { ...cleanAudit, high: "0" },
+  ]) {
+    await assert.rejects(ensureWranglerToolchain({
+      ...options,
+      runCommand: async (command, args, runOptions) => args[1] === "audit" && args[2] !== "signatures"
+        ? result(0, JSON.stringify({ metadata: { vulnerabilities } }))
+        : fake.run(command, args, runOptions),
+    }), /npm audit (metadata is incomplete|total is inconsistent)/);
+  }
+  assert.equal(fake.count("signatures"), 3, "malformed audit evidence reached signature verification");
+  assert.equal(fake.count("ci"), 1, "malformed audit evidence triggered destructive reconstruction");
+  assert(fake.launcherBins().every(bin => !existsSync(bin)), "settled toolchain operation retained a private npm launcher");
+
   const descriptor = wranglerToolchainDescriptor({ packageRoot, stateRoot });
   writeFileSync(join(descriptor.root, "package-lock.json"), "{}\n", "utf8");
   await ensureWranglerToolchain(options);
@@ -203,29 +221,14 @@ async function withForeignMaintenanceLock(stateRoot, callback) {
     stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
     env: { ...process.env, NODE_V8_COVERAGE: "" },
   });
-  await new Promise((resolvePromise, rejectPromise) => {
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return; settled = true; clearTimeout(timer);
-      error ? rejectPromise(error) : resolvePromise();
-    };
-    const timer = setTimeout(() => finish(new Error("foreign maintenance fixture did not become ready")), 10_000);
-    child.once("error", finish);
-    child.once("exit", (code) => finish(new Error(`foreign maintenance fixture exited early (${code})`)));
-    child.stdout.once("data", (chunk) => finish(String(chunk).includes("ready") ? null : new Error("foreign maintenance fixture emitted an invalid readiness marker")));
-  });
+  await waitForFixtureReady(child, { label: "foreign maintenance" });
   try { return await callback(); }
-  finally {
-    const closed = new Promise((resolvePromise) => {
-      child.once("close", resolvePromise);
-    });
-    child.kill("SIGTERM");
-    await closed;
-  }
+  finally { await stopFixtureChild(child); }
 }
 
 function createFakeNpmRunner(options = {}) {
   const calls = [];
+  const launcherBins = new Set();
   const versions = {
     cf: options.cf || "1.0.0-beta.5",
     wrangler: options.wrangler || "4.144.0",
@@ -235,7 +238,14 @@ function createFakeNpmRunner(options = {}) {
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
     total() { return calls.length; },
+    launcherBins() { return [...launcherBins]; },
     async run(_command, args, runOptions) {
+      const bin = runOptions.env.PATH.split(delimiter)[0];
+      launcherBins.add(bin);
+      assert.equal(Object.keys(runOptions.env).filter(key => /^path$/i.test(key)).length, 1);
+      assert.match(bin, /npm-bin-/);
+      const launcher = readFileSync(join(bin, process.platform === "win32" ? "npm.cmd" : "npm"), "utf8");
+      assert(launcher.includes(args[0]) && launcher.includes(process.execPath), "toolchain lifecycle npm launcher lost its explicit executable pair");
       const npmArgs = args.slice(1);
       if (npmArgs[0] === "--version") {
         calls.push("version");

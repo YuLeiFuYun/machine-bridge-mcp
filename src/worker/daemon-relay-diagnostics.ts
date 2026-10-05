@@ -273,6 +273,7 @@ function timestamp(value: unknown): string | null {
 }
 
 function nullableInteger(value: unknown, minimum: number, maximum: number): number | null {
+  if (value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= minimum && number <= maximum ? number : null;
 }

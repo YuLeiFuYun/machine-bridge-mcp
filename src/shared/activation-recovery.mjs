@@ -14,8 +14,8 @@ export function isActivationRecoveryReason(value) {
 
 /** @param {unknown} reason */
 export function canonicalActivationRecoveryDetail(reason) {
-  if (typeof reason !== "string") throw new Error("activation recovery reason is invalid");
-  const detail = DETAIL_BY_REASON[reason];
+  if (!isActivationRecoveryReason(reason)) throw new Error("activation recovery reason is invalid");
+  const detail = DETAIL_BY_REASON[/** @type {string} */ (reason)];
   if (!detail) throw new Error("activation recovery reason is invalid");
   return detail;
 }

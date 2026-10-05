@@ -1,10 +1,11 @@
+import { WorkerToolError } from "./errors.ts";
 import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AuthorizedToken } from "./access.ts";
 import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOperation } from "./account-admin.ts";
-import { exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
+import { currentOAuthTokenAuthority, exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
 import {
   AUTH_BLOCK_SECONDS, accountByName, authorizationIdentity, emptyOAuthStore,
-  normalizeOAuthScope, pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
-  recordAuthorizationFailure, safeEqual, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
+  pruneAuthFailures, pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken,
+  recordAuthorizationFailure, sha256Hex, validateAuthorizationRequest, verifyAccountPassword,
   type OAuthClient, type OAuthStore,
 } from "./oauth-state.ts";
 import {
@@ -166,7 +167,10 @@ export class OAuthController {
     if (redirectUris.length > 5) {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uris must contain at most 5 entries" }, 400);
     }
-    const suppliedRedirectUris = redirectUris.map((item) => String(item));
+    if (redirectUris.some((item) => typeof item !== "string")) {
+      return json({ error: "invalid_client_metadata", error_description: "redirect_uris entries must be strings" }, 400);
+    }
+    const suppliedRedirectUris = redirectUris as string[];
     if (suppliedRedirectUris.some((item) => item.length > 1024)) {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uri is too long" }, 400);
     }
@@ -294,42 +298,31 @@ export class OAuthController {
   }
 
   async verifyAccessToken(token: string, base: string): Promise<AuthorizedToken | null> {
+    if (!token) return null;
+    const key = `sha256:${await sha256Hex(token)}`;
+    return this.withOAuthLock(() => this.authorityForTokenKey(key, base));
+  }
+
+  // Revalidate after body parsing/reconnect waits and synchronously transfer dispatch ownership.
+  async runWithCurrentAuthority(authorized: AuthorizedToken, dispatch: () => void): Promise<void> {
     return this.withOAuthLock(async () => {
-      if (!token) return null;
-      const store = await this.oauthStore();
-      const key = `sha256:${await sha256Hex(token)}`;
-      const record = store.tokens[key];
-      if (!record) return null;
-      if (record.expires_at <= Math.floor(Date.now() / 1000)) {
-        delete store.tokens[key];
-        await this.ctx.storage.put("oauth", store);
-        return null;
+      const current = await this.authorityForTokenKey(authorized.tokenKey);
+      if (!current || current.accountId !== authorized.accountId || current.accountVersion !== authorized.accountVersion
+          || current.clientId !== authorized.clientId || current.familyId !== authorized.familyId
+          || current.role !== authorized.role || current.dpopJkt !== authorized.dpopJkt) {
+        throw new WorkerToolError("authorization_denied", "tool authority was revoked before daemon dispatch", false,
+          { side_effects_started: false });
       }
-      const currentVersion = this.env.OAUTH_TOKEN_VERSION ?? "";
-      if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
-      if (record.resource !== `${base}/mcp`) return null;
-      if (normalizeOAuthScope(record.scope, this.serverName) !== record.scope) { delete store.tokens[key]; await this.ctx.storage.put("oauth", store); return null; }
-      const account = store.accounts[record.account_id];
-      const client = store.clients[record.client_id];
-      if (
-        !account
-        || !account.active
-        || account.version !== record.account_version
-        || account.role !== record.role
-        || !client
-        || client.trusted_account_id !== account.account_id
-        || client.trusted_account_version !== account.version
-        || client.trusted_role !== account.role
-      ) {
-        delete store.tokens[key];
-        await this.ctx.storage.put("oauth", store);
-        return null;
-      }
-      return {
-        tokenKey: key, accountId: account.account_id,
-        accountVersion: account.version, clientId: record.client_id, familyId: String(record.family_id || ""), dpopJkt: String(record.dpop_jkt || ""), role: account.role,
-      };
+      dispatch();
     });
+  }
+
+  private async authorityForTokenKey(key: string, base?: string): Promise<AuthorizedToken | null> {
+    const store = await this.oauthStore();
+    const hadToken = Object.hasOwn(store.tokens, key);
+    const current = await currentOAuthTokenAuthority(store, key, this.env.OAUTH_TOKEN_VERSION ?? "", this.serverName, base);
+    if (hadToken && !Object.hasOwn(store.tokens, key)) await this.ctx.storage.put("oauth", store);
+    return current;
   }
 
   private async withOAuthLock<T>(callback: () => Promise<T>): Promise<T> {

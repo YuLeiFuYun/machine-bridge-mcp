@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { BridgeError } from "../src/local/errors.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
+import { MacosBackgroundInputService } from "../src/local/macos-background-input.mjs";
 import {
   processCancellationFailure,
   processChildErrorFailure,
@@ -11,6 +12,7 @@ import {
   processTimeoutFailure,
 } from "../src/local/process-nonreplayable-settlement.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
+import { prepareDurableShellProcess } from "../src/local/durable-process-spec.mjs";
 
 class FixtureChild extends EventEmitter {
   constructor(pid) {
@@ -54,11 +56,21 @@ const service = new ProcessExecutionService({
       child.emit("error", new Error("process failed after start"));
       child.emit("close", null, null);
     });
+    if (spawnMode === "cleanup-success") queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ ok: true, dispatch_started: true, input_transport: "public-cgevent-pid" })));
+      child.emit("close", 0, null);
+    });
     return child;
   },
   terminateProcess: () => { terminated += 1; return null; },
   childSettlementOptions: { fallbackMs: 5 },
 });
+
+for (const [command, code] of [[null, "invalid_request"], ["\0", "invalid_request"], ["🚀".repeat(16 * 1024 + 1), "limit_exceeded"]]) {
+  await assert.rejects(service.runShell(command, 1), (error) => error.code === code);
+  assert.throws(() => prepareDurableShellProcess(service, { command }), (error) => error.code === code);
+}
+assert.equal(spawnCalls, 0, "invalid shell commands reached either process delivery route");
 
 const preCancelled = new AbortController();
 preCancelled.abort(new BridgeError("cancelled", "cancelled before spawn"));
@@ -174,6 +186,41 @@ assert.strictEqual(processChildErrorFailure(false, fallback, true), fallback);
 assert.equal(processChildErrorFailure(true, fallback, true).details.trigger, "process_error");
 assert.equal(processChildErrorFailure(true, "", false).message, "process failed before spawn");
 assert.equal(processChildErrorFailure(true, new Error("spawn failed at /private/tmp/operator-secret"), false).message, "process failed before spawn");
+
+const cleanupFailure = new BridgeError("unavailable", "synthetic resource lease cleanup failure");
+const previousCoordinator = service.resourceCoordinator;
+service.resourceCoordinator = { acquire: async () => ({
+  async bindProcess() {},
+  async release() { throw cleanupFailure; },
+}) };
+spawnMode = "cleanup-success";
+try {
+  const beforeCleanupSpawn = spawnCalls;
+  await assert.rejects(
+    service.run("never", [], 1000, true, 1024, {}, process.cwd(), null, { nonReplayableMutation: true }),
+    (error) => error.retryable === false && error.details?.side_effects_started === "unknown"
+      && error.details?.reason === "process_outcome_unknown_after_spawn" && error.details?.trigger === "resource_cleanup",
+    "post-spawn resource cleanup failure lost the non-replayable mutation boundary",
+  );
+  assert.equal(spawnCalls, beforeCleanupSpawn + 1);
+  const helper = new MacosBackgroundInputService({
+    runProcess: service.run.bind(service), cacheRoot: process.cwd(), platform: "darwin",
+  });
+  helper.ensureBuilt = async () => "never";
+  await assert.rejects(() => helper.runHelper({ operation: "synthetic" }, 1, {}, { mutating: true }),
+    (error) => /outcome is unknown/.test(error.message) && !/before dispatch/.test(error.message),
+    "native input layer advertised a completed child as a safe pre-dispatch failure");
+  assert.equal(spawnCalls, beforeCleanupSpawn + 2, "cleanup failure replayed the native helper");
+  await assert.rejects(service.run("never", [], 1000, true, 1024, {}, process.cwd()),
+    (error) => error === cleanupFailure, "ordinary resource cleanup failure changed its existing error identity");
+  spawnMode = "async-pre";
+  await assert.rejects(service.run("never", [], 1000, true, 1024, {}, process.cwd(), null, { nonReplayableMutation: true }),
+    (error) => error.details?.reason === "process_failed_before_spawn" && error.retryable === false
+      && error.cause instanceof AggregateError && error.cause.errors[1] === cleanupFailure,
+    "known pre-spawn failure with incomplete resource cleanup lost its distinct settlement or either failure");
+} finally {
+  service.resourceCoordinator = previousCoordinator; spawnMode = "normal";
+}
 
 await new Promise((resolve) => { setImmediate(resolve); });
 assert.equal(tracker.snapshot().active_processes, 0, "process settlement fixtures leaked tracked children");

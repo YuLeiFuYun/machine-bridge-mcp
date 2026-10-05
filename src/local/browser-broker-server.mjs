@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { isAllowedExtensionOrigin, isAllowedLoopbackHost } from "./browser-pairing-http.mjs";
+import { isAllowedExtensionOrigin, isAllowedLoopbackHost, securityHeaders } from "./browser-pairing-http.mjs";
 import { EXPECTED_EXTENSION_ID } from "./browser-extension-identity.mjs";
 import { createBrokerAuthRegistry } from "./browser-broker-auth.mjs";
 import { createBrowserBrokerAuthHttpHandler } from "./browser-broker-auth-http.mjs";
@@ -14,7 +14,13 @@ export async function startBrowserBrokerServer({
   const extensionAuth = createBrokerAuthRegistry(extensionToken, "extension");
   const handleAuthHttp = createBrowserBrokerAuthHttpHandler({ port, extensionToken, runtimeAuth, extensionAuth });
   const server = serverFactory((request, response) => {
-    if (!handleAuthHttp(request, response)) onHttp(request, response);
+    try {
+      if (!handleAuthHttp(request, response)) onHttp(request, response);
+    } catch (error) {
+      if (response.headersSent) { response.destroy(); return; }
+      response.writeHead(error?.code === "ERR_INVALID_URL" ? 400 : 500,
+        securityHeaders("text/plain; charset=utf-8")).end();
+    }
   });
   const wss = new WebSocketServerClass({ noServer: true, maxPayload });
   server.on("upgrade", (request, socket, head) => {

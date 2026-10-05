@@ -2,7 +2,9 @@
   if (globalThis.__machineBridgeBrowserOperations) return;
 
   const MAX_ACCESSIBLE_FRAMES = 64;
-  const PAGE_AUTOMATION_VERSION = 4;
+  const PAGE_AUTOMATION_VERSION = 5;
+  const rendererRequests = new Map();
+  const MAX_RENDERER_REQUESTS = 64;
   const MUTATING_METHODS = new Set([
     "manage_tabs", "point_action", "backend_node_action", "action", "fill_form", "upload_files", "screenshot",
   ]);
@@ -158,16 +160,16 @@
     }
     throwIfCancelled(state);
     if (action === "new") {
-      const tab = await invokeBrowserTabMutation(
+      const tab = await invokeBrowserMutation(
         () => chrome.tabs.create({ url: newTabUrl || "about:blank", active: newTabActive }),
-        "create",
+        "during create", "browser tab mutation",
       );
       return { action: "new", ...publicTab(tab) };
     }
     const tab = await chrome.tabs.get(params.tabId);
     throwIfCancelled(state);
     if (action === "activate") {
-      const activated = await invokeBrowserTabMutation(() => chrome.tabs.update(tab.id, { active: true }), "activate_tab");
+      const activated = await invokeBrowserMutation(() => chrome.tabs.update(tab.id, { active: true }), "during activate_tab", "browser tab mutation");
       throwIfCancelled(state);
       if (!Number.isInteger(activated?.windowId) || activated.windowId < 1) {
         throw new Error("browser tab activation completed but its current window is unavailable before focus; inspect tabs before retrying");
@@ -183,7 +185,7 @@
         throw new Error("browser tab activation completed but the target tab was no longer active before focus; inspect tabs before retrying");
       }
       const focusWindowId = focusTarget.windowId;
-      await invokeBrowserTabMutation(() => chrome.windows.update(focusWindowId, { focused: true }), "focus_window");
+      await invokeBrowserMutation(() => chrome.windows.update(focusWindowId, { focused: true }), "during focus_window", "browser tab mutation");
       let settled;
       try { settled = await chrome.tabs.get(tab.id); }
       catch { throw new Error("browser tab activation and window focus completed but the target tab could not be verified; inspect tabs before retrying"); }
@@ -196,7 +198,7 @@
       return { action: "activate", ...publicTab(settled) };
     }
     const result = { action: "close", closed: true, ...publicTab(tab) };
-    await invokeBrowserTabMutation(() => chrome.tabs.remove(tab.id), "close");
+    await invokeBrowserMutation(() => chrome.tabs.remove(tab.id), "during close", "browser tab mutation");
     return result;
   }
 
@@ -252,7 +254,7 @@
       if (urlMatched && page.matched === true) {
         return { ok: true, tab_id: current.id, title: current.title || "", url: current.url || "", condition: last };
       }
-      await delay(200);
+      await new Promise((resolve) => { setTimeout(resolve, 200); });
     }
     throw new Error(`browser wait timed out; last condition: ${JSON.stringify(last || {})}`);
   }
@@ -1360,7 +1362,7 @@
       try {
         await assertExpectedNavigationTab(tab.id, params.expectedTabUrl);
         throwIfCancelled(state);
-        const updated = await invokeBrowserNavigationMutation(() => chrome.tabs.update(tab.id, { url: params.url }));
+        const updated = await invokeBrowserMutation(() => chrome.tabs.update(tab.id, { url: params.url }), "because the navigation mutation API failed");
         await awaitPostDispatchWait(waiter);
         return postActionTabMetadata(updated.id);
       } catch (error) {
@@ -1378,7 +1380,7 @@
             tab.id, params.expectedTabUrl, params.expectedDocumentEpoch, params.expectedHistoryEntryKey,
           );
           throwIfCancelled(state);
-          await invokeBrowserNavigationMutation(() => chrome.tabs.reload(tab.id));
+          await invokeBrowserMutation(() => chrome.tabs.reload(tab.id), "because the navigation mutation API failed");
         }
         await awaitPostDispatchWait(waiter);
         return postActionTabMetadata(tab.id);
@@ -1397,8 +1399,8 @@
             tab.id, params.expectedTabUrl, params.expectedDocumentEpoch, params.expectedHistoryEntryKey,
           );
           throwIfCancelled(state);
-          if (params.action === "back") await invokeBrowserNavigationMutation(() => chrome.tabs.goBack(tab.id));
-          else await invokeBrowserNavigationMutation(() => chrome.tabs.goForward(tab.id));
+          if (params.action === "back") await invokeBrowserMutation(() => chrome.tabs.goBack(tab.id), "because the navigation mutation API failed");
+          else await invokeBrowserMutation(() => chrome.tabs.goForward(tab.id), "because the navigation mutation API failed");
         }
         await awaitPostDispatchWait(waiter);
         return postActionTabMetadata(tab.id);
@@ -1760,55 +1762,51 @@
     return { promise, cancel: () => settle() };
   }
 
-  async function awaitPostDispatchWait(waiter) {
-    try {
-      await waiter.promise;
-    } catch (error) {
-      const detail = String(error?.message || error).replace(/\s+/g, " ").slice(0, 500);
-      throw new Error(`browser action may have been dispatched; the action outcome is unknown because post-dispatch wait failed. Inspect the page before retrying. (${detail})`);
-    }
+  function awaitPostDispatchWait(waiter) {
+    return invokeBrowserMutation(() => waiter.promise, "because post-dispatch wait failed");
   }
 
-  async function invokeBrowserNavigationMutation(operation) {
+  async function invokeBrowserMutation(operation, failure, subject = "browser action") {
     try {
       return await operation();
     } catch (error) {
       const detail = String(error?.message || error).replace(/\s+/g, " ").slice(0, 500);
-      throw new Error(`browser action may have been dispatched; the action outcome is unknown because the navigation mutation API failed. Inspect the page before retrying. (${detail})`);
+      throw new Error(`${subject} may have been dispatched; the ${subject === "browser action" ? "action " : ""}outcome is unknown ${failure}. Inspect ${subject === "browser action" ? "the page" : "tabs"} before retrying. (${detail})`);
     }
   }
 
-  async function invokeBrowserTabMutation(operation, phase) {
-    try {
-      return await operation();
-    } catch (error) {
-      const detail = String(error?.message || error).replace(/\s+/g, " ").slice(0, 500);
-      throw new Error(`browser tab mutation may have been dispatched; the outcome is unknown during ${phase}. Inspect tabs before retrying. (${detail})`);
-    }
-  }
-  
   async function executePageMutation(target, method, params, state) {
     await chrome.scripting.executeScript({ target, files: ["page-automation.js"] });
     throwIfCancelled(state);
+    if (rendererRequests.size >= MAX_RENDERER_REQUESTS) throw new Error("too many active renderer requests");
+    const token = crypto.randomUUID();
+    if (rendererRequests.has(token)) throw new Error("renderer request identity collision");
+    const lease = {
+      state, tabId: target.tabId, frameId: target.frameIds?.[0] ?? 0,
+      deadline: performance.now() + boundedRequestTimeout(state?.timeoutMs),
+    };
+    rendererRequests.set(token, lease);
     let executions;
     try {
       executions = await chrome.scripting.executeScript({
         target,
-        func: async (operation, payload, expectedVersion) => {
+        func: async (operation, payload, expectedVersion, requestToken) => {
           const protocol = "machine_bridge_page_mutation_v1";
           try {
             const api = globalThis.__machineBridgePageAutomation;
             if (!api || api.version !== expectedVersion) throw new Error("page automation module version mismatch");
             if (typeof api[operation] !== "function") throw new Error("page automation module is unavailable");
-            return { protocol, ok: true, result: await api[operation](payload) };
+            return { protocol, ok: true, result: await api[operation](payload, { token: requestToken }) };
           } catch (error) {
             return { protocol, ok: false, error: String(error?.message || error).replace(/\s+/g, " ").slice(0, 1000) };
           }
         },
-        args: [method, params, PAGE_AUTOMATION_VERSION],
+        args: [method, params, PAGE_AUTOMATION_VERSION, token],
       });
     } catch (error) {
       throw pageMutationDispatchUnknown(error);
+    } finally {
+      if (rendererRequests.get(token) === lease) rendererRequests.delete(token);
     }
     const settlement = Array.isArray(executions) && executions.length === 1 ? executions[0]?.result : null;
     if (settlement?.protocol !== "machine_bridge_page_mutation_v1") {
@@ -1822,6 +1820,32 @@
     }
     if (settlement.ok !== true) throw pageMutationSettlementUnknown();
     return [{ ...executions[0], result: settlement.result }];
+  }
+
+  function rendererProgress(token, sender) {
+    const lease = typeof token === "string" ? rendererRequests.get(token) : null;
+    const active = Boolean(lease && sender?.tab?.id === lease.tabId
+      && (sender?.frameId ?? 0) === lease.frameId
+      && lease.state?.cancelled !== true && performance.now() < lease.deadline);
+    return { ok: true, active };
+  }
+
+  function handleRendererProgressMessage(message, sender, sendResponse) {
+    if (message.type === "machine_bridge_internal_progress") {
+      sendResponse(rendererProgress(message.request_token, sender));
+      return false;
+    }
+    const delayMs = message.delay_ms;
+    if (!Number.isSafeInteger(delayMs) || delayMs < 1 || delayMs > 250) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    const scoped = message.request_token !== undefined;
+    const response = () => scoped ? rendererProgress(message.request_token, sender) : { ok: true };
+    const current = response();
+    if (scoped && current.active !== true) { sendResponse(current); return false; }
+    setTimeout(() => sendResponse(response()), delayMs);
+    return true;
   }
 
   function pageMutationSettlementUnknown() {
@@ -1846,10 +1870,6 @@
       }));
   }
   
-  function delay(ms) {
-    return new Promise((resolve) => { setTimeout(resolve, ms); });
-  }
-
   function boundedRequestTimeout(value) {
     if (!Number.isSafeInteger(value)) return 30000;
     return Math.max(1000, Math.min(185000, value));
@@ -1871,7 +1891,7 @@
   }
 
   Object.defineProperty(globalThis, "__machineBridgeBrowserOperations", {
-    value: Object.freeze({ dispatch, methodMayMutate, responsePayload, boundedRequestTimeout, boundedDocumentSource }),
+    value: Object.freeze({ dispatch, methodMayMutate, responsePayload, boundedRequestTimeout, boundedDocumentSource, rendererProgress, handleRendererProgressMessage }),
     configurable: false,
   });
 })();

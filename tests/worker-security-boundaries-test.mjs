@@ -1,3 +1,10 @@
+import nodeAssert from "node:assert/strict";
+import { verifyDpopProof } from "../src/worker/dpop.ts";
+import { verifyP256Signature } from "../src/worker/device-session-verifier.ts";
+import { handleDaemonHttpRelay } from "../src/worker/daemon-http-controller.ts";
+import { DaemonRegistry } from "../src/worker/daemon-registry.ts";
+import { WorkerObservability } from "../src/worker/observability.ts";
+import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { accountAdminAuthorized, handleAccountAdminOperation } from "../src/worker/account-admin.ts";
 import { discardRequestBody, readBoundedText } from "../src/worker/http.ts";
 import { handleOAuthClientAdminOperation } from "../src/worker/oauth-client-admin.ts";
@@ -6,7 +13,7 @@ import { exchangeOAuthToken } from "../src/worker/oauth-tokens.ts";
 import {
   acknowledgeAuthorityRevocation, authorityRevocationWireMessage, authorityRevocations, putWithAuthorityRevocation,
 } from "../src/worker/authority-revocations.ts";
-import { recordMatchesAuthorityRevocation } from "../src/shared/authority-revocation.mjs";
+import { normalizeAuthorityRevocation, recordMatchesAuthorityRevocation } from "../src/shared/authority-revocation.mjs";
 import { deriveRefreshReplacementPair } from "../src/worker/oauth-token-derivation.ts";
 import {
   loadOAuthRefreshStore,
@@ -672,7 +679,7 @@ await testRefreshReplacementDerivation();
 await testTokenRotationAndReplay();
 await testRefreshStateLifecycle();
 await testRequestBodyStreamingBoundaries();
-console.log("Worker security boundary state-machine test ok");
+
 
 async function expectReject(callback, expected) {
   let rejection;
@@ -684,3 +691,67 @@ async function expectReject(callback, expected) {
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+
+async function test_dpop_invalid_htu_throws() {
+ const {publicJwk}=await createDpopFixture();
+ const encoded=(v)=>Buffer.from(JSON.stringify(v)).toString("base64url");
+ const proof=encoded({typ:"dpop+jwt",alg:"ES256",jwk:publicJwk})+"."+encoded({htm:"POST",htu:"not a URL",iat:Math.floor(Date.now()/1000),jti:"synthetic_proof_0001"})+"."+Buffer.alloc(64).toString("base64url");
+ nodeAssert.equal(await verifyDpopProof({request:new Request("https://relay.example.invalid/mcp",{method:"POST",headers:{DPoP:proof}})}),null);
+}
+
+await test_dpop_invalid_htu_throws();
+
+async function test_async_signature_failure_escapes() {
+ const {publicJwk}=await createDpopFixture();
+ const verify=crypto.subtle.verify;
+ crypto.subtle.verify=async()=>{throw new Error("synthetic verification failure");};
+ try {nodeAssert.equal(await verifyP256Signature(publicJwk,"synthetic",new Uint8Array(64)),false);}
+ finally {crypto.subtle.verify=verify;}
+}
+
+await test_async_signature_failure_escapes();
+
+async function test_https_revocation_backlog_prevents_ready() {
+ const server="machine-bridge-mcp",version="3.0.0-beta.198",origin="https://relay.example.invalid";
+ const root=createDeviceIdentity(),identity=createDeviceSessionIdentity(root,origin,server,version);
+ const records=Array.from({length:1024},(_,i)=>({id:"revoke_"+"r".repeat(37)+String(i).padStart(6,"0"),account_id:"acct_"+"a".repeat(37)+String(i).padStart(6,"0"),account_version:1,queued_at:Math.floor(Date.now()/1000)}));
+ const storage=new MemoryStorage({"authority-revocations":{schema_version:1,records}});
+ const registry=new DaemonRegistry({getWebSockets(){return[];}});
+ const pending={rebindInstance(){return[];}};
+ const session="relay_http_"+"s".repeat(43);let activation,workerSeq=0,daemonSeq=0,messages=[],ready=false;
+ for(let poll=0;poll<20&&!ready;poll++){
+  const body=JSON.stringify({protocol:1,session_id:session,instance_id:"daemon_"+"d".repeat(43),ack_worker_seq:workerSeq,messages,owned_call_ids:[],...(activation?{activation_token:activation}:{tools:["read_file"],policy:{}})});
+  const request=new Request(origin+"/daemon/http",{method:"POST",headers:createDaemonHttpRelayHeaders(identity,origin,server,version,body),body});
+  const response=await handleDaemonHttpRelay({request,storage,registry,pending,observability:new WorkerObservability(),publicKeyJson:publicDeviceJwkJson(root),server,version,scheduleAlarm:async()=>{},detachChannel:async()=>{},retireWebSocket:async()=>{}});
+  nodeAssert.equal(response.status,200);const reply=await response.json();activation=reply.activation_token;messages=[];
+  assert(reply.messages.length<=64);
+  for(const message of reply.messages){
+   workerSeq=message.seq;
+   if(message.payload.type==="authority_revoke")messages.push({seq:++daemonSeq,payload:{type:"authority_revoke_ack",revocation_id:message.payload.revocation_id}});
+   if(message.payload.type==="ready_ack")messages.push({seq:++daemonSeq,payload:{type:"https_ready"}});
+  }
+  ready=reply.phase==="ready";
+ }
+ assert(ready);nodeAssert.equal((await authorityRevocations(storage)).length,0);
+}
+
+await test_https_revocation_backlog_prevents_ready();
+
+{
+  const valid = { account_id: `acct_${"a".repeat(43)}`, account_version: 1,
+    client_id: `mcp_client_${"c".repeat(43)}`, family_id: `mcp_family_${"f".repeat(43)}` };
+  assert(normalizeAuthorityRevocation(valid)?.familyId === valid.family_id, "valid scoped revocation was rejected");
+  for (const [field, values] of [
+    ["account_id", [null, [valid.account_id]]], ["account_version", ["1", [1], true]],
+    ["client_id", [null, "", [valid.client_id], {}]], ["family_id", [null, "", [valid.family_id], {}]],
+  ]) {
+    for (const value of values) assert(normalizeAuthorityRevocation({ ...valid, [field]: value }) === null,
+      "malformed authority field widened or coerced the revocation scope");
+  }
+  const storage = new MemoryStorage({ "authority-revocations": { schema_version: 1, records: [{
+    id: `revoke_${"r".repeat(43)}`, ...valid, client_id: null, queued_at: 1,
+  }] } });
+  await expectReject(() => authorityRevocations(storage), "authority revocation state is invalid");
+}
+
+console.log("Worker security boundary state-machine test ok");

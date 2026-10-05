@@ -5,6 +5,7 @@ import process from "node:process";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { LocalRuntime } from "./runtime.mjs";
 import { isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
+import { activeManagedJobs } from "./managed-jobs.mjs";
 import { generateSshKeyPair } from "./ssh-key.mjs";
 import { runExecutable } from "./shell.mjs";
 import { allToolNames, assertCanonicalFullPolicy, policyProfile } from "./tools.mjs";
@@ -186,15 +187,18 @@ export async function runFullAccessTest({
         const status = runtime.managedJobManager.read({ job_id: unsettledJobId });
         if (!isTerminalManagedJobStatus(status.status)) {
           runtime.managedJobManager.cancel({ job_id: unsettledJobId });
-          await waitForJob(runtime.managedJobManager, unsettledJobId, FULL_ACCESS_JOB_CLEANUP_WAIT_MS);
         }
+        await waitForJob(runtime.managedJobManager, unsettledJobId, FULL_ACCESS_JOB_CLEANUP_WAIT_MS);
       } catch {
         removeRoot = false;
       }
     }
-    await runtime?.stop();
-    if (previousSentinel === undefined) delete process.env[sentinelKey];
-    else process.env[sentinelKey] = previousSentinel;
+    try {
+      await runtime?.stop();
+    } finally {
+      if (previousSentinel === undefined) delete process.env[sentinelKey];
+      else process.env[sentinelKey] = previousSentinel;
+    }
     if (removeRoot) await rm(root, { recursive: true, force: true });
   }
 }
@@ -205,7 +209,9 @@ async function waitForJob(manager, jobId, timeoutMs) {
   while (!deadline.expired()) {
     const value = manager.read({ job_id: jobId });
     lastStatus = String(value.status || "unknown");
-    if (isTerminalManagedJobStatus(value.status)) return value;
+    // A published result can precede the runner's final status write; retain its directory until exit.
+    if (isTerminalManagedJobStatus(value.status)
+        && !activeManagedJobs(manager.jobRoot).some((job) => job.job_id === jobId)) return value;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 50); });
   }
   throw new Error(`full access managed-job test timed out while status=${lastStatus}`);

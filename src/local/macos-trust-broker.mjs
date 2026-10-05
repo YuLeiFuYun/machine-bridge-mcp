@@ -74,10 +74,8 @@ export function ensureMacosSecureDeviceRoot({ workspaceHash, existing = null, ro
   probeProvisionedMacosTrustBroker(broker, options);
   const tagSuffix = randomBytes(18).toString("base64url").replaceAll("_", "-");
   const tag = `com.machine-bridge-mcp.device.${String(workspaceHash || "workspace").slice(0, 24)}.${tagSuffix}`;
-  let created = false;
   try {
     const result = runBroker(broker.path, ["ensure", "--tag", tag], { timeoutMs: 30_000 }, options);
-    created = true;
     assertBrokerKeyResult(result, tag);
     const identity = {
       scheme: "device-signature-v1",
@@ -95,10 +93,8 @@ export function ensureMacosSecureDeviceRoot({ workspaceHash, existing = null, ro
     return identity;
   } catch (error) {
     let cleanupError = null;
-    if (created) {
-      try { runBroker(broker.path, ["delete", "--tag", tag], { timeoutMs: 30_000 }, options); }
-      catch (failure) { cleanupError = failure; }
-    }
+    try { deleteBrokerKey(broker.path, tag, options); }
+    catch (failure) { cleanupError = failure; }
     if (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
@@ -119,7 +115,7 @@ export function signWithMacosSecureDeviceRoot(identity, transcript, { reason = "
     input,
     timeoutMs: 120_000,
   }, options);
-  if (!result.ok || result.provider !== PROVIDER || result.keyTag !== identity.keyTag || !/^[A-Za-z0-9_-]{86}$/.test(String(result.signature || ""))) {
+  if (result.ok !== true || result.provider !== PROVIDER || result.keyTag !== identity.keyTag || typeof result.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(result.signature)) {
     throw new Error("Secure Enclave broker returned an invalid signature result");
   }
   if (result.publicJwk && deviceKeyId(result.publicJwk) !== identity.keyId) {
@@ -172,11 +168,9 @@ export function inspectProvisionedMacosTrustBroker(binaryPath, options = {}) {
 export function probeProvisionedMacosTrustBroker(brokerOrPath, options = {}) {
   const broker = typeof brokerOrPath === "string" ? inspectProvisionedMacosTrustBroker(brokerOrPath, options) : brokerOrPath;
   const tag = `com.machine-bridge-mcp.device.probe.${randomBytes(18).toString("base64url").replaceAll("_", "-")}`;
-  let created = false;
   let probeError = null;
   try {
     const result = runBroker(broker.path, ["ensure", "--tag", tag], { timeoutMs: 30_000 }, options);
-    created = true;
     assertBrokerKeyResult(result, tag);
   } catch (error) {
     probeError = error instanceof MacosTrustBrokerUnavailableError
@@ -186,11 +180,10 @@ export function probeProvisionedMacosTrustBroker(brokerOrPath, options = {}) {
         { cause: error },
       );
   }
-  if (created) {
-    const deleted = runBroker(broker.path, ["delete", "--tag", tag], { timeoutMs: 30_000 }, options);
-    if (!deleted.ok || deleted.provider !== PROVIDER || deleted.keyTag !== tag) {
-      throw new MacosTrustBrokerUnavailableError("macOS trust broker could not remove its capability-probe key");
-    }
+  try { deleteBrokerKey(broker.path, tag, options); }
+  catch (cleanupError) {
+    if (probeError) throw new AggregateError([probeError, cleanupError], "macOS trust broker capability probe failed and its temporary key could not be removed");
+    throw cleanupError;
   }
   if (probeError) throw probeError;
   return broker;
@@ -325,10 +318,17 @@ function assertBrokerBinding(identity, broker) {
 }
 
 function assertBrokerKeyResult(result, tag) {
-  if (!result?.ok || result.provider !== PROVIDER || result.keyTag !== tag || result.secureEnclave !== true || !result.publicJwk) {
+  if (result?.ok !== true || result.provider !== PROVIDER || result.keyTag !== tag || result.secureEnclave !== true || !result.publicJwk) {
     throw new Error("Secure Enclave broker returned an invalid key result");
   }
   deviceKeyId(result.publicJwk);
+}
+
+function deleteBrokerKey(binary, tag, options) {
+  const result = runBroker(binary, ["delete", "--tag", tag], { timeoutMs: 30_000 }, options);
+  if (result.ok !== true || result.provider !== PROVIDER || result.keyTag !== tag) {
+    throw new MacosTrustBrokerUnavailableError("macOS trust broker returned an invalid key deletion result");
+  }
 }
 
 function runBroker(binary, args, { input, timeoutMs }, options = {}) {

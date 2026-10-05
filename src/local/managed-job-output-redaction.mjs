@@ -1,7 +1,7 @@
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
 
 export function managedJobResourcePathVariants(value, platform = process.platform) {
-  const canonical = resolve(value);
+  const canonical = platform === "win32" ? win32.resolve(value) : resolve(value);
   const variants = new Set(pathTextVariants(canonical));
   if (platform === "darwin" && canonical.startsWith("/private/")) {
     for (const variant of pathTextVariants(canonical.slice("/private".length))) variants.add(variant);
@@ -11,7 +11,7 @@ export function managedJobResourcePathVariants(value, platform = process.platfor
 
 export function redactManagedJobOutput(buffer, context, runtimeDir, platform = process.platform, truncatedBytes = 0) {
   const safeBuffer = discardUnsafeTruncationTail(buffer, context, runtimeDir, platform, truncatedBytes);
-  const redactedBytes = replaceBufferEntries(safeBuffer, byteRedactionEntries(context, runtimeDir));
+  const redactedBytes = replaceBufferEntries(safeBuffer, byteRedactionEntries(context, runtimeDir, platform));
   let text = new TextDecoder("utf-8").decode(redactedBytes);
   for (const entry of textRedactionEntries(context, runtimeDir, platform)) {
     text = replaceTextEntry(text, entry, platform);
@@ -21,10 +21,12 @@ export function redactManagedJobOutput(buffer, context, runtimeDir, platform = p
 
 function discardUnsafeTruncationTail(buffer, context, runtimeDir, platform, truncatedBytes) {
   if (!(Number(truncatedBytes) > 0) || !Buffer.isBuffer(buffer) || buffer.length === 0) return buffer;
-  const patterns = protectedBytePatterns(context, runtimeDir, platform);
+  const patterns = protectedBytePatterns(context, runtimeDir, platform)
+    .map(pattern => platform === "win32" ? asciiCaseFold(pattern) : pattern);
   let end = buffer.length;
   while (end > 0) {
-    const view = buffer.subarray(0, end);
+    const prefix = buffer.subarray(0, end);
+    const view = platform === "win32" ? asciiCaseFold(prefix) : prefix;
     let longest = 0;
     for (const pattern of patterns) longest = Math.max(longest, partialSuffixLength(view, pattern));
     if (longest === 0) break;
@@ -61,10 +63,10 @@ function literalRedactionEntries(context) {
   return entries.sort((left, right) => right[1].length - left[1].length);
 }
 
-function pathRedactionEntries(context, runtimeDir) {
+function pathRedactionEntries(context, runtimeDir, platform) {
   const entries = [];
   const add = (value, replacement) => {
-    for (const variant of pathTextVariants(value)) {
+    for (const variant of managedJobResourcePathVariants(value, platform)) {
       if (variant) entries.push({ value: variant, replacement, caseInsensitive: true });
     }
   };
@@ -79,25 +81,34 @@ function pathRedactionEntries(context, runtimeDir) {
 
 function textRedactionEntries(context, runtimeDir, platform) {
   if (platform !== "win32") return [];
-  return pathRedactionEntries(context, runtimeDir)
+  return pathRedactionEntries(context, runtimeDir, platform)
     .map((entry) => ({ ...entry, caseInsensitive: true }))
     .sort((left, right) => right.value.length - left.value.length);
 }
 
-function byteRedactionEntries(context, runtimeDir) {
+function byteRedactionEntries(context, runtimeDir, platform) {
   const entries = [];
   for (const [name, value] of Object.entries(context.bytes || {})) {
     if (Buffer.isBuffer(value) && value.length > 0) {
       entries.push({ pattern: value, replacement: Buffer.from(`<redacted-resource:${name}>`) });
     }
   }
-  for (const entry of pathRedactionEntries(context, runtimeDir)) {
+  for (const entry of pathRedactionEntries(context, runtimeDir, platform)) {
     entries.push({ pattern: Buffer.from(entry.value), replacement: Buffer.from(entry.replacement) });
   }
   for (const [name, value] of literalRedactionEntries(context)) {
     entries.push({ pattern: Buffer.from(value), replacement: Buffer.from(`<redacted-resource:${name}>`) });
   }
   return entries.sort((left, right) => right.pattern.length - left.pattern.length);
+}
+
+// Windows case aliases must also be protected at a truncated capture boundary.
+function asciiCaseFold(buffer) {
+  const folded = Buffer.from(buffer);
+  for (let index = 0; index < folded.length; index += 1) {
+    if (folded[index] >= 65 && folded[index] <= 90) folded[index] += 32;
+  }
+  return folded;
 }
 
 function partialSuffixLength(buffer, pattern) {

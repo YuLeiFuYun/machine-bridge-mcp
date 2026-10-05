@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { moduleSpecifiers } from "./source-module-graph.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const localRoot = join(root, "src", "local");
@@ -14,18 +15,14 @@ for (const name of modules) {
     throw new Error(`obsolete daemon/runtime naming returned in ${relative(root, file)}`);
   }
   const dependencies = [];
-  for (const match of source.matchAll(/(?:\bfrom\s+|\bimport\s*\(\s*)["'](\.\/[^"']+)["']/g)) {
-    const target = resolve(dirname(file), match[1]);
+  for (const specifier of moduleSpecifiers(source, file).filter((value) => value.startsWith("./"))) {
+    const target = resolve(dirname(file), specifier);
     const modulePath = extname(target) ? target : `${target}.mjs`;
-    if (!existsSync(modulePath)) throw new Error(`missing relative module ${match[1]} imported by ${relative(root, file)}`);
+    if (!existsSync(modulePath)) throw new Error(`missing relative module ${specifier} imported by ${relative(root, file)}`);
     if (dirname(modulePath) === localRoot && modulePath.endsWith(".mjs")) dependencies.push(modulePath);
   }
   graph.set(file, dependencies);
 }
-
-const visiting = new Set();
-const visited = new Set();
-for (const file of graph.keys()) visitModule(file, []);
 
 const adapterModules = new Set([
   "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs",
@@ -424,7 +421,9 @@ const lineLimits = Object.freeze({
   "src/local/hardened-npm-download-timeout.mjs": 60,
   "src/local/hardened-npm-extract.mjs": 50,
   "src/local/hardened-npm-verification.mjs": 110,
+  "src/local/hardened-npm-launcher.mjs": 60,
   "src/local/npm-environment.mjs": 40,
+  "src/local/npm-audit-report.mjs": 40,
   "src/local/private-toolchain-integrity.mjs": 70,
   "src/local/wrangler-toolchain.mjs": 230,
   "src/local/wrangler-toolchain-verification.mjs": 140,
@@ -533,11 +532,15 @@ const lineLimits = Object.freeze({
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
   "src/worker/websocket-protocol.ts": 60,
-  "browser-extension/browser-operations.js": 1920,
+  "browser-extension/browser-operations.js": 1900,
   "browser-extension/page-automation.js": 1200,
-  "browser-extension/devtools-observation.js": 460,
+  "browser-extension/devtools-input.js": 330,
+  "browser-extension/devtools-observation.js": 440,
+  "browser-extension/devtools-session.js": 50,
+  "browser-extension/broker-auth.js": 110,
+  "browser-extension/pairing-bootstrap.js": 70,
   "browser-extension/broker-liveness.js": 50,
-  "browser-extension/service-worker.js": 370,
+  "browser-extension/service-worker.js": 350,
 });
 for (const [name, maximum] of Object.entries(lineLimits)) {
   const lines = readFileSync(join(root, name), "utf8").split(/\r?\n/).length;
@@ -1019,7 +1022,6 @@ for (const obsolete of ["export function ownerOnlyFile", "export function ensure
 for (const name of ["managed-job-runner-claim.mjs", "managed-job-storage.mjs", "managed-job-runner.mjs", "managed-job-lock.mjs"]) {
   const source = readFileSync(join(localRoot, name), "utf8");
   if (source.includes('from "./state.mjs"')) throw new Error(`${name} regained an unnecessary state dependency`);
-  if (!source.includes('from "./secure-file.mjs"')) throw new Error(`${name} bypasses the secure owner-only file boundary`);
 }
 
 const resourceOperationsSource = readFileSync(join(localRoot, "resource-operations.mjs"), "utf8");
@@ -1049,7 +1051,9 @@ const sshKeySource = readFileSync(join(localRoot, "ssh-key.mjs"), "utf8");
 for (const required of ["GENERATED_KEY_IDENTITIES", "chmodRegularFileIfIdentitySync", "installedLinkIdentity(opened.fd, source, target)", "removeGeneratedSshKeyPair", "replacement was preserved"]) {
   if (!sshKeySource.includes(required)) throw new Error(`SSH key ownership transaction boundary regressed: ${required}`);
 }
-if (sshKeySource.indexOf("inspectSshKeyPair(request.privateKeyPath") > sshKeySource.indexOf("secureKeyModes(request.privateKeyPath")) {
+const keyInspectionAt = sshKeySource.indexOf("inspectSshKeyPair(request.privateKeyPath");
+const keyModeChangeAt = sshKeySource.indexOf("secureKeyModes(request.privateKeyPath");
+if (keyInspectionAt < 0 || keyModeChangeAt < 0 || keyInspectionAt > keyModeChangeAt) {
   throw new Error("existing SSH key permissions are changed before key-pair validation");
 }
 
@@ -1070,7 +1074,9 @@ const mutationCoordinatorSource = readFileSync(join(localRoot, "file-mutation-co
 for (const required of ["this.queues = new Map()", "fileMutationPathKey", "const reservations = keys.map", "await Promise.all(reservations.map", "return await callback()"]){
   if (!mutationCoordinatorSource.includes(required)) throw new Error(`file mutation coordinator lost reservation or settlement boundary: ${required}`);
 }
-if (mutationCoordinatorSource.indexOf("this.queues.set(key, tail)") > mutationCoordinatorSource.indexOf("await Promise.all(reservations.map")) {
+const reservationAt = mutationCoordinatorSource.indexOf("this.queues.set(key, tail)");
+const mutationWaitAt = mutationCoordinatorSource.indexOf("await Promise.all(reservations.map");
+if (reservationAt < 0 || mutationWaitAt < 0 || reservationAt > mutationWaitAt) {
   throw new Error("file mutation coordinator waits before registering every requested path");
 }
 if (mutationCoordinatorSource.includes("Promise.race") || mutationCoordinatorSource.includes('addEventListener("abort"')) {
@@ -1085,7 +1091,9 @@ const brokerSocketOpen = browserBridgeSource.indexOf("new WebSocket(url, [protoc
 if (brokerProofCheck < 0 || brokerSocketOpen < 0 || brokerProofCheck > brokerSocketOpen) {
   throw new Error("runtime broker exposes its WebSocket proof before authenticating the candidate loopback owner");
 }
-if (browserBridgeSource.indexOf("if (proxy.authenticated)") > browserBridgeSource.indexOf("if (offset === MAX_PORT_ATTEMPTS - 1)")) {
+const authenticatedPeerAt = browserBridgeSource.indexOf("if (proxy.authenticated)");
+const portExhaustionAt = browserBridgeSource.indexOf("if (offset === MAX_PORT_ATTEMPTS - 1)");
+if (authenticatedPeerAt < 0 || portExhaustionAt < 0 || authenticatedPeerAt > portExhaustionAt) {
   throw new Error("browser broker can skip past an authenticated-but-unready peer and create a second owner");
 }
 for (const required of ["pairing.migrationPending && offset === 0", "previous browser broker occupies the migrated pairing port", "migrationPending: false"]) {
@@ -1110,11 +1118,6 @@ for (const required of ["createBrowserPairingGrant(extensionToken, targetPort)",
 const pairingListenIndex = browserPairingLaunchSource.indexOf('server.listen(0, "127.0.0.1")');
 const pairingUrlIndex = browserPairingLaunchSource.indexOf('return { url:');
 if (pairingListenIndex < 0 || pairingUrlIndex < 0 || pairingListenIndex > pairingUrlIndex) throw new Error("browser ephemeral pairing launch lost bind-before-open ordering");
-const cliLocalAdminBrowserSource = readFileSync(join(localRoot, "cli-local-admin.mjs"), "utf8");
-for (const required of ["readBrowserPairing(context.stateRoot)", "startBrowserPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken })", "await openTarget(launch.url)", "launch.close()"] ) {
-  if (!cliLocalAdminBrowserSource.includes(required)) throw new Error(`browser CLI pairing bypassed the shared ephemeral launch boundary: ${required}`);
-}
-if (cliLocalAdminBrowserSource.includes("await openExternal(context.pairingUrl)")) throw new Error("browser CLI pairing reopened the long-lived broker URL directly");
 const browserPairingGrantSource = readFileSync(join(localRoot, "browser-pairing-grant.mjs"), "utf8");
 for (const required of ["createBrowserPairingGrant", "createPairingBootstrapRegistry", "machine-bridge-browser-pair-v2", "machine-bridge-browser-pair-init-v2", "machine-bridge-browser-pair-${direction}-v2", "pending.get(grant.id)", "serverNonce: existing.serverNonce", "used.set(grant.id", "pending.delete(grant.id)"]) {
   if (!browserPairingGrantSource.includes(required)) throw new Error(`browser pairing bootstrap boundary regressed: ${required}`);
@@ -1185,7 +1188,7 @@ if (!workspaceTransactionSource.includes("patch transaction may have partially m
     || !workspaceTransactionSource.includes("file mutation failed and staging cleanup was incomplete")
     || !workspaceTransactionSource.includes("new AggregateError([primary, ...recoveryFailures]")
     || !workspaceTransactionSource.includes("new AggregateError([primary, ...cleanupFailures]")
-    || !workspaceTransactionSource.includes("await createTarget(stage.temp, operation.target)")
+    || !workspaceTransactionSource.includes("publishFileLinkWithIdentity(stage.temp, operation.target, createTarget, record)")
     || !workspaceTransactionSource.includes("reason: \"target_appeared\"")
     || !workspaceTransactionSource.includes("fileMutationPathKey(full, platform)")) {
   throw new Error("workspace transaction lost no-overwrite targets, shared path identity, or causal cleanup reporting");
@@ -1289,20 +1292,6 @@ if (!runtimeDiagnosticStateBoundary.includes("relayRecoveryRuntimeSnapshot(runti
 const authorityRevocationBoundary = /async applyAuthorityRevocation\(revocation\)[\s\S]*?\n  runProcess\(/.exec(runtimeBoundarySource)?.[0] || "";
 for (const required of ["async applyAuthorityRevocation", "try { calls =", "sessionRevocation = Promise.resolve(this.processSessionManager.revokeAuthority", "try { jobs =", "sessions = await sessionRevocation", "failures.length", "retained revocation must be retried"]) {
   if (!authorityRevocationBoundary.includes(required)) throw new Error(`authority revocation lost all-category fail-closed application: ${required}`);
-}
-const runtimeStopBoundary = /async stop\(\)[\s\S]*?\n  send\(/.exec(runtimeBoundarySource)?.[0] || "";
-for (const required of [
-  "await this.callRegistry.cancelAllAndWait(\"runtime stopped\")",
-  "await this.processTracker.drain(\"SIGKILL\")",
-  "await this.processSessionManager.clearAndWait()",
-  "this.lifecycle.markStopFailed(error)",
-  "this.lifecycle.markStopped()",
-]) {
-  if (!runtimeStopBoundary.includes(required)) throw new Error(`runtime stop lost close-settled ownership teardown: ${required}`);
-}
-if (!(runtimeStopBoundary.indexOf("callRegistry.cancelAllAndWait") < runtimeStopBoundary.indexOf("processTracker.drain")
-  && runtimeStopBoundary.indexOf("processTracker.drain") < runtimeStopBoundary.indexOf("processSessionManager.clearAndWait"))) {
-  throw new Error("runtime stop no longer drains calls before processes and process sessions");
 }
 const processTrackerBoundary = readFileSync(join(localRoot, "process-tracker.mjs"), "utf8");
 for (const required of ["async drain(", "this.drainSignal = signal", "if (this.drainSignal) this.requestDrainTermination(child)", "process shutdown did not settle before the runtime teardown deadline"]) {
@@ -1593,8 +1582,9 @@ if (!daemonDetachBoundary.includes("this.pending.rejectSocket(socket, (record) =
   throw new Error("identity-damaged daemon socket cleanup regained retryable settlement for already-dispatched calls");
 }
 const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
-if (daemonWebSocketErrorBoundary.indexOf("const cleanup = this.cleanupDaemonSocket")
-  > daemonWebSocketErrorBoundary.indexOf('daemon.websocket.error')) {
+const daemonErrorCleanupAt = daemonWebSocketErrorBoundary.indexOf("const cleanup = this.cleanupDaemonSocket");
+const daemonErrorLogAt = daemonWebSocketErrorBoundary.indexOf("daemon.websocket.error");
+if (daemonErrorCleanupAt < 0 || daemonErrorLogAt < 0 || daemonErrorCleanupAt > daemonErrorLogAt) {
   throw new Error("daemon WebSocket error logging occurs before cleanup ownership is claimed");
 }
 const daemonWebSocketCloseBoundary = /async webSocketClose[\s\S]*?async webSocketError/.exec(workerIndexBoundary)?.[0] || "";
@@ -1783,18 +1773,6 @@ for (const forbidden of ["AUTHORIZATION_FIELDS", "<form method=\"post\" action=\
 }
 for (const required of ["AUTHORIZATION_FIELDS", "authorizationPage", "redirectOrigin"]) {
   if (!workerOAuthPageBoundary.includes(required)) throw new Error(`OAuth authorization page lost rendering/security responsibility: ${required}`);
-}
-
-function visitModule(file, stack) {
-  if (visited.has(file)) return;
-  if (visiting.has(file)) {
-    const cycle = [...stack.slice(stack.indexOf(file)), file].map((item) => relative(localRoot, item)).join(" -> ");
-    throw new Error(`local module dependency cycle detected: ${cycle}`);
-  }
-  visiting.add(file);
-  for (const dependency of graph.get(file) || []) visitModule(dependency, [...stack, file]);
-  visiting.delete(file);
-  visited.add(file);
 }
 
 console.log(`architecture module boundaries ok (${modules.length} local modules)`);

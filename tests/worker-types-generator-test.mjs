@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from "node:zlib";
 import { parseWorkerTypesArguments, runWranglerTypes } from "../scripts/generate-worker-types.mjs";
 import { runCompletedWranglerCommand } from "../scripts/wrangler-command-lifecycle.mjs";
@@ -24,7 +26,7 @@ const mismatchedRuntime = runtimePayload("interface RuntimeCache { mismatch: tru
 
 try {
   await writeFile(fixture, `
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 const mode = process.env.MBM_WRANGLER_FIXTURE_MODE;
 const command = process.argv[2];
 let marker = "";
@@ -36,6 +38,13 @@ if (command === "types") {
   const before = existsSync(target) ? readFileSync(target, "utf8") : "";
   process.stdout.write("types-existing:" + (before ? "yes" : "no") + "\\n");
   process.stdout.write("types-pre-runtime-only:" + (before.startsWith(process.env.MBM_RUNTIME_HEADER + "\\n// Begin runtime types\\n") ? "yes" : "no") + "\\n");
+}
+if (["replace-link", "replace-directory", "replace-file"].includes(mode)) {
+  rmSync(process.argv[3]);
+  if (mode === "replace-link") symlinkSync(process.env.MBM_TYPES_REPLACEMENT, process.argv[3]);
+  else if (mode === "replace-directory") mkdirSync(process.argv[3]);
+  else writeFileSync(process.argv[3], "valuable replacement");
+  process.exit(7);
 }
 if (mode === "fail") process.exit(7);
 if (mode === "hang-before") setInterval(() => {}, 1000);
@@ -144,6 +153,55 @@ else {
   await assert.rejects(runWranglerTypes(typesOptions("fail", refreshFailure, { refreshRuntimeSeed: true, runtimePayload: refreshedRuntime })), /exit code 7/);
   await assertSnapshot(target, priorTarget, priorTargetMode, "refresh failure did not restore the prior target");
   await assertSnapshot(seed, refreshSeedSnapshot.bytes, refreshSeedSnapshot.mode, "refresh failure did not restore the prior seed");
+
+  const valuable = join(root, "valuable.txt");
+  await writeFile(valuable, "valuable original", { mode: 0o640 });
+  await chmod(valuable, 0o640);
+  for (const mode of ["replace-link", "replace-directory", "replace-file"]) {
+    await rm(target, { recursive: true, force: true });
+    await writeFile(target, priorTarget);
+    const options = typesOptions(mode, capture());
+    options.env.MBM_TYPES_REPLACEMENT = valuable;
+    await assert.rejects(runWranglerTypes(options), error => {
+      assert(error instanceof AggregateError, "recovery failure must preserve both causes");
+      assert.match(error.errors[0].message, /exit code 7/);
+      return true;
+    });
+    await assertSnapshot(valuable, Buffer.from("valuable original"), 0o640, "recovery modified another file");
+    if (mode === "replace-link") assert((await lstat(target)).isSymbolicLink());
+    else if (mode === "replace-directory") assert((await lstat(target)).isDirectory());
+    else assert.equal(await readFile(target, "utf8"), "valuable replacement");
+  }
+  await rm(target, { recursive: true, force: true });
+  await symlink(valuable, target);
+  await assert.rejects(runWranglerTypes(typesOptions("normal", capture())), /symbolic link/);
+  await rm(target);
+  await link(valuable, target);
+  await assert.rejects(runWranglerTypes(typesOptions("normal", capture())), /multiple hard links/);
+  await rm(target);
+  const sibling = await mkdtemp(join(tmpdir(), "machine-bridge-types-outside-"));
+  try {
+    const alias = join(root, "outside-alias");
+    await symlink(sibling, alias, "dir");
+    await assert.rejects(runWranglerTypes({ ...typesOptions("normal", capture()), targetPath: join(alias, "types.d.ts") }),
+      /parent must remain inside/);
+    assert.deepEqual(await import("node:fs/promises").then(fs => fs.readdir(sibling)), []);
+  } finally { await rm(sibling, { recursive: true, force: true }); }
+  if (process.platform !== "win32") {
+    assert.equal(spawnSync("mkfifo", [target]).status, 0);
+    const moduleUrl = pathToFileURL(resolve("scripts/generate-worker-types.mjs")).href;
+    const code = 'import {runWranglerTypes} from ' + JSON.stringify(moduleUrl)
+      + ';await runWranglerTypes(' + JSON.stringify({
+        cwd: root, targetPath: target, seedPath: seed, wranglerPath: fixture, expectedRuntimeHeader: runtimeHeader,
+      }) + ');';
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+      timeout: 2_000, killSignal: "SIGKILL", encoding: "utf8",
+    });
+    assert.equal(child.error, undefined, "Worker types snapshot blocked on a FIFO");
+    assert.notEqual(child.status, 0);
+    assert.match(child.stderr, /not a regular file/);
+    await rm(target);
+  }
 
   assert.deepEqual(parseWorkerTypesArguments([]), { refreshRuntimeSeed: false });
   assert.deepEqual(parseWorkerTypesArguments(["--refresh-runtime-seed"]), { refreshRuntimeSeed: true });

@@ -12,7 +12,7 @@ body:
     attributes:
       label: Version
       description: Output of `machine-mcp --version` or the npm package version.
-      placeholder: 0.16.2
+      placeholder: Output of machine-mcp --version
     validations:
       required: true
   - type: dropdown

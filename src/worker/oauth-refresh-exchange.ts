@@ -94,9 +94,13 @@ export async function exchangeRefreshToken(
       return reject(options);
     }
     delete refreshStore.tokens[refreshKey];
-    recordConsumedRefreshToken(oauthStore, refreshStore, refreshKey, record, record.family_expires_at, now, validation.accessScope);
+    const revocations = recordConsumedRefreshToken(oauthStore, refreshStore, refreshKey, record, record.family_expires_at, now, validation.accessScope);
     validation.client.last_used_at = now;
-    await saveOAuthStores(oauthStore, refreshStore, options.storage);
+    await saveOAuthStores(oauthStore, refreshStore, options.storage, revocations);
+    if (Object.hasOwn(refreshStore.revoked_families, record.family_id)) {
+      options.onRefreshEvent?.("family_revoked");
+      return json({ error: "invalid_grant" }, 400);
+    }
     options.onRefreshEvent?.("rotated");
     return tokenResponse(issued, validation.accessScope, record.dpop_jkt);
   });

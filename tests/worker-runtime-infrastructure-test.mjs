@@ -1,3 +1,7 @@
+import nodeAssert from "node:assert/strict";
+import { handleOuterWorkerFetch } from "../src/worker/worker-entry.ts";
+import { DaemonHttpChannel } from "../src/worker/daemon-http-channel.ts";
+import { queueDaemonHttpRevocations } from "../src/worker/authority-revocations.ts";
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { pendingCallReconnectSettlement } from "../src/worker/pending-call-reconnect-settlement.ts";
 import {
@@ -57,7 +61,7 @@ import {
 import { projectManagedJobMonitorStatus } from "../src/worker/mcp-job-monitor-status.ts";
 import { workerBodyLimitBytes } from "../src/worker/worker-runtime-config.ts";
 import { retainWorkerTask } from "../src/worker/worker-task-lifetime.ts";
-import { applyCors, corsPreflight, searchParamsObject } from "../src/worker/http.ts";
+import { applyCors, corsPreflight, searchParamsObject, workerErrorClass } from "../src/worker/http.ts";
 import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
   textToolResult,
@@ -153,7 +157,7 @@ testWebSocketProtocol();
 testDaemonLiveness();
 await testThrottledEdgeLogger();
 await testWorkerStaticRoutes();
-console.log("worker runtime infrastructure test ok");
+
 
 
 
@@ -904,6 +908,13 @@ async function testDaemonReadyWaiters() {
     "brief daemon reconnect did not wake a waiting new call");
   assert(await waitForReadyDaemon(registry, { graceMs: 1 }) === socket,
     "ready daemon call admission unnecessarily waited");
+  const preAborted = new AbortController();
+  preAborted.abort();
+  for (const admit of [waitForReadyDaemon, readyDaemonForDispatch]) {
+    await nodeAssert.rejects(admit(registry, { signal: preAborted.signal }), error => error.code === "cancelled",
+      "already-ready daemon ignored pre-dispatch cancellation");
+    assert(readyDaemonWaiterSnapshot(registry).active === 0, "pre-aborted admission retained a readiness waiter");
+  }
   const synchronousImmediate = immediateReadyDaemonForDispatch(registry);
   assert(synchronousImmediate?.socket === socket && synchronousImmediate.recoveryDelayMs === 0,
     "ready daemon dispatch lost its synchronous no-yield admission path");
@@ -2564,6 +2575,14 @@ async function testWorkerContinuityEvidence() {
 }
 
 function testWorkerObservability() {
+  for (const name of ["operator@example.com", SYNTHETIC_REFRESH_TOKEN, `oauth_store_persist_oauth_${SYNTHETIC_REFRESH_TOKEN}`, "oauth_store_persist_oauth_error\nprivate"]) {
+    const error = new Error("private cause retained internally");
+    error.name = name;
+    nodeAssert.equal(workerErrorClass(error), "error", "unexpected exception name entered the public error class");
+  }
+  nodeAssert.equal(workerErrorClass(new TypeError("private")), "type_error");
+  nodeAssert.equal(workerErrorClass(new RangeError("private")), "range_error");
+  nodeAssert.equal(workerErrorClass(null), "unknown_error");
   const metrics = new WorkerObservability();
   metrics.requestFinished(200);
   metrics.requestFinished(403);
@@ -2943,4 +2962,80 @@ async function testWorkerStaticRoutes() {
   const gateway = workerGatewayErrorResponse(new Request("https://example.test/mcp"));
   assert(gateway.status === 502 && (await gateway.json()).error === "worker_gateway_error", "outer Worker did not normalize unexpected failures");
   assert(outerWorkerErrorClass(Object.assign(new Error("secret-value-must-not-appear"), { code: "ECONNRESET" })) === "error:econnreset", "outer error class included sensitive exception text");
+}
+
+async function test_outer_async_gateway_failure_escapes() {
+ const limiter={limit:async()=>({success:true})};
+ const response=await handleOuterWorkerFetch(new Request("https://relay.example.invalid/daemon/http",{method:"POST"}),{
+ BRIDGE:{getByName(){return{fetch:async()=>{throw new Error("synthetic gateway failure");}};}},
+ STATEFUL_GLOBAL_RATE_LIMITER:limiter,STATEFUL_RATE_LIMITER:limiter}, {waitUntil(){}},{server:"machine-bridge-mcp",version:"3.0.0-beta.198"});
+ nodeAssert.equal(response.status,502);
+}
+
+await test_outer_async_gateway_failure_escapes();
+
+async function test_metrics_capacity_recurses() {
+ const m=new WorkerObservability();
+ for(let i=0;i<160;i++){m.callStarted("tool_"+i);m.callFinished("tool_"+i);}
+ const s=m.snapshot();assert(Object.keys(s.tools).length<=128);nodeAssert.equal(s.calls.completed,160);
+}
+
+await test_metrics_capacity_recurses();
+
+async function test_monitor_rollover_loses_activation() {
+ const storage=testDurableStorage();const m=new ManagedJobMonitorClaimStore(storage);
+ const a={accountId:"account",accountVersion:1,clientId:"client",familyId:"family",role:"owner"};
+ const job="job_"+"a".repeat(43);const id=await m.issue(job,a,100);
+ const state=await storage.get("managed-job-monitor-claims-v1");
+ state.sequence=Number.MAX_SAFE_INTEGER;await storage.put("managed-job-monitor-claims-v1",state);
+ assert(await m.activate(job,id,a,101));assert(await m.claim(job,id,a,102));assert(await m.has(job,id,a,103));
+}
+
+await test_monitor_rollover_loses_activation();
+
+async function test_probing_https_candidate_can_drain() {
+ const r=new DaemonRegistry({getWebSockets(){return[];}});
+ const c=r.http.beginCandidate("relay_http_"+"a".repeat(43),{role:"candidate",instanceId:"instance",connectedAt:new Date().toISOString(),lastSeenAt:new Date().toISOString()});
+ r.http.activate(c.sessionId,c.activationToken);
+ nodeAssert.equal(r.beginDrain(c),false);
+}
+
+await test_probing_https_candidate_can_drain();
+
+{
+  const channel = new DaemonHttpChannel({ sessionId: "synthetic", activationToken: "synthetic",
+    attachment: { role: "candidate", connectedAt: new Date().toISOString() } });
+  channel.activate(); channel.verifyReady();
+  const records = Array.from({ length: 130 }, (_, i) => ({ id: `revoke_${i.toString(36).padStart(43, "0")}`,
+    account_id: SYNTHETIC_ACCOUNT_ID, account_version: 1, queued_at: 1 }));
+  queueDaemonHttpRevocations(channel, records);
+  queueDaemonHttpRevocations(channel, records);
+  assert(channel.readyState === 1 && channel.queuedMessageCount === 64,
+    "control backlog invalidated or duplicated a healthy HTTPS channel");
+  assert(channel.acknowledgeWorker(64), "HTTPS control batch acknowledgement was rejected");
+  queueDaemonHttpRevocations(channel, records.slice(64));
+  assert(channel.queuedMessageCount === 64 && channel.outboundMessages()[0].seq === 65,
+    "deferred controls did not refill in sequence");
+  const diagnostics = sanitizeDaemonRelayDiagnostics({ schema_version: 1, recent_outages: [{ outage_number: 1, close_code: null }] });
+  assert(diagnostics.recent_outages[0].close_code === null, "unknown outage close code became a real zero code");
+}
+
+console.log("worker runtime infrastructure test ok");
+
+
+{
+  const channel = new DaemonHttpChannel({ sessionId: "synthetic", activationToken: `activate_${"a".repeat(43)}`,
+    attachment: { role: "candidate", connectedAt: new Date().toISOString() } });
+  channel.activate();
+  const first = JSON.stringify({ data: "x".repeat(relayContract.httpFallbackMaximumMessageBytes - 11) });
+  const second = JSON.stringify({ data: "y".repeat(relayContract.httpFallbackMaximumEnvelopeBytes
+    - relayContract.httpFallbackMaximumMessageBytes - 11) });
+  channel.send(first); channel.send(second);
+  const messages = channel.outboundMessages();
+  const envelope = JSON.stringify({ protocol: 1, phase: "probing", activation_token: channel.activationToken,
+    ack_daemon_seq: Number.MAX_SAFE_INTEGER, messages });
+  assert(messages.length === 1 && Buffer.byteLength(envelope) <= relayContract.httpFallbackMaximumEnvelopeBytes,
+    "HTTPS response envelope omitted sequence/header overhead from its byte budget");
+  assert(channel.acknowledgeWorker(messages[0].seq) && channel.outboundMessages()[0].seq === 2,
+    "HTTPS envelope budgeting lost or skipped the deferred message");
 }

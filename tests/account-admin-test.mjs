@@ -125,6 +125,14 @@ assert((await client.removeClient({ clientId: listedClients.clients[0].client_id
 expectThrow(() => client.removeClient({ clientId: "invalid" }), "client id is invalid");
 await client.create({ name: "build-bot", role: "operator", password: generated });
 await client.update({ accountId: accounts[1].account_id, role: "editor", active: false });
+assert(JSON.parse(requests.at(-1).options.body).active === false, "account disabling changed its boolean intent");
+await client.update({ accountId: accounts[1].account_id, active: true });
+assert(JSON.parse(requests.at(-1).options.body).active === true, "account enabling changed its boolean intent");
+const requestsBeforeInvalidActive = requests.length;
+for (const active of ["false", "true", 0, 1, null, [], {}, new Boolean(false)]) {
+  expectThrow(() => client.update({ accountId: accounts[1].account_id, active }), "active flag must be a boolean");
+}
+assert(requests.length === requestsBeforeInvalidActive, "invalid account state reached the mutation request boundary");
 await client.rotatePassword({ accountId: accounts[1].account_id, password: generated });
 assert((await client.remove({ accountId: accounts[1].account_id })).removed === true, "account removal response was not normalized");
 assert(requests.some((request) => request.url.endsWith("/admin/accounts/rotate-password")), "password rotation used the wrong endpoint");

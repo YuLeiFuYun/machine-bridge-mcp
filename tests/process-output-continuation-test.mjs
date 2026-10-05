@@ -12,7 +12,7 @@ import { completeProcessSessionRead, readProcessSession } from "../src/local/pro
 import { notifySessionWaiters } from "../src/local/process-session-events.mjs";
 import { ProcessSessionManager } from "../src/local/process-sessions.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
-import { PROCESS_SESSION_RETENTION_MS } from "../src/local/execution-limits.mjs";
+import { MAX_PROCESS_SESSIONS, PROCESS_SESSION_RETENTION_MS } from "../src/local/execution-limits.mjs";
 import { ResourceAdmissionError } from "../src/local/resource-admission.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
@@ -85,6 +85,7 @@ try {
   await testRemoteReadCancellationAfterHelperResolution();
   await testSuccessfulContinuation();
   await testFailureContinuation();
+  await testConcurrentSessionCapacity();
   await testSessionReleaseAfterBinding();
   await testSessionExitFallbackSettlement();
   await testSessionCancellationAfterSpawn();
@@ -950,4 +951,60 @@ async function waitFor(predicate, milliseconds, message) {
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
+}
+
+async function testConcurrentSessionCapacity() {
+  const gates = []; const releases = []; const children = [];
+  const manager = new ProcessSessionManager({
+    workspace: root, runtimeDir: root, policy, authorizeTool() {},
+    processTracker: { track() {}, untrack() {} },
+    resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {},
+    resourceCoordinator: { acquire: () => new Promise((resolvePromise) => {
+      const index = gates.length; releases[index] = 0;
+      gates.push(() => resolvePromise({
+        async bindProcess() {},
+        async release() { releases[index] += 1; return true; },
+      }));
+    }) },
+    spawnProcess() {
+      const child = new EventEmitter();
+      child.pid = 90_000_000 + children.length;
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      children.push(child);
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
+    },
+    terminateTree(child) { queueMicrotask(() => child.emit("close", null, "SIGKILL")); return true; },
+  });
+  const total = MAX_PROCESS_SESSIONS + 2;
+  const pending = Array.from({ length: total }, () => manager.start({ argv: [process.execPath, "-e", "capacity fixture"] }));
+  try {
+    await waitFor(() => gates.length === total, 5_000, "concurrent session admission did not reach the barrier");
+    for (const release of gates) release();
+    const outcomes = await Promise.allSettled(pending);
+    assert.equal(outcomes.filter((result) => result.status === "fulfilled").length, MAX_PROCESS_SESSIONS,
+      "concurrent resource admission bypassed the session capacity ceiling");
+    const denied = outcomes.filter((result) => result.status === "rejected");
+    assert.equal(denied.length, 2);
+    assert(denied.every((result) => result.reason?.code === "limit_exceeded"),
+      "session capacity failure lost its typed pre-spawn denial");
+    assert.equal(children.length, MAX_PROCESS_SESSIONS, "capacity denial occurred after spawning excess children");
+    assert.equal(manager.status().active, MAX_PROCESS_SESSIONS);
+    assert.equal(releases.filter((count) => count === 1).length, 2, "capacity denial retained admitted resource leases");
+
+    children[0].emit("close", 0, null);
+    const replacement = manager.start({ argv: [process.execPath, "-e", "replacement fixture"] });
+    await waitFor(() => gates.length === total + 1, 5_000, "a completed session did not free capacity");
+    gates[total]();
+    await replacement;
+    assert.equal(manager.status().active, MAX_PROCESS_SESSIONS, "replacement changed the active session ceiling");
+    assert.equal(manager.status().retained, MAX_PROCESS_SESSIONS, "completed session was not evicted for capacity");
+    await manager.clearAndWait();
+    await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+    assert(releases.every((count) => count === 1), "capacity rejection or session cleanup did not release each lease exactly once");
+  } finally {
+    for (const release of gates) release();
+    await Promise.allSettled(pending);
+    await manager.clearAndWait();
+  }
 }

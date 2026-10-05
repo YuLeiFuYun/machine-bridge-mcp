@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { EventEmitter } from "node:events";
 import { testRelayRetryPolicy } from "./relay-http-retry-cases.mjs";
 import { testExecutedIdleRelayBudget } from "./relay-http-budget-cases.mjs";
@@ -824,6 +825,8 @@ async function testWebSocketHandshakeUsesResilientFallbackDiagnostics() {
   const session = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, now);
   const issuedAt = Math.floor(now / 1000);
   const wrapperStatus = {
+    transport: "https", network_route: "system-network-stack",
+    last_transport_error_reason: "connection_timeout",
     outage_count: 4,
     https_fallback_last_takeover_ms: 850,
     https_fallback_last_takeover_outage_number: 4,
@@ -836,6 +839,8 @@ async function testWebSocketHandshakeUsesResilientFallbackDiagnostics() {
     }],
   };
   const rawWebSocketStatus = {
+    transport: "websocket", network_route: "application-http-proxy",
+    last_transport_error_reason: "connection_reset",
     outage_count: 4,
     https_fallback_last_takeover_ms: 0,
     https_fallback_last_takeover_outage_number: 0,
@@ -871,6 +876,16 @@ async function testWebSocketHandshakeUsesResilientFallbackDiagnostics() {
     },
   };
   const hello = await options.websocket.helloMessage(welcome, rawWebSocketStatus);
+  assert.equal(hello.relay_diagnostics.transport, "websocket");
+  assert.equal(hello.relay_diagnostics.network_route, rawWebSocketStatus.network_route);
+  assert.equal(hello.relay_diagnostics.last_transport_error_reason, "connection_reset");
+  const http = options.http.descriptor({
+    transport: "https", network_route: "system-network-stack", last_transport_error_reason: "connection_timeout",
+  });
+  assert.equal(http.relayDiagnostics.transport, "https");
+  assert.equal(http.relayDiagnostics.network_route, "system-network-stack");
+  assert.equal(http.relayDiagnostics.last_transport_error_reason, "connection_timeout");
+  assert.equal(http.relayDiagnostics.https_fallback_last_takeover_outage_number, 4);
   assert.equal(hello.relay_diagnostics.https_fallback_last_takeover_outage_number, 4,
     "WebSocket daemon hello ignored resilient fallback takeover identity");
   assert.deepEqual(hello.relay_diagnostics.recent_outages.map((entry) => [
@@ -1125,6 +1140,7 @@ await testSignedHttpRelayAuthentication();
 testQuotaSafeRelayCadenceDefaults();
 await testDynamicHttpDeviceSessionProvider();
 testTransportSequences();
+await testSignedHttpEnvelopeBudget();
 await testDedicatedHttpFallbackProxy();
 await testHttpFallbackFailureClassification();
 await testLocalLostResponseDoesNotReplayToolCall();
@@ -1140,3 +1156,47 @@ testFallbackDiagnosticProjectionContract();
 await testWebSocketHandshakeUsesResilientFallbackDiagnostics();
 await testPrimaryFallbackHandoverStress();
 console.log("relay HTTP fallback reliability test ok");
+
+async function testSignedHttpEnvelopeBudget() {
+  const root = createDeviceIdentity();
+  const identity = createDeviceSessionIdentity(root, ORIGIN, SERVER, VERSION, NOW);
+  const scheduler = new ManualScheduler();
+  const receivedSequences = [];
+  const storage = new MemoryStorage();
+  const activationToken = "activate_" + "b".repeat(43);
+  const connection = new DaemonHttpRelayConnection({
+    workerUrl: ORIGIN, deviceIdentity: identity, expectedServer: SERVER, expectedVersion: VERSION,
+    instanceId: "instance_envelope_budget_12345678", scheduler,
+    now: () => scheduler.now, wallNow: () => NOW + scheduler.now, minimumRequestIntervalMs: 1,
+    ownedCallIds: () => Array.from({ length: 32 }, (_, index) => "call_" + String(index).padStart(3, "0") + "a".repeat(237)),
+    postRequest: async ({ headers, body }) => {
+      assert(Buffer.byteLength(body) <= relayContract.httpFallbackMaximumEnvelopeBytes,
+        "signed HTTPS poll omitted framing or request metadata from its byte budget");
+      assert.equal(await verifyDaemonHttpRelayRequest({
+        storage, publicKeyJson: publicDeviceJwkJson(root), headers: new Headers(headers), body: Buffer.from(body),
+        workerOrigin: ORIGIN, server: SERVER, version: VERSION, now: Math.floor((NOW + scheduler.now) / 1000),
+      }), true, "bounded outbound poll lost its exact-body device authentication");
+      const request = JSON.parse(body);
+      receivedSequences.push(...request.messages.map((message) => message.seq));
+      return response({ protocol: 1, phase: "probing", activation_token: activationToken,
+        ack_daemon_seq: request.messages.at(-1)?.seq ?? connection.outbound.acknowledged, messages: [] });
+    },
+  });
+  try {
+    connection.start();
+    connection.authenticated = true;
+    connection.activationToken = activationToken;
+    for (const size of [relayContract.httpFallbackMaximumMessageBytes, 64 * 1024]) {
+      const payload = { type: "tool_result", id: "call_12345678", result: "" };
+      payload.result = "x".repeat(size - Buffer.byteLength(JSON.stringify(payload)));
+      connection.outbound.enqueue(payload);
+    }
+    await connection.poll();
+    assert.deepEqual(receivedSequences, [1], "first bounded envelope did not retain the unsent tail");
+    assert.equal(connection.outbound.messages.length, 1);
+    scheduler.now += connection.minimumRequestIntervalMs;
+    await connection.poll();
+    assert.deepEqual(receivedSequences, [1, 2], "bounded poll lost or replayed the deferred result");
+    assert.equal(connection.outbound.messages.length, 0);
+  } finally { connection.stop(); }
+}

@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
-import { capabilityFingerprint } from "../src/local/agent-context-projection.mjs";
+import { capabilityFingerprint, publicSkillWarnings } from "../src/local/agent-context-projection.mjs";
 import { automaticPackageCommands, packageScriptCommand } from "../src/local/project-package.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 
@@ -368,7 +368,7 @@ description: 审查部署流程并验证发布配置。
       "disabled by the active policy",
     );
   } finally {
-    editRuntime.stop();
+    await editRuntime.stop();
   }
 
   await writeFile(join(workspace, ".machine-bridge", "agent.json"), JSON.stringify({
@@ -578,7 +578,7 @@ Use the linked workflow.
   const limitedContext = await limitedManager.agentContext({ path: "." });
   assert(limitedContext.instructions_truncated === true && limitedContext.instruction_files.length === 0, "instruction byte ceiling did not stop oversized guidance");
 
-    const externalGuidance = join(root, "external-guidance");
+  const externalGuidance = join(root, "external-guidance");
   await mkdir(externalGuidance, { recursive: true });
   await writeFile(join(externalGuidance, "OUTSIDE.md"), "outside guidance\n", "utf8");
   try {
@@ -592,9 +592,61 @@ Use the linked workflow.
     if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
   }
 
+  await testSkillWarningDisplayBoundaries();
   console.log("agent context test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
+}
+
+
+async function testSkillWarningDisplayBoundaries() {
+  for (const token of ["$&", "$'", "$$", String.fromCharCode(36, 96)]) {
+    const entrypoint = "/owned/private/" + token + "/SKILL.md";
+    const visible = token + "/SKILL.md";
+    const [warning] = publicSkillWarnings([{ entrypoint, message: "invalid skill: " + entrypoint }], () => visible);
+    assert(warning.message === "invalid skill: " + visible, "skill warning interpreted a literal display path as replacement syntax");
+  }
+  const cases = ["short", "long", "replacement-token", "valid"];
+  if (process.platform !== "win32") cases.push("control-character-root");
+  for (const type of cases) {
+    const prefix = type === "control-character-root" ? "mbm-owned-private-\nwarning-" : "mbm-owned-private-warning-";
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), prefix)));
+    try {
+      let leaf = join(workspace, type === "replacement-token" ? "owned-$&" : "skill");
+      if (type === "long") while (Buffer.byteLength(join(leaf, "SKILL.md")) < 992) {
+        const remaining = 992 - Buffer.byteLength(join(leaf, "SKILL.md")) - 1;
+        leaf = join(leaf, "x".repeat(Math.min(180, remaining)));
+      }
+      await mkdir(leaf, { recursive: true });
+      await mkdir(join(workspace, ".git"));
+      await mkdir(join(workspace, ".machine-bridge"));
+      await writeFile(join(workspace, ".machine-bridge", "agent.json"), JSON.stringify({
+        version: 1, skill_roots: [relative(workspace, leaf)],
+      }));
+      await writeFile(join(leaf, "SKILL.md"), type === "valid"
+        ? "---\nname: owned-valid\ndescription: Owned positive control\n---\n" : Buffer.from([0xc3, 0x28]));
+      const manager = new AgentContextManager({
+        workspace, policy: { unrestrictedPaths: false },
+        home: join(workspace, "empty-home"), codexHome: join(workspace, "empty-codex-home"),
+        displayPath: (value) => relative(workspace, value) || ".",
+        resolveExistingPath: async () => workspace,
+      });
+      const result = await manager.listLocalSkills({ path: "." });
+      const hiddenPrefix = workspace.replace(/[\r\n\u0000-\u001f\u007f]+/g, " ");
+      assert(!JSON.stringify(result).includes(hiddenPrefix), "skill warnings bypassed the relative display policy");
+      if (type === "valid") {
+        assert(result.skills.length === 1 && result.warnings.length === 0, "valid skill positive control was lost");
+      } else {
+        assert(result.skills.length === 0 && result.warnings.length === 1, "invalid UTF-8 skill was not skipped and reported");
+        assert(result.warnings[0].message.includes("not valid UTF-8 text") && result.warnings[0].message.length <= 1000,
+          "skill warning lost its bounded useful diagnosis");
+        assert(result.warnings[0].entrypoint === relative(workspace, join(leaf, "SKILL.md")),
+          "skill warning lost its display entrypoint");
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }
 }
 
 function assert(condition, message) {

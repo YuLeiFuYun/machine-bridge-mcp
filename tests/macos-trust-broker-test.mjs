@@ -1,5 +1,5 @@
 import { chmodSync, closeSync, constants as fsConstants, fstatSync, linkSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
@@ -11,72 +11,75 @@ import {
   signWithMacosSecureDeviceRoot,
 } from "../src/local/macos-trust-broker.mjs";
 
-if (process.platform !== "darwin") {
-  console.log("macOS trust broker test skipped on non-macOS");
-  process.exit(0);
-}
-
 const root = mkdtempSync(path.join(tmpdir(), "mbm-trust-broker-"));
 try {
-  const binary = buildDevelopmentTrustBrokerBinary(root);
+  const binary = process.platform === "darwin"
+    ? buildDevelopmentTrustBrokerBinary(root)
+    : path.join(root, "synthetic-broker");
+  if (process.platform !== "darwin") writeFileSync(binary, "synthetic broker; never executed", { mode: 0o700 });
   const canonicalBinary = realpathSync(binary);
-  const info = statSync(binary);
-  assert(info.isFile(), "development trust broker build did not produce a regular file");
-  assert((info.mode & 0o077) === 0, "development trust broker is accessible to group or other users");
-  assert((info.mode & 0o700) === 0o700, "development trust broker is not owner-executable");
+  if (process.platform === "darwin") {
+    const info = statSync(binary);
+    assert(info.isFile(), "development trust broker build did not produce a regular file");
+    assert((info.mode & 0o077) === 0, "development trust broker is accessible to group or other users");
+    assert((info.mode & 0o700) === 0o700, "development trust broker is not owner-executable");
 
-  const signature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
-  assert(signature.status === 0, `development trust broker ad-hoc signature verification failed: ${signature.stderr}`);
-  expectThrow(
-    () => inspectProvisionedMacosTrustBroker(binary),
-    "ad-hoc signing cannot access the data-protection Keychain",
-  );
+    const signature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
+    assert(signature.status === 0, `development trust broker ad-hoc signature verification failed: ${signature.stderr}`);
+    expectThrow(
+      () => inspectProvisionedMacosTrustBroker(binary),
+      "ad-hoc signing cannot access the data-protection Keychain",
+    );
 
-  const usage = spawnSync(binary, [], { encoding: "utf8", killSignal: "SIGKILL", timeout: 10_000 });
-  assert(usage.status !== 0 && usage.stderr.includes("usage:"), "development trust broker did not fail closed on an invalid command");
+    const usage = spawnSync(binary, [], { encoding: "utf8", killSignal: "SIGKILL", timeout: 10_000 });
+    assert(usage.status !== 0 && usage.stderr.includes("usage:"), "development trust broker did not fail closed on an invalid command");
 
-  const second = buildDevelopmentTrustBrokerBinary(root);
-  assert(second === binary, "development trust broker cache path changed without a source change");
+    testNativeKeyProvenance(root);
+    await testSigningStreamBound(binary);
 
-  appendNoFollowRegularFile(binary, Buffer.from([0]));
-  const rebuilt = buildDevelopmentTrustBrokerBinary(root);
-  assert(rebuilt === binary, "tampered development trust broker was rebuilt at a different path");
-  const rebuiltSignature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
-  assert(rebuiltSignature.status === 0, "tampered development trust broker was not rebuilt and re-signed");
+    const second = buildDevelopmentTrustBrokerBinary(root);
+    assert(second === binary, "development trust broker cache path changed without a source change");
 
-  chmodSync(binary, 0o777);
-  expectThrow(
-    () => buildDevelopmentTrustBrokerBinary(root),
-    "must remain owner-only and owner-executable",
-  );
-  chmodSync(binary, 0o700);
+    appendNoFollowRegularFile(binary, Buffer.from([0]));
+    const rebuilt = buildDevelopmentTrustBrokerBinary(root);
+    assert(rebuilt === binary, "tampered development trust broker was rebuilt at a different path");
+    const rebuiltSignature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binary], { encoding: "utf8", killSignal: "SIGKILL", timeout: 30_000 });
+    assert(rebuiltSignature.status === 0, "tampered development trust broker was not rebuilt and re-signed");
 
-  const marker = `${binary}.sha256`;
-  const markerBytes = readFileSync(marker);
-  unlinkSync(marker);
-  symlinkSync(binary, marker);
-  expectThrow(
-    () => buildDevelopmentTrustBrokerBinary(root),
-    "must not be a symbolic link",
-  );
-  unlinkSync(marker);
-  writeFileSync(marker, markerBytes, { mode: 0o600 });
+    chmodSync(binary, 0o777);
+    expectThrow(
+      () => buildDevelopmentTrustBrokerBinary(root),
+      "must remain owner-only and owner-executable",
+    );
+    chmodSync(binary, 0o700);
 
-  const markerHardLink = `${marker}.link`;
-  linkSync(marker, markerHardLink);
-  expectThrow(
-    () => buildDevelopmentTrustBrokerBinary(root),
-    "must not have multiple hard links",
-  );
-  unlinkSync(markerHardLink);
+    const marker = `${binary}.sha256`;
+    const markerBytes = readFileSync(marker);
+    unlinkSync(marker);
+    symlinkSync(binary, marker);
+    expectThrow(
+      () => buildDevelopmentTrustBrokerBinary(root),
+      "must not be a symbolic link",
+    );
+    unlinkSync(marker);
+    writeFileSync(marker, markerBytes, { mode: 0o600 });
 
-  const binaryHardLink = `${binary}.link`;
-  linkSync(binary, binaryHardLink);
-  expectThrow(
-    () => buildDevelopmentTrustBrokerBinary(root),
-    "must not have multiple hard links",
-  );
-  unlinkSync(binaryHardLink);
+    const markerHardLink = `${marker}.link`;
+    linkSync(marker, markerHardLink);
+    expectThrow(
+      () => buildDevelopmentTrustBrokerBinary(root),
+      "must not have multiple hard links",
+    );
+    unlinkSync(markerHardLink);
+
+    const binaryHardLink = `${binary}.link`;
+    linkSync(binary, binaryHardLink);
+    expectThrow(
+      () => buildDevelopmentTrustBrokerBinary(root),
+      "must not have multiple hard links",
+    );
+    unlinkSync(binaryHardLink);
+  }
 
   const publicJwk = createDeviceIdentity().publicJwk;
   const calls = [];
@@ -127,7 +130,7 @@ try {
     }
     return result(1, "", "unexpected action");
   };
-  const options = { spawnSync: provisionedSpawn };
+  const options = { spawnSync: provisionedSpawn, allowNonDarwin: true };
   const broker = inspectProvisionedMacosTrustBroker(binary, options);
   assert(broker.identifier === "com.machine-bridge-mcp.trust-broker", "provisioned broker identifier was not retained");
   assert(broker.teamIdentifier === "ABCDEFGHIJ", "provisioned broker Team ID was not retained");
@@ -170,13 +173,91 @@ try {
   let incompleteCleanupError;
   try {
     ensureMacosSecureDeviceRoot({
-      workspaceHash: "c".repeat(24), brokerPath: binary, options: { spawnSync: incompleteCleanupSpawn },
+      workspaceHash: "c".repeat(24), brokerPath: binary, options: { spawnSync: incompleteCleanupSpawn, allowNonDarwin: true },
     });
   } catch (error) { incompleteCleanupError = error; }
   assert(incompleteCleanupError instanceof AggregateError
     && incompleteCleanupError.errors?.length === 2
     && incompleteCleanupError.message.includes("could not be removed"),
   "Secure Enclave rollback failure did not preserve both enrollment and cleanup errors");
+
+  for (const phase of ["probe", "enrollment"]) {
+    for (const failure of ["invalid_json", "timeout"]) {
+      const syntheticKeys = new Set();
+      const faultSpawn = (command, args, processOptions) => {
+        if (command === "/usr/bin/codesign") return provisionedSpawn(command, args, processOptions);
+        const [action, , tag] = args;
+        if (action === "ensure") {
+          syntheticKeys.add(tag);
+          if ((phase === "probe") === tag.includes(".probe.")) {
+            return failure === "invalid_json"
+              ? result(0, "{", "")
+              : { status: null, stdout: "", stderr: "", signal: "SIGKILL", error: Object.assign(new Error("synthetic timeout"), { code: "ETIMEDOUT" }) };
+          }
+        }
+        if (action === "delete") syntheticKeys.delete(tag);
+        return provisionedSpawn(command, args, processOptions);
+      };
+      const faultOptions = { ...options, spawnSync: faultSpawn };
+      expectThrow(
+        () => phase === "probe"
+          ? probeProvisionedMacosTrustBroker(binary, faultOptions)
+          : ensureMacosSecureDeviceRoot({ brokerPath: binary, options: faultOptions }),
+        failure === "invalid_json" ? "invalid JSON" : "timed out",
+      );
+      assert(syntheticKeys.size === 0, "failed broker response left a newly created synthetic key behind");
+    }
+    const badCleanupSpawn = (command, args, processOptions) => {
+      if (command === "/usr/bin/codesign") return provisionedSpawn(command, args, processOptions);
+      const [action, , tag] = args;
+      if ((phase === "probe") === tag.includes(".probe.")) {
+        if (action === "ensure") return result(0, "{", "");
+        if (action === "delete") return jsonResult({ ok: "false", provider: identity.provider, keyTag: tag });
+      }
+      return provisionedSpawn(command, args, processOptions);
+    };
+    let cleanupFailure;
+    try {
+      const faultOptions = { ...options, spawnSync: badCleanupSpawn };
+      if (phase === "probe") probeProvisionedMacosTrustBroker(binary, faultOptions);
+      else ensureMacosSecureDeviceRoot({ brokerPath: binary, options: faultOptions });
+    } catch (error) { cleanupFailure = error; }
+    assert(cleanupFailure instanceof AggregateError && cleanupFailure.errors.length === 2
+      && cleanupFailure.errors[0].message.includes("invalid JSON")
+      && cleanupFailure.errors[1].message.includes("invalid key deletion result"),
+    "probe/enrollment cleanup replaced the original error or accepted a malformed deletion receipt");
+  }
+  for (const deletionOverride of [{ ok: "false" }, { provider: "wrong" }, { keyTag: "wrong" }]) {
+    const badDeletionSpawn = (command, args, processOptions) => {
+      if (command !== "/usr/bin/codesign" && args[0] === "delete") {
+        return jsonResult({ ok: true, provider: identity.provider, keyTag: args[2], ...deletionOverride });
+      }
+      return provisionedSpawn(command, args, processOptions);
+    };
+    expectThrow(() => probeProvisionedMacosTrustBroker(binary, { ...options, spawnSync: badDeletionSpawn }),
+      "invalid key deletion result");
+  }
+  const badKeySpawn = (command, args, processOptions) => {
+    if (command !== "/usr/bin/codesign" && ["ensure", "public"].includes(args[0])) {
+      return jsonResult({ ok: "false", provider: identity.provider, keyTag: args[2], publicJwk, secureEnclave: true });
+    }
+    return provisionedSpawn(command, args, processOptions);
+  };
+  expectThrow(() => probeProvisionedMacosTrustBroker(binary, { ...options, spawnSync: badKeySpawn }), "invalid key result");
+  const deleteCount = calls.filter(({ args }) => args[0] === "delete").length;
+  expectThrow(() => ensureMacosSecureDeviceRoot({ existing: identity, options: { ...options, spawnSync: badKeySpawn } }), "invalid key result");
+  assert(calls.filter(({ args }) => args[0] === "delete").length === deleteCount,
+    "failed existing-root verification attempted to delete the enrolled key");
+  for (const signatureOverride of [{ ok: "false" }, { signature: ["A".repeat(86)] }]) {
+    const badSignatureSpawn = (command, args, processOptions) => {
+      if (command !== "/usr/bin/codesign" && args[0] === "sign") {
+        return jsonResult({ ok: true, provider: identity.provider, keyTag: args[2], publicJwk, signature: "A".repeat(86), ...signatureOverride });
+      }
+      return provisionedSpawn(command, args, processOptions);
+    };
+    expectThrow(() => signWithMacosSecureDeviceRoot(identity, "synthetic transcript", { options: { ...options, spawnSync: badSignatureSpawn } }),
+      "invalid signature result");
+  }
 
   const retained = ensureMacosSecureDeviceRoot({ existing: identity, brokerPath: binary, options });
   assert(retained === identity, "existing Secure Enclave root was unnecessarily replaced");
@@ -253,4 +334,151 @@ function expectThrow(callback, fragment) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function testNativeKeyProvenance(fixtureRoot) {
+  const nativeSource = readFileSync(new URL("../native/macos/MachineBridgeTrustBroker.swift", import.meta.url), "utf8");
+  const declarationEnd = nativeSource.indexOf("@main");
+  const functionStart = nativeSource.indexOf("private func ensurePrivateKey");
+  assert(declarationEnd > 0 && functionStart > declarationEnd, "native broker fixture cannot isolate producer declarations");
+  const producer = (nativeSource.slice(0, declarationEnd) + nativeSource.slice(functionStart))
+    .replaceAll("SecItemCopyMatching(", "fixtureCopyMatching(")
+    .replaceAll("SecItemDelete(", "fixtureDelete(")
+    .replaceAll("SecKeyCreateRandomKey(", "fixtureCreateRandomKey(")
+    .replaceAll("SecKeyCopyAttributes(", "fixtureKeyAttributes(");
+  const driver = path.join(fixtureRoot, "owned-key-provenance.swift");
+  const fixtureBinary = path.join(fixtureRoot, "owned-key-provenance");
+  writeFileSync(driver, producer + String.raw`
+private var lookupStatus: OSStatus = errSecSuccess
+private var lookupValue: CFTypeRef?
+private var ownedKey: SecKey!
+private var hardwareAttributes = false
+private var generationCount = 0
+private var deletionCount = 0
+private var lastDelete: NSDictionary?
+
+private func fixtureCopyMatching(_ query: CFDictionary, _ result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
+    let attributes = query as NSDictionary
+    precondition(attributes[kSecAttrKeyClass] as? String == kSecAttrKeyClassPrivate as String)
+    if lookupStatus == errSecSuccess { result?.pointee = lookupValue }
+    return lookupStatus
+}
+private func fixtureCreateRandomKey(_ attributes: CFDictionary, _ error: UnsafeMutablePointer<Unmanaged<CFError>?>?) -> SecKey? {
+    precondition((attributes as NSDictionary)[kSecAttrTokenID] as? String == kSecAttrTokenIDSecureEnclave as String)
+    generationCount += 1
+    return ownedKey
+}
+private func fixtureKeyAttributes(_ key: SecKey) -> CFDictionary? {
+    guard hardwareAttributes else { return SecKeyCopyAttributes(key) }
+    return [
+        kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+        kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+        kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+        kSecAttrKeySizeInBits as String: 256,
+    ] as CFDictionary
+}
+private func fixtureDelete(_ query: CFDictionary) -> OSStatus {
+    deletionCount += 1
+    lastDelete = query as NSDictionary
+    return errSecSuccess
+}
+private func expectFailure(_ operation: () throws -> Void, _ fragment: String) {
+    do { try operation(); fatalError("expected failure: \(fragment)") }
+    catch { precondition(String(describing: error).contains(fragment), "unexpected error: \(error)") }
+}
+@main
+private struct OwnedTrustBrokerFixture {
+    static func main() throws {
+        var error: Unmanaged<CFError>?
+        let softwareAttributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits as String: 256,
+            kSecPrivateKeyAttrs as String: [kSecAttrIsPermanent as String: false],
+        ]
+        guard let software = SecKeyCreateRandomKey(softwareAttributes as CFDictionary, &error) else {
+            fatalError("nonpersistent software fixture failed")
+        }
+        ownedKey = software
+        lookupValue = software
+        expectFailure({ _ = try output(tag: "owned-fixture", key: software, signature: nil) }, "not a Secure Enclave")
+        expectFailure({ _ = try loadPrivateKey(tag: "owned-fixture", prompt: nil, allowInteraction: false) }, "not a Secure Enclave")
+        expectFailure({ _ = try ensurePrivateKey(tag: "owned-fixture") }, "not a Secure Enclave")
+        expectFailure({ try deletePrivateKey(tag: "owned-fixture") }, "not a Secure Enclave")
+        precondition(generationCount == 0 && deletionCount == 0, "software key was replaced or deleted")
+        for status in [errSecInteractionNotAllowed, errSecAuthFailed, errSecParam] {
+            lookupStatus = status
+            expectFailure({ _ = try ensurePrivateKey(tag: "owned-fixture") }, "load Secure Enclave key")
+            expectFailure({ try deletePrivateKey(tag: "owned-fixture") }, "load Secure Enclave key")
+        }
+        precondition(generationCount == 0 && deletionCount == 0, "lookup failure created or deleted a key")
+        lookupStatus = errSecItemNotFound
+        let absent = try existingPrivateKey(tag: "owned-fixture")
+        precondition(absent == nil)
+        try deletePrivateKey(tag: "owned-fixture")
+        precondition(deletionCount == 0)
+        expectFailure({ _ = try ensurePrivateKey(tag: "owned-fixture") }, "not a Secure Enclave")
+        precondition(generationCount == 2, "missing key did not take only availability and creation paths")
+        lookupStatus = errSecSuccess
+        lookupValue = "invalid reference" as CFString
+        expectFailure({ _ = try loadPrivateKey(tag: "owned-fixture", prompt: nil, allowInteraction: false) }, "invalid key reference")
+        lookupValue = software
+        hardwareAttributes = true // Synthetic attributes only; no actual Secure Enclave enrollment.
+        let retained = try ensurePrivateKey(tag: "owned-fixture")
+        precondition(CFEqual(retained, software) && generationCount == 2)
+        try deletePrivateKey(tag: "owned-fixture")
+        precondition(deletionCount == 1)
+        let references = lastDelete?[kSecMatchItemList] as? [SecKey]
+        precondition(references?.count == 1 && CFEqual(references![0], software))
+        precondition(lastDelete?[kSecAttrTokenID] as? String == kSecAttrTokenIDSecureEnclave as String)
+        precondition(lastDelete?[kSecReturnRef] == nil && lastDelete?[kSecMatchLimit] == nil)
+        let fixturePath = CommandLine.arguments[1]
+        let file = URL(fileURLWithPath: fixturePath)
+        for count in [1, 64 * 1024] {
+            try Data(repeating: 0x61, count: count).write(to: file)
+            let input = try FileHandle(forReadingFrom: file)
+            let data = try readSigningInput(input)
+            try input.close()
+            precondition(data.count == count)
+        }
+        for data in [Data(), Data([0xff]), Data(repeating: 0x61, count: 64 * 1024 + 1)] {
+            try data.write(to: file)
+            let input = try FileHandle(forReadingFrom: file)
+            defer { try? input.close() }
+            expectFailure({ _ = try readSigningInput(input) }, data == Data([0xff]) ? "not UTF-8" : "empty or too large")
+        }
+        print("owned native key provenance and bounded signing input ok")
+    }
+}
+`, { mode: 0o600 });
+  // Match the production driver, which selects the active SDK; a resolved toolchain binary does not.
+  const built = spawnSync("/usr/bin/swiftc", ["-parse-as-library", driver, "-o", fixtureBinary], {
+    encoding: "utf8", killSignal: "SIGKILL", timeout: 120_000, maxBuffer: 512 * 1024,
+  });
+  assert(built.status === 0 && !built.error, "native provenance fixture did not compile: " + built.stderr);
+  const tested = spawnSync(fixtureBinary, [path.join(fixtureRoot, "owned-signing-input")], {
+    encoding: "utf8", killSignal: "SIGKILL", timeout: 15_000,
+  });
+  assert(tested.status === 0 && !tested.error, "native provenance fixture failed: " + tested.stderr);
+}
+
+async function testSigningStreamBound(binary) {
+  const child = spawn(binary, ["sign", "--tag", "owned-stream-fixture"], { stdio: ["pipe", "ignore", "pipe"] });
+  let stderr = ""; let timer;
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+  child.stdin.on("error", () => { /* Rejection may close the pipe while the owned fixture is writing. */ });
+  try {
+    const settled = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal }));
+      timer = setTimeout(() => reject(new Error("native broker waited for EOF after oversized signing input")), 10_000);
+    });
+    child.stdin.write(Buffer.alloc(64 * 1024 + 1, 0x61)); // Keep stdin open to prove early bounded rejection.
+    const result = await settled;
+    assert(result.code === 1 && result.signal === null && stderr.includes("signing input is empty or too large"),
+      "native broker did not reject oversized open stdin before Keychain access");
+  } finally {
+    clearTimeout(timer);
+    child.stdin.destroy();
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
 }

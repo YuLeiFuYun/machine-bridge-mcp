@@ -522,9 +522,11 @@ async function verifyDeploymentUrlBoundaries() {
       retryHealth: async () => { throw new Error("health must not run without a Worker URL"); },
       logger: quietLogger(),
     }),
-    /deployment fingerprint was not saved/,
+    error => error.code === "worker_endpoint_unverified" && error.deploymentSucceeded === true,
   );
-  assert.equal(missingSaves, 0);
+  assert.equal(missingSaves, 1);
+  assert.equal(missing.worker.deployedVersion, version);
+  assert.equal(missing.worker.deployHash, workerDeploymentFingerprint(missing, { packageRoot: root }));
 
   for (const unrelated of [
     "See https://example.test/mcp for documentation",
@@ -545,11 +547,55 @@ async function verifyDeploymentUrlBoundaries() {
         retryHealth: async () => { throw new Error("health must not run for an invalid extracted URL"); },
         logger: quietLogger(),
       }),
-      /deployment fingerprint was not saved/,
+      error => error.code === "worker_endpoint_unverified" && error.deploymentSucceeded === true,
     );
-    assert.equal(poisonedSaves, 0, `unrelated URL poisoned persisted deployment state: ${unrelated}`);
+    assert.equal(poisonedSaves, 1, "successful upload evidence was not saved");
     assert.equal(poisoned.worker.url, undefined);
   }
+
+
+  const stateRoot = mkdtempSync(join(os.tmpdir(), "mbm-endpoint-evidence-state-"));
+  const workspace = mkdtempSync(join(os.tmpdir(), "mbm-endpoint-evidence-workspace-"));
+  try {
+    const pending = loadState(workspace, { stateDir: stateRoot });
+    ensureWorkerSecrets(pending, { workerName: "mbm-endpoint-evidence-test" });
+    let deploys = 0;
+    const options = {
+      packageRoot: root, expectedVersion: version, saveState, logger: quietLogger(),
+      runCf: async args => args[0] === "auth"
+        ? { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "1".repeat(32) }] }) }
+        : { code: 0, stdout: (deploys += 1, "uploaded without URL"), stderr: "" },
+      withSecretsFile: async (_state, callback) => callback("synthetic-secrets.json"),
+      retryHealth: async () => ({ ok: true, version }),
+    };
+    await assert.rejects(ensureWorkerDeployment(pending, { json: true }, options),
+      error => error.code === "worker_endpoint_unverified" && error.deploymentSucceeded === true);
+    const reloaded = loadState(workspace, { stateDir: stateRoot });
+    await assert.rejects(ensureWorkerDeployment(reloaded, { json: true }, options),
+      error => error.code === "worker_endpoint_unverified" && error.deploymentSucceeded === false);
+    assert.equal(deploys, 1, "restart blindly replayed a confirmed upload with unknown endpoint");
+    reloaded.worker.url = "https://mbm-endpoint-evidence-test.account-example.workers.dev";
+    reloaded.worker.mcpServerUrl = reloaded.worker.url + "/mcp";
+    await ensureWorkerDeployment(reloaded, { json: true }, options);
+    assert.equal(deploys, 1, "endpoint reconciliation repeated a confirmed upload");
+  } finally {
+    rmSync(stateRoot, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+  const cleaned = workerState("mbm-cleanup-evidence-test");
+  let cleanupDeploys = 0;
+  const cleanupOptions = {
+    packageRoot: root, expectedVersion: version, saveState: () => {}, logger: quietLogger(),
+    runCf: async args => args[0] === "auth"
+      ? { code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id: "1".repeat(32) }] }) }
+      : { code: 0, stdout: (cleanupDeploys += 1, "https://mbm-cleanup-evidence-test.account-example.workers.dev"), stderr: "" },
+    withSecretsFile: async (_state, callback) => { await callback("synthetic-secrets.json"); throw new Error("synthetic cleanup failure"); },
+    retryHealth: async () => ({ ok: true, version }),
+  };
+  await assert.rejects(ensureWorkerDeployment(cleaned, { json: true }, cleanupOptions), /synthetic cleanup failure/);
+  assert.equal(cleaned.worker.deployedVersion, version, "cleanup erased successful upload evidence");
+  await ensureWorkerDeployment(cleaned, { json: true }, cleanupOptions);
+  assert.equal(cleanupDeploys, 1, "cleanup failure authorized duplicate deployment");
 
   const recorded = workerState("mbm-recorded-url-test");
   recorded.worker.url = "https://mbm-recorded-url-test.account-example.workers.dev";

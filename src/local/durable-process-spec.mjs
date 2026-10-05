@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
-import { MAX_COMMAND_BYTES, validateArgv } from "./process-contract.mjs";
+import { validateArgv, validateShellCommand } from "./process-contract.mjs";
 import { durableProcessExecutionTimeoutSeconds, durableRegisteredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
 import { workspaceShellCommand } from "./shell.mjs";
 
@@ -42,11 +42,7 @@ export async function prepareDurableRegisteredProcess(service, args, context = {
 export function prepareDurableShellProcess(service, args, context = {}) {
   service.policyGate.assert("exec_command");
   const idempotencyKey = durableProcessIdempotencyKey(args, context);
-  const command = args?.command;
-  if (!command || typeof command !== "string") throw new BridgeError("invalid_request", "command is required");
-  if (command.includes("\0")) throw new BridgeError("invalid_request", "command contains a NUL byte");
-  if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new BridgeError("limit_exceeded", `command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
-  const shell = workspaceShellCommand(command);
+  const shell = workspaceShellCommand(validateShellCommand(args?.command));
   return durableSpec(service, {
     sourceTool: "exec_command",
     name: "durable shell command",

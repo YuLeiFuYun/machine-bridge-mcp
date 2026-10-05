@@ -52,6 +52,7 @@ async function createSshKeyPair(request, options = {}) {
   const tempPrivate = resolve(request.parent, `.${basename(request.privateKeyPath)}.mbm-${suffix}`);
   const tempPublic = `${tempPrivate}.pub`;
   const tempIdentities = {};
+  const installedIdentities = {};
   let primaryError = null;
   let result;
   try {
@@ -64,33 +65,28 @@ async function createSshKeyPair(request, options = {}) {
     tempIdentities.public = keyPathIdentity(tempPublic, "generated temporary SSH public key");
     await secureKeyModes(tempPrivate, tempPublic, tempIdentities);
     await install(tempPrivate, request.privateKeyPath);
-    const installedPrivateIdentity = keyPathIdentity(request.privateKeyPath, "generated SSH private key");
-    try {
-      await install(tempPublic, request.publicKeyPath);
-    } catch (error) {
-      try {
-        removeKeyPathIfCurrent(request.privateKeyPath, installedPrivateIdentity, "generated SSH private key");
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], "SSH key pair installation failed and private-key rollback was incomplete");
-      }
-      throw error;
-    }
-    const installedIdentities = {
-      private: installedPrivateIdentity,
-      public: keyPathIdentity(request.publicKeyPath, "generated SSH public key"),
-    };
+    installedIdentities.private = keyPathIdentity(request.privateKeyPath, "generated SSH private key");
+    await install(tempPublic, request.publicKeyPath);
+    installedIdentities.public = keyPathIdentity(request.publicKeyPath, "generated SSH public key");
     await secureKeyModes(request.privateKeyPath, request.publicKeyPath, installedIdentities);
     result = await inspectSshKeyPair(request.privateKeyPath, request.publicKeyPath, true);
   } catch (error) {
     primaryError = error;
   }
   const cleanupErrors = [];
+  if (primaryError) {
+    for (const [kind, filePath] of [["private", request.privateKeyPath], ["public", request.publicKeyPath]]) {
+      if (!installedIdentities[kind]) continue;
+      try { removeKeyPathIfCurrent(filePath, installedIdentities[kind], "generated SSH " + kind + " key"); }
+      catch (error) { cleanupErrors.push(error); }
+    }
+  }
   for (const [filePath, identity] of [[tempPrivate, tempIdentities.private], [tempPublic, tempIdentities.public]]) {
     if (!identity) continue;
     try { unlinkKnownLinkIfCurrent(filePath, identity); } catch (error) { cleanupErrors.push(error); }
   }
   if (cleanupErrors.length) {
-    throw new AggregateError(primaryError ? [primaryError, ...cleanupErrors] : cleanupErrors, "SSH key staging cleanup was incomplete");
+    throw new AggregateError(primaryError ? [primaryError, ...cleanupErrors] : cleanupErrors, primaryError ? "SSH key generation failed and rollback was incomplete" : "SSH key staging cleanup was incomplete");
   }
   if (primaryError) throw primaryError;
   return result;
@@ -246,13 +242,13 @@ function removeInstalledLinkIfCurrent(filePath, expectedIdentity, label = "insta
 async function secureKeyModes(privateKeyPath, publicKeyPath, expected) {
   if (process.platform === "win32") return;
   if (!expected?.private || !expected?.public) throw new Error("SSH key permission update requires exact key identities");
-  chmodRegularFileIfIdentitySync(privateKeyPath, expected.private, 0o600, "SSH private key");
-  chmodRegularFileIfIdentitySync(publicKeyPath, expected.public, 0o644, "SSH public key");
+  expected.private = chmodRegularFileIfIdentitySync(privateKeyPath, expected.private, 0o600, "SSH private key");
+  expected.public = chmodRegularFileIfIdentitySync(publicKeyPath, expected.public, 0o644, "SSH public key");
 }
 function keyIdentities(key) {
   const identities = key?.[GENERATED_KEY_IDENTITIES];
   if (!identities?.private || !identities?.public) throw new Error("SSH key inspection identity is unavailable");
-  return identities;
+  return { ...identities };
 }
 function tryReadKeySnapshot(path, maxBytes, label) {
   try { return readKeySnapshot(path, maxBytes, label); } catch (error) {

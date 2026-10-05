@@ -178,7 +178,7 @@ export async function runStdioServer({ workspace, policy, logLevel = "info", job
 
 function parseJsonRpcLine(line, send) {
   let message;
-  try { message = JSON.parse(line); } catch {
+  try { message = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(line)); } catch {
     send(rpcError(null, -32700, "Parse error"));
     return null;
   }
@@ -201,7 +201,7 @@ function consumeBoundedJsonLines(stream, { maxLineBytes, onLine, onOversize }) {
       let line = bytes ? Buffer.concat(chunks, bytes) : Buffer.alloc(0);
       if (line.length && line[line.length - 1] === 13) line = line.subarray(0, line.length - 1);
       resetLine();
-      onLine(line.toString("utf8"));
+      onLine(line);
     };
     const onData = (input) => {
       const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);

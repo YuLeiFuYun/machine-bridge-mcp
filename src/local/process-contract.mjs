@@ -1,3 +1,5 @@
+import { BridgeError } from "./errors.mjs";
+
 export const MAX_COMMAND_BYTES = 64 * 1024;
 export const MAX_ARGV_ITEMS = 256;
 
@@ -16,4 +18,11 @@ export function validateArgv(value) {
     throw new Error(`argv exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
   }
   return argv;
+}
+
+export function validateShellCommand(command) {
+  if (!command || typeof command !== "string") throw new BridgeError("invalid_request", "command is required");
+  if (command.includes("\0")) throw new BridgeError("invalid_request", "command contains a NUL byte");
+  if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new BridgeError("limit_exceeded", `command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
+  return command;
 }

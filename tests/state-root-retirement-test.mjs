@@ -8,13 +8,13 @@ import {
   inspectStateRootGeneration, removeStateRootGenerationIfCurrent, retiredStateRootDirectories, stateRootRetirementPath,
 } from "../src/local/state-root-retirement.mjs";
 
-const roots = [];
+const fixtureParent = await mkdtemp(join(tmpdir(), "mbm-state-retirement-fixtures-"));
 try {
-  assert.deepEqual(retiredStateRootDirectories(join(tmpdir(), "mbm-state-retirement-missing-parent", "root")), [],
+  assert.deepEqual(retiredStateRootDirectories(join(fixtureParent, "mbm-state-retirement-missing-parent", "root")), [],
     "missing state-root parent was not treated as having no retired generations");
-  assert.throws(() => stateRootRetirementPath(join(tmpdir(), "root"), { dev: 0n, ino: 0n }, "bad"), /nonce is invalid/,
+  assert.throws(() => stateRootRetirementPath(join(fixtureParent, "root"), { dev: 0n, ino: 0n }, "bad"), /nonce is invalid/,
     "invalid state-root retirement nonce was accepted");
-  assert.equal(removeStateRootGenerationIfCurrent(join(tmpdir(), "mbm-state-retirement-missing-root"), { dev: 0n, ino: 0n }, () => {}), false,
+  assert.equal(removeStateRootGenerationIfCurrent(join(fixtureParent, "mbm-state-retirement-missing-root"), { dev: 0n, ino: 0n }, () => {}), false,
     "missing current state root was not treated as an absent generation");
 
   const normal = await validStateRoot("normal");
@@ -114,13 +114,12 @@ try {
 
   console.log("state root retirement test ok");
 } finally {
-  for (const path of roots) await rm(path, { recursive: true, force: true }).catch(() => {});
+  await rm(fixtureParent, { recursive: true, force: true });
 }
 
 async function validStateRoot(label) {
-  const root = await mkdtemp(join(tmpdir(), `mbm-state-retirement-${label}-`));
-  const workspace = await mkdtemp(join(tmpdir(), `mbm-state-retirement-workspace-${label}-`));
-  roots.push(root, workspace);
+  const root = await mkdtemp(join(fixtureParent, `mbm-state-retirement-${label}-`));
+  const workspace = await mkdtemp(join(fixtureParent, `mbm-state-retirement-workspace-${label}-`));
   loadState(workspace, { stateDir: root });
   return { root, workspace };
 }

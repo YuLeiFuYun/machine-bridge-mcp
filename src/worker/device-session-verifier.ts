@@ -84,7 +84,7 @@ export async function verifyDeviceSessionCertificate(input: {
 export async function verifyP256Signature(publicJwk: JsonWebKey, transcript: string, signature: Uint8Array<ArrayBuffer>): Promise<boolean> {
   try {
     const key = await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-    return crypto.subtle.verify(
+    return await crypto.subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
       key,
       signature,

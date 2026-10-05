@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -38,6 +40,22 @@ try {
     renameSync(moved, file);
   }
 
+  if (process.platform !== "win32") {
+    const pipe = join(root, "nonblocking-special-file");
+    const created = spawnSync("/usr/bin/mkfifo", [pipe], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
+    if (created.status !== 0) throw new Error("native FIFO fixture could not create its own pipe");
+    const sourceRoot = fileURLToPath(new URL("..", import.meta.url));
+    const program = 'import {pathToFileURL} from "node:url";import path from "node:path";const [source,pipe,kind]=process.argv.slice(1);try{if(kind==="sync"){const m=await import(pathToFileURL(path.join(source,"src/local/secure-file.mjs")));m.readBoundedRegularFileSync(pipe,128);}else{const m=await import(pathToFileURL(path.join(source,"src/local/workspace-file-service.mjs")));await m.readBoundedFile(pipe,128,"FIFO fixture");}throw new Error("special file accepted");}catch(e){if(!e.message.includes("not a regular file"))throw e;console.log("special-file-rejected");}';
+    for (const kind of ["sync", "async"]) {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", program, sourceRoot, pipe, kind], {
+        encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", env: { ...process.env, NODE_V8_COVERAGE: "" },
+      });
+      if (result.status !== 0 || result.stdout.trim() !== "special-file-rejected") {
+        throw new Error("bounded " + kind + " reader blocked opening a pipe before its regular-file check", { cause: result.error });
+      }
+    }
+  }
+
   const directory = join(root, "directory");
   await mkdir(directory);
   expectThrow(() => readBoundedRegularFileSync(directory, 64), "not a regular file");
@@ -75,6 +93,15 @@ try {
   }
 
   if (process.platform !== "win32") {
+    const refreshedPath = join(root, "chmod-refreshed-identity");
+    await writeFile(refreshedPath, "owned-mode-change", { mode: 0o600 });
+    const beforeMode = readBoundedRegularFileWithInfoSync(refreshedPath, 1024);
+    const afterIdentity = chmodRegularFileIfIdentitySync(refreshedPath, beforeMode.identity, 0o644);
+    const afterMode = readBoundedRegularFileWithInfoSync(refreshedPath, 1024);
+    if ((afterMode.info.mode & 0o777) !== 0o644 || !sameFilesystemIdentity(afterIdentity, afterMode.identity)
+        || !unlinkRegularFileIfIdentitySync(refreshedPath, afterIdentity)) {
+      throw new Error("verified chmod did not return an updated descriptor identity for owned cleanup");
+    }
     const unlinkSource = join(root, "identity-unlink.txt");
     const unlinkAlias = join(root, "identity-unlink.alias");
     await writeFile(unlinkSource, "identity-unlink", { mode: 0o600 });

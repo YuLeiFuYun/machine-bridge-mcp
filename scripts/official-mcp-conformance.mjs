@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { once } from "node:events";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,8 +58,10 @@ async function startBearerProxy({ upstream, accessToken }) {
 
 async function proxyRequest(request, response, upstream, accessToken) {
   const controller = new AbortController();
-  request.once("aborted", () => controller.abort());
-  response.once("close", () => { if (!response.writableEnded) controller.abort(); });
+  const abortRequest = () => controller.abort();
+  const closeResponse = () => { if (!response.writableEnded) controller.abort(); };
+  request.once("aborted", abortRequest);
+  response.once("close", closeResponse);
   try {
     const body = await readBoundedBody(request, MAX_PROXY_REQUEST_BYTES);
     const headers = new Headers();
@@ -83,22 +86,37 @@ async function proxyRequest(request, response, upstream, accessToken) {
     response.writeHead(upstreamResponse.status, responseHeaders);
     if (!upstreamResponse.body) return response.end();
     const reader = upstreamResponse.body.getReader();
+    let complete = false;
+    let cancellationRequested = false;
+    const cancelBody = () => {
+      if (complete || cancellationRequested) return;
+      cancellationRequested = true;
+      void reader.cancel().catch(() => { /* Abort already ends transport ownership; failed best-effort cancellation must not delay reader release. */ });
+    };
+    controller.signal.addEventListener("abort", cancelBody, { once: true });
+    if (controller.signal.aborted) cancelBody();
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) { complete = true; break; }
+        if (controller.signal.aborted) throw controller.signal.reason;
         if (value && !response.write(Buffer.from(value))) {
-          await new Promise((resolve) => { response.once("drain", resolve); });
+          await once(response, "drain", { signal: controller.signal });
         }
       }
       response.end();
     } finally {
+      controller.signal.removeEventListener("abort", cancelBody);
+      cancelBody();
       reader.releaseLock();
     }
   } catch (error) {
-    if (controller.signal.aborted) return response.destroy();
+    if (controller.signal.aborted || response.headersSent) return response.destroy();
     if (!response.headersSent) response.writeHead(error?.code === "request_too_large" ? 413 : 502, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: "conformance_proxy_failure" }));
+  } finally {
+    request.removeListener("aborted", abortRequest);
+    response.removeListener("close", closeResponse);
   }
 }
 
@@ -138,9 +156,13 @@ function readBoundedBody(request, maximumBytes) {
 }
 
 async function runCommand({ command, args, cwd, timeoutMs }) {
+  const environment = { ...nestedNpmEnvironment(process.env), NO_COLOR: "1", CI: "1" };
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() === "MBM_OFFICIAL_CONFORMANCE_ACCESS_TOKEN") delete environment[key];
+  }
   const result = await runExecutable(command, args, {
     cwd,
-    env: { ...nestedNpmEnvironment(process.env), NO_COLOR: "1", CI: "1" },
+    env: environment,
     capture: true,
     allowFailure: true,
     timeoutMs,

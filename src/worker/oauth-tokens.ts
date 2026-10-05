@@ -1,3 +1,4 @@
+import type { AuthorizedToken } from "./access.ts";
 import { consumeDpopProof, verifyDpopProof, type VerifiedDpopProof } from "./dpop.ts";
 import { HttpError, json, parseRequestBody } from "./http.ts";
 import { loadOAuthRefreshStore } from "./oauth-refresh-families.ts";
@@ -8,7 +9,7 @@ import {
   tokenResponse,
   type OAuthTokenExchangeOptions,
 } from "./oauth-token-issuance.ts";
-import { normalizeOAuthScope, pkceS256, safeEqual } from "./oauth-state.ts";
+import { normalizeOAuthScope, pkceS256, safeEqual, type OAuthStore } from "./oauth-state.ts";
 
 export type { OAuthRefreshEvent } from "./oauth-token-issuance.ts";
 const OAUTH_BODY_LIMIT_BYTES = 64 * 1024;
@@ -80,4 +81,39 @@ async function exchangeAuthorizationCode(
     staged.name = `oauth_token_stage_${stage}`;
     throw staged;
   }
+}
+
+/** Validate current authority; callers persist any pruned token while holding the OAuth lock. */
+export async function currentOAuthTokenAuthority(
+  store: OAuthStore, key: string, tokenVersion: string, serverName: string, base?: string,
+): Promise<AuthorizedToken | null> {
+    const record = store.tokens[key];
+    if (!record) return null;
+    if (record.expires_at <= Math.floor(Date.now() / 1000)) {
+      delete store.tokens[key];
+      return null;
+    }
+    const currentVersion = tokenVersion;
+    if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
+    if (base !== undefined && record.resource !== `${base}/mcp`) return null;
+    if (normalizeOAuthScope(record.scope, serverName) !== record.scope) { delete store.tokens[key]; return null; }
+    const account = store.accounts[record.account_id];
+    const client = store.clients[record.client_id];
+    if (
+      !account
+      || !account.active
+      || account.version !== record.account_version
+      || account.role !== record.role
+      || !client
+      || client.trusted_account_id !== account.account_id
+      || client.trusted_account_version !== account.version
+      || client.trusted_role !== account.role
+    ) {
+      delete store.tokens[key];
+      return null;
+    }
+    return {
+      tokenKey: key, accountId: account.account_id,
+      accountVersion: account.version, clientId: record.client_id, familyId: String(record.family_id || ""), dpopJkt: String(record.dpop_jkt || ""), role: account.role,
+    };
 }

@@ -10,6 +10,7 @@ import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceI
 import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
 import { accountAdminRequestHeaders } from "../src/local/account-admin.mjs";
 import { workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
+import { terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../src/worker/mcp-subscription-contract.ts";
 import { runOfficialMcpConformance } from "../scripts/official-mcp-conformance.mjs";
@@ -502,6 +503,7 @@ try {
         expectedFailures: path.join(packageRoot, "tests", "mcp-conformance-baseline.yml"),
       });
       logs = appendBounded(logs, `\n--- official conformance ${scenario} ---\n${conformance.stdout}\n${conformance.stderr}`);
+      console.log(`official MCP conformance ${scenario}: exit ${conformance.code}`);
       if (conformance.code !== 0 && process.env.MBM_OFFICIAL_CONFORMANCE_ALLOW_FAILURE !== "1") {
         throw new Error(`official MCP conformance scenario failed: ${scenario}\n${conformance.stdout}\n${conformance.stderr}`);
       }
@@ -2190,9 +2192,8 @@ try {
   for (const socket of daemonSockets) {
     try { socket.close(1000, "test complete"); } catch {}
   }
-  terminate(child, "SIGTERM");
+  await terminate(child);
   await Promise.race([closed, sleep(3000)]);
-  terminate(child, "SIGKILL");
   await withTimeout(Promise.allSettled([...activeHttpRequests]), 3000,
     "outstanding worker integration HTTP requests").catch(() => {});
   await rm(persistDir, { recursive: true, force: true }).catch(() => {});
@@ -2679,14 +2680,14 @@ function openPort() {
   });
 }
 
-function terminate(processHandle, signal) {
-  if (!processHandle?.pid || processHandle.exitCode !== null) return;
-  try {
-    if (process.platform === "win32") processHandle.kill(signal);
-    else process.kill(-processHandle.pid, signal);
-  } catch {
-    try { processHandle.kill(signal); } catch {}
-  }
+async function terminate(processHandle) {
+  if (!processHandle?.pid) return;
+  await new Promise((resolve) => {
+    terminateProcessTreeWithEscalation(processHandle, {
+      graceMs: 3000,
+      onTerminationSettled: resolve,
+    });
+  });
 }
 
 function appendBounded(current, chunk) {

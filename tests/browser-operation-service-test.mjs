@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { BrowserOperationService } from "../src/local/browser-operation-service.mjs";
+import { browserPairingLaunchCommand } from "../src/local/browser-command.mjs";
+
+const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 const authorized = [];
 const requests = [];
@@ -17,7 +20,7 @@ const bridge = {
   extensionInfo: {
     extension_id: "abcdefghijklmnopabcdefghijklmnop",
     protocol: 3,
-    version: "3.0.0-beta.70",
+    version: "fixture-version",
     capabilities: ["trusted_input", "computer_observation_v1", "cdp_accessibility_snapshot", "cdp_surface_screenshot", "backend_node_trusted_input"],
   },
 };
@@ -28,7 +31,7 @@ const service = new BrowserOperationService({
   request: async (method, params, timeoutSeconds) => {
     requests.push({ method, params, timeoutSeconds });
     if (method === "screenshot") {
-      return { data: "data:image/png;base64,AA==", tab_id: 7, url: "https://example.test", title: "Example", tab_metadata_verified: true };
+      return { data: `data:image/png;base64,${PNG_BASE64}`, tab_id: 7, url: "https://example.test", title: "Example", tab_metadata_verified: true };
     }
     return { ok: true, method };
   },
@@ -39,7 +42,7 @@ const service = new BrowserOperationService({
     return launch;
   },
   extensionPath: "/synthetic/extension",
-  expectedExtensionVersion: "3.0.0-beta.70",
+  expectedExtensionVersion: "fixture-version",
   expectedExtensionId: "abcdefghijklmnopabcdefghijklmnop",
   runProcess: async (...args) => { processCalls.push(args); return { code: 0 }; },
   readResourceText: async (name) => name === "secret" ? "private-value" : "text-value",
@@ -63,6 +66,28 @@ assert.equal(pairOpened.opened_pairing_page, true);
 assert.equal(launches.length, 1);
 assert.equal(processCalls.length, 1);
 assert.equal(launches[0].closed, false);
+const launchCommand = browserPairingLaunchCommand(launches[0].url);
+assert.deepEqual(processCalls[0].slice(0, 2), [launchCommand.cmd, launchCommand.argv],
+  "pairing must use the canonical platform launcher");
+
+const cancelled = new Error("synthetic cancellation after pairing listener creation");
+service.throwIfCancelled = () => { throw cancelled; };
+await assert.rejects(service.pair({ open: true }), (error) => error === cancelled);
+assert.equal(launches.length, 2, "fixture must cancel after creating the ephemeral listener");
+assert.equal(launches[1].closed, true, "cancelled pairing leaked its listener until expiry");
+assert.equal(processCalls.length, 1, "cancelled pairing reached browser process dispatch");
+service.throwIfCancelled = () => {};
+
+const runProcess = service.runProcess;
+for (const [reason, code, retryable] of [
+  ["process_failed_before_spawn", "unavailable", true],
+  ["process_outcome_unknown_after_spawn", "execution_failed", false],
+]) {
+  service.runProcess = async () => { throw Object.assign(new Error("synthetic launcher failure"), { details: { reason } }); };
+  await assert.rejects(service.pair({ open: true }), (error) => error.code === code && error.retryable === retryable);
+  assert.equal(launches.at(-1).closed, true, "failed launch leaked its ephemeral listener");
+}
+service.runProcess = runProcess;
 
 await service.listTabs({ current_window: true, include_pinned: false, timeout_seconds: 12 });
 await service.manageTabs({ action: "new", url: "https://example.test", active: false, timeout_seconds: 11 });
@@ -115,8 +140,23 @@ assert.equal(upload.resource_contents_exposed, false);
 
 const screenshot = await service.screenshot({ tab_id: 7, format: "png", timeout_seconds: 5 });
 assert.equal(screenshot.$mcp.content[0].type, "image");
-assert.equal(screenshot.$mcp.content[0].data, "AA==");
+assert.equal(screenshot.$mcp.content[0].data, PNG_BASE64);
 assert.equal(screenshot.$mcp.structuredContent.tab_metadata_verified, true);
+assert.deepEqual(Object.keys(screenshot.$mcp.content[0]).sort(), ["data", "mimeType", "type"],
+  "screenshot returned private decoded bytes instead of the fixed MCP image projection");
+for (const data of [
+  "data:image/png;base64,QUJD",
+  "data:image/png;base64,==",
+  `data:image/png;base64,${PNG_BASE64}=`,
+  `data:image/jpeg;base64,${PNG_BASE64}`,
+  ["data:image/png;base64,QUJD"],
+]) {
+  const invalidScreenshotService = new BrowserOperationService({
+    authorizeTool() {},
+    async request() { return { data }; },
+  });
+  await assert.rejects(invalidScreenshotService.screenshot({}), /browser extension returned an invalid screenshot/);
+}
 
 for (const method of ["list_tabs", "manage_tabs", "wait", "get_source", "inspect_page", "document_state", "point_action", "action", "fill_form", "upload_files", "screenshot"]) {
   assert(requests.some((entry) => entry.method === method), `missing request coverage for ${method}`);

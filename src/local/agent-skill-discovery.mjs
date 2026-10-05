@@ -59,7 +59,10 @@ export async function discoverLocalSkills(options) {
     while (stack.length) {
       options.throwIfCancelled(options.context);
       const current = stack.pop();
-      if (!current || seenDirectories.has(current.directory)) continue;
+      if (!current) continue;
+      current.directory = await realpath(current.directory);
+      assertAllowedPath(current.directory, options.workspace, options.unrestricted, "skill directory");
+      if (seenDirectories.has(current.directory)) continue;
       seenDirectories.add(current.directory);
       visitedEntries += 1;
       if (visitedEntries > MAX_SKILL_SCAN_ENTRIES) {
@@ -69,6 +72,7 @@ export async function discoverLocalSkills(options) {
       const entrypoint = await findSkillEntrypoint(current.directory);
       if (entrypoint) {
         const canonical = await realpath(entrypoint);
+        assertAllowedPath(canonical, options.workspace, options.unrestricted, "skill entrypoint");
         if (!seenEntrypoints.has(canonical)) {
           seenEntrypoints.add(canonical);
           try {
@@ -82,14 +86,13 @@ export async function discoverLocalSkills(options) {
               }
             }
           } catch (error) {
-            if (warnings.length < 100) warnings.push({ entrypoint: canonical, message: boundedMessage(error) });
+            if (warnings.length < 100) warnings.push({ entrypoint: canonical, message: boundedMessage(error, canonical, options.displayPath) });
           }
         }
         continue;
       }
       if (current.depth >= MAX_SKILL_SCAN_DEPTH) continue;
-      const handle = await opendir(current.directory);
-      for await (const entry of handle) {
+      for await (const entry of stableSkillDirectoryEntries(current.directory, options.context, options.throwIfCancelled)) {
         options.throwIfCancelled(options.context);
         visitedEntries += 1;
         if (visitedEntries > MAX_SKILL_SCAN_ENTRIES) {
@@ -102,12 +105,12 @@ export async function discoverLocalSkills(options) {
         } else if (entry.isSymbolicLink()) {
           let target;
           try { target = await realpath(child); } catch (error) {
-            if (warnings.length < 100) warnings.push({ entrypoint: child, message: boundedMessage(error) });
+            if (warnings.length < 100) warnings.push({ entrypoint: child, message: boundedMessage(error, child, options.displayPath) });
             continue;
           }
           let targetInfo;
           try { targetInfo = await stat(target); } catch (error) {
-            if (warnings.length < 100) warnings.push({ entrypoint: child, message: boundedMessage(error) });
+            if (warnings.length < 100) warnings.push({ entrypoint: child, message: boundedMessage(error, child, options.displayPath) });
             continue;
           }
           if (!targetInfo.isDirectory()) continue;
@@ -125,8 +128,10 @@ export async function discoverLocalSkills(options) {
   return { skills, warnings, truncated };
 }
 
-/** @param {string} root @param {number} maxFiles @param {unknown} context @param {(context: unknown) => void} throwIfCancelled */
-export async function listSkillFiles(root, maxFiles, context, throwIfCancelled) {
+/** @param {string} root @param {number} maxFiles @param {unknown} context @param {(context: unknown) => void} throwIfCancelled @param {string} [expectedRoot] */
+export async function listSkillFiles(root, maxFiles, context, throwIfCancelled, expectedRoot) {
+  root = await realpath(root);
+  if (expectedRoot !== undefined && root !== expectedRoot) throw new Error("skill directory changed during traversal");
   /** @type {Array<{path: string, bytes: number, type: "file" | "symlink"}>} */
   const files = [];
   const stack = [{ directory: root, depth: 0 }];
@@ -136,8 +141,9 @@ export async function listSkillFiles(root, maxFiles, context, throwIfCancelled) 
     throwIfCancelled(context);
     const current = stack.pop();
     if (!current) continue;
-    const handle = await opendir(current.directory);
-    for await (const entry of handle) {
+    current.directory = await realpath(current.directory);
+    assertAllowedPath(current.directory, root, false, "skill directory");
+    for await (const entry of stableSkillDirectoryEntries(current.directory, context, throwIfCancelled)) {
       throwIfCancelled(context);
       visited += 1;
       if (visited > MAX_SKILL_SCAN_ENTRIES) {
@@ -151,6 +157,7 @@ export async function listSkillFiles(root, maxFiles, context, throwIfCancelled) 
         else truncated = true;
       } else if (entry.isFile()) {
         const info = await lstat(full);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error("skill file changed during traversal");
         files.push({ path: rel, bytes: info.size, type: "file" });
       } else if (entry.isSymbolicLink()) {
         files.push({ path: rel, bytes: 0, type: "symlink" });
@@ -164,6 +171,34 @@ export async function listSkillFiles(root, maxFiles, context, throwIfCancelled) 
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
   return { files, truncated };
+}
+
+/** @param {string} directory @param {unknown} context @param {(context: unknown) => void} throwIfCancelled */
+async function* stableSkillDirectoryEntries(directory, context, throwIfCancelled) {
+  const expected = await lstat(directory, { bigint: true });
+  const assertCurrent = async () => {
+    throwIfCancelled(context);
+    const current = await lstat(directory, { bigint: true });
+    if (!expected.isDirectory() || expected.isSymbolicLink() || !current.isDirectory() || current.isSymbolicLink()
+        || current.dev !== expected.dev || current.ino !== expected.ino || await realpath(directory) !== directory) {
+      throw new Error("skill directory changed during traversal");
+    }
+  };
+  await assertCurrent();
+  const handle = await opendir(directory);
+  try {
+    await assertCurrent();
+    for await (const entry of handle) {
+      await assertCurrent();
+      yield entry;
+      await assertCurrent();
+    }
+    await assertCurrent();
+  } finally {
+    await handle.close().catch((error) => {
+      if (error?.code !== "ERR_DIR_CLOSED") throw error;
+    });
+  }
 }
 
 /** @param {unknown} content @returns {{name?: string, description?: string}} */
@@ -205,7 +240,7 @@ async function findSkillEntrypoint(directory) {
 
 /** @param {string} entrypoint @param {string} sourceRoot @returns {Promise<SkillSummary>} */
 async function summarizeSkill(entrypoint, sourceRoot) {
-  const content = await readRegularUtf8(entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
+  const content = await readRegularUtf8(entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint", { canonicalPath: entrypoint });
   const metadata = parseSkillMetadata(content.text);
   if (!metadata.name || !metadata.description) throw new Error("SKILL.md front matter requires non-empty name and description fields");
   return {
@@ -220,13 +255,13 @@ async function summarizeSkill(entrypoint, sourceRoot) {
   };
 }
 
-/** @param {unknown} error */
-function boundedMessage(error) {
+/** @param {unknown} error @param {string} entrypoint @param {(value: string) => string} displayPath */
+function boundedMessage(error, entrypoint, displayPath) {
   if (error !== null && typeof error === "object" && "code" in error && error.code) {
     return `local skill access failed (${classifyOperationalError(error)})`;
   }
   const message = error instanceof Error ? error.message : String(error || "invalid local skill");
-  return message.replace(/[\r\n\u0000-\u001f\u007f]+/g, " ").slice(0, 1000);
+  return message.replaceAll(entrypoint, () => displayPath(entrypoint)).replace(/[\r\n\u0000-\u001f\u007f]+/g, " ").slice(0, 1000);
 }
 
 /** @param {string} value */

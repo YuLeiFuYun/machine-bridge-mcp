@@ -185,22 +185,25 @@ export class DaemonHttpRelayConnection {
     const earliest = Math.max(this.lastRequestStartedAt + this.minimumRequestIntervalMs, this.retryNotBeforeAt);
     if (now < earliest) { this.schedulePoll(earliest - now); return; }
     this.lastRequestStartedAt = now;
-    const descriptor = this.activationToken ? null : (this.descriptor() || {});
-    const body = JSON.stringify({
+    const descriptor = this.activationToken ? null : (this.descriptor(this.status()) || {});
+    const envelope = {
       protocol: 1,
       session_id: this.transportSessionId,
       instance_id: this.instanceId,
       ...(this.activationToken ? { activation_token: this.activationToken } : {}),
       ack_worker_seq: this.inbound.acknowledged,
       owned_call_ids: [...this.ownedCallIds()].slice(0, 32),
-      messages: this.outbound.snapshot(),
+      messages: [],
       ...(this.takeoverWebSocket ? { takeover_websocket: true } : {}),
       ...(this.takeoverWebSocketConnectionId ? { takeover_websocket_connection_id: this.takeoverWebSocketConnectionId } : {}),
       ...(descriptor ? {
         tools: descriptor.tools ?? [], policy: descriptor.policy ?? {},
         relay_diagnostics: descriptor.relayDiagnostics ?? {},
       } : {}),
-    });
+    };
+    const availableBytes = relayContract.httpFallbackMaximumEnvelopeBytes - Buffer.byteLength(JSON.stringify(envelope)) + 2;
+    envelope.messages = this.outbound.snapshot(availableBytes);
+    const body = JSON.stringify(envelope);
     const controller = new AbortController();
     this.inFlight = controller;
     try {

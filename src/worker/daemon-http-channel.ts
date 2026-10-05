@@ -37,6 +37,7 @@ export class DaemonHttpChannel implements DaemonChannel {
   get activatedMs(): number { return this.activatedAtMs; }
   get isActivated(): boolean { return !this.closed && this.activatedAtMs > 0; }
   get daemonSequence(): number { return this.acknowledgedDaemonSeq; }
+  get queuedMessageCount(): number { return this.outbound.length; }
 
   activate(now = Date.now()): void {
     if (this.closed) throw new Error("HTTP daemon channel is closed");
@@ -51,7 +52,6 @@ export class DaemonHttpChannel implements DaemonChannel {
     this.touch(now);
     this.attachment.role = "daemon";
     this.attachment.connectedAt = new Date(now).toISOString();
-    this.attachment.lastSeenAt = this.attachment.connectedAt;
     this.attachment.relayDiagnostics = relayDiagnosticsAfterReady(
       this.attachment.relayDiagnostics,
       this.attachment.connectedAt,
@@ -63,18 +63,26 @@ export class DaemonHttpChannel implements DaemonChannel {
     this.attachment.lastSeenAt = new Date(now).toISOString();
   }
 
-  send(data: string): void {
+  send(data: string, deferWhenFull = false): boolean {
     if (!this.isActivated) throw new Error("HTTP daemon channel is not activated");
     const bytes = new TextEncoder().encode(data).byteLength;
     if (bytes > relayContract.httpFallbackMaximumMessageBytes
         || this.outbound.length >= relayContract.httpFallbackMaximumQueuedMessages
         || this.queuedBytes + bytes > relayContract.httpFallbackMaximumQueuedBytes) {
+      if (deferWhenFull) return false;
       throw new Error("HTTP daemon relay queue capacity exceeded");
     }
     let payload: unknown;
     try { payload = JSON.parse(data); } catch { throw new Error("HTTP daemon relay message is not JSON"); }
     this.outbound.push(Object.freeze({ seq: this.nextWorkerSeq++, payload, bytes }));
     this.queuedBytes += bytes;
+    return true;
+  }
+
+  hasQueuedRevocation(id: unknown): boolean {
+    return this.outbound.some(({ payload }) =>
+      (payload as Record<string, unknown>)?.type === "authority_revoke"
+      && (payload as Record<string, unknown>).revocation_id === id);
   }
 
   acknowledgeWorker(sequence: number): boolean {
@@ -82,20 +90,21 @@ export class DaemonHttpChannel implements DaemonChannel {
     if (sequence <= this.acknowledgedWorkerSeq) return true;
     this.acknowledgedWorkerSeq = sequence;
     while (this.outbound[0]?.seq <= sequence) {
-      const removed = this.outbound.shift();
-      if (removed) this.queuedBytes = Math.max(0, this.queuedBytes - removed.bytes);
+      this.queuedBytes -= this.outbound.shift()!.bytes;
     }
     return true;
   }
 
   outboundMessages(): Array<{ seq: number; payload: unknown }> {
     const selected: Array<{ seq: number; payload: unknown }> = [];
-    let bytes = 0;
+    // Fixed response fields fit within 512 bytes; count sequence wrappers and separators too.
+    let bytes = 512;
     for (const message of this.outbound) {
-      if (selected.length >= relayContract.httpFallbackMaximumQueuedMessages) break;
-      if (selected.length > 0 && bytes + message.bytes > relayContract.httpFallbackMaximumEnvelopeBytes) break;
-      selected.push({ seq: message.seq, payload: message.payload });
-      bytes += message.bytes;
+      const entry = { seq: message.seq, payload: message.payload };
+      const encodedBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength + 1;
+      if (bytes + encodedBytes > relayContract.httpFallbackMaximumEnvelopeBytes) break;
+      selected.push(entry);
+      bytes += encodedBytes;
     }
     return selected;
   }

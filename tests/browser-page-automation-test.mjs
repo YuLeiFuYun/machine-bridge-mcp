@@ -1,3 +1,4 @@
+import { webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { performance } from "node:perf_hooks";
@@ -135,7 +136,7 @@ const context = vm.createContext({
 });
 vm.runInContext(source, context, { filename: "page-automation.js" });
 const api = context.__machineBridgePageAutomation;
-assert(api?.version === 4 && typeof api.inspect === "function" && typeof api.historyAction === "function",
+assert(api?.version === 5 && typeof api.inspect === "function" && typeof api.historyAction === "function",
   "page automation module did not expose its versioned fixed API");
 
 for (const [payload, expected] of [
@@ -560,6 +561,8 @@ assert(projectionInput.value === "applied-before-projection-failure",
 projectionInputMutated = false;
 elements = elements.filter((element) => element !== projectionInput);
 
+await testRendererRequestCancellation();
+
 button.isConnected = false;
 await expectReject(() => api.action({ action: "click", selector: { ref }, elementTimeoutMs: 50 }), "reference is stale");
 
@@ -571,7 +574,7 @@ const staleApi = Object.freeze({ action: async () => ({ stale: true }) });
 Object.defineProperty(context, "__machineBridgePageAutomation", { value: staleApi, configurable: true });
 vm.runInContext(source, context, { filename: "page-automation-upgrade.js" });
 assert(context.__machineBridgePageAutomation !== staleApi
-  && context.__machineBridgePageAutomation?.version === 4
+  && context.__machineBridgePageAutomation?.version === 5
   && typeof context.__machineBridgePageAutomation.action === "function",
   "stale page automation instance was not replaced by the current versioned module");
 
@@ -630,4 +633,125 @@ async function expectReject(operation, expected) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function testRendererRequestCancellation() {
+  const operationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
+  const sender = { tab: { id: 1 }, frameId: 0 };
+  const savedChrome = context.chrome;
+  button.isConnected = true;
+  input.disabled = false;
+  const secondInput = new FakeInputElement({ id: "cancel-second", type: "text" });
+  const fileInput = new FakeInputElement({ id: "cancel-upload", type: "file" });
+  elements.push(secondInput, fileInput);
+  const refs = api.inspect({ maxElements: 30, includeValues: false }).elements;
+  const secondRef = refs.find((item) => item.id === secondInput.id).ref;
+  const fileRef = refs.find((item) => item.id === fileInput.id).ref;
+  async function runCase(method, payload, unblock, check, { expire = false, sibling = false } = {}) {
+    let releaseDelay; let enteredDelay; let token; let clock = 0;
+    const entered = new Promise((resolve) => { enteredDelay = resolve; });
+    const state = { cancelled: false, timeoutMs: 1000 };
+    const operationsContext = vm.createContext({
+      performance: { now: () => clock }, crypto: webcrypto, Promise,
+      TextEncoder, TextDecoder, setTimeout, clearTimeout, console,
+      chrome: {
+        tabs: { get: async () => ({ id: 1, windowId: 1, url: "https://example.test/form", title: "Owned renderer fixture" }) },
+        scripting: { async executeScript(request) {
+          if (request.files) return [];
+          context.__requestProgressArgs = request.args;
+          return [{ frameId: 0, result: await vm.runInContext("(" + request.func.toString() + ")(...__requestProgressArgs)", context) }];
+        } },
+      },
+    });
+    vm.runInContext(operationsSource, operationsContext, { filename: "browser-operations-cancellation.js" });
+    const operations = operationsContext.__machineBridgeBrowserOperations;
+    context.chrome = { runtime: { sendMessage(message) {
+      if (message.type === "machine_bridge_internal_progress") return Promise.resolve(operations.rendererProgress(message.request_token, sender));
+      assert(message.type === "machine_bridge_internal_delay", "renderer progress used an unexpected timing message");
+      token = message.request_token;
+      enteredDelay();
+      return new Promise((resolve) => { releaseDelay = () => resolve(operations.rendererProgress(token, sender)); });
+    } } };
+    const outcome = operations.dispatch(method, payload, state)
+      .then((result) => ({ ok: true, result }), (error) => ({ ok: false, error }));
+    let pendingTimer;
+    let early;
+    try {
+      early = await Promise.race([
+        entered.then(() => null), outcome,
+        new Promise((_, reject) => { pendingTimer = setTimeout(() => reject(new Error("owned renderer did not enter its controlled wait")), 1000); }),
+      ]);
+    } finally { clearTimeout(pendingTimer); }
+    if (early !== null) throw new Error("renderer fixture settled before controlled wait: " + String(early.error?.message || early.result));
+    assert(operations.rendererProgress(token, sender).active === true, "own live request progress was unavailable");
+    assert(operations.rendererProgress(token, { tab: { id: 2 }, frameId: 0 }).active === false
+      && operations.rendererProgress(token, { tab: { id: 1 }, frameId: 1 }).active === false
+      && operations.rendererProgress("missing", sender).active === false,
+    "renderer progress was usable from a different tab/frame or an unknown identity");
+    if (expire) clock = 1001;
+    else state.cancelled = true;
+    if (sibling) {
+      secondInput.disabled = false;
+      const other = await operations.dispatch("action", {
+        tabId: 1, action: "fill", selector: { ref: secondRef }, value: "unrelated survives",
+        inputMode: "dom", waitFor: "none", elementTimeoutMs: 500,
+      }, { cancelled: false, timeoutMs: 1000 });
+      assert(other.ok === true && secondInput.value === "unrelated survives",
+        "cancelling one active renderer request cancelled a different request");
+    }
+    unblock();
+    releaseDelay();
+    const settled = await outcome;
+    assert(!settled.ok && String(settled.error?.message || settled.error).includes("cancelled"),
+      "renderer mutation did not observe cancellation/deadline after its pending wait");
+    check(settled.error);
+    assert(operations.rendererProgress(token, sender).active === false, "settled renderer request retained progress authority");
+  }
+  try {
+    input.value = "unchanged"; input.focused = false; input.disabled = true;
+    await runCase("action", {
+      tabId: 1, action: "fill", selector: { ref: inputRef }, value: "must not apply",
+      inputMode: "dom", waitFor: "none", elementTimeoutMs: 5000,
+    }, () => { input.disabled = false; }, () => {
+      assert(input.value === "unchanged" && input.focused === false, "fill mutated or focused after cancellation during actionability wait");
+    }, { sibling: true });
+    input.disabled = true;
+    await runCase("action", {
+      tabId: 1, action: "fill", selector: { ref: inputRef }, value: "must not apply",
+      inputMode: "dom", waitFor: "none", elementTimeoutMs: 5000,
+    }, () => { input.disabled = false; }, () => {
+      assert(input.value === "unchanged", "expired renderer request mutated after actionability wait");
+    }, { expire: true });
+    hit = button; const clickBaseline = button.clickCount;
+    await runCase("action", {
+      tabId: 1, action: "click", selector: { ref },
+      inputMode: "dom", waitFor: "none", elementTimeoutMs: 5000,
+    }, () => {}, (error) => {
+      assert(button.clickCount === clickBaseline && String(error.message).includes("outcome is unknown"),
+        "cancelled pointer stability wait clicked or forgot prior scroll side effects");
+    });
+    secondInput.value = ""; secondInput.disabled = true; input.value = "";
+    await runCase("fill_form", {
+      tabId: 1, fields: [
+        { selector: { ref: inputRef }, action: "fill", value: "prior field applied", sensitive: false },
+        { selector: { ref: secondRef }, action: "fill", value: "must not apply", sensitive: false },
+      ], elementTimeoutMs: 5000, submit: false, waitFor: "none",
+    }, () => { secondInput.disabled = false; }, (error) => {
+      assert(input.value === "prior field applied" && secondInput.value === ""
+        && String(error.message).includes("outcome is unknown"),
+      "cancelled form changed a later field or erased its partial-effect boundary");
+    });
+    fileInput.disabled = true;
+    await runCase("upload_files", {
+      tabId: 1, selector: { ref: fileRef }, elementTimeoutMs: 5000,
+      files: [{ filename: "owned.txt", mime: "text/plain", data: "b3duZWQ=" }],
+    }, () => { fileInput.disabled = false; }, () => {
+      assert(fileInput.files === undefined, "cancelled file wait assigned files");
+    });
+  } finally {
+    input.disabled = false; secondInput.disabled = false; fileInput.disabled = false;
+    elements = elements.filter((element) => element !== secondInput && element !== fileInput);
+    delete context.__requestProgressArgs;
+    if (savedChrome === undefined) delete context.chrome; else context.chrome = savedChrome;
+  }
 }

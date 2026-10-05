@@ -854,7 +854,7 @@ try {
       && !reviewerRouted.execution_routing.routes.some((route) => ["application", "browser", "shell"].includes(route.id)),
     "reviewer task resolution did not isolate application inventory from unavailable execution surfaces");
   } finally {
-    routingRuntime.stop();
+    await routingRuntime.stop();
   }
 
   const liveMacosRequested = process.argv.includes("--live-macos");

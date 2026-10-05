@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import { classifyOperationalError } from "./log.mjs";
 import { BridgeError } from "./errors.mjs";
 import { resolveRuntimeNodeExecutable } from "./runtime-node-executable.mjs";
-import { ownerOnlyFile } from "./secure-file.mjs";
 import { openPrivateAppendFile, trimDiagnosticFile } from "./managed-job-storage.mjs";
 import { publishProvisionalRunnerClaim } from "./managed-job-runner-claim.mjs";
 import { EXECUTION_SURFACE, withExecutionSurface } from "./execution-surface.mjs";
@@ -52,18 +51,19 @@ export function launchRunner(dir, recover = false, recoveryToken = "", options =
       shell: false,
       env: managedRunnerEnvironment({ fullEnv: options.fullEnv === true, recoveryToken, launchToken, source: options.env || process.env }),
     });
-  } finally {
-    if (stdoutFd !== undefined) closeSync(stdoutFd);
-    if (stderrFd !== undefined) closeSync(stderrFd);
-  }
-  ownerOnlyFile(stdoutFile);
-  ownerOnlyFile(stderrFile);
-  child.once?.("error", (error) => {
-    logger.error?.("managed job runner process reported an asynchronous failure", {
-      recovery: recover,
-      error_class: classifyOperationalError(error),
+    child.once?.("error", (error) => {
+      try {
+        logger.error?.("managed job runner process reported an asynchronous failure", {
+          recovery: recover,
+          error_class: classifyOperationalError(error),
+        });
+      } catch { /* A failed diagnostic sink must not crash the daemon after child settlement. */ }
     });
-  });
+  } finally {
+    for (const fd of [stdoutFd, stderrFd]) {
+      if (fd !== undefined) { try { closeSync(fd); } catch { /* The child owns its duplicate; close every parent diagnostic descriptor without replacing launch errors. */ } }
+    }
+  }
   const pid = Number(child.pid);
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("managed job runner did not receive a process id");
   try {

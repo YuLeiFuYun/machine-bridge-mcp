@@ -15,7 +15,7 @@ const SOURCES = Object.freeze({
 });
 
 export function sensitiveValuePattern(name, flags = "g") {
-  const source = SOURCES[String(name || "")];
-  if (!source) throw new TypeError(`unknown sensitive-value pattern: ${name}`);
+  if (typeof name !== "string" || !Object.hasOwn(SOURCES, name)) throw new TypeError("unknown sensitive-value pattern");
+  const source = SOURCES[name];
   return new RegExp(source, flags);
 }

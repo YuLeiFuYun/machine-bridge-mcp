@@ -106,7 +106,6 @@ try {
     && readFileSync(rematerializedCandidate.path).equals(readFileSync(join(output, metadata.filename))),
   "accepted candidate staging still depended on a stale worktree-local candidate instead of exact acceptance rematerialization");
   rematerializedCandidate.dispose();
-  writeFileSync(candidateManifestPath, `${JSON.stringify(candidateManifest, null, 2)}\n`);
   writeFileSync(candidateManifestPath, `${JSON.stringify({ ...candidateManifest, shasum: "f".repeat(40) }, null, 2)}\n`);
   expectThrow(() => resolveAcceptedCandidateTarball(root, verified), "shasum does not match");
   writeFileSync(candidateManifestPath, `${JSON.stringify(candidateManifest, null, 2)}\n`);

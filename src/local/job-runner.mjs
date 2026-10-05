@@ -9,7 +9,7 @@ import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, processState } from "./process-identity.mjs";
-import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { managedJobCancellationRequested } from "./managed-job-cancellation.mjs";
 import {
   clearManagedJobActiveChild, managedJobActiveChildFile, managedJobActiveChildRecoveryReady,
@@ -339,7 +339,7 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
   const envOverrides = Object.fromEntries(Object.entries(step.env || {}).map(([key, value]) => [key, substitute(value, plan, resourceContext)]));
   const envResourceValues = Object.fromEntries(Object.entries(step.env_resources || {}).map(([key, name]) => [key, resourceEnvValue(name, resourceContext.bytes)]));
   const env = {
-    ...executionEnv(plan.workspace, { fullEnv: plan.full_env === true, runtimeDir }),
+    ...executionEnv(plan.workspace, { fullEnv: plan.full_env === true, runtimeDir, delegated: plan.delegated_process === true }),
     ...envOverrides,
     ...envResourceValues,
   };
@@ -516,6 +516,10 @@ async function spawnStep(argv, {
       },
     });
     child.on("error", (error) => { childError ||= error; });
+    child.stdin.on("error", (error) => {
+      childError ||= new Error("managed job child stdin delivery failed", { cause: error });
+      void terminateAndSettle();
+    });
     if (input && input.length) child.stdin.end(input);
     else child.stdin.end();
 
@@ -538,6 +542,7 @@ async function spawnStep(argv, {
 }
 
 function materializeResources(resources) {
+  for (const name of ["home", "tmp", "cache"]) ensureOwnerOnlyDirectorySync(join(runtimeDir, name));
   mkdirSync(resourcesDir, { recursive: true, mode: 0o700 });
   chmodSync(resourcesDir, 0o700);
   const paths = {};

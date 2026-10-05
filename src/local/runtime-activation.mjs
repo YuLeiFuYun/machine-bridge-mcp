@@ -110,7 +110,7 @@ export async function activatePersistentRuntime(options = {}) {
     }
     autostartInstalled = true;
 
-    candidateRuntime.stop();
+    await candidateRuntime.stop();
     candidateRuntime = null;
     daemonLock.release();
     daemonLock = null;
@@ -205,8 +205,13 @@ async function failedActivationSettlement({
   candidateRecoveryRedeployed,
 }) {
   const cleanupErrors = [];
-  try { candidateRuntime?.stop?.(); } catch (failure) { cleanupErrors.push(failure); }
-  try { daemonLock?.release?.(); } catch (failure) { cleanupErrors.push(failure); }
+  let candidateStopFailed = false;
+  try { await candidateRuntime?.stop?.(); }
+  catch (failure) { candidateStopFailed = true; cleanupErrors.push(failure); }
+  // A failed shutdown can leave the candidate running; retain its daemon lock.
+  if (!candidateStopFailed) {
+    try { daemonLock?.release?.(); } catch (failure) { cleanupErrors.push(failure); }
+  }
   if (!startupReleased && startupLock) {
     try { startupLock.release(); }
     catch (failure) { cleanupErrors.push(failure); }
@@ -240,7 +245,7 @@ async function failedActivationSettlement({
   if (serviceLock) {
     try { serviceLock.release(); } catch (failure) { cleanupErrors.push(failure); }
   }
-  if (cleanupErrors.length) return activationCleanupFailure(error, cleanupErrors);
+  if (cleanupErrors.length) return activationCleanupFailure(error, cleanupErrors, candidateStopFailed);
   if (recovery?.candidateServiceStarted && candidateRelayVerified && recoverablePostReadySettlement(error)) {
     return {
       ok: true,
@@ -284,8 +289,7 @@ async function startCandidateWithRecovery({
     } catch (error) {
       lastError = error;
       let stopFailure = null;
-      try { await runtime.stop(); } catch (failure) { stopFailure = failure; }
-      finally { onRuntimeStopped(); }
+      try { await runtime.stop(); onRuntimeStopped(); } catch (failure) { stopFailure = failure; }
       if (stopFailure) {
         const cleanupError = new AggregateError(
           [error, stopFailure],
@@ -571,13 +575,14 @@ function activationFailureWithRecovery(error) {
   return recovered;
 }
 
-function activationCleanupFailure(error, cleanupErrors) {
+function activationCleanupFailure(error, cleanupErrors, daemonOwnershipRetained = false) {
   const details = cleanupErrors.slice(0, 4).map(activationErrorMessage).join("; ");
   const aggregate = new AggregateError(
     [error, ...cleanupErrors],
-    `persistent runtime activation failed: ${activationErrorMessage(error)}; local cleanup was incomplete: ${details}`,
+    `persistent runtime activation failed: ${activationErrorMessage(error)}; local cleanup was incomplete: ${details}${daemonOwnershipRetained ? "; daemon ownership retained" : ""}`,
   );
   aggregate.cleanupIncomplete = true;
+  if (daemonOwnershipRetained) aggregate.daemonOwnershipRetained = true;
   if (error?.code) aggregate.code = error.code;
   return aggregate;
 }

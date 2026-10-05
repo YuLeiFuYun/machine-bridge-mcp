@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { withHardenedNpmLauncher } from "../src/local/hardened-npm-launcher.mjs";
 import {
   ensureHardenedNpm,
   HARDENED_NPM_ARTIFACTS,
@@ -38,8 +40,10 @@ try {
     };
   });
 
+  const sessionParent = join(root, "session's lifecycle fixture");
+  mkdirSync(sessionParent);
   const session = await createHardenedNpmSession({
-    tempRoot: root,
+    tempRoot: sessionParent,
     hardenedNpm: {
       artifacts,
       readArtifact: (artifact) => bytesByName.get(artifact.name),
@@ -47,7 +51,23 @@ try {
   });
   assert.equal(session.version, "12.0.2");
   assert.equal(session.undiciVersion, "6.28.0");
-  session.dispose();
+  try {
+    const rivalBin = join(root, "rival-npm");
+    mkdirSync(rivalBin);
+    writeFileSync(join(rivalBin, process.platform === "win32" ? "npm.cmd" : "npm"),
+      process.platform === "win32" ? "@echo off\r\necho 11.0.0\r\n" : "#!/bin/sh\nprintf '11.0.0\\n'\n", { mode: 0o700 });
+    const rivalEnvironment = { ...process.env };
+    const inheritedPaths = Object.entries(rivalEnvironment).filter(([key]) => /^path$/i.test(key));
+    for (const [key] of inheritedPaths) delete rivalEnvironment[key];
+    rivalEnvironment.PATH = [rivalBin, ...inheritedPaths.map(([, value]) => value)].join(delimiter);
+    const readNpmVersion = env => execFileSync(
+      process.platform === "win32" ? (process.env.ComSpec || process.env.COMSPEC || "cmd.exe") : "npm",
+      process.platform === "win32" ? ["/d", "/s", "/c", "npm --version"] : ["--version"],
+      { env, encoding: "utf8", timeout: 10_000, windowsHide: true }).trim();
+    assert.equal(readNpmVersion(rivalEnvironment), "11.0.0", "owned rival npm fixture did not take precedence");
+    assert.equal(readNpmVersion(nestedNpmEnvironment(rivalEnvironment, { bin: session.bin })), "12.0.2",
+      "nested lifecycle npm escaped the verified private CLI to a rival PATH entry");
+  } finally { session.dispose(); }
   assert.equal(session.dispose(), undefined, "hardened npm session disposal was not idempotent");
   const primary = new Error("primary failure");
   const cleanup = new Error("cleanup failure");
@@ -75,6 +95,24 @@ try {
   assert.equal(HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.integrity, "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==");
   assert.equal(HARDENED_NPM_BRACE_EXPANSION_ARTIFACT.maximumBytes, 1024 * 1024);
   assert.equal(verifyHardenedNpm(preparedRoot, { artifacts }).cli, prepared.cli);
+
+  const scopedBin = await withHardenedNpmLauncher(sessionParent, prepared.cli, async (bin) => {
+    await Promise.resolve();
+    assert(existsSync(bin), "private launcher was removed before its operation settled");
+    return bin;
+  });
+  assert(!existsSync(scopedBin), "successful operation retained its private launcher");
+  for (const cause of [primary, null]) {
+    let failedBin, rejected = false, actual;
+    try {
+      await withHardenedNpmLauncher(sessionParent, prepared.cli, (bin) => {
+        failedBin = bin;
+        throw cause;
+      });
+    } catch (error) { rejected = true; actual = error; }
+    assert(rejected && actual === cause, "launcher cleanup replaced or swallowed the primary rejection");
+    assert(!existsSync(failedBin), "failed operation retained its private launcher");
+  }
 
   let downloads = 0;
   const parent = join(root, "toolchains");

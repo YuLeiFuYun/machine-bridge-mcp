@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { parse } from "@babel/parser";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,6 @@ const visiting = new Set();
 const visited = new Set();
 
 for (const file of sourceFiles) visit(file, []);
-console.log(`architecture source module graph ok (${sourceFiles.length} modules)`);
 
 function sourceFilesBelow(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -25,7 +25,7 @@ function sourceFilesBelow(directory) {
 
 function relativeDependencies(file) {
   const text = readFileSync(file, "utf8");
-  const specifiers = new Set(moduleSpecifiers(text).filter((specifier) => specifier.startsWith(".")));
+  const specifiers = new Set(moduleSpecifiers(text, file).filter((specifier) => specifier.startsWith(".")));
   return [...specifiers].flatMap((specifier) => {
     const target = resolve(dirname(file), specifier);
     for (const candidate of sourceCandidates(target)) if (sourceSet.has(candidate)) return [candidate];
@@ -33,104 +33,33 @@ function relativeDependencies(file) {
   });
 }
 
-export function moduleSpecifiers(text) {
-  const tokens = sourceTokens(String(text || ""));
+export function moduleSpecifiers(text, file = "module.ts") {
+  const nodes = [parse(String(text || ""), {
+    sourceType: "module",
+    sourceFilename: file,
+    plugins: [["typescript", { dts: /\.d\.[cm]?ts$/u.test(file) }]],
+    createImportExpressions: true,
+    attachComment: false,
+  })];
   const specifiers = [];
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token.type !== "identifier" || (token.value !== "import" && token.value !== "export")) continue;
-    const next = tokens[index + 1];
-    if (token.value === "import" && next?.type === "string") {
-      specifiers.push(next.value);
-      continue;
+  while (nodes.length) {
+    const node = nodes.pop();
+    if (!node || typeof node.type !== "string") continue;
+    let source;
+    if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(node.type)) {
+      source = node.source;
+    } else if (node.type === "TSImportType") {
+      source = node.argument;
+    } else if (node.type === "TSImportEqualsDeclaration" && node.moduleReference.type === "TSExternalModuleReference") {
+      source = node.moduleReference.expression;
     }
-    if (token.value === "import" && next?.value === "(" && tokens[index + 2]?.type === "string") {
-      specifiers.push(tokens[index + 2].value);
-      continue;
-    }
-    for (let cursor = index + 1, remaining = 256; cursor + 1 < tokens.length && remaining > 0; cursor += 1, remaining -= 1) {
-      const current = tokens[cursor];
-      if (current.value === ";") break;
-      if (current.type === "identifier" && (current.value === "import" || current.value === "export")) break;
-      if (current.type === "identifier" && current.value === "from" && tokens[cursor + 1]?.type === "string") {
-        specifiers.push(tokens[cursor + 1].value);
-        break;
-      }
+    if (source?.type === "StringLiteral") specifiers.push({ start: node.start, value: source.value });
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) nodes.push(...value);
+      else if (value && typeof value === "object") nodes.push(value);
     }
   }
-  return specifiers;
-}
-
-function sourceTokens(text) {
-  const tokens = [];
-  scanCode(0, false);
-  return tokens;
-
-  function scanCode(start, stopAtTemplateBrace) {
-    let index = start;
-    let nestedBraces = 0;
-    while (index < text.length) {
-      const char = text[index];
-      if (/\s/u.test(char)) { index += 1; continue; }
-      if (char === "/" && text[index + 1] === "/") {
-        const end = text.indexOf("\n", index + 2);
-        if (end < 0) return text.length;
-        index = end + 1;
-        continue;
-      }
-      if (char === "/" && text[index + 1] === "*") {
-        const end = text.indexOf("*/", index + 2);
-        index = end < 0 ? text.length : end + 2;
-        continue;
-      }
-      if (char === "'" || char === '"') {
-        const quote = char;
-        let cursor = index + 1;
-        let value = "";
-        while (cursor < text.length) {
-          if (text[cursor] === "\\") {
-            value += text.slice(cursor, Math.min(text.length, cursor + 2));
-            cursor += 2;
-            continue;
-          }
-          if (text[cursor] === quote) break;
-          value += text[cursor++];
-        }
-        tokens.push({ type: "string", value });
-        index = cursor < text.length ? cursor + 1 : text.length;
-        continue;
-      }
-      if (char === "`") { index = scanTemplate(index + 1); continue; }
-      if (stopAtTemplateBrace && char === "}") {
-        if (nestedBraces === 0) return index + 1;
-        nestedBraces -= 1;
-      } else if (stopAtTemplateBrace && char === "{") nestedBraces += 1;
-      if (/[A-Za-z_$]/.test(char)) {
-        let cursor = index + 1;
-        while (cursor < text.length && /[A-Za-z0-9_$]/.test(text[cursor])) cursor += 1;
-        tokens.push({ type: "identifier", value: text.slice(index, cursor) });
-        index = cursor;
-        continue;
-      }
-      tokens.push({ type: "punctuation", value: char });
-      index += 1;
-    }
-    return index;
-  }
-
-  function scanTemplate(start) {
-    let index = start;
-    while (index < text.length) {
-      if (text[index] === "\\") { index += 2; continue; }
-      if (text[index] === "`") return index + 1;
-      if (text[index] === "$" && text[index + 1] === "{") {
-        index = scanCode(index + 2, true);
-        continue;
-      }
-      index += 1;
-    }
-    return index;
-  }
+  return specifiers.sort((left, right) => left.start - right.start).map(({ value }) => value);
 }
 
 function sourceCandidates(target) {
@@ -172,3 +101,31 @@ assert.deepEqual(parserFixture, [
   "./dynamic.mjs",
   "./template-expression.mjs",
 ], "source module graph parser missed multiline edges or treated comments/string contents as imports");
+
+assert.deepEqual(moduleSpecifiers(String.raw`import "\u002e/escaped-import.mjs";
+export { value } from "\x2e/escaped-export.mjs";
+const lazy = import("./dynamic-\u0065dge.mjs");
+const misleading = /import("regex-only")/;
+const call = receiver.import("./method-only.mjs");
+const optional = receiver?.import("./optional-method-only.mjs");
+const meta = import.meta.url;
+import type { Type } from "./type-only.ts";
+type Loaded = import("./type-query.ts").Type;
+import legacy = require("./require-style.ts");
+`), [
+  "./escaped-import.mjs", "./escaped-export.mjs", "./dynamic-edge.mjs",
+  "./type-only.ts", "./type-query.ts", "./require-style.ts",
+], "source module graph must decode module strings and exclude regexes, methods and import.meta");
+
+assert.deepEqual(moduleSpecifiers('import type { Type } from "./ambient.mjs"; export const value: Type;', "fixture.d.mts"),
+  ["./ambient.mjs"], "source module graph rejected ambient declaration syntax");
+assert.throws(() => moduleSpecifiers("export declare const tools: readonly Array<string>;", "fixture.d.mts"), SyntaxError,
+  "source module graph accepted the public validator's invalid readonly-array declaration");
+
+const longBindings = Array.from({ length: 300 }, (_, index) => "value" + index).join(", ");
+assert.deepEqual(moduleSpecifiers("import { " + longBindings + " } from './long-import.mjs';"),
+  ["./long-import.mjs"], "source module graph silently truncated a long import declaration");
+assert.throws(() => moduleSpecifiers("import { unfinished"), SyntaxError,
+  "source module graph accepted an incomplete module as dependency-free");
+
+console.log("architecture source module graph ok (" + sourceFiles.length + " modules)");

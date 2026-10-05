@@ -4,13 +4,14 @@ const FAMILY_ID = /^mcp_family_[A-Za-z0-9_-]{43}$/;
 
 export function normalizeAuthorityRevocation(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const accountId = String(value.account_id || "");
-  const accountVersion = Number(value.account_version);
-  const clientId = value.client_id === undefined ? "" : String(value.client_id || "");
-  const familyId = value.family_id === undefined ? "" : String(value.family_id || "");
-  if (!ACCOUNT_ID.test(accountId) || !Number.isSafeInteger(accountVersion) || accountVersion <= 0) return null;
-  if (clientId && !CLIENT_ID.test(clientId)) return null;
-  if (familyId && (!clientId || !FAMILY_ID.test(familyId))) return null;
+  const accountId = value.account_id;
+  const accountVersion = value.account_version;
+  const clientId = value.client_id;
+  const familyId = value.family_id;
+  if (typeof accountId !== "string" || !ACCOUNT_ID.test(accountId)
+      || !Number.isSafeInteger(accountVersion) || accountVersion <= 0) return null;
+  if (clientId !== undefined && (typeof clientId !== "string" || !CLIENT_ID.test(clientId))) return null;
+  if (familyId !== undefined && (typeof familyId !== "string" || !clientId || !FAMILY_ID.test(familyId))) return null;
   return Object.freeze({
     accountId,
     accountVersion,

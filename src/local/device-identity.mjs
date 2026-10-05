@@ -97,7 +97,7 @@ export function validatePublicDeviceRoot(identity) {
 export function publicDeviceJwkJson(identity) {
   const publicJwk = identity?.publicJwk;
   validatePublicDeviceJwk(publicJwk);
-  return JSON.stringify(publicJwk);
+  return JSON.stringify(canonicalPublicJwk(publicJwk));
 }
 
 export function createDaemonPreflightHeaders(identity, workerOrigin, server, version, now = Date.now()) {

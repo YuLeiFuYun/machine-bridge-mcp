@@ -7,7 +7,7 @@ export class ToolArgumentValidationError extends Error {
   details: Readonly<{ tool: string; validation_issues: readonly ToolValidationIssue[] }>;
 }
 export function compileToolArgumentValidators(
-  tools: readonly Array<{ name: string; inputSchema?: unknown }>,
+  tools: ReadonlyArray<{ name: string; inputSchema?: unknown }>,
   options?: { maximumDepth?: number; maximumNodes?: number; maximumIssues?: number; maximumPatternLength?: number; maximumValidationSteps?: number },
 ): Readonly<{
   names: readonly string[];

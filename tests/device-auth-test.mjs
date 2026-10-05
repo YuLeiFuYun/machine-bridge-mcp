@@ -46,6 +46,15 @@ assert(sessionIdentity.keyId === deviceKeyId(sessionIdentity.publicJwk), "sessio
 assert(rootIdentity.keyId !== sessionIdentity.keyId, "session identity reused the long-term root key");
 const rootPublicJson = publicDeviceJwkJson(rootIdentity);
 assert(!rootPublicJson.includes('"d"'), "Worker root public-key material contained the private scalar");
+expectThrow(() => publicDeviceJwkJson({ publicJwk: rootIdentity.privateJwk }), "public key is invalid");
+const publicProjection = JSON.parse(publicDeviceJwkJson({
+  publicJwk: { ...rootIdentity.publicJwk, syntheticMetadata: { credential: "synthetic fixture value" } },
+}));
+assert(Object.keys(publicProjection).sort().join(",") === "crv,kty,x,y",
+  "Worker public-key export included non-public metadata");
+assert(deviceKeyId(publicProjection) === rootIdentity.keyId,
+  "canonical public-key export changed the enrolled key identity");
+
 
 for (const [value, fragment] of [
   [null, "device identity is missing"],

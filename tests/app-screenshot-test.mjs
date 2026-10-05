@@ -16,14 +16,9 @@ await captureRejectsMultipleWindowsWithoutAxBounds();
 await pointActionCarriesSnapshotWindowBinding();
 await doubleClickActionCarriesSnapshotWindowBinding();
 await dragActionCarriesSnapshotWindowBinding();
-await dragActionRejectsChangedScreenshotBeforeInput();
-await dragActionCancellationAfterSnapshotSkipsInput();
 await scrollActionCarriesSnapshotWindowBinding();
-await scrollActionRejectsChangedScreenshotBeforeInput();
-await scrollActionCancellationAfterSnapshotSkipsInput();
 await pointActionRejectsChangedProcessBeforeInput();
-await pointActionRejectsChangedScreenshotBeforeInput();
-await pointActionCancellationAfterSnapshotSkipsInput();
+await visualActionsRejectChangedOrCancelledSnapshots();
 await pointActionPreservesUnknownHelperSettlement();
 await rejectsInvalidCaptureAndCleansTemporaryDirectory();
 
@@ -419,62 +414,6 @@ async function dragActionCarriesSnapshotWindowBinding() {
   assert.deepEqual(result.destination_normalized_point, { x: 0.75, y: 0.5 });
 }
 
-async function dragActionRejectsChangedScreenshotBeforeInput() {
-  const original = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x44, 0x52]);
-  const changed = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x44, 0x58]);
-  const digest = createHash("sha256").update(original).digest("hex");
-  let serviceDrags = 0;
-  const service = { async drag() { serviceDrags += 1; return { ok: true }; } };
-  const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
-    if (cmd === "osascript") {
-      const payload = JSON.parse(stdin);
-      assert.equal(payload.operation, "window_candidates");
-      return { code: 0, stdout: `${JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 }))}\n`, stderr: "" };
-    }
-    if (cmd === "/usr/sbin/screencapture") {
-      await writeFile(argv.at(-1), changed);
-      return { code: 0, stdout: "", stderr: "" };
-    }
-    throw new Error(`unexpected command ${cmd}`);
-  }, { backgroundInputService: service });
-  await assert.rejects(() => manager.dragApplication({
-    application: "Notes", normalized_x: 0.2, normalized_y: 0.3,
-    destination_normalized_x: 0.8, destination_normalized_y: 0.7,
-    window_id: 321, bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
-  }), /application visual snapshot changed before dispatch/);
-  assert.equal(serviceDrags, 0, "changed application screenshot reached native drag input");
-}
-
-async function dragActionCancellationAfterSnapshotSkipsInput() {
-  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x44, 0x43]);
-  const digest = createHash("sha256").update(png).digest("hex");
-  let cancelled = false;
-  let serviceDrags = 0;
-  const service = { async drag() { serviceDrags += 1; return { ok: true }; } };
-  const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
-    if (cmd === "osascript") {
-      const payload = JSON.parse(stdin);
-      assert.equal(payload.operation, "window_candidates");
-      return { code: 0, stdout: `${JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 }))}\n`, stderr: "" };
-    }
-    if (cmd === "/usr/sbin/screencapture") {
-      await writeFile(argv.at(-1), png);
-      cancelled = true;
-      return { code: 0, stdout: "", stderr: "" };
-    }
-    throw new Error(`unexpected command ${cmd}`);
-  }, {
-    backgroundInputService: service,
-    throwIfCancelled() { if (cancelled) throw new Error("application drag request cancelled"); },
-  });
-  await assert.rejects(() => manager.dragApplication({
-    application: "Notes", normalized_x: 0.2, normalized_y: 0.3,
-    destination_normalized_x: 0.8, destination_normalized_y: 0.7,
-    window_id: 321, bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
-  }), /application drag request cancelled/);
-  assert.equal(serviceDrags, 0, "application drag started after cancellation arrived during screenshot revalidation");
-}
-
 async function scrollActionCarriesSnapshotWindowBinding() {
   const calls = [];
   const serviceCalls = [];
@@ -522,60 +461,6 @@ async function scrollActionCarriesSnapshotWindowBinding() {
   assert.deepEqual(result.scroll_delta, { delta_x: -120, delta_y: 481 });
 }
 
-async function scrollActionRejectsChangedScreenshotBeforeInput() {
-  const original = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x53, 0x43]);
-  const changed = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x53, 0x58]);
-  const digest = createHash("sha256").update(original).digest("hex");
-  let serviceScrolls = 0;
-  const service = { async scroll() { serviceScrolls += 1; return { ok: true }; } };
-  const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
-    if (cmd === "osascript") {
-      const payload = JSON.parse(stdin);
-      assert.equal(payload.operation, "window_candidates");
-      return { code: 0, stdout: `${JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 }))}\n`, stderr: "" };
-    }
-    if (cmd === "/usr/sbin/screencapture") {
-      await writeFile(argv.at(-1), changed);
-      return { code: 0, stdout: "", stderr: "" };
-    }
-    throw new Error(`unexpected command ${cmd}`);
-  }, { backgroundInputService: service });
-  await assert.rejects(() => manager.scrollApplication({
-    application: "Notes", normalized_x: 0.5, normalized_y: 0.5, delta_y: 500,
-    window_id: 321, bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
-  }), /application visual snapshot changed before dispatch/);
-  assert.equal(serviceScrolls, 0, "changed application screenshot reached native scroll input");
-}
-
-async function scrollActionCancellationAfterSnapshotSkipsInput() {
-  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x53, 0x43, 0x43]);
-  const digest = createHash("sha256").update(png).digest("hex");
-  let cancelled = false;
-  let serviceScrolls = 0;
-  const service = { async scroll() { serviceScrolls += 1; return { ok: true }; } };
-  const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
-    if (cmd === "osascript") {
-      const payload = JSON.parse(stdin);
-      assert.equal(payload.operation, "window_candidates");
-      return { code: 0, stdout: `${JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 }))}\n`, stderr: "" };
-    }
-    if (cmd === "/usr/sbin/screencapture") {
-      await writeFile(argv.at(-1), png);
-      cancelled = true;
-      return { code: 0, stdout: "", stderr: "" };
-    }
-    throw new Error(`unexpected command ${cmd}`);
-  }, {
-    backgroundInputService: service,
-    throwIfCancelled() { if (cancelled) throw new Error("application scroll request cancelled"); },
-  });
-  await assert.rejects(() => manager.scrollApplication({
-    application: "Notes", normalized_x: 0.5, normalized_y: 0.5, delta_y: 500,
-    window_id: 321, bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
-  }), /application scroll request cancelled/);
-  assert.equal(serviceScrolls, 0, "application scroll started after cancellation arrived during screenshot revalidation");
-}
-
 async function pointActionRejectsChangedProcessBeforeInput() {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x41]);
   const digest = createHash("sha256").update(png).digest("hex");
@@ -604,60 +489,49 @@ async function pointActionRejectsChangedProcessBeforeInput() {
   assert.equal(serviceClicks, 0, "changed application process reached native visual input");
 }
 
-async function pointActionRejectsChangedScreenshotBeforeInput() {
+async function visualActionsRejectChangedOrCancelledSnapshots() {
   const original = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x41]);
   const changed = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x42]);
   const digest = createHash("sha256").update(original).digest("hex");
-  let serviceClicks = 0;
-  const service = { async click() { serviceClicks += 1; return { ok: true }; } };
-  const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
-    if (cmd === "osascript") {
-      const payload = JSON.parse(stdin);
-      if (payload.operation === "window_candidates") {
-        return { code: 0, stdout: `${JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 }))}\n`, stderr: "" };
-      }
+  for (const [method, inputMethod, actionArgs] of [
+    ["pointApplication", "click", { normalized_x: 0.5, normalized_y: 0.5 }],
+    ["dragApplication", "drag", { normalized_x: 0.2, normalized_y: 0.3, destination_normalized_x: 0.8, destination_normalized_y: 0.7 }],
+    ["scrollApplication", "scroll", { normalized_x: 0.5, normalized_y: 0.5, delta_y: 500 }],
+  ]) {
+    for (const scenario of ["changed", "cancelled"]) {
+      let cancelled = false;
+      let screenshotCalls = 0;
+      let inputCalls = 0;
+      let outputPath = "";
+      const service = { async [inputMethod]() { inputCalls += 1; return { ok: true }; } };
+      const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
+        if (cmd === "osascript") {
+          assert.equal(JSON.parse(stdin).operation, "window_candidates");
+          return { code: 0, stdout: JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 })) + "\n", stderr: "" };
+        }
+        if (cmd === "/usr/sbin/screencapture") {
+          screenshotCalls += 1;
+          outputPath = argv.at(-1);
+          await writeFile(outputPath, scenario === "changed" ? changed : original);
+          cancelled = scenario === "cancelled";
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        throw new Error("unexpected command " + cmd);
+      }, {
+        backgroundInputService: service,
+        throwIfCancelled() { if (cancelled) throw new Error("application visual request cancelled"); },
+      });
+      await assert.rejects(() => manager[method]({
+        application: "Notes", ...actionArgs, window_id: 321,
+        bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
+      }), scenario === "changed" ? /application visual snapshot changed before dispatch/ : /application visual request cancelled/,
+      method + " accepted a " + scenario + " snapshot");
+      assert.equal(screenshotCalls, 1, method + " did not exercise screenshot revalidation");
+      assert.equal(inputCalls, 0, method + " dispatched input after snapshot " + scenario);
+      await assert.rejects(() => stat(outputPath), (error) => error?.code === "ENOENT",
+        method + " retained its owned screenshot after rejection");
     }
-    if (cmd === "/usr/sbin/screencapture") {
-      await writeFile(argv.at(-1), changed);
-      return { code: 0, stdout: "", stderr: "" };
-    }
-    throw new Error(`unexpected command ${cmd}`);
-  }, { backgroundInputService: service });
-  await assert.rejects(() => manager.pointApplication({
-    application: "Notes", normalized_x: 0.5, normalized_y: 0.5, window_id: 321,
-    bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
-  }), /application visual snapshot changed before dispatch/);
-  assert.equal(serviceClicks, 0, "changed screenshot reached the experimental background-input service");
-}
-
-async function pointActionCancellationAfterSnapshotSkipsInput() {
-  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x41, 0x42]);
-  const digest = createHash("sha256").update(png).digest("hex");
-  let cancelled = false;
-  let serviceClicks = 0;
-  const service = { async click() { serviceClicks += 1; return { ok: true }; } };
-  const manager = managerWith(async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
-    if (cmd === "osascript") {
-      const payload = JSON.parse(stdin);
-      assert.equal(payload.operation, "window_candidates");
-      return { code: 0, stdout: `${JSON.stringify(windowState(321, { x: 10, y: 20, width: 640, height: 480 }))}\n`, stderr: "" };
-    }
-    if (cmd === "/usr/sbin/screencapture") {
-      await writeFile(argv.at(-1), png);
-      cancelled = true;
-      return { code: 0, stdout: "", stderr: "" };
-    }
-    throw new Error(`unexpected command ${cmd}`);
-  }, {
-    backgroundInputService: service,
-    throwIfCancelled() { if (cancelled) throw new Error("application request cancelled"); },
-  });
-  await assert.rejects(() => manager.pointApplication({
-    application: "Notes", normalized_x: 0.5, normalized_y: 0.5, window_id: 321,
-    bounds: { x: 10, y: 20, width: 640, height: 480 }, screenshot_sha256: digest, timeout_seconds: 2,
-  }), /application request cancelled/);
-  assert.equal(serviceClicks, 0,
-    "application visual point input started after cancellation arrived during screenshot revalidation");
+  }
 }
 
 async function pointActionPreservesUnknownHelperSettlement() {

@@ -172,7 +172,7 @@ function canonicalizePotentialPath(input) {
   return path.join(canonicalExisting, ...suffix);
 }
 
-function assertStateRootSeparatedFromWorkspace(stateRoot, workspace) {
+export function assertStateRootSeparatedFromWorkspace(stateRoot, workspace) {
   const canonicalStateRoot = canonicalizePotentialPath(stateRoot);
   const stateIdentity = process.platform === "win32" ? canonicalStateRoot.toLowerCase() : canonicalStateRoot;
   const workspaceIdentity = process.platform === "win32" ? workspace.toLowerCase() : workspace;
@@ -843,14 +843,15 @@ function pruneBackups(filePath, keep) {
   let backups = [];
   try {
     backups = readdirSync(dir)
-      .filter(name => name.startsWith(prefix))
-      .map(name => ({ path: path.join(dir, name), mtime: statSync(path.join(dir, name)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
+      .filter(name => name.startsWith(prefix) && /^\d+(?:-[a-f0-9]{8})?$/.test(name.slice(prefix.length)))
+      .map(name => ({ path: path.join(dir, name), info: lstatSync(path.join(dir, name), { bigint: true }) }))
+      .filter(({ info }) => info.isFile() && !info.isSymbolicLink() && info.nlink === 1n)
+      .sort((a, b) => Number(b.info.mtimeNs - a.info.mtimeNs));
   } catch {
     return;
   }
   for (const backup of backups.slice(keep)) {
-    try { unlinkSync(backup.path); }
+    try { unlinkRegularFileIfIdentitySync(backup.path, filesystemIdentity(backup.info, "corrupt state backup")); }
     catch { /* Backup pruning is bounded housekeeping; retained backups are safer than failing state recovery. */ }
   }
 }

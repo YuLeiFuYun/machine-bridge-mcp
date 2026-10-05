@@ -200,6 +200,12 @@ export function validateAuthorizationRequest(
   serverName: string,
   store: OAuthStore,
 ): { value: ValidatedAuthorization } | { error: string; status: number } {
+  for (const field of ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method"]) {
+    if (typeof body[field] !== "string") return { error: `${field} must be a string.`, status: 400 };
+  }
+  for (const field of ["resource", "scope"]) {
+    if (body[field] !== undefined && typeof body[field] !== "string") return { error: `${field} must be a string.`, status: 400 };
+  }
   const responseType = String(body.response_type ?? "");
   const clientId = String(body.client_id ?? "");
   const redirectUri = String(body.redirect_uri ?? "");
@@ -217,7 +223,7 @@ export function validateAuthorizationRequest(
   if (codeChallengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) {
     return { error: "A valid PKCE S256 challenge is required.", status: 400 };
   }
-  const client = store.clients[clientId];
+  const client = Object.hasOwn(store.clients, clientId) ? store.clients[clientId] : undefined;
   if (!client) return { error: "Unknown OAuth client.", status: 400 };
   if (!client.redirect_uris.includes(redirectUri)) return { error: "redirect_uri is not registered.", status: 400 };
   if (client.registration_revision !== OAUTH_CLIENT_REGISTRATION_REVISION) {

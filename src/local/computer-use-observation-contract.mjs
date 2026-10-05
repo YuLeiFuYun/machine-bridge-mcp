@@ -21,13 +21,13 @@ export function validateApplicationInspectionEvidence(value) {
 export function validateBrowserObservationForSnapshot(captured) {
   if (!captured || typeof captured !== "object" || Array.isArray(captured)) throw new Error("browser observation is invalid");
   if (!Number.isSafeInteger(captured.tab_id) || captured.tab_id < 1) throw new Error("browser observation tab id is invalid");
-  browserAuthorityString(captured.url, 32768, false);
+  browserString(captured.url, 32768, false, true);
   browserString(captured.title, 32768, true);
-  if (captured.document_epoch !== undefined) browserAuthorityString(captured.document_epoch, 9000, true);
+  if (captured.document_epoch !== undefined) browserString(captured.document_epoch, 9000, true, true);
   if (captured.capture !== undefined) {
     if (!captured.capture || typeof captured.capture !== "object" || Array.isArray(captured.capture)) throw new Error("browser observation capture is invalid");
-    if (captured.capture.semantic_epoch !== undefined) browserAuthorityString(captured.capture.semantic_epoch, 9000, true);
-    if (captured.capture.cdp_epoch !== undefined) browserAuthorityString(captured.capture.cdp_epoch, 9000, true);
+    if (captured.capture.semantic_epoch !== undefined) browserString(captured.capture.semantic_epoch, 9000, true, true);
+    if (captured.capture.cdp_epoch !== undefined) browserString(captured.capture.cdp_epoch, 9000, true, true);
   }
   if (captured.semantic === undefined) return;
   if (!captured.semantic || typeof captured.semantic !== "object" || Array.isArray(captured.semantic)) {
@@ -37,7 +37,7 @@ export function validateBrowserObservationForSnapshot(captured) {
       && (!Number.isSafeInteger(captured.semantic.tab_id) || captured.semantic.tab_id < 1)) {
     throw new Error("browser observation tab id is invalid");
   }
-  if (captured.semantic.url !== undefined) browserAuthorityString(captured.semantic.url, 32768, false);
+  if (captured.semantic.url !== undefined) browserString(captured.semantic.url, 32768, false, true);
   if (captured.semantic.title !== undefined) browserString(captured.semantic.title, 32768, true);
   if (typeof captured.semantic.frames_truncated !== "boolean") throw new Error("browser observation truncation evidence is invalid");
   if (captured.semantic.frames === undefined) return;
@@ -51,8 +51,8 @@ export function validateBrowserObservationForSnapshot(captured) {
     if (!frame.document || typeof frame.document !== "object" || Array.isArray(frame.document)) {
       throw new Error("browser observation frame authority is invalid");
     }
-    if (frame.document.epoch !== undefined) browserAuthorityString(frame.document.epoch, 9000, true);
-    if (frame.document.url !== undefined) browserAuthorityString(frame.document.url, 32768, false);
+    if (frame.document.epoch !== undefined) browserString(frame.document.epoch, 9000, true, true);
+    if (frame.document.url !== undefined) browserString(frame.document.url, 32768, false, true);
   }
 }
 
@@ -73,12 +73,8 @@ export function browserObservationArgs(args) {
   };
 }
 
-function browserAuthorityString(value, maxLength, allowEmpty) {
-  return observationString(value, maxLength, allowEmpty, "browser observation authority string is invalid");
-}
-
-function browserString(value, maxLength, allowEmpty) {
-  return observationString(value, maxLength, allowEmpty, "browser observation string is invalid");
+function browserString(value, maxLength, allowEmpty, authority = false) {
+  return observationString(value, maxLength, allowEmpty, `browser observation${authority ? " authority" : ""} string is invalid`);
 }
 
 function observationString(value, maxLength, allowEmpty, message) {
@@ -86,4 +82,48 @@ function observationString(value, maxLength, allowEmpty, message) {
     throw new Error(message);
   }
   return value;
+}
+
+// Sampling scores, query choices and ref-cache counters describe capture, not page effects.
+const DOCUMENT_SEMANTIC_FIELDS = ["epoch", "url", "title", "language", "ready_state", "forms", "open_shadow_roots"];
+const CONTROL_SEMANTIC_FIELDS = [
+  "ref", "tag", "type", "role", "name", "text", "id", "field_name", "label", "placeholder", "href",
+  "sensitive", "in_shadow_dom", "visible", "enabled", "editable", "checked", "selected", "focused", "bounding_box",
+];
+const ACCESSIBILITY_SEMANTIC_FIELDS = [
+  "ax_id", "parent_ax_id", "frame_id", "role", "name", "description", "disabled", "focused", "focusable", "editable",
+  "checked", "selected", "expanded", "required", "sensitive", "clickable", "bounding_box", "paint_order",
+];
+
+export function browserSemanticContent(observation, includeAccessibility) {
+  return {
+    target: observation.target,
+    frames: (observation.semantic?.frames || []).map((frame) => ({
+      frame_id: frame.frame_id,
+      document: semanticFields(frame.document, DOCUMENT_SEMANTIC_FIELDS),
+      elements: (frame.elements || []).map((element) => semanticFields(element, CONTROL_SEMANTIC_FIELDS))
+        .sort((left, right) => String(left.ref).localeCompare(String(right.ref))),
+    })).sort((left, right) => left.frame_id - right.frame_id),
+    nodes: includeAccessibility ? (observation.semantic.accessibility.nodes || [])
+      .map((node) => semanticFields(node, ACCESSIBILITY_SEMANTIC_FIELDS))
+      .sort((left, right) => `${left.frame_id}|${left.ax_id}`.localeCompare(`${right.frame_id}|${right.ax_id}`)) : [],
+  };
+}
+
+export function comparableSemanticCoverage(before, after, beforePrivateState, afterPrivateState) {
+  if (before.surface === "browser") {
+    return [before, after].every((observation) => observation.semantic?.frames_truncated === false
+      && Array.isArray(observation.semantic.frames)
+      && observation.semantic.frames.every((frame) => frame.truncated === false && frame.document?.scan_truncated !== true))
+      && [before, after].every((observation) => !observation.semantic?.accessibility
+        || observation.semantic.accessibility.available === false || observation.semantic.accessibility.truncated !== true);
+  }
+  return before.semantic?.truncated === false && after.semantic?.truncated === false
+    && before.capture?.window_coherent === after.capture?.window_coherent
+    && before.semantic.menus_included === after.semantic.menus_included
+    && beforePrivateState?.application_inspection?.max_depth === afterPrivateState?.application_inspection?.max_depth;
+}
+
+function semanticFields(value, fields) {
+  return Object.fromEntries(fields.filter((field) => Object.hasOwn(value || {}, field)).map((field) => [field, value[field]]));
 }

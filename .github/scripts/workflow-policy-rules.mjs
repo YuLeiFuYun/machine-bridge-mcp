@@ -24,6 +24,7 @@ const ALLOWED_WRITE_PERMISSIONS = new Set([
 
 export function verifyWorkflowSource(source, name) {
   verifyTextShape(source, name);
+  verifyReviewableMappings(source, name);
   const sections = topLevelSections(source, name);
   for (const required of ["name", "on", "permissions", "concurrency", "jobs"]) {
     if (!sections.has(required)) throw new Error(`workflow ${name} is missing top-level ${required}`);
@@ -58,8 +59,29 @@ function verifyTextShape(source, name) {
   if (/(?:toJSON|toJson)\s*\(\s*secrets\s*\)|\$\{\{\s*(?:secrets\.|github\.token)|\bGITHUB_TOKEN\b/i.test(source)) {
     throw new Error(`workflow ${name} exposes or references repository credentials`);
   }
-  if (/^\s*<<\s*:/m.test(source) || /:\s*&[A-Za-z0-9_-]+\s*$/m.test(source)) {
-    throw new Error(`workflow ${name} uses YAML merge or anchor features that obscure review`);
+}
+
+// This dependency-free gate accepts the repository's plain block mappings.
+// Reject alternate key/mapping encodings before the policy-specific readers.
+function verifyReviewableMappings(source, name) {
+  let scalarIndent = null;
+  for (const line of source.split("\n")) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const indent = leadingSpaces(line);
+    if (scalarIndent !== null && indent > scalarIndent) continue;
+    scalarIndent = null;
+    const body = line.trimStart().replace(/^- +/, "");
+    if (/^(?:["'{\[&*!]|\?(?:\s|$)|<<\s*:)/.test(body)) {
+      throw new Error(`workflow ${name} must use plain keys and block mappings`);
+    }
+    const mapping = /^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/.exec(body);
+    if (!mapping) continue;
+    const [, key, value] = mapping;
+    if (/^[&*!]/.test(value) || value.startsWith("{") && key !== "permissions"
+      || key === "steps" && value && !value.startsWith("#")) {
+      throw new Error(`workflow ${name} must use plain keys and block mappings`);
+    }
+    if (/^[|>]/.test(value)) scalarIndent = indent + (line.trimStart().startsWith("- ") ? 2 : 0);
   }
 }
 
@@ -132,8 +154,11 @@ function verifyJobs(section, name) {
 
 function verifyJobPermissions(job, name) {
   const lines = job.source.split("\n");
-  const index = lines.findIndex((line) => /^    permissions:\s*$/.test(line));
+  const index = lines.findIndex((line) => /^    permissions:/.test(line));
   if (index < 0) return;
+  const inline = /^    permissions:\s*(.*?)\s*$/.exec(lines[index])?.[1];
+  if (inline === "{}") return;
+  if (inline) throw new Error(`workflow ${name} job ${job.name} uses unreviewed inline permissions`);
   const permissions = indentedMap(lines.slice(index + 1), 6);
   for (const [permission, value] of permissions) {
     if (["read", "none"].includes(value)) continue;
@@ -164,17 +189,42 @@ function verifyActions(source, name) {
 function verifyExpressionBoundaries(source, name) {
   const lines = source.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
-    const match = /^(\s*)run:\s*(.*)$/.exec(lines[index]);
+    const match = /^(\s*)(-\s+)?run:\s*(.*)$/.exec(lines[index]);
     if (!match) continue;
-    const indent = match[1].length;
-    const block = [match[2]];
+    const indent = match[1].length + (match[2]?.length || 0);
+    const block = [match[3]];
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
       if (lines[cursor].trim() && leadingSpaces(lines[cursor]) <= indent) break;
       block.push(lines[cursor]);
     }
-    if (/\$\{\{\s*github\.event\./.test(block.join("\n"))) {
-      throw new Error(`workflow ${name} interpolates github.event data directly into a shell command`);
+    for (const expression of shellExpressions(block.join("\n"), name)) {
+      const tokens = expression.match(/'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|\S/g) || [];
+      const untrusted = tokens.some((token, cursor) => {
+        if (token.toLowerCase() !== "github" || tokens[cursor - 1] === ".") return false;
+        if (tokens[cursor + 1] === ".") return tokens[cursor + 2]?.toLowerCase() === "event";
+        if (tokens[cursor + 1] !== "[") return true;
+        const key = tokens[cursor + 2] || "";
+        return tokens[cursor + 3] !== "]" || !/^'(?:''|[^'])*'$/.test(key)
+          || key.slice(1, -1).replaceAll("''", "'").toLowerCase() === "event";
+      });
+      if (untrusted) throw new Error(`workflow ${name} interpolates github.event data directly into a shell command`);
     }
+  }
+}
+
+function* shellExpressions(source, name) {
+  let start = source.indexOf("$" + "{{");
+  while (start !== -1) {
+    let cursor = start + 3, quoted = false;
+    for (; cursor < source.length; cursor += 1) {
+      if (source[cursor] === "'") {
+        if (quoted && source[cursor + 1] === "'") { cursor += 1; continue; }
+        quoted = !quoted;
+      } else if (!quoted && source[cursor] === "}" && source[cursor + 1] === "}") break;
+    }
+    if (cursor === source.length) throw new Error(`workflow ${name} has an unterminated shell expression`);
+    yield source.slice(start + 3, cursor);
+    start = source.indexOf("$" + "{{", cursor + 2);
   }
 }
 

@@ -1,4 +1,6 @@
+import { closeSync, fstatSync, rmSync, symlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { runFixtureChild } from "./fixtures/child-fixture.mjs";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
@@ -736,10 +738,10 @@ async function testRecoveryClaimFailurePreservesRetryState() {
     env: { ...process.env, MBM_RECOVERY_LOCK_TOKEN: recoveryToken, MBM_RUNNER_LAUNCH_TOKEN: launchToken },
     stdio: ["ignore", "ignore", "pipe"],
   });
-  let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-  publishProvisionalRunnerClaim(dir, child.pid, launchToken);
-  const code = await new Promise((resolvePromise) => { child.once("close", resolvePromise); });
+  const { code, stderr } = await runFixtureChild(child, {
+    label: "recovery claim handshake",
+    prepare: () => publishProvisionalRunnerClaim(dir, child.pid, launchToken),
+  });
   const after = JSON.parse(await readFile(join(dir, "status.json"), "utf8"));
   assert(code !== 0, "recovery runner unexpectedly accepted a wrong-type recovery-lock claim");
   assert(after.status === "interrupted" && await exists(join(dir, "plan.json")) && !(await exists(join(dir, "result.json"))),
@@ -967,20 +969,18 @@ async function testManagedJobAccountRecoveryCapacity() {
       process.stdout.write(JSON.stringify({ accepted: false, code: error?.code || null, retryable: error?.retryable === true }));
     }
   `;
-  const runConcurrentChild = (char) => new Promise((resolveChild, rejectChild) => {
+  const runConcurrentChild = async (char) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", childSource, concurrentRoot, workspace, char], {
       stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NODE_V8_COVERAGE: "" },
     });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", rejectChild);
-    child.once("exit", (code) => {
-      if (code !== 0) return rejectChild(new Error(`account quota child failed (${code}): ${stderr}`));
-      try { resolveChild(JSON.parse(stdout)); } catch { rejectChild(new Error(`account quota child returned invalid JSON: ${stdout} ${stderr}`)); }
-    });
-  });
-  const concurrentResults = await Promise.all([runConcurrentChild("x"), runConcurrentChild("y")]);
+    const { code, stdout } = await runFixtureChild(child, { timeoutMs: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS * 1000, label: "account quota" });
+    if (code !== 0) throw new Error(`account quota fixture child failed (${code})`);
+    return JSON.parse(stdout);
+  };
+  const settledChildren = await Promise.allSettled([runConcurrentChild("x"), runConcurrentChild("y")]);
+  const childFailures = settledChildren.filter(result => result.status === "rejected").map(result => result.reason);
+  if (childFailures.length) throw new AggregateError(childFailures, "concurrent quota fixtures failed");
+  const concurrentResults = settledChildren.map(result => result.value);
   const acceptedConcurrent = concurrentResults.filter((result) => result.accepted).length;
   assert(acceptedConcurrent === 1
     && concurrentResults.every((result) => result.accepted || ["conflict", "limit_exceeded"].includes(result.code)),
@@ -1869,6 +1869,41 @@ try {
   assert(runnerErrors.length === 1 && runnerErrors[0].fields.error_class === "execution_failed", "asynchronous runner spawn failure was unhandled or unobservable");
   assert(!("job_id" in runnerErrors[0].fields), "default asynchronous runner failure log exposed the managed-job identifier");
 
+  for (const fault of ["descriptor-close-failed", "logger-threw", ...(process.platform === "win32" ? [] : ["diagnostic-replaced"])]) {
+    const faultDir = join(root, "runner-launch-" + fault);
+    await mkdir(faultDir, { mode: 0o700 });
+    const child = new EventEmitter();
+    child.pid = 90_000_023;
+    child.unref = () => {};
+    let descriptors = [];
+    let reported = 0;
+    const outside = join(root, "runner-launch-untouched.txt");
+    await writeFile(outside, "untouched", { mode: 0o600 });
+    const returnedPid = launchRunner(faultDir, false, "", {
+      spawnProcess(_command, _args, options) {
+        descriptors = options.stdio.slice(1);
+        for (const fd of descriptors) assert((process.platform === "win32" || (fstatSync(fd).mode & 0o077) === 0), "runner inherited a public diagnostic descriptor");
+        if (fault === "descriptor-close-failed") closeSync(descriptors[0]);
+        if (fault === "diagnostic-replaced") {
+          rmSync(join(faultDir, "runner.err.log"));
+          symlinkSync(outside, join(faultDir, "runner.err.log"));
+        }
+        return child;
+      },
+      logger: { error() { reported += 1; if (fault === "logger-threw") throw new Error("synthetic closed logging sink"); } },
+    });
+    assert(returnedPid === child.pid, "diagnostic cleanup discarded the child launch outcome");
+    child.emit("error", Object.assign(new Error("synthetic child error"), { code: "EAGAIN" }));
+    assert(reported === 1 && await readFile(outside, "utf8") === "untouched",
+      "runner error was unobserved or diagnostic handling followed a replaced path");
+    for (const fd of descriptors) {
+      let closed = false;
+      try { fstatSync(fd); } catch (error) { closed = error?.code === "EBADF"; }
+      assert(closed, "runner launch leaked a parent diagnostic descriptor");
+    }
+    await rm(faultDir, { recursive: true, force: true });
+  }
+
   const provisionalRunnerDir = join(root, `job_${"P".repeat(24)}`);
   await mkdir(provisionalRunnerDir, { recursive: true });
   const provisionalChild = new EventEmitter();
@@ -2405,10 +2440,7 @@ try {
     steps: [{ argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1],'unexpected')", directMarker] }],
   });
   const directRunner = spawn(process.execPath, [runnerEntry, "--job-dir", join(jobRoot, directStaged.job_id)], { stdio: "ignore", windowsHide: true });
-  const directExit = await new Promise((resolvePromise, rejectPromise) => {
-    directRunner.once("close", (code) => resolvePromise(code));
-    directRunner.once("error", rejectPromise);
-  });
+  const { code: directExit } = await runFixtureChild(directRunner, { label: "staged runner" });
   assert(directExit !== 0, "runner accepted an unapproved staged job");
   const directStatus = manager.read({ job_id: directStaged.job_id });
   assert(directStatus.status === "staged" && !(await exists(directMarker)), "direct runner changed or executed a staged job");
@@ -2479,6 +2511,45 @@ try {
   await utimes(staleTransitionLock, oldTime, oldTime);
   const staleCancellation = manager.cancel({ job_id: staleReusedPid.job_id });
   assert(staleCancellation.status === "cancelled_before_start", "stale transition lock with a reused live PID was not reclaimed");
+
+  const stdinMutationMarker = join(workspace, "stdin-mutation-once.txt");
+  const stdinCleanupMarker = join(workspace, "stdin-cleanup-once.txt");
+  const closedStdin = manager.start({
+    name: "early closed child stdin",
+    steps: [{
+      argv: [process.execPath, "-e",
+        "const fs=require('node:fs');fs.appendFileSync(process.argv[1],'x');fs.closeSync(0);setTimeout(()=>process.exit(0),100)",
+        stdinMutationMarker],
+      env: { NODE_V8_COVERAGE: "" }, stdin: "x".repeat(256 * 1024), timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+    }],
+    finally_steps: [{
+      argv: [process.execPath, "-e", "require('node:fs').appendFileSync(process.argv[1],'x')", stdinCleanupMarker],
+      env: { NODE_V8_COVERAGE: "" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS,
+    }],
+  });
+  const stdinResult = await waitForJob(manager, closedStdin.job_id);
+  assert(stdinResult.status === "failed" && stdinResult.error_class === "execution_failed",
+    "early closed child stdin was silently accepted or escaped through runner crash recovery");
+  assert(await readFile(stdinMutationMarker, "utf8") === "x", "stdin delivery failure replayed the main mutation");
+  assert(await readFile(stdinCleanupMarker, "utf8") === "x", "stdin delivery failure skipped or duplicated finally cleanup");
+  const stdinRunnerDiagnostics = await readFile(join(jobRoot, closedStdin.job_id, "runner.err.log"), "utf8");
+  assert(!stdinRunnerDiagnostics.includes("Unhandled 'error' event"), "child stdin EPIPE still terminated the job runner");
+  assert(stdinResult.result_persisted === true && stdinResult.artifact_cleanup_pending === false,
+    "stdin failure did not settle durable result persistence and artifact cleanup");
+
+  const privateRuntimeManager = createManagedJobTestManager({
+    jobRoot: join(root, "private-runtime-jobs"), workspace,
+    policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {}, recover: false,
+  });
+  const privateRuntime = privateRuntimeManager.start({
+    name: "minimal job runtime directories",
+    steps: [{ argv: [process.execPath, "-e",
+      "const fs=require('node:fs'),os=require('node:os'),p=require('node:path');for(const n of ['HOME','TMPDIR','XDG_CACHE_HOME']){const s=fs.lstatSync(process.env[n]);if(!s.isDirectory()||s.isSymbolicLink()||(process.platform!=='win32'&&(s.mode&0o077)!==0))throw new Error('runtime directory is not private');}const t=fs.mkdtempSync(p.join(os.tmpdir(),'synthetic-'));fs.writeFileSync(p.join(t,'synthetic.txt'),'ok');fs.rmSync(t,{recursive:true});process.stdout.write('private-runtime-ok');"],
+      timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+  });
+  const privateRuntimeResult = await waitForJob(privateRuntimeManager, privateRuntime.job_id);
+  assert(privateRuntimeResult.status === "succeeded" && privateRuntimeResult.result?.steps?.[0]?.stdout === "private-runtime-ok",
+    "minimal managed jobs cannot use their private home, temp and cache directories");
 
   const runnerDiagnosticRoot = join(root, "runner-diagnostic-jobs");
   const runnerDiagnosticManager = new ManagedJobManager({
@@ -2733,13 +2804,21 @@ try {
     policy: { allowWrite: true, execMode: "direct", minimalEnv: false },
     resources: { changing: inspectResourceFile(changingResource) },
   });
+  const resourceGate = await pendingDependencyFixture(changingManager, "resource replacement preparation gate");
   const changingJob = changingManager.start({
     name: "resource replacement fails closed",
+    depends_on: [resourceGate.job_id],
     steps: [{ argv: [process.execPath, "-e", "setTimeout(()=>{},250)"], stdin_resource: "changing", timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
   });
-  await writeFile(changingResource, "second-value", { mode: 0o600 });
+  // The runner must not copy the original input before the replacement completes.
+  try {
+    await writeFile(changingResource, "second-value", { mode: 0o600 });
+  } finally {
+    await settleDependencyFixture(changingManager, resourceGate.job_id, "succeeded");
+  }
   const changed = await waitForJob(changingManager, changingJob.job_id);
-  assert(changed.status === "failed" && changed.result?.error_class === "resource_error", "resource change after submission did not fail closed");
+  assert(changed.status === "failed" && changed.result?.error_class === "resource_error"
+    && changed.result.steps.length === 0, "resource change before preparation did not fail closed before step execution");
 
   const outputBudget = manager.start({
     name: "bounded aggregate output",
@@ -3042,8 +3121,10 @@ try {
   const foreignClaimRunner = spawn(process.execPath, [runnerEntry, "--job-dir", foreignClaimDir], {
     stdio: "ignore", windowsHide: true, env: { ...process.env, MBM_RUNNER_LAUNCH_TOKEN: "b".repeat(32) },
   });
-  publishProvisionalRunnerClaim(foreignClaimDir, process.pid, "a".repeat(32));
-  const foreignClaimExit = await childExitCode(foreignClaimRunner);
+  const { code: foreignClaimExit } = await runFixtureChild(foreignClaimRunner, {
+    label: "foreign claim",
+    prepare: () => publishProvisionalRunnerClaim(foreignClaimDir, process.pid, "a".repeat(32)),
+  });
   const foreignClaimAfter = JSON.parse(await readFile(join(foreignClaimDir, "status.json"), "utf8"));
   assert(foreignClaimExit !== 0 && foreignClaimAfter.status === "queued"
     && await exists(join(foreignClaimDir, "plan.json")) && await exists(join(foreignClaimDir, "runner.pid")),
@@ -3064,11 +3145,20 @@ try {
     stdio: "ignore", windowsHide: true,
     env: { ...process.env, MBM_RUNNER_LAUNCH_TOKEN: corruptFatalLaunchToken, MBM_RECOVERY_LOCK_TOKEN: "d".repeat(32) },
   });
-  publishProvisionalRunnerClaim(corruptFatalDir, corruptFatalRunner.pid, corruptFatalLaunchToken);
-  await waitForConfirmedRunnerClaim(join(corruptFatalDir, "runner.pid"), corruptFatalRunner.pid);
-  await writeFile(join(corruptFatalDir, "status.json"), "{not-json\n", { mode: 0o600 });
-  const corruptFatalExit = await childExitCode(corruptFatalRunner);
+  const { code: corruptFatalExit } = await runFixtureChild(corruptFatalRunner, {
+    label: "fatal state corruption",
+    prepare: async () => {
+      publishProvisionalRunnerClaim(corruptFatalDir, corruptFatalRunner.pid, corruptFatalLaunchToken);
+      await waitForConfirmedRunnerClaim(join(corruptFatalDir, "runner.pid"), corruptFatalRunner.pid);
+      await writeFile(join(corruptFatalDir, "status.json"), "{not-json\n", { mode: 0o600 });
+      // Release the recovery handshake only after corrupt state is installed.
+      await writeFile(join(corruptFatalDir, "recovery.lock"), JSON.stringify({
+        pid: corruptFatalRunner.pid, token: "d".repeat(32),
+      }) + "\n", { mode: 0o600 });
+    },
+  });
   assert(corruptFatalExit !== 0 && (await readFile(join(corruptFatalDir, "status.json"), "utf8")) === "{not-json\n"
+    && !(await exists(join(corruptFatalDir, "recovery.lock")))
     && await exists(join(corruptFatalDir, "plan.json")) && await exists(join(corruptFatalDir, "runner.pid")),
   "fatal runner replaced unreadable job state or scrubbed evidence after confirming its claim");
 
@@ -3086,10 +3176,7 @@ try {
   })}
 `, { mode: 0o600 });
   const corruptRunner = spawn(process.execPath, [runnerEntry, "--job-dir", corruptDir], { stdio: "ignore", windowsHide: true });
-  await new Promise((resolvePromise, rejectPromise) => {
-    corruptRunner.once("close", resolvePromise);
-    corruptRunner.once("error", rejectPromise);
-  });
+  await runFixtureChild(corruptRunner, { label: "corrupt plan" });
   const corruptStatus = JSON.parse(await readFile(join(corruptDir, "status.json"), "utf8"));
   assert(corruptStatus.status === "runner_failed", `corrupt plan did not become runner_failed: ${corruptStatus.status}`);
   assert(!(await exists(join(corruptDir, "plan.json"))) && !(await exists(join(corruptDir, "runner.pid"))), "fatal runner retained active execution metadata");
@@ -3176,13 +3263,6 @@ function testTerminalPersistenceBoundary() {
   });
   assert(confirmationFailure.statusPersisted && confirmationFailure.artifactsScrubbed && confirmationFailure.statusErrorClass === "persistence_failed", "post-cleanup status confirmation failure was hidden");
   assert(confirmationFailure.status.artifact_cleanup_pending === true, "failed cleanup confirmation did not retain conservative pending state");
-}
-
-async function childExitCode(child) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    child.once("close", (code) => resolvePromise(code));
-    child.once("error", rejectPromise);
-  });
 }
 
 async function waitForConfirmedRunnerClaim(file, pid, timeoutMs = 10_000) {

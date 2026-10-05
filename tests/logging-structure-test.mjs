@@ -1,5 +1,11 @@
+import nodeAssert from "node:assert/strict";
 import { createLogger } from "../src/local/log.mjs";
+import { sensitiveValuePattern } from "../src/shared/sensitive-value-patterns.mjs";
 import { sanitizePortableLogText } from "../src/shared/log-redaction.mjs";
+
+for (const name of ["__proto__", "constructor", "toString", "hasOwnProperty", ["emailAddress"], null]) {
+  nodeAssert.throws(() => sensitiveValuePattern(name), TypeError, "unknown pattern escaped the fixed catalog");
+}
 
 const stdout = captureStream();
 const stderr = captureStream();
@@ -125,6 +131,24 @@ for (const [credential, expected] of delimiterEdgeCredentials) {
 }
 assert(sanitizePortableLogText("capability_routing=enabled", { maxChars: 1000 }) === "capability_routing=enabled",
   "safe capability metadata was over-redacted");
+
+
+for (const key of ["client%5fsecret", "%74oken", "c%6fde", "API%2dKEY", "private%5fkey", "bad%zz"]) {
+  const input = "https://example.invalid/?" + key + "=synthetic-query-value&view=summary";
+  const clean = sanitizePortableLogText(input, { maxChars: 1000 });
+  assert(!clean.includes("synthetic-query-value") && clean.includes("view=summary"),
+    "encoded parameter escaped redaction or erased harmless data");
+  for (const format of ["text", "json"]) {
+    const output = captureStream();
+    createLogger({ format, stdout: output, stderr: output, color: false }).warn(input, { note: input });
+    assert(!output.lines.join("").includes("synthetic-query-value"), "logger bypassed query redaction");
+  }
+}
+const privateKeyBegin = ["-----BEGIN", "RSA PRIVATE KEY-----"].join(" ");
+for (const ending of ["", "\n" + privateKeyBegin.replace("BEGIN", "END")]) {
+  assert(!sanitizePortableLogText(privateKeyBegin + "\nsynthetic-private-key-body" + ending, { maxChars: 1000 })
+    .includes("synthetic-private-key-body"), "complete or truncated private-key body escaped redaction");
+}
 
 console.log("structured logging test ok");
 

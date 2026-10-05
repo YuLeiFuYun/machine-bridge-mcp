@@ -4,8 +4,8 @@ import { sanitizeLogText } from "../src/local/log.mjs";
 
 main().catch(error => {
   const message = process.env.MBM_DEBUG === "1"
-    ? sanitizeLogText(error?.stack || error?.message || String(error))
+    ? (error?.stack || error?.message || String(error))
     : (error?.message || String(error));
-  console.error(`Error: ${message}`);
+  console.error(`Error: ${sanitizeLogText(message)}`);
   process.exitCode = 1;
 });

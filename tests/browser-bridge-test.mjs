@@ -15,6 +15,7 @@ import { BROKER_AUTH_REQUEST_HEADER, BROKER_AUTH_REQUEST_VALUE, createBrokerAuth
 import { createPairingBootstrapInitProof, createPairingBootstrapProof, parseBrowserPairingGrant } from "../src/local/browser-pairing-grant.mjs";
 import { processState } from "../src/local/process-identity.mjs";
 
+const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const BROWSER_FIXTURE_WAIT_MS = 30_000;
 const realBrowserTransportObservable = process.platform === "win32" || processState(process.pid) === "running";
@@ -188,9 +189,7 @@ try {
   await waitFor(async () => (await client.status()).extension_reload_required === true);
 
   extension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
-  const extensionReady = attachExtensionResponder(extension);
-  await onceOpen(extension);
-  await extensionReady;
+  await Promise.all([onceOpen(extension), attachExtensionResponder(extension)]);
   await waitFor(() => owner.extensionConnected());
   const connectedStatus = await owner.status();
   assert(connectedStatus.expected_extension_version === PACKAGE_VERSION && connectedStatus.extension_protocol === 3 && connectedStatus.extension_version === PACKAGE_VERSION, "extension handshake metadata was not exposed");
@@ -260,9 +259,7 @@ try {
   await waitFor(() => owner.pending.size === 1 && owner.brokerDiagnostics().routed_requests === 1);
   const previousServerSocket = owner.socket;
   replacementExtension = new WebSocket(initial.endpoint, [await brokerProtocol(initial.endpoint, pairing.extensionToken, "extension")], { origin: `chrome-extension://${EXPECTED_EXTENSION_ID}` });
-  const replacementReady = attachExtensionResponder(replacementExtension);
-  await onceOpen(replacementExtension);
-  await replacementReady;
+  await Promise.all([onceOpen(replacementExtension), attachExtensionResponder(replacementExtension)]);
   await waitFor(() => owner.extensionConnected() && owner.socket !== previousServerSocket);
   assert((await owner.status()).extension_reload_required === false, "compatible replacement did not clear reload guidance");
   const ownerReplacementError = await interruptedOwner;
@@ -631,10 +628,16 @@ async function testInMemoryBrowserBridgeLifecycle() {
     assert((await manager.pair({ open: false })).opened_pairing_page === false,
       "in-memory pairing status unexpectedly launched a browser process");
 
-    await manager.documentState({}).catch(() => {});
-    await manager.observeComputer({}).catch(() => {});
-    await manager.pointAction({}).catch(() => {});
-    await manager.backendNodeAction({ action: "invalid" }).catch(() => {});
+    const computerRequestStart = extension.sent.length;
+    assert((await manager.documentState({})).ok === true, "in-memory document-state route did not settle");
+    const observation = await manager.observeComputer({});
+    assert(observation.capture.screenshot_sha256 === "" && observation.imageContent.length === 0,
+      "in-memory observation without a screenshot invented image evidence");
+    await expectReject(manager.pointAction({}), "visual point action must be");
+    await expectReject(manager.backendNodeAction({ action: "invalid" }), "snapshot backend action must be");
+    assert(extension.sent.slice(computerRequestStart).filter((message) => message.type === "request")
+      .map((message) => message.method).join(",") === "document_state,observe_computer",
+    "invalid computer actions dispatched to the extension or valid observation routes were skipped");
 
     extension.holdRequests = true;
     const cancelled = manager.listTabs({}, { callId: "in-memory-cancel" });
@@ -823,7 +826,7 @@ function inMemoryBrowserResult(method, params) {
   if (method === "inspect_page") return { elements: [] };
   if (method === "upload_files") return { file_count: Array.isArray(params.files) ? params.files.length : 0 };
   if (method === "screenshot") return {
-    data: "data:image/png;base64,aQ==", tab_id: 7, url: "https://example.test/", title: "Example", tab_metadata_verified: true,
+    data: `data:image/png;base64,${PNG_BASE64}`, tab_id: 7, url: "https://example.test/", title: "Example", tab_metadata_verified: true,
   };
   return { ok: true };
 }
@@ -1053,7 +1056,6 @@ function attachExtensionResponder(socket) {
         && message.pong_watchdog === true,
       "broker extension acknowledgement omitted the negotiated pong watchdog");
       handshakeStage = "ready";
-      clearTimeout(timer);
       resolveReady();
       return;
     }
@@ -1094,7 +1096,7 @@ function attachExtensionResponder(socket) {
     }
     socket.send(JSON.stringify({ type: "response", id: message.id, ok: false, error: "unexpected method" }));
   });
-  return ready;
+  return ready.finally(() => clearTimeout(timer));
 }
 
 async function expectReject(promise, expected) {

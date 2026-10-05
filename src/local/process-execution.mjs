@@ -4,10 +4,10 @@ import { stat } from "node:fs/promises";
 import { BoundedOutput } from "./bounded-output.mjs";
 import { attachChildProcessSettlement } from "./child-process-settlement.mjs";
 import { executionEnv, workspaceShellCommand } from "./shell.mjs";
-import { MAX_COMMAND_BYTES, validateArgv } from "./process-contract.mjs";
+import { validateArgv, validateShellCommand } from "./process-contract.mjs";
 import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
-import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
+import { delegatedProcessCommand, delegatedProcessRuntimeDir } from "./delegated-process-sandbox.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
 import { boundedProcessErrorMessage } from "./process-error-message.mjs";
 import { processForegroundTimeoutSeconds, registeredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
@@ -78,10 +78,7 @@ export class ProcessExecutionService {
   }
   async runShell(command, timeoutSeconds, context = {}) {
     this.policyGate.assert("exec_command");
-    if (!command || typeof command !== "string") throw new BridgeError("invalid_request", "command is required");
-    if (command.includes("\0")) throw new BridgeError("invalid_request", "command contains a NUL byte");
-    if (Buffer.byteLength(command) > MAX_COMMAND_BYTES) throw new BridgeError("limit_exceeded", `command exceeds maximum size (${MAX_COMMAND_BYTES} bytes)`);
-    const shell = workspaceShellCommand(command);
+    const shell = workspaceShellCommand(validateShellCommand(command));
     const result = await this.runPublic(
       shell.cmd, shell.args,
       processForegroundTimeoutSeconds("exec_command", timeoutSeconds, context) * 1000,
@@ -139,8 +136,9 @@ export class ProcessExecutionService {
       throw new BridgeError("limit_exceeded", "process stdin exceeds 1 MiB");
     }
     const internalFixed = options.internalFixed === true;
+    const runtimeDir = internalFixed ? this.runtimeDir : delegatedProcessRuntimeDir(this.runtimeDir, context);
     const baseEnvironment = executionEnv(this.workspace, {
-      fullEnv: internalFixed ? false : this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir,
+      fullEnv: internalFixed ? false : this.policyForContext(context).minimalEnv === false, runtimeDir, delegated: runtimeDir !== this.runtimeDir,
     });
     if (internalFixed) Object.assign(baseEnvironment, options.internalEnvironment || {});
     const executionEnvironment = internalFixed ? baseEnvironment : withExecutionSurface(baseEnvironment, EXECUTION_SURFACE.foregroundProcess);
@@ -158,7 +156,7 @@ export class ProcessExecutionService {
       try {
         const launch = internalFixed
           ? { command: cmd, args }
-          : delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+          : delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir, context });
         this.throwIfCancelled(context);
         child = this.spawnProcess(launch.command, launch.args, {
           cwd,
@@ -205,11 +203,10 @@ export class ProcessExecutionService {
         if (terminationTimer || processClosed) return;
         terminationTimer = this.terminateProcess(child);
       };
-      const rejectCancelled = () => {
+      const onAbort = () => {
         terminate();
         settle(() => rejectPromise(processCancellationFailure(nonReplayableMutation, signal)));
       };
-      const onAbort = () => rejectCancelled();
       signal?.addEventListener?.("abort", onAbort, { once: true });
 
       timeoutTimer = setTimeout(() => {
@@ -255,11 +252,16 @@ export class ProcessExecutionService {
           if (code === 0 || allowFailure) settle(() => resolvePromise(result));
           else settle(() => rejectPromise(processPostSpawnFailure(nonReplayableMutation, "nonzero_exit",
             new BridgeError("execution_failed", processFailureMessage(result), { details: { process: result } }), { process: result })));
-          }, rejectPromise);
+          }, (error) => {
+            const failure = !child?.pid && childError
+              ? processPreSpawnFailure(new AggregateError([childError, error], "process spawn failed and resource cleanup was incomplete"), nonReplayableMutation)
+              : processPostSpawnFailure(nonReplayableMutation, "resource_cleanup", error);
+            settle(() => rejectPromise(failure));
+          });
         },
       });
 
-      if (signal?.aborted) rejectCancelled();
+      if (signal?.aborted) onAbort();
     });
   }
 }

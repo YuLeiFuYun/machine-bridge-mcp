@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer, get } from "node:http";
+import { startBrowserBrokerServer } from "../src/local/browser-broker-server.mjs";
 import {
   createBrokerAuthChallenge,
   createBrokerAuthRegistry,
@@ -225,4 +227,54 @@ function assertHttp(handler, request, expectedStatus) {
   assert.equal(response.ended, true);
 }
 
+await testBrokerHttpErrorBoundary();
 console.log("browser broker authentication test ok");
+
+async function testBrokerHttpErrorBoundary() {
+  const broker = await startBrowserBrokerServer({
+    port: 39393, extensionToken: "e".repeat(43), runtimeToken: "r".repeat(43), maxPayload: 8192,
+    onSocket() {},
+    onHttp(request, response) {
+      if (request.url === "/early") throw new Error("synthetic-private-value");
+      if (request.url === "/late") { response.writeHead(200); throw new Error("synthetic-private-value"); }
+      response.writeHead(200).end("healthy");
+    },
+    serverFactory(handler) {
+      const server = createServer(handler);
+      const listen = server.listen.bind(server);
+      server.listen = (_port, host) => listen(0, host);
+      return server;
+    },
+  });
+  try {
+    const port = broker.server.address().port;
+    const malformed = await brokerHttpRequest(port, "http://[");
+    assert.equal(malformed.status, 400, "malformed URL escaped the broker HTTP request boundary");
+    assert.equal(malformed.body, "", "malformed URL response disclosed internal request details");
+    assert.equal(malformed.headers["cache-control"], "no-store");
+    const early = await brokerHttpRequest(port, "/early");
+    assert.equal(early.status, 500);
+    assert.equal(early.body, "", "broker exception exposed internal error text");
+    await assert.rejects(brokerHttpRequest(port, "/late"),
+      "exception after HTTP headers did not close its incomplete response");
+    assert.deepEqual((await brokerHttpRequest(port, "/healthz")).body, "healthy",
+      "broker stopped accepting requests after a handled HTTP error");
+  } finally {
+    broker.wss.close();
+    await new Promise((resolve) => { broker.server.close(resolve); });
+  }
+}
+
+function brokerHttpRequest(port, path) {
+  return new Promise((resolve, reject) => {
+    const request = get({ hostname: "127.0.0.1", port, path, headers: { host: "127.0.0.1:39393" } }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, body }));
+      response.on("error", reject);
+    });
+    request.on("error", reject);
+    request.setTimeout(3000, () => { request.destroy(new Error("broker fixture request timed out")); });
+  });
+}

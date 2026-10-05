@@ -13,5 +13,5 @@ export async function stopOwnedPlatformService({
     return { owned: false, stopped: false, daemon, provider: null };
   }
   const provider = await stopPlatformService();
-  return { owned: true, stopped: provider?.ok !== false, daemon, provider };
+  return { owned: true, stopped: provider?.ok === true && provider.active === false, daemon, provider };
 }

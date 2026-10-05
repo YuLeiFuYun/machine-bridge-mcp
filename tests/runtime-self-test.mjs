@@ -630,21 +630,28 @@ export async function runtimeSelfTest() {
 
       const processTreeOwnershipObservable = await sampleProcessStartTimesAsync();
       if (processTreeOwnershipObservable) {
+        // Only the descendant may publish readiness, after installing its signal handler.
+        // Its SIGTERM receipt proves the graceful phase reached a resistant live process.
+        const descendantScript = "const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => writeFileSync(process.argv[2], 'SIGTERM')); writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => process.exit(0), 30000);";
         const descendantPidFile = join(workspace, "timeout-descendant.pid");
-        const descendantCommand = `(trap '' TERM; sleep 30) & echo $! > ${shellQuote(descendantPidFile)}; wait`;
+        const descendantSignalFile = join(workspace, "timeout-descendant.signal");
+        const descendantCommand = `${shellQuote(process.execPath)} -e ${shellQuote(descendantScript)} ${shellQuote(descendantPidFile)} ${shellQuote(descendantSignalFile)} & wait`;
         await expectReject(() => restricted.execCommand({ command: descendantCommand, timeout_seconds: 1 }), "command timed out");
-        const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+        const descendantPid = Number((await waitForFileText(descendantPidFile, 5000)).trim());
         if (!await waitForProcessExit(descendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
           try { process.kill(descendantPid, "SIGKILL"); } catch {}
           throw new Error("timeout escalation left a SIGTERM-ignoring descendant running");
         }
+        if (await readFile(descendantSignalFile, "utf8") !== "SIGTERM") {
+          throw new Error("shell timeout test never proved its descendant received and resisted SIGTERM");
+        }
 
         const detachedDescendantPidFile = join(workspace, "detached-timeout-descendant.pid");
-        const detachedParent = `const { spawn } = require('node:child_process'); const { writeFileSync } = require('node:fs'); const child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: 'ignore' }); writeFileSync(process.argv[1], String(child.pid)); setInterval(()=>{},1000);`;
-        // Coverage instrumentation can delay a fresh Node process enough that a 200 ms
-        // deadline expires before the fixture writes its descendant PID. Keep the
-        // deadline bounded, but long enough to exercise post-start tree cleanup.
-        await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile], 2000), "command timed out");
+        const detachedDescendantSignalFile = join(workspace, "detached-timeout-descendant.signal");
+        const detachedParent = `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}, process.argv[1], process.argv[2]], { stdio: 'ignore' }); setTimeout(() => process.exit(0), 30000);`;
+        // Keep startup bounded; missing descendant readiness must fail the test.
+        // The finite fixture also exits if an assertion interrupts test cleanup.
+        await expectReject(() => restricted.runProcess(process.execPath, ["-e", detachedParent, detachedDescendantPidFile, detachedDescendantSignalFile], 2000), "command timed out");
         const detachedDescendantPid = Number((await waitForFileText(detachedDescendantPidFile, 5000)).trim());
         // Capture/refresh and the final current-ownership check have separate bounded
         // budgets around the graceful-termination window. Poll the real descendant until
@@ -652,6 +659,9 @@ export async function runtimeSelfTest() {
         if (!await waitForProcessExit(detachedDescendantPid, PROCESS_TREE_ESCALATION_WAIT_MS)) {
           try { process.kill(detachedDescendantPid, "SIGKILL"); } catch {}
           throw new Error("one-shot process timeout cancelled forced escalation after the direct child exited");
+        }
+        if (await readFile(detachedDescendantSignalFile, "utf8") !== "SIGTERM") {
+          throw new Error("one-shot timeout test never proved its descendant received and resisted SIGTERM");
         }
       }
     }
@@ -746,12 +756,14 @@ async function waitForProcessExit(pid, timeoutMs) {
 }
 
 function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("descendant fixture did not provide a valid PID");
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error?.code === "EPERM";
+    if (error?.code === "EPERM") return true;
+    if (error?.code === "ESRCH") return false;
+    throw error;
   }
 }
 

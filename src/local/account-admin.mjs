@@ -36,10 +36,11 @@ export class AccountAdminClient {
   }
 
   update({ accountId, role, active, displayName }) {
+    if (active !== undefined && typeof active !== "boolean") throw new BridgeError("invalid_request", "account active flag must be a boolean");
     return this.request("PATCH", "/admin/accounts", {
       account_id: requiredAccountId(accountId),
       ...(role === undefined ? {} : { role: normalizeAccountRole(role) }),
-      ...(active === undefined ? {} : { active: Boolean(active) }),
+      ...(active === undefined ? {} : { active }),
       ...(displayName === undefined ? {} : { display_name: String(displayName) }),
     });
   }

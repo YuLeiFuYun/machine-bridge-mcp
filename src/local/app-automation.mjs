@@ -272,64 +272,34 @@ export class AppAutomationManager {
     const processName = applicationProcessName(application);
     const normalizedX = normalizedCoordinate(args.normalized_x, "normalized_x");
     const normalizedY = normalizedCoordinate(args.normalized_y, "normalized_y");
-    const clickCount = args.click_count === undefined ? 1 : positiveInteger(args.click_count, "click_count");
+    const clickCount = args.click_count === undefined ? 1 : requiredPositiveInteger(args.click_count, "click_count");
     if (clickCount > 2) throw new Error("application visual click_count must be 1 or 2");
-    const expectedWindowId = positiveInteger(args.window_id, "window_id");
+    const expectedWindowId = requiredPositiveInteger(args.window_id, "window_id");
     const expectedBounds = requiredWindowBounds(args.bounds);
     const expectedScreenshotSha256 = requiredSha256(args.screenshot_sha256, "screenshot_sha256");
     const expectedProcessId = optionalExpectedProcessId(args.expected_process_id);
     const expectedProcessGeneration = optionalExpectedProcessGeneration(args.expected_process_generation);
     const timeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 120);
-    this.throwIfCancelled(context);
-    let captured;
-    try { captured = await this.captureMacWindow(processName, timeoutSeconds, context, expectedProcessId, expectedProcessGeneration); }
-    catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes("application process changed before operation") || message.includes("application process generation changed before operation")) throw error;
-      throw new Error("application visual snapshot unavailable before dispatch");
-    }
-    const actualSha256 = createHash("sha256").update(captured.bytes).digest("hex");
-    if (captured.window.window_id !== expectedWindowId
-        || !sameWindowBoundsNode(captured.window.bounds, expectedBounds)
-        || actualSha256 !== expectedScreenshotSha256) {
-      throw new Error("application visual snapshot changed before dispatch");
-    }
-    this.throwIfCancelled(context);
+    const captured = await this.captureValidatedVisualTarget({
+      processName, timeoutSeconds, expectedProcessId, expectedProcessGeneration,
+      expectedWindowId, expectedBounds, expectedScreenshotSha256,
+    }, context);
     const screenX = expectedBounds.x + normalizedX * expectedBounds.width;
     const screenY = expectedBounds.y + normalizedY * expectedBounds.height;
     const localX = normalizedX * expectedBounds.width;
     const localY = normalizedY * expectedBounds.height;
-    let result;
-    try {
-      result = await this.backgroundInputService.click({
-        pid: captured.window.process_id,
-        process_generation: captured.window.process_generation,
-        window_id: expectedWindowId, screen_x: screenX, screen_y: screenY,
-        local_x: localX, local_y: localY,
-        ...(clickCount === 1 ? {} : { click_count: clickCount }),
-        window_x: expectedBounds.x, window_y: expectedBounds.y,
-        window_width: expectedBounds.width, window_height: expectedBounds.height,
-        timeout_seconds: timeoutSeconds,
-      }, context);
-    } catch (error) {
-      if (error instanceof BridgeError && error.code === "cancelled") throw error;
-      const message = String(error?.message || error);
-      if (message.includes("outcome is unknown") || message.includes("partially dispatched")) {
-        throw applicationVisualInputOutcomeUnknown(error);
-      }
-      if (message.includes("process_generation_changed_before_dispatch")) throw new Error("application process generation changed before operation");
-      if (message.includes("before dispatch") || message.includes("unavailable")) throw new Error("application visual input unavailable before dispatch");
-      throw applicationVisualInputOutcomeUnknown(error);
-    }
+    const result = await this.dispatchVisualInput("click", {
+      pid: captured.window.process_id,
+      process_generation: captured.window.process_generation,
+      window_id: expectedWindowId, screen_x: screenX, screen_y: screenY,
+      local_x: localX, local_y: localY,
+      ...(clickCount === 1 ? {} : { click_count: clickCount }),
+      window_x: expectedBounds.x, window_y: expectedBounds.y,
+      window_width: expectedBounds.width, window_height: expectedBounds.height,
+      timeout_seconds: timeoutSeconds,
+    }, context);
     return {
-      application, process_name: processName, ok: result?.ok === true,
-      coordinate_source: "macos_skylight_experimental", window_bound: true, screenshot_revalidated: true,
-      input_transport: typeof result?.input_transport === "string" ? result.input_transport : "",
-      experimental_backend: true,
-      focus_without_raise: result?.focus_without_raise === true,
-      front_window_validated: result?.front_window_validated === true,
-      cursor_preserved: result?.cursor_preserved === true,
-      frontmost_restored: result?.frontmost_restored === true,
+      application, process_name: processName, ...result,
       normalized_point: { x: normalizedX, y: normalizedY },
     };
   }
@@ -347,62 +317,32 @@ export class AppAutomationManager {
     const normalizedY = normalizedCoordinate(args.normalized_y, "normalized_y");
     const destinationNormalizedX = normalizedCoordinate(args.destination_normalized_x, "destination_normalized_x");
     const destinationNormalizedY = normalizedCoordinate(args.destination_normalized_y, "destination_normalized_y");
-    const expectedWindowId = positiveInteger(args.window_id, "window_id");
+    const expectedWindowId = requiredPositiveInteger(args.window_id, "window_id");
     const expectedBounds = requiredWindowBounds(args.bounds);
     const expectedScreenshotSha256 = requiredSha256(args.screenshot_sha256, "screenshot_sha256");
     const expectedProcessId = optionalExpectedProcessId(args.expected_process_id);
     const expectedProcessGeneration = optionalExpectedProcessGeneration(args.expected_process_generation);
     const timeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 120);
-    this.throwIfCancelled(context);
-    let captured;
-    try { captured = await this.captureMacWindow(processName, timeoutSeconds, context, expectedProcessId, expectedProcessGeneration); }
-    catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes("application process changed before operation") || message.includes("application process generation changed before operation")) throw error;
-      throw new Error("application visual snapshot unavailable before dispatch");
-    }
-    const actualSha256 = createHash("sha256").update(captured.bytes).digest("hex");
-    if (captured.window.window_id !== expectedWindowId
-        || !sameWindowBoundsNode(captured.window.bounds, expectedBounds)
-        || actualSha256 !== expectedScreenshotSha256) {
-      throw new Error("application visual snapshot changed before dispatch");
-    }
-    this.throwIfCancelled(context);
+    const captured = await this.captureValidatedVisualTarget({
+      processName, timeoutSeconds, expectedProcessId, expectedProcessGeneration,
+      expectedWindowId, expectedBounds, expectedScreenshotSha256,
+    }, context);
     const sourcePoint = applicationWindowPoint(expectedBounds, normalizedX, normalizedY);
     const destinationPoint = applicationWindowPoint(expectedBounds, destinationNormalizedX, destinationNormalizedY);
-    let result;
-    try {
-      result = await this.backgroundInputService.drag({
-        pid: captured.window.process_id,
-        process_generation: captured.window.process_generation,
-        window_id: expectedWindowId,
-        screen_x: sourcePoint.screen_x, screen_y: sourcePoint.screen_y,
-        local_x: sourcePoint.local_x, local_y: sourcePoint.local_y,
-        destination_screen_x: destinationPoint.screen_x, destination_screen_y: destinationPoint.screen_y,
-        destination_local_x: destinationPoint.local_x, destination_local_y: destinationPoint.local_y,
-        window_x: expectedBounds.x, window_y: expectedBounds.y,
-        window_width: expectedBounds.width, window_height: expectedBounds.height,
-        timeout_seconds: timeoutSeconds,
-      }, context);
-    } catch (error) {
-      if (error instanceof BridgeError && error.code === "cancelled") throw error;
-      const message = String(error?.message || error);
-      if (message.includes("outcome is unknown") || message.includes("partially dispatched")) {
-        throw applicationVisualInputOutcomeUnknown(error);
-      }
-      if (message.includes("process_generation_changed_before_dispatch")) throw new Error("application process generation changed before operation");
-      if (message.includes("before dispatch") || message.includes("unavailable")) throw new Error("application visual input unavailable before dispatch");
-      throw applicationVisualInputOutcomeUnknown(error);
-    }
+    const result = await this.dispatchVisualInput("drag", {
+      pid: captured.window.process_id,
+      process_generation: captured.window.process_generation,
+      window_id: expectedWindowId,
+      screen_x: sourcePoint.screen_x, screen_y: sourcePoint.screen_y,
+      local_x: sourcePoint.local_x, local_y: sourcePoint.local_y,
+      destination_screen_x: destinationPoint.screen_x, destination_screen_y: destinationPoint.screen_y,
+      destination_local_x: destinationPoint.local_x, destination_local_y: destinationPoint.local_y,
+      window_x: expectedBounds.x, window_y: expectedBounds.y,
+      window_width: expectedBounds.width, window_height: expectedBounds.height,
+      timeout_seconds: timeoutSeconds,
+    }, context);
     return {
-      application, process_name: processName, ok: result?.ok === true,
-      coordinate_source: "macos_skylight_experimental", window_bound: true, screenshot_revalidated: true,
-      input_transport: typeof result?.input_transport === "string" ? result.input_transport : "",
-      experimental_backend: true,
-      focus_without_raise: result?.focus_without_raise === true,
-      front_window_validated: result?.front_window_validated === true,
-      cursor_preserved: result?.cursor_preserved === true,
-      frontmost_restored: result?.frontmost_restored === true,
+      application, process_name: processName, ...result,
       normalized_point: { x: normalizedX, y: normalizedY },
       destination_normalized_point: { x: destinationNormalizedX, y: destinationNormalizedY },
     };
@@ -422,12 +362,37 @@ export class AppAutomationManager {
     const deltaX = applicationScrollDelta(args.delta_x, "delta_x");
     const deltaY = applicationScrollDelta(args.delta_y, "delta_y");
     if (deltaX === 0 && deltaY === 0) throw new Error("application visual scroll requires a non-zero delta_x or delta_y");
-    const expectedWindowId = positiveInteger(args.window_id, "window_id");
+    const expectedWindowId = requiredPositiveInteger(args.window_id, "window_id");
     const expectedBounds = requiredWindowBounds(args.bounds);
     const expectedScreenshotSha256 = requiredSha256(args.screenshot_sha256, "screenshot_sha256");
     const expectedProcessId = optionalExpectedProcessId(args.expected_process_id);
     const expectedProcessGeneration = optionalExpectedProcessGeneration(args.expected_process_generation);
     const timeoutSeconds = clampInt(args.timeout_seconds, 30, 1, 120);
+    const captured = await this.captureValidatedVisualTarget({
+      processName, timeoutSeconds, expectedProcessId, expectedProcessGeneration,
+      expectedWindowId, expectedBounds, expectedScreenshotSha256,
+    }, context);
+    const point = applicationWindowPoint(expectedBounds, normalizedX, normalizedY);
+    const result = await this.dispatchVisualInput("scroll", {
+      pid: captured.window.process_id,
+      process_generation: captured.window.process_generation,
+      window_id: expectedWindowId,
+      screen_x: point.screen_x, screen_y: point.screen_y,
+      local_x: point.local_x, local_y: point.local_y,
+      delta_x: deltaX, delta_y: deltaY,
+      window_x: expectedBounds.x, window_y: expectedBounds.y,
+      window_width: expectedBounds.width, window_height: expectedBounds.height,
+      timeout_seconds: timeoutSeconds,
+    }, context);
+    return {
+      application, process_name: processName, ...result,
+      normalized_point: { x: normalizedX, y: normalizedY },
+      scroll_delta: { delta_x: deltaX, delta_y: deltaY },
+    };
+  }
+
+  async captureValidatedVisualTarget(target, context) {
+    const { processName, timeoutSeconds, expectedProcessId, expectedProcessGeneration } = target;
     this.throwIfCancelled(context);
     let captured;
     try { captured = await this.captureMacWindow(processName, timeoutSeconds, context, expectedProcessId, expectedProcessGeneration); }
@@ -437,27 +402,19 @@ export class AppAutomationManager {
       throw new Error("application visual snapshot unavailable before dispatch");
     }
     const actualSha256 = createHash("sha256").update(captured.bytes).digest("hex");
-    if (captured.window.window_id !== expectedWindowId
-        || !sameWindowBoundsNode(captured.window.bounds, expectedBounds)
-        || actualSha256 !== expectedScreenshotSha256) {
+    if (captured.window.window_id !== target.expectedWindowId
+        || !sameWindowBoundsNode(captured.window.bounds, target.expectedBounds)
+        || actualSha256 !== target.expectedScreenshotSha256) {
       throw new Error("application visual snapshot changed before dispatch");
     }
     this.throwIfCancelled(context);
-    const point = applicationWindowPoint(expectedBounds, normalizedX, normalizedY);
+    return captured;
+  }
+
+  async dispatchVisualInput(operation, input, context) {
     let result;
-    try {
-      result = await this.backgroundInputService.scroll({
-        pid: captured.window.process_id,
-        process_generation: captured.window.process_generation,
-        window_id: expectedWindowId,
-        screen_x: point.screen_x, screen_y: point.screen_y,
-        local_x: point.local_x, local_y: point.local_y,
-        delta_x: deltaX, delta_y: deltaY,
-        window_x: expectedBounds.x, window_y: expectedBounds.y,
-        window_width: expectedBounds.width, window_height: expectedBounds.height,
-        timeout_seconds: timeoutSeconds,
-      }, context);
-    } catch (error) {
+    try { result = await this.backgroundInputService[operation](input, context); }
+    catch (error) {
       if (error instanceof BridgeError && error.code === "cancelled") throw error;
       const message = String(error?.message || error);
       if (message.includes("outcome is unknown") || message.includes("partially dispatched")) {
@@ -468,7 +425,7 @@ export class AppAutomationManager {
       throw applicationVisualInputOutcomeUnknown(error);
     }
     return {
-      application, process_name: processName, ok: result?.ok === true,
+      ok: result?.ok === true,
       coordinate_source: "macos_skylight_experimental", window_bound: true, screenshot_revalidated: true,
       input_transport: typeof result?.input_transport === "string" ? result.input_transport : "",
       experimental_backend: true,
@@ -476,8 +433,6 @@ export class AppAutomationManager {
       front_window_validated: result?.front_window_validated === true,
       cursor_preserved: result?.cursor_preserved === true,
       frontmost_restored: result?.frontmost_restored === true,
-      normalized_point: { x: normalizedX, y: normalizedY },
-      scroll_delta: { delta_x: deltaX, delta_y: deltaY },
     };
   }
 
@@ -1024,10 +979,6 @@ function applicationScrollDelta(value, label) {
 function requiredPositiveInteger(value, label) {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${label} must be a positive integer`);
   return value;
-}
-
-function positiveInteger(value, label) {
-  return requiredPositiveInteger(value, label);
 }
 
 function optionalExpectedProcessId(value) {

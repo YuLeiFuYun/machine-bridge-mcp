@@ -196,7 +196,7 @@ export class WorkspaceFileService {
       const occurrences = countOccurrences(current, oldText);
       if (occurrences === 0) throw new BridgeError("not_found", "old_text was not found", { details: { reason: "text_not_found" } });
       if (!args.replace_all && occurrences !== 1) throw new BridgeError("conflict", `old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`, { details: { reason: "text_ambiguous", occurrences } });
-      const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, newText);
+      const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, () => newText);
       const bytes = Buffer.byteLength(updated);
       if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       this.throwIfCancelled(context);
@@ -300,7 +300,7 @@ export class WorkspaceFileService {
     if (bounded.buffer.includes(0)) return;
     const buffer = bounded.buffer;
     let text;
-    try { text = new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch { return; }
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer); } catch { return; }
     if (!text) return;
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
@@ -337,7 +337,7 @@ export class WorkspaceFileService {
 }
 
 export async function readBoundedFile(filePath, maxBytes, label) {
-  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0);
+  const flags = Number(fsConstants.O_RDONLY) | Number(fsConstants.O_NOFOLLOW || 0) | Number(fsConstants.O_NONBLOCK || 0);
   const handle = await open(filePath, flags);
   try {
     const info = await handle.stat();
@@ -366,7 +366,7 @@ function isSkippableSearchFileError(error) {
 }
 
 function decodeUtf8(buffer) {
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(buffer); } catch {
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer); } catch {
     throw new BridgeError("invalid_request", "file is not valid UTF-8 text", { details: { reason: "invalid_utf8" } });
   }
 }

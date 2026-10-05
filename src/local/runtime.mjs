@@ -309,7 +309,12 @@ export class LocalRuntime {
     }
   }
 
-  async stop() {
+  stop() {
+    if (!this.stopPromise) this.stopPromise = this.stopRuntime().finally(() => { this.stopPromise = null; });
+    return this.stopPromise;
+  }
+
+  async stopRuntime() {
     if (!this.lifecycle.beginStop()) return;
     try {
       this.deviceSession?.stop();

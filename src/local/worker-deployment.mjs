@@ -32,6 +32,11 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   const healthOptions = { expectedWorkerName: state.worker.name, ...(options.healthOptions || {}) };
   const complete = hasCompleteWorkerState(state.worker);
 
+  if (!args.forceWorker && !args.rotateSecrets && !complete
+      && state.worker.deployHash === desiredHash && state.worker.deployedVersion === expectedVersion) {
+    throw workerEndpointUnverifiedError(false);
+  }
+
   if (!args.forceWorker && !args.rotateSecrets && complete && state.worker.deployHash === desiredHash) {
     const recordedCurrentDeployment = state.worker.deployedVersion === expectedVersion;
     const attempts = recordedCurrentDeployment
@@ -61,26 +66,17 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   });
   const accountId = cfDeploymentAccount(auth, environment);
   logger.info?.("Deploying Cloudflare Worker");
-  const deploy = await withCfProjectFn(sourceSnapshot, state.worker.name,
-    project => withSecretsFileFn(state, secretFile => runCfFn([
-      "deploy", "--prebuilt", "--secrets-file", secretFile,
-    ], { ...project, capture: true, hardTimeout: true, stateRoot: cfStateRoot, packageRoot: options.packageRoot || packageRoot })),
+  await withCfProjectFn(sourceSnapshot, state.worker.name,
+    project => withSecretsFileFn(state, async secretFile => {
+      const deploy = await runCfFn([
+        "deploy", "--prebuilt", "--secrets-file", secretFile,
+      ], { ...project, capture: true, hardTimeout: true, stateRoot: cfStateRoot, packageRoot: options.packageRoot || packageRoot });
+      // Persist confirmed external success before staging cleanup can fail.
+      recordWorkerUpload(state, deploy, desiredHash, expectedVersion, saveStateFn);
+      return deploy;
+    }),
     { runCf: runCfFn, stateRoot: cfStateRoot, packageRoot: options.packageRoot || packageRoot,
       env: { ...environment, CLOUDFLARE_ACCOUNT_ID: accountId } });
-
-  const detectedUrl = extractWorkerUrl(deploy.stdout, state.worker.name) || extractWorkerUrl(deploy.stderr, state.worker.name);
-  const recordedUrl = workerUrlMatchesName(state.worker.url, state.worker.name) ? state.worker.url : "";
-  const workerUrl = detectedUrl || recordedUrl;
-  if (!workerUrl) {
-    throw new Error("Worker upload returned success, but cf output contained no workers.dev URL and no matching recorded URL exists. The deployment fingerprint was not saved; rerun with --verbose and inspect the cf output before retrying.");
-  }
-
-  state.worker.url = workerUrl.replace(/\/+$/, "");
-  state.worker.mcpServerUrl = `${state.worker.url}/mcp`;
-  state.worker.deployHash = desiredHash;
-  state.worker.deployedVersion = expectedVersion;
-  state.worker.updatedAt = new Date().toISOString();
-  saveStateFn(state);
 
   const health = await retryHealthFn(state.worker.url, expectedVersion, options.deploymentHealthAttempts ?? DEFAULT_DEPLOYMENT_HEALTH_ATTEMPTS, healthOptions);
   if (!health.ok) {
@@ -90,6 +86,32 @@ export async function ensureWorkerDeployment(state, args = {}, options = {}) {
   logger.success?.("Worker ready", { version: health.version });
   logger.debug?.("Worker health route", { network_route: health.networkRoute || "unknown" });
   return state.worker;
+}
+
+function recordWorkerUpload(state, deploy, desiredHash, expectedVersion, saveStateFn) {
+  const detectedUrl = extractWorkerUrl(deploy.stdout, state.worker.name) || extractWorkerUrl(deploy.stderr, state.worker.name);
+  const recordedUrl = workerUrlMatchesName(state.worker.url, state.worker.name) ? state.worker.url : "";
+  const workerUrl = detectedUrl || recordedUrl;
+  state.worker.deployHash = desiredHash;
+  state.worker.deployedVersion = expectedVersion;
+  state.worker.updatedAt = new Date().toISOString();
+  if (workerUrl) {
+    state.worker.url = workerUrl.replace(/\/+$/, "");
+    state.worker.mcpServerUrl = state.worker.url + "/mcp";
+  } else {
+    delete state.worker.url;
+    delete state.worker.mcpServerUrl;
+  }
+  saveStateFn(state);
+  if (!workerUrl) throw workerEndpointUnverifiedError(true);
+}
+
+function workerEndpointUnverifiedError(deploymentSucceeded) {
+  const error = new Error("Worker upload success is recorded, but its endpoint is unverified. No automatic redeployment is allowed; reconcile the existing workers.dev endpoint before retrying.");
+  error.code = "worker_endpoint_unverified";
+  error.deploymentSucceeded = deploymentSucceeded;
+  error.retryable = false;
+  return error;
 }
 
 export function extractWorkerUrl(text = "", workerName = "") {

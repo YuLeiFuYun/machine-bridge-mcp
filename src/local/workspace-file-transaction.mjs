@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { fileMutationPathKey } from "./file-mutation-coordinator.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
+import { publishFileLinkWithIdentity, removeLinkedFileSnapshot, restoreFileSnapshotNoReplace, snapshotFileIdentitySync } from "./exclusive-publication-recovery.mjs";
 export async function atomicWriteText(full, content, existing = null, options = {}) {
   const readText = requiredReadText(options.readText, options.expectedHash);
   if (options.expectedHash && existing && !options.createOnly) return commitPatchTransaction([{
@@ -46,7 +47,6 @@ export async function atomicWriteText(full, content, existing = null, options = 
     throw error;
   }
 }
-
 export function assertNoResolvedPatchCollisions(operations, platform = process.platform) {
   const owners = new Map();
   for (const operation of operations) {
@@ -97,29 +97,29 @@ export async function commitPatchTransaction(operations, options = {}) {
       }
       const record = { operation, backup, targetCreated: false };
       committed.push(record);
+      if (backup) record.backupIdentity = snapshotFileIdentitySync(backup);
       if (backup && sha256(await readText(backup)) !== operation.originalHash) {
         throw new BridgeError("conflict", "patch source changed during commit", { details: { reason: "hash_mismatch" } });
       }
       const stage = staged.find((item) => item.operation === operation);
       if (!stage) continue;
       try {
-        await createTarget(stage.temp, operation.target);
+        await publishFileLinkWithIdentity(stage.temp, operation.target, createTarget, record);
       } catch (error) {
         if (error?.code === "EEXIST") {
           throw new BridgeError("conflict", "patch target appeared during apply", { cause: error, details: { reason: "target_appeared" } });
         }
         throw error;
       }
-      record.targetCreated = true;
     }
   } catch (error) {
     const rollbackFailures = [];
     for (const item of [...committed].reverse()) {
       if (item.targetCreated) {
-        try { await remove(item.operation.target, { force: true }); } catch (failure) { rollbackFailures.push(failure); }
+        try { await removeLinkedFileSnapshot(item.operation.target, item.targetIdentity, remove); } catch (failure) { rollbackFailures.push(failure); }
       }
       if (item.backup) {
-        try { await move(item.backup, item.operation.source); } catch (failure) { rollbackFailures.push(failure); }
+        try { await restoreFileSnapshotNoReplace(item.backup, item.operation.source, options.restoreLink || link, remove, item.backupIdentity); } catch (failure) { rollbackFailures.push(failure); }
       }
     }
     const stagingCleanupFailures = await removeArtifacts(staged.map((item) => item.temp), remove);

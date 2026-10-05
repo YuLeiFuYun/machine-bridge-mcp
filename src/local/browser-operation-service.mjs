@@ -1,9 +1,9 @@
 import {
-  browserPairingLaunchUnavailable, browserPairingLaunchUnknown, clampInt, normalizeBrowserAction, normalizeBrowserSelector, normalizeBrowserWait,
+  browserPairingLaunchCommand, browserPairingLaunchUnavailable, browserPairingLaunchUnknown, clampInt, normalizeBrowserAction, normalizeBrowserSelector, normalizeBrowserWait,
   normalizeBrowserSnapshotIdentity, normalizeImageFormat, normalizeInputMode, normalizeNavigationWait, normalizeTabCommand, optionalBoolean, optionalInteger, optionalString,
   validateNavigationUrl,
 } from "./browser-command.mjs";
-import { BrowserComputerObservationService } from "./browser-computer-observation-service.mjs";
+import { BrowserComputerObservationService, parseBrowserScreenshot } from "./browser-computer-observation-service.mjs";
 import { BrowserTrustedInputHealth, TRUSTED_INPUT_QUARANTINE_FALLBACK } from "./browser-trusted-input-health.mjs";
 import {
   boundedBrowserValue, normalizeMimeType, normalizeUploadFilename, optionalStringArray, prepareBrowserFormField,
@@ -110,13 +110,9 @@ export class BrowserOperationService {
     const open = optionalBoolean(args.open, "open", true);
     if (open) {
       const launch = await this.createPairingLaunch(this.bridgeStatus().port);
-      const command = process.platform === "darwin"
-        ? { cmd: "open", argv: [launch.url] }
-        : process.platform === "win32"
-          ? { cmd: "cmd.exe", argv: ["/d", "/s", "/c", "start", "", launch.url] }
-          : { cmd: "xdg-open", argv: [launch.url] };
-      this.throwIfCancelled(context);
       try {
+        this.throwIfCancelled(context);
+        const command = browserPairingLaunchCommand(launch.url);
         await this.runProcess(command.cmd, command.argv, 30_000, false, 128 * 1024, context, undefined, null, { nonReplayableMutation: true });
       } catch (error) {
         launch.close();
@@ -334,17 +330,16 @@ export class BrowserOperationService {
       format: normalizeImageFormat(args.format, "format"),
       quality: clampInt(args.quality, 90, 1, 100),
     }, clampInt(args.timeout_seconds, 30, 1, 120), context);
-    const data = typeof result.data === "string" ? result.data : "";
-    const match = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/.exec(data);
-    if (!match) throw new Error("browser extension returned an invalid screenshot");
+    const image = parseBrowserScreenshot(result.data);
+    if (!image) throw new Error("browser extension returned an invalid screenshot");
     return {
       $mcp: {
-        content: [{ type: "image", data: match[2], mimeType: match[1] }],
+        content: [{ type: "image", data: image.data, mimeType: image.mimeType }],
         structuredContent: {
           tab_id: result.tab_id,
           url: result.url,
           title: result.title, tab_metadata_verified: result.tab_metadata_verified === true,
-          mime_type: match[1],
+          mime_type: image.mimeType,
         },
       },
     };

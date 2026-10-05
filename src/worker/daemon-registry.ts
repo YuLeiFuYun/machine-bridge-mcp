@@ -33,7 +33,7 @@ export class DaemonRegistry implements ReadyDaemonRegistry {
   }
   readyAttachment(channel: DaemonChannel): DaemonAttachment | undefined {
     return channel.daemonTransport === "https"
-      ? this.http.attachment(channel as DaemonHttpChannel)
+      ? (channel.readyState === 1 ? this.http.attachment(channel as DaemonHttpChannel) : undefined)
       : this.sockets.readyAttachment(channel as WebSocket);
   }
   httpReadyChannels(now = Date.now()): DaemonHttpChannel[] { return this.http.readyChannels(now); }
