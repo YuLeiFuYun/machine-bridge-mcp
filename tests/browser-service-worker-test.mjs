@@ -70,6 +70,7 @@ async function testInternalDelayService() {
     },
   };
   const context = createContext({ chrome: baseChrome({ runtime }) });
+  loadBrowserOperations(context);
   loadServiceWorker(context, []);
   assert(typeof messageListener === "function", "service worker did not register its internal runtime message listener");
 
@@ -788,39 +789,16 @@ async function testPageMutationScriptingSettlementBoundary() {
 }
 
 async function testScreenshotRestoresActiveTab() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-  ]);
-  const activations = [];
-  let focusedWindow = false;
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab(windowId) {
-          const active = [...tabs.values()].find((tab) => tab.windowId === windowId && tab.active);
-          assert(active?.id === 2, "screenshot did not activate the requested tab");
-          active.title = "Captured target";
-          active.url = "https://example.test/target-after-capture";
-          return "data:image/png;base64,AAAA";
-        },
-      },
-      windows: { async update() { focusedWindow = true; } },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const fixture = createScreenshotFixture();
+  const { tabs, activations, chrome, api } = fixture;
+  const capture = chrome.tabs.captureVisibleTab;
+  chrome.tabs.captureVisibleTab = async (windowId) => {
+    const active = [...tabs.values()].find(tab => tab.windowId === windowId && tab.active);
+    assert(active?.id === 2, "screenshot did not activate the requested tab");
+    active.title = "Captured target";
+    active.url = "https://example.test/target-after-capture";
+    return capture();
+  };
   const result = await api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {});
   assert(result.tab_id === 2, "screenshot returned the wrong tab");
   assert(result.tab_metadata_verified === true
@@ -828,34 +806,16 @@ async function testScreenshotRestoresActiveTab() {
     && result.url === "https://example.test/target-after-capture",
   "screenshot returned pre-capture tab provenance instead of the verified post-capture active-tab observation");
   assert(activations.join(",") === "2,1", "screenshot did not restore the previously active tab");
-  assert(focusedWindow === false, "screenshot unnecessarily stole window focus");
+  assert(fixture.focusedWindow === false, "screenshot unnecessarily stole window focus");
 }
 
 async function testScreenshotRestoreMutationFailureIsUnknown() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-  ]);
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active && id === 1 && tabs.get(2).active) throw new Error("restore denied");
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() { return "data:image/png;base64,AAAA"; },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const { tabs, chrome, api } = createScreenshotFixture();
+  const update = chrome.tabs.update;
+  chrome.tabs.update = async (id, patch) => {
+    if (patch.active && id === 1 && tabs.get(2).active) throw new Error("restore denied");
+    return update(id, patch);
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "restoration may have been dispatched; the active-tab outcome is unknown",
@@ -864,34 +824,12 @@ async function testScreenshotRestoreMutationFailureIsUnknown() {
 }
 
 async function testScreenshotRestoreVerificationFailureIsUnknown() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-  ]);
-  const activations = [];
-  let restoreApplied = false;
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          if (restoreApplied && query.active && query.windowId === 5) throw new Error("restore verification response lost");
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-            if (id === 1) restoreApplied = true;
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() { return "data:image/png;base64,AAAA"; },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const { tabs, activations, chrome, api } = createScreenshotFixture();
+  const query = chrome.tabs.query;
+  chrome.tabs.query = async (options) => {
+    if (activations.includes(1) && options.active && options.windowId === 5) throw new Error("restore verification response lost");
+    return query(options);
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "restoration may have been dispatched; the active-tab outcome is unknown",
@@ -901,36 +839,13 @@ async function testScreenshotRestoreVerificationFailureIsUnknown() {
 }
 
 async function testScreenshotMovedRestoreBaselineDoesNotTouchOtherWindow() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-    [3, { id: 3, windowId: 9, active: true, title: "Other window", url: "https://example.test/other" }],
-  ]);
-  const activations = [];
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() {
-          tabs.get(1).windowId = 9;
-          tabs.get(1).active = false;
-          return "data:image/png;base64,AAAA";
-        },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const { tabs, activations, chrome, api } = createScreenshotFixture([[3, { id: 3, windowId: 9, active: true, title: "Other window", url: "https://example.test/other" }]]);
+  const capture = chrome.tabs.captureVisibleTab;
+  chrome.tabs.captureVisibleTab = async () => {
+    tabs.get(1).windowId = 9;
+    tabs.get(1).active = false;
+    return capture();
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "could not restore the previous active tab",
@@ -942,82 +857,34 @@ async function testScreenshotMovedRestoreBaselineDoesNotTouchOtherWindow() {
 }
 
 async function testScreenshotRejectsActiveTabChangeBeforeActivation() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-    [3, { id: 3, windowId: 5, active: false, title: "User choice", url: "https://example.test/user" }],
-  ]);
-  const activations = [];
-  let captures = 0;
+  const fixture = createScreenshotFixture([[3, { id: 3, windowId: 5, active: false, title: "User choice", url: "https://example.test/user" }]]);
+  const { tabs, activations, chrome, api } = fixture;
   let activeQueries = 0;
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          if (query.active && query.windowId === 5) {
-            activeQueries += 1;
-            if (activeQueries === 2) {
-              tabs.get(1).active = false;
-              tabs.get(3).active = true;
-            }
-          }
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() { captures += 1; return "data:image/png;base64,AAAA"; },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const query = chrome.tabs.query;
+  chrome.tabs.query = async (options) => {
+    if (options.active && options.windowId === 5 && ++activeQueries === 2) {
+      tabs.get(1).active = false;
+      tabs.get(3).active = true;
+    }
+    return query(options);
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "active tab changed before temporary activation",
   );
   assert(activeQueries === 2, "screenshot did not perform the last-hop active-tab revalidation before activation");
   assert(activations.length === 0, "screenshot overwrote a user tab switch that happened before helper activation");
-  assert(captures === 0, "screenshot capture ran after the active-tab baseline changed before helper activation");
+  assert(fixture.captures === 0, "screenshot capture ran after the active-tab baseline changed before helper activation");
   assert(tabs.get(3).active === true, "screenshot did not preserve the user's pre-activation tab switch");
 }
 
 async function testScreenshotRejectsActiveTabChangeDuringCapture() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-    [3, { id: 3, windowId: 5, active: false, title: "User choice", url: "https://example.test/user" }],
-  ]);
-  const activations = [];
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() {
-          for (const tab of tabs.values()) if (tab.windowId === 5) tab.active = false;
-          tabs.get(3).active = true;
-          return "data:image/png;base64,WRONGTAB";
-        },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const { tabs, activations, chrome, api } = createScreenshotFixture([[3, { id: 3, windowId: 5, active: false, title: "User choice", url: "https://example.test/user" }]]);
+  chrome.tabs.captureVisibleTab = async () => {
+    for (const tab of tabs.values()) if (tab.windowId === 5) tab.active = false;
+    tabs.get(3).active = true;
+    return "data:image/png;base64,WRONGTAB";
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "active tab changed during capture",
@@ -1027,125 +894,91 @@ async function testScreenshotRejectsActiveTabChangeDuringCapture() {
 }
 
 async function testScreenshotActivationFailureIsUnknown() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-  ]);
-  const activations = [];
-  let captures = 0;
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-          }
-          if (id === 2) throw new Error("activation response lost after request");
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() { captures += 1; return "data:image/png;base64,AAAA"; },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const fixture = createScreenshotFixture();
+  const { tabs, activations, chrome, api } = fixture;
+  const update = chrome.tabs.update;
+  chrome.tabs.update = async (id, patch) => {
+    const result = await update(id, patch);
+    if (id === 2) throw new Error("activation response lost after request");
+    return result;
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "temporary tab activation may have been dispatched; the outcome is unknown",
   );
   assert(activations.join(",") === "2,1",
     "ambiguous screenshot activation was retried or failed to run the guarded best-effort restore exactly once");
-  assert(captures === 0, "screenshot capture ran after the temporary activation response became ambiguous");
+  assert(fixture.captures === 0, "screenshot capture ran after the temporary activation response became ambiguous");
   assert(tabs.get(1).active === true && tabs.get(2).active === false,
     "guarded restoration did not undo a helper-owned activation after the activation response became ambiguous");
 }
 
 async function testScreenshotWindowChangeDuringActivationIsUnknown() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-    [3, { id: 3, windowId: 9, active: true, title: "Other window", url: "https://example.test/other" }],
-  ]);
-  const activations = [];
-  let captures = 0;
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active && id === 2) {
-            tabs.get(2).windowId = 9;
-            for (const tab of tabs.values()) if (tab.windowId === 9) tab.active = false;
-            tabs.get(2).active = true;
-            activations.push(id);
-          } else if (patch.active) {
-            activations.push(id);
-            tabs.get(id).active = true;
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() { captures += 1; return "data:image/png;base64,AAAA"; },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const fixture = createScreenshotFixture([[3, { id: 3, windowId: 9, active: true, title: "Other window", url: "https://example.test/other" }]]);
+  const { tabs, activations, chrome, api } = fixture;
+  const update = chrome.tabs.update;
+  chrome.tabs.update = async (id, patch) => {
+    if (patch.active && id === 2) tabs.get(2).windowId = 9;
+    return update(id, patch);
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "outcome is unknown because target window provenance changed",
   );
-  assert(captures === 0 && activations.join(",") === "2",
+  assert(fixture.captures === 0 && activations.join(",") === "2",
     "cross-window screenshot activation captured or rolled back using a stale restore baseline");
   assert(tabs.get(1).active === true && tabs.get(2).active === true && tabs.get(3).active === false,
     "cross-window activation uncertainty did not preserve the actual post-activation state for inspection");
 }
 
 async function testScreenshotPreCaptureVerificationFailureRestoresTab() {
-  const tabs = new Map([
-    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
-    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
-  ]);
-  const activations = [];
+  const fixture = createScreenshotFixture();
+  const { tabs, activations, chrome, api } = fixture;
   let activeQueries = 0;
-  let captures = 0;
-  const context = createContext({
-    chrome: baseChrome({
-      tabs: {
-        async get(id) { return { ...tabs.get(id) }; },
-        async query(query) {
-          if (query.active && query.windowId === 5) {
-            activeQueries += 1;
-            if (activeQueries === 3) throw new Error("active query transport failed before capture");
-          }
-          return [...tabs.values()].filter((tab) => (!query.active || tab.active) && (query.windowId === undefined || tab.windowId === query.windowId)).map((tab) => ({ ...tab }));
-        },
-        async update(id, patch) {
-          if (patch.active) {
-            for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
-            tabs.get(id).active = true;
-            activations.push(id);
-          }
-          return { ...tabs.get(id) };
-        },
-        async captureVisibleTab() { captures += 1; return "data:image/png;base64,AAAA"; },
-      },
-    }),
-  });
-  const api = loadBrowserOperations(context);
+  const query = chrome.tabs.query;
+  chrome.tabs.query = async (options) => {
+    if (options.active && options.windowId === 5 && ++activeQueries === 3) throw new Error("active query transport failed before capture");
+    return query(options);
+  };
   await expectReject(
     () => api.dispatch("screenshot", { tabId: 2, format: "png", quality: 90 }, {}),
     "could not verify target tab at capture boundary",
   );
-  assert(captures === 0, "capture ran after pre-capture active-tab identity became unverifiable");
+  assert(fixture.captures === 0, "capture ran after pre-capture active-tab identity became unverifiable");
   assert(activations.join(",") === "2,1", "resolved temporary activation was not restored from the screenshot finally path");
   assert(tabs.get(1).active === true, "pre-capture verification failure left the temporary target tab active");
+}
+
+function createScreenshotFixture(extraTabs = []) {
+  const tabs = new Map([
+    [1, { id: 1, windowId: 5, active: true, title: "Original", url: "https://example.test/original" }],
+    [2, { id: 2, windowId: 5, active: false, title: "Target", url: "https://example.test/target" }],
+    ...extraTabs,
+  ]);
+  const fixture = { tabs, activations: [], captures: 0, focusedWindow: false };
+  const chrome = baseChrome({
+    tabs: {
+      async get(id) { return { ...tabs.get(id) }; },
+      async query(query) {
+        return [...tabs.values()].filter(tab => (!query.active || tab.active)
+          && (query.windowId === undefined || tab.windowId === query.windowId)).map(tab => ({ ...tab }));
+      },
+      async update(id, patch) {
+        if (patch.active) {
+          for (const tab of tabs.values()) if (tab.windowId === tabs.get(id).windowId) tab.active = false;
+          tabs.get(id).active = true;
+          fixture.activations.push(id);
+        }
+        return { ...tabs.get(id) };
+      },
+      async captureVisibleTab() {
+        fixture.captures += 1;
+        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH1kAAAAASUVORK5CYII=";
+      },
+    },
+    windows: { async update() { fixture.focusedWindow = true; } },
+  });
+  return Object.assign(fixture, { chrome, api: loadBrowserOperations(createContext({ chrome })) });
 }
 
 async function testNavigationMutationApiFailureIsUnknown() {
@@ -1974,13 +1807,16 @@ async function testBrowserWaitIgnoresWallClockRollback() {
   });
   const api = loadBrowserOperations(context);
   let error = null;
+  let timer;
   try {
     await Promise.race([
       api.dispatch("wait", { tabId: 7, urlContains: "/complete", timeoutMs: 30 }, { cancelled: false }),
-      new Promise((_, reject) => { setTimeout(() => reject(new Error("wall-clock watchdog expired")), 1000); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("wall-clock watchdog expired")), 1000); }),
     ]);
   } catch (caught) {
     error = caught;
+  } finally {
+    clearTimeout(timer);
   }
   assert(String(error?.message || "").includes("browser wait timed out"), "browser wait did not use an elapsed monotonic deadline when wall time was frozen");
 }
@@ -2227,4 +2063,22 @@ async function expectReject(operation, expected) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+{
+  const context = createContext({ chrome: baseChrome() });
+  const api = loadServiceWorker(context, ["handleMessage", "activeRequests"]);
+  const ownerSocket = { bridgeReady: true };
+  const foreignSocket = { bridgeReady: true };
+  const state = { socket: ownerSocket, cancelled: false };
+  api.activeRequests.set("owned-cancel", state);
+  await api.handleMessage(foreignSocket, JSON.stringify({ type: "cancel", id: "owned-cancel" }));
+  assert(state.cancelled === false, "different socket cancelled an owned browser request");
+  await api.handleMessage(ownerSocket, JSON.stringify({ type: "cancel", id: "owned-cancel" }));
+  assert(state.cancelled === true, "owning socket cancellation was ignored");
+  const replacement = { socket: foreignSocket, cancelled: false };
+  api.activeRequests.set("owned-cancel", replacement);
+  await api.handleMessage(ownerSocket, JSON.stringify({ type: "cancel", id: "owned-cancel" }));
+  assert(replacement.cancelled === false, "old socket cancelled a same-id replacement request");
+  api.activeRequests.delete("owned-cancel");
 }

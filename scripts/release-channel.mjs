@@ -56,7 +56,7 @@ export function requiresSoakForStable(version) {
 
 export function assertPublishTag(version, requestedTag) {
   const parsed = parseReleaseVersion(version);
-  const actual = String(requestedTag || (parsed.prerelease ? "latest" : "latest")).trim().toLowerCase();
+  const actual = String(requestedTag || "latest").trim().toLowerCase();
   if (actual !== parsed.npmTag) {
     throw new Error(`${parsed.raw} must be published with npm dist-tag ${parsed.npmTag}, not ${actual || "<empty>"}`);
   }

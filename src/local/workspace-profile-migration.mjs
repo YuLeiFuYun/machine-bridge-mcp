@@ -11,6 +11,7 @@ import {
   STATE_SCHEMA_VERSION,
   acquireMachineServiceLockWithWait,
   acquireMaintenanceLock,
+  assertStateRootSeparatedFromWorkspace,
   defaultStateRoot,
   expandHome,
   loadGlobalConfig,
@@ -174,6 +175,7 @@ export async function migrateWorkspaceProfile({
   const root = canonicalStateRoot(stateRoot);
   const source = normalizeHistoricalWorkspace(sourceWorkspace);
   const destination = resolveWorkspace(requiredPath(destinationWorkspace, "destination workspace"));
+  assertStateRootSeparatedFromWorkspace(root, destination);
   if (samePath(source, destination)) throw new Error("workspace migration requires different source and destination paths");
 
   const profilesRoot = path.join(root, "profiles");

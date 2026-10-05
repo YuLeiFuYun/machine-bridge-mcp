@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,10 +6,87 @@ import {
   isTransientFilesystemMutationError, isTransientReplaceError, removePathSync, replaceFileSync,
 } from "../src/local/atomic-fs.mjs";
 import { publicError } from "../src/local/errors.mjs";
-import { assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
+import { WorkspaceFileService, assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
 try {
+  const service = new WorkspaceFileService({
+    workspace: root, policyGate: { assert() {} }, throwIfCancelled() {},
+    resolveExistingPath: async name => join(root, name), resolveWritePath: async name => join(root, name), displayPath: name => name,
+    withMutationPaths: async (_paths, run) => run(),
+  });
+  const literalReplacement = ["$&", "$$", "$'", "$" + String.fromCharCode(96), "中文🙂"].join("|");
+  for (const replaceAll of [false, true]) {
+    const name = replaceAll ? "literal-all.txt" : "literal-once.txt";
+    const original = replaceAll ? "beforeTOKENmiddleTOKENafter" : "beforeTOKENafter";
+    await writeFile(join(root, name), original, "utf8");
+    const edited = await service.editFile({ path: name, old_text: "TOKEN", new_text: literalReplacement, replace_all: replaceAll });
+    const expected = original.split("TOKEN").join(literalReplacement);
+    assert(await readFile(join(root, name), "utf8") === expected && edited.sha256 === sha256(expected),
+      "literal edit expanded replacement tokens instead of preserving the requested text");
+    assert(edited.replacements === (replaceAll ? 2 : 1), "literal edit returned an incorrect occurrence count");
+  }
+
+
+  const bomName = "bom.txt", bomText = "\uFEFFTOKEN中文🙂";
+  const writtenBom = await service.writeFile({ path: bomName, content: bomText });
+  const readBom = await service.readFile({ path: bomName });
+  assert(readBom.content === bomText && readBom.sha256 === writtenBom.sha256 && readBom.sha256 === sha256(bomText),
+    "UTF-8 read lost the leading BOM or changed the committed byte hash");
+  const editedBom = await service.editFile({ path: bomName, old_text: "TOKEN", new_text: "changed", expected_sha256: writtenBom.sha256 });
+  assert(await readFile(join(root, bomName), "utf8") === bomText.replace("TOKEN", "changed")
+    && editedBom.sha256 === sha256(bomText.replace("TOKEN", "changed")), "unchanged BOM file failed its write/read/edit hash precondition");
+
+  for (const replaceBeforeConfirmation of [false, true]) {
+    const custodyTarget = join(root, replaceBeforeConfirmation ? "confirmation-replacement.txt" : "rollback-replacement.txt");
+    const custodySecond = join(root, "custody-second.txt");
+    let calls = 0;
+    const custodyFailure = await expectAsyncThrow(() => commitPatchTransaction([
+      { kind: "add", target: custodyTarget, content: "staged", mode: 0o600 },
+      { kind: "add", target: custodySecond, content: "second", mode: 0o600 },
+    ], { async link(from, to) {
+      calls += 1;
+      if (replaceBeforeConfirmation && calls === 1) {
+        await link(from, to); await rm(to); await writeFile(to, "valuable replacement", { mode: 0o600 }); return;
+      }
+      if (calls === 2) {
+        await rm(custodyTarget); await writeFile(custodyTarget, "valuable replacement", { mode: 0o600 });
+        throw new Error("synthetic later commit failure");
+      }
+      return link(from, to);
+    } }), "recovery was incomplete", "execution_failed", true, "patch_recovery_incomplete");
+    assert(await readFile(custodyTarget, "utf8") === "valuable replacement" && custodyFailure.retryable === false,
+      "transaction rollback removed a concurrently replaced target or invited blind replay");
+  }
+
+  const custodySource = join(root, "restore-source-replacement.txt");
+  await writeFile(custodySource, "original", { mode: 0o600 });
+  await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "update", source: custodySource, target: custodySource, content: "update", originalHash: sha256("original"), mode: 0o600,
+  }], { async link() {
+    await writeFile(custodySource, "valuable new source", { flag: "wx", mode: 0o600 });
+    throw new Error("synthetic commit failure");
+  } }), "recovery was incomplete", "execution_failed", true, "patch_recovery_incomplete");
+  const preservedBackups = (await readdir(root)).filter(name => name.startsWith(".restore-source-replacement.txt.mbm-backup-"));
+  assert(await readFile(custodySource, "utf8") === "valuable new source" && preservedBackups.length === 1
+    && await readFile(join(root, preservedBackups[0]), "utf8") === "original",
+  "transaction rollback overwrote a new source or discarded its original recovery snapshot");
+
+
+  const changedBackupSource = join(root, "changed-backup-source.txt");
+  await writeFile(changedBackupSource, "original backup", { mode: 0o600 });
+  await expectAsyncThrow(() => commitPatchTransaction([{
+    kind: "update", source: changedBackupSource, target: changedBackupSource,
+    content: "update", originalHash: sha256("original backup"), mode: 0o600,
+  }], { async link() {
+    const backupName = (await readdir(root)).find(name => name.startsWith(".changed-backup-source.txt.mbm-backup-"));
+    await rm(join(root, backupName)); await writeFile(join(root, backupName), "valuable backup replacement", { mode: 0o600 });
+    throw new Error("synthetic commit failure after backup replacement");
+  } }), "recovery was incomplete", "execution_failed", true, "patch_recovery_incomplete");
+  const changedBackupName = (await readdir(root)).find(name => name.startsWith(".changed-backup-source.txt.mbm-backup-"));
+  assert(await readFile(join(root, changedBackupName), "utf8") === "valuable backup replacement",
+    "rollback consumed or changed a replacement recovery artifact");
+
   const source = join(root, "source.json");
   const target = join(root, "target.json");
   await writeFile(source, "new", "utf8");
@@ -152,10 +229,7 @@ try {
     originalHash: sha256("old"),
     mode: 0o600,
   }], {
-    async rename(from, to) {
-      if (from.includes(".mbm-backup-")) throw new Error("simulated rollback failure");
-      return rename(from, to);
-    },
+    async restoreLink() { throw new Error("simulated rollback failure"); },
     async link() { throw new Error("simulated commit failure"); },
   }), "recovery was incomplete", "execution_failed", true);
   const publicRollbackFailure = publicError(rollbackFailure);

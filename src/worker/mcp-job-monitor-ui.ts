@@ -61,12 +61,12 @@ export function managedJobMonitorClientCapabilities(request: JsonRpcRequest): Re
   return objectValue(meta["io.modelcontextprotocol/clientCapabilities"]);
 }
 
-export function managedJobMonitorResources(serverInfo: Record<string, unknown>): Record<string, unknown> {
-  return cacheableResult({ resources: [RESOURCE] }, { ttlMs: 0, cacheScope: "public", serverInfo });
+export function managedJobMonitorResources(serverInfo: Record<string, unknown>, templates = false): Record<string, unknown> {
+  return cacheableResult(templates ? { resourceTemplates: [] } : { resources: [RESOURCE] }, { ttlMs: 0, cacheScope: "public", serverInfo });
 }
 
 export function managedJobMonitorResource(uri: unknown, serverInfo: Record<string, unknown>): Record<string, unknown> {
-  if (uri !== JOB_MONITOR_RESOURCE_URI) throw new McpProtocolError(-32602, "Resource not found", { uri: typeof uri === "string" ? uri : "" });
+  if (uri !== JOB_MONITOR_RESOURCE_URI) throw new McpProtocolError(-32602, "Resource not found");
   return cacheableResult({
     contents: [{
       uri: JOB_MONITOR_RESOURCE_URI,
@@ -86,8 +86,8 @@ export function dispatchManagedJobMonitorResource(
   request: JsonRpcRequest,
   serverInfo: Record<string, unknown>,
 ): Readonly<{ status: number; message: Record<string, unknown> }> | null {
-  if (request.method === "resources/list") {
-    return { status: 200, message: rpcResult(request.id, managedJobMonitorResources(serverInfo))! };
+  if (request.method === "resources/list" || request.method === "resources/templates/list") {
+    return { status: 200, message: rpcResult(request.id, managedJobMonitorResources(serverInfo, request.method === "resources/templates/list"))! };
   }
   if (request.method !== "resources/read") return null;
   try {

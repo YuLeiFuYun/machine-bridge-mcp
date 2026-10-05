@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { redactManagedJobOutput } from "../src/local/managed-job-output-redaction.mjs";
 
 const emptyContext = {
@@ -48,7 +49,7 @@ assert(redactManagedJobOutput(Buffer.from("value=abcdef"), overlappingCrossClass
   "/tmp/managed-job-redaction-runtime") === "value=<redacted-resource:longLiteral>",
 "byte-first redaction let a shorter resource value expose the suffix of a longer literal secret");
 
-const shortPath = "/tmp/managed-job-redaction-prefix";
+const shortPath = resolve("/tmp/managed-job-redaction-prefix");
 const longPath = shortPath + "-long";
 const overlappingPaths = {
   bytes: {}, paths: { short: shortPath, long: longPath }, sourcePaths: {}, temporaryPaths: {}, redactions: {},
@@ -56,6 +57,34 @@ const overlappingPaths = {
 assert(redactManagedJobOutput(Buffer.from("path=" + longPath), overlappingPaths,
   "/tmp/managed-job-redaction-runtime") === "path=<resource:long>",
 "shorter managed-job path partially redacted a longer protected path");
+
+
+// POSIX alias fixtures use the host-native path resolver; Windows cases below cover every path category.
+if (process.platform !== "win32") {
+  const darwinContext = {
+    bytes: {}, paths: { sample: "/private/tmp/job-alias/resource" },
+    sourcePaths: { sample: ["/private/tmp/job-alias/source"] },
+    temporaryPaths: { scratch: "/private/tmp/job-alias/temp" }, redactions: {},
+  };
+  assert(redactManagedJobOutput(Buffer.from("/tmp/job-alias/resource /tmp/job-alias/source /tmp/job-alias/temp /tmp/job-alias/runtime"),
+    darwinContext, "/private/tmp/job-alias/runtime", "darwin")
+    === "<resource:sample> <resource-source:sample> <temp:scratch> <job-runtime>",
+  "Darwin canonical aliases escaped managed-job result redaction");
+  assert(redactManagedJobOutput(Buffer.from("prefix /tmp/job-alias/reso"), darwinContext,
+    "/private/tmp/job-alias/runtime", "darwin", 8) === "prefix ", "Darwin truncated alias escaped redaction");
+  assert(redactManagedJobOutput(Buffer.from("/tmp/job-alias/resource"), darwinContext,
+    "/private/tmp/job-alias/runtime", "linux") === "/tmp/job-alias/resource", "Darwin aliases changed Linux semantics");
+}
+const windowsContext = { bytes: {}, paths: { sample: "C:\\Private\\Resource" },
+  sourcePaths: { sample: ["C:\\Private\\Source"] }, temporaryPaths: { scratch: "C:\\Private\\Temp" }, redactions: {} };
+assert(redactManagedJobOutput(Buffer.from("C:\\PRIVATE\\RESOURCE"), windowsContext,
+  "C:\\Private\\Runtime", "win32") === "<resource:sample>", "Windows complete case alias escaped redaction");
+assert(redactManagedJobOutput(Buffer.from("C:/PRIVATE/RESOURCE C:/PRIVATE/SOURCE C:/PRIVATE/TEMP C:/PRIVATE/RUNTIME"),
+  windowsContext, "C:\\Private\\Runtime", "win32")
+  === "<resource:sample> <resource-source:sample> <temp:scratch> <job-runtime>",
+"Windows aliases escaped resource, source, temporary, or runtime path redaction");
+assert(redactManagedJobOutput(Buffer.from("prefix C:\\PRIVATE\\RESOU"), windowsContext,
+  "C:\\Private\\Runtime", "win32", 5) === "prefix ", "Windows truncated case alias escaped redaction");
 
 console.log("managed-job output redaction test ok");
 

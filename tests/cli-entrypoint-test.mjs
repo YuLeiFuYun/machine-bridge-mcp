@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -13,6 +14,7 @@ const entry = resolve(root, "bin", "machine-mcp.mjs");
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 
 await testDirectLoopbackHealth();
+await testLoopbackHealthDeadline();
 
 assert(
   workspaceDaemonOwnsPlatformAutostart({ alive: true, verified_service_daemon: true, mode: "service" }),
@@ -45,12 +47,14 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "mbm-cli-entrypoint-workspace-"
 try {
   const debugSecret = `ghp_${"A".repeat(36)}`;
   const missingDebugWorkspace = join(homedir(), `.mbm-debug-${debugSecret}-${process.pid}-missing`);
-  const debugFailure = run(["workspace", "set", missingDebugWorkspace, "--state-dir", stateRoot], { MBM_DEBUG: "1" });
-  assert(debugFailure.status !== 0, "debug redaction fixture unexpectedly resolved a missing workspace");
-  assert(!debugFailure.stderr.includes(homedir()), "debug top-level exception leaked the local home path");
-  assert(!debugFailure.stderr.includes(debugSecret), "debug top-level exception leaked a credential-shaped value");
-  assert(debugFailure.stderr.includes("<home>") && debugFailure.stderr.includes("<redacted-access-token>"),
-    "debug top-level exception did not use the shared log redaction boundary");
+  for (const debugMode of ["", "1"]) {
+    const failure = run(["workspace", "set", missingDebugWorkspace, "--state-dir", stateRoot], { MBM_DEBUG: debugMode });
+    assert(failure.status !== 0, "CLI redaction fixture unexpectedly resolved a missing workspace");
+    assert(!failure.stderr.includes(homedir()), "top-level exception leaked the local home path");
+    assert(!failure.stderr.includes(debugSecret), "top-level exception leaked a credential-shaped value");
+    assert(failure.stderr.includes("<home>") && failure.stderr.includes("<redacted-access-token>"),
+      "default/debug top-level exception did not use the shared log redaction boundary");
+  }
 
   const initial = run(["workspace", "show", "--state-dir", stateRoot]);
   assert(initial.status === 0, `workspace show failed: ${initial.stderr}`);
@@ -191,4 +195,45 @@ function describeRun(result) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function testLoopbackHealthDeadline() {
+  let mode = "trickle"; let settleClosed;
+  const server = createServer((_request, response) => {
+    const onClosed = settleClosed;
+    if (mode === "ok") { response.end(JSON.stringify({ ok: true })); return; }
+    response.writeHead(mode === "status-error" ? 500 : 200, { "content-type": "application/json" });
+    response.write("{");
+    const interval = setInterval(() => response.write(" "), 10);
+    const endTimer = setTimeout(() => response.end("}"), 400);
+    response.on("error", () => {});
+    response.once("close", () => { clearInterval(interval); clearTimeout(endTimer); onClosed?.(); });
+  });
+  await new Promise((resolvePromise) => { server.listen(0, "127.0.0.1", resolvePromise); });
+  try {
+    const port = server.address().port; const target = `http://127.0.0.1:${port}/healthz`;
+    let closed = new Promise((resolvePromise) => { settleClosed = resolvePromise; });
+    assert(await readLoopbackJson(target, { timeoutMs: 80 }) === null,
+      "continuous trickle data bypassed the complete health-request deadline");
+    await requireClosed(closed);
+    mode = "ok"; settleClosed = null;
+    assert((await readLoopbackJson(target))?.ok === true, "health deadline broke ordinary complete JSON responses");
+    mode = "status-error";
+    closed = new Promise((resolvePromise) => { settleClosed = resolvePromise; });
+    assert(await readLoopbackJson(target) === null, "health request accepted a non-success HTTP response");
+    await requireClosed(closed);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolvePromise) => { server.close(resolvePromise); });
+  }
+}
+async function requireClosed(closed) {
+  let timer;
+  try {
+    const observed = await Promise.race([
+      closed.then(() => true),
+      new Promise((resolvePromise) => { timer = setTimeout(() => resolvePromise(false), 1_000); }),
+    ]);
+    assert(observed, "health failure retained its rejected or timed-out socket");
+  } finally { clearTimeout(timer); }
 }

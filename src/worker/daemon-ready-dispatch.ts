@@ -1,5 +1,6 @@
 import { readyDaemonWaiterSnapshot, waitForReadyDaemon } from "./daemon-ready-waiters.ts";
 import { readyDaemonChannels, type DaemonChannel, type ReadyDaemonRegistry } from "./daemon-channel.ts";
+import { WorkerToolError } from "./errors.ts";
 
 type ReadyWaitOptions = Parameters<typeof waitForReadyDaemon>[1];
 type ReadyDispatch = Readonly<{ socket: DaemonChannel; recoveryDelayMs: number }>;
@@ -15,6 +16,7 @@ export async function readyDaemonForDispatch(
   options: ReadyWaitOptions = {},
   now: () => number = () => performance.now(),
 ): Promise<ReadyDispatch> {
+  if (options.signal?.aborted) throw new WorkerToolError("cancelled", "tool call cancelled before local daemon dispatch");
   const immediate = immediateReadyDaemonForDispatch(registry);
   if (immediate) return immediate;
   const startedAt = now();

@@ -336,18 +336,9 @@ Do not point two logical trust domains at one broad parent directory merely to r
 
 Version 3 supports the current MCP protocol contract advertised by the server and rejects incompatible mixed-version Worker/daemon combinations. Preserve the owner-only state root when upgrading from the immediately preceding supported release; malformed, obsolete, or ambiguous trust state fails closed instead of being guessed or silently regenerated. Follow [UPGRADING.md](UPGRADING.md) for blocked prereleases and coordinated Worker/daemon/browser-extension replacement.
 
-
-Repeat the isolated global installation, then start Machine Bridge in the target workspace:
+Repeat the isolated installation in [section 4](#4-install-the-released-package) for your platform, then start Machine Bridge in the target workspace:
 
 ```sh
-install_dir="$(mktemp -d)"
-(
-  cd "$install_dir"
-  npx --yes npm@12.0.2 install --global npm@12.0.2
-  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
-)
-rm -rf "$install_dir"
-
 machine-mcp --workspace /path/to/project --verbose
 ```
 

@@ -118,7 +118,7 @@ function validClaim(value: unknown): value is Claim {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const claim = value as Partial<Claim>;
   return Object.keys(value).every((key) => CLAIM_FIELDS.has(key)) && typeof claim.jobId === "string" && JOB_ID.test(claim.jobId)
-    && typeof claim.monitorId === "string" && MONITOR_ID.test(claim.monitorId) && STATES.has(String(claim.state))
+    && typeof claim.monitorId === "string" && MONITOR_ID.test(claim.monitorId) && typeof claim.state === "string" && STATES.has(claim.state)
     && Number.isSafeInteger(claim.expiresAt) && Number(claim.expiresAt) > 0 && Number.isSafeInteger(claim.sequence) && Number(claim.sequence) > 0
     && claim.owner_kind === "account" && nonempty(claim.owner_account_id) && Number.isSafeInteger(claim.owner_account_version)
     && Number(claim.owner_account_version) > 0 && nonempty(claim.owner_client_id) && nonempty(claim.owner_family_id) && nonempty(claim.owner_role);
@@ -136,7 +136,7 @@ function matchesAuthorized(claim: Claim, authorized: AuthorizedToken): boolean {
     && claim.owner_client_id === authorized.clientId && claim.owner_family_id === authorized.familyId && claim.owner_role === authorized.role;
 }
 function prune(state: State, now: number): void { state.claims = state.claims.filter((claim) => claim.state === "claimed" || claim.expiresAt > now); }
-function replaceClaim(state: State, previous: Claim, next: Claim): void { state.claims[state.claims.indexOf(previous)] = Object.freeze(next); }
+function replaceClaim(state: State, previous: Claim, next: Claim): void { state.claims[state.claims.findIndex((claim) => claim.monitorId === previous.monitorId)] = Object.freeze(next); }
 function evictOldest(state: State): void { state.claims.splice(state.claims.reduce((best, claim, index, all) => claim.sequence < all[best].sequence ? index : best, 0), 1); }
 function bumpSequence(state: State): number {
   if (state.sequence >= Number.MAX_SAFE_INTEGER - 1) { state.claims.sort((a, b) => a.sequence - b.sequence); state.claims = state.claims.map((claim, index) => Object.freeze({ ...claim, sequence: index + 1 })); state.sequence = state.claims.length; }

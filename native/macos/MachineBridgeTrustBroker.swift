@@ -59,16 +59,14 @@ private struct MachineBridgeTrustBroker {
                 let key = try loadPrivateKey(tag: tag, prompt: nil, allowInteraction: false)
                 result = try output(tag: tag, key: key, signature: nil)
             case "status":
-                let key = try? loadPrivateKey(tag: tag, prompt: nil, allowInteraction: false)
+                let key = try existingPrivateKey(tag: tag)
                 if let key {
                     result = try output(tag: tag, key: key, signature: nil)
                 } else {
                     result = Output(ok: false, provider: providerName, keyTag: tag, publicJwk: nil, signature: nil, secureEnclave: secureEnclaveAvailable())
                 }
             case "sign":
-                let data = FileHandle.standardInput.readDataToEndOfFile()
-                guard !data.isEmpty, data.count <= 64 * 1024 else { throw BrokerError.invalidInput("signing input is empty or too large") }
-                guard String(data: data, encoding: .utf8) != nil else { throw BrokerError.invalidInput("signing input is not UTF-8") }
+                let data = try readSigningInput(FileHandle.standardInput)
                 let key = try loadPrivateKey(tag: tag, prompt: reason, allowInteraction: true)
                 var error: Unmanaged<CFError>?
                 guard let der = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, data as CFData, &error) as Data? else {
@@ -77,8 +75,7 @@ private struct MachineBridgeTrustBroker {
                 let raw = try derToP1363(der)
                 result = try output(tag: tag, key: key, signature: raw.base64URLEncodedString())
             case "delete":
-                let status = SecItemDelete(keyQuery(tag: tag, returnRef: false, allowInteraction: false, prompt: nil) as CFDictionary)
-                guard status == errSecSuccess || status == errSecItemNotFound else { throw BrokerError.security(status, "delete key") }
+                try deletePrivateKey(tag: tag)
                 result = Output(ok: true, provider: providerName, keyTag: tag, publicJwk: nil, signature: nil, secureEnclave: secureEnclaveAvailable())
             default:
                 throw BrokerError.usage("unknown action: \(action)")
@@ -93,7 +90,7 @@ private struct MachineBridgeTrustBroker {
 }
 
 private func ensurePrivateKey(tag: String) throws -> SecKey {
-    if let existing = try? loadPrivateKey(tag: tag, prompt: nil, allowInteraction: false) { return existing }
+    if let existing = try existingPrivateKey(tag: tag) { return existing }
     guard secureEnclaveAvailable() else { throw BrokerError.invalidKey("Secure Enclave is unavailable") }
     var accessError: Unmanaged<CFError>?
     guard let access = SecAccessControlCreateWithFlags(
@@ -119,14 +116,59 @@ private func ensurePrivateKey(tag: String) throws -> SecKey {
     guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &keyError) else {
         throw keyError?.takeRetainedValue() ?? BrokerError.invalidKey("could not create Secure Enclave key")
     }
+    try requireSecureEnclaveKey(key)
     return key
+}
+
+private func existingPrivateKey(tag: String) throws -> SecKey? {
+    do {
+        return try loadPrivateKey(tag: tag, prompt: nil, allowInteraction: false)
+    } catch BrokerError.security(let status, _) where status == errSecItemNotFound {
+        return nil
+    }
+}
+
+private func deletePrivateKey(tag: String) throws {
+    guard let key = try existingPrivateKey(tag: tag) else { return }
+    var query = keyQuery(tag: tag, returnRef: false, allowInteraction: false, prompt: nil)
+    query.removeValue(forKey: kSecReturnRef as String)
+    query.removeValue(forKey: kSecMatchLimit as String)
+    query[kSecAttrTokenID as String] = kSecAttrTokenIDSecureEnclave
+    query[kSecMatchItemList as String] = [key]
+    let status = SecItemDelete(query as CFDictionary)
+    guard status == errSecSuccess || status == errSecItemNotFound else { throw BrokerError.security(status, "delete key") }
+}
+
+private func requireSecureEnclaveKey(_ key: SecKey) throws {
+    guard let attributes = SecKeyCopyAttributes(key) as NSDictionary?,
+          attributes[kSecAttrTokenID] as? String == kSecAttrTokenIDSecureEnclave as String,
+          attributes[kSecAttrKeyClass] as? String == kSecAttrKeyClassPrivate as String,
+          attributes[kSecAttrKeyType] as? String == kSecAttrKeyTypeECSECPrimeRandom as String,
+          attributes[kSecAttrKeySizeInBits] as? Int == 256 else {
+        throw BrokerError.invalidKey("key is not a Secure Enclave P-256 private key")
+    }
+}
+
+private func readSigningInput(_ input: FileHandle) throws -> Data {
+    let limit = 64 * 1024
+    var data = Data()
+    while let chunk = try input.read(upToCount: min(8192, limit + 1 - data.count)), !chunk.isEmpty {
+        data.append(chunk)
+        guard data.count <= limit else { throw BrokerError.invalidInput("signing input is empty or too large") }
+    }
+    guard !data.isEmpty else { throw BrokerError.invalidInput("signing input is empty or too large") }
+    guard String(data: data, encoding: .utf8) != nil else { throw BrokerError.invalidInput("signing input is not UTF-8") }
+    return data
 }
 
 private func loadPrivateKey(tag: String, prompt: String?, allowInteraction: Bool) throws -> SecKey {
     let query = keyQuery(tag: tag, returnRef: true, allowInteraction: allowInteraction, prompt: prompt)
     var result: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &result)
-    guard status == errSecSuccess, let key = result as! SecKey? else { throw BrokerError.security(status, "load Secure Enclave key") }
+    guard status == errSecSuccess else { throw BrokerError.security(status, "load Secure Enclave key") }
+    guard let result, CFGetTypeID(result) == SecKeyGetTypeID() else { throw BrokerError.invalidKey("key query returned an invalid key reference") }
+    let key = result as! SecKey
+    try requireSecureEnclaveKey(key)
     return key
 }
 
@@ -134,6 +176,7 @@ private func keyQuery(tag: String, returnRef: Bool, allowInteraction: Bool, prom
     var query: [String: Any] = [
         kSecClass as String: kSecClassKey,
         kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+        kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
         kSecAttrApplicationTag as String: Data(tag.utf8),
         kSecReturnRef as String: returnRef,
         kSecMatchLimit as String: kSecMatchLimitOne,
@@ -149,6 +192,7 @@ private func keyQuery(tag: String, returnRef: Bool, allowInteraction: Bool, prom
 }
 
 private func output(tag: String, key: SecKey, signature: String?) throws -> Output {
+    try requireSecureEnclaveKey(key)
     guard let publicKey = SecKeyCopyPublicKey(key) else { throw BrokerError.invalidKey("public key is unavailable") }
     var error: Unmanaged<CFError>?
     guard let external = SecKeyCopyExternalRepresentation(publicKey, &error) as Data? else {

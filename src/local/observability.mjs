@@ -50,9 +50,9 @@ export class RuntimeObservability {
   }
 
   toolMetric(tool) {
-    const name = String(tool || "unknown").slice(0, 128) || "unknown";
+    let name = String(tool || "unknown").slice(0, 128) || "unknown";
+    if (!this.byTool.has(name) && this.byTool.size >= MAX_TOOLS - (this.byTool.has("<other>") ? 0 : 1)) name = "<other>";
     if (!this.byTool.has(name)) {
-      if (this.byTool.size >= MAX_TOOLS) return this.toolMetric("<other>");
       this.byTool.set(name, {
         started: 0, completed: 0, failed: 0, active: 0, slow: 0,
         total_duration_ms: 0, max_duration_ms: 0, last_duration_ms: 0,
@@ -63,11 +63,8 @@ export class RuntimeObservability {
   }
 
   incrementError(code) {
-    const key = String(code || "execution_failed").slice(0, 64);
-    if (!this.errors.has(key) && this.errors.size >= MAX_ERROR_CODES) {
-      this.errors.set("<other>", (this.errors.get("<other>") || 0) + 1);
-      return;
-    }
+    let key = String(code || "execution_failed").slice(0, 64);
+    if (!this.errors.has(key) && this.errors.size >= MAX_ERROR_CODES - (this.errors.has("<other>") ? 0 : 1)) key = "<other>";
     this.errors.set(key, (this.errors.get(key) || 0) + 1);
   }
 }

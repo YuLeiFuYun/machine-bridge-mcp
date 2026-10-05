@@ -10,12 +10,13 @@ export function cfAuthenticationResult(result = {}) {
   let value;
   try { value = JSON.parse(result.stdout); }
   catch { return { authenticated: false, accounts: [] }; }
-  if (!value || Array.isArray(value) || value.authenticated !== true || value.tokenValid === false) {
+  if (!value || Array.isArray(value) || value.authenticated !== true
+      || (value.tokenValid !== undefined && value.tokenValid !== true)) {
     return { authenticated: false, accounts: [] };
   }
   const accounts = Array.isArray(value.accounts) ? value.accounts
-    .filter(account => account && /^[a-f0-9]{32}$/i.test(account.id))
-    .map(account => ({ id: account.id })) : [];
+    .filter(account => account && typeof account.id === "string" && /^[a-f0-9]{32}$/i.test(account.id))
+    .map(account => ({ id: account.id.toLowerCase() })) : [];
   return { authenticated: true, accounts };
 }
 
@@ -36,12 +37,12 @@ export async function ensureCfAuthenticated({
 
 export function cfDeploymentAccount(auth, environment = process.env) {
   const configured = environment.CLOUDFLARE_ACCOUNT_ID;
-  if (configured) {
-    if (!/^[a-f0-9]{32}$/i.test(configured)
-        || (auth.accounts.length && !auth.accounts.some(account => account.id === configured))) {
+  if (configured !== undefined) {
+    if (typeof configured !== "string" || !/^[a-f0-9]{32}$/i.test(configured)
+        || (auth.accounts.length && !auth.accounts.some(account => account.id === configured.toLowerCase()))) {
       throw new Error("CLOUDFLARE_ACCOUNT_ID does not identify an accessible Cloudflare account");
     }
-    return configured;
+    return configured.toLowerCase();
   }
   if (auth.accounts.length === 1) return auth.accounts[0].id;
   throw new Error("Set CLOUDFLARE_ACCOUNT_ID to the existing Worker's account before deploying with cf");

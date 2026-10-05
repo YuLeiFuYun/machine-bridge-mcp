@@ -9,6 +9,7 @@ import {
 } from "./state.mjs";
 import { readBrowserPairing, readBrowserPairingPort } from "./browser-pairing-store.mjs";
 import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
+import { browserPairingLaunchCommand } from "./browser-command.mjs";
 import { browserExtensionPathForRuntime } from "./browser-extension-path.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
 import { readLoopbackJson } from "./loopback-health.mjs";
@@ -222,9 +223,7 @@ async function browserPairAction(args, {
   if (!context.result.running) throw new Error("browser bridge is not reachable; keep machine-mcp running and retry");
   const pairing = readBrowserPairing(context.stateRoot);
   if (!pairing || pairing.port !== context.port) throw new Error("browser pairing state changed; retry setup");
-  const launch = startPairingLaunch === startBrowserPairingLaunch
-    ? await startBrowserPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken })
-    : await startPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken });
+  const launch = await startPairingLaunch({ brokerPort: pairing.port, extensionToken: pairing.extensionToken });
   try { await openTarget(launch.url); } catch (error) { launch.close(); throw error; }
   if (args.json) {
     console.log(JSON.stringify({ ...context.result, pairing_page_opened: true }, null, 2));
@@ -285,13 +284,9 @@ function renderBrowserStatus(result, json) {
 }
 
 function openExternal(target) {
-  const command = process.platform === "darwin"
-    ? { file: "open", args: [target] }
-    : process.platform === "win32"
-      ? { file: "cmd.exe", args: ["/d", "/s", "/c", "start", "", target] }
-      : { file: "xdg-open", args: [target] };
+  const command = browserPairingLaunchCommand(target);
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: true });
+    const child = spawn(command.cmd, command.argv, { detached: true, stdio: "ignore", windowsHide: true });
     child.once("spawn", () => {
       child.unref();
       resolvePromise();

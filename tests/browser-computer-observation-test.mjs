@@ -87,6 +87,7 @@ async function localServiceHashesReturnedScreenshotBytes() {
 
 async function localServiceRejectsMalformedScreenshotEvidence() {
   for (const data of [
+    "", null, false, 0,
     "data:image/png;base64,QUJD",
     `data:image/png;base64,${PNG_BASE64}=`,
     `data:image/jpeg;base64,${PNG_BASE64}`,

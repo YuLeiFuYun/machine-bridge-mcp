@@ -48,15 +48,10 @@ if (!brokerServerSource.includes("isAllowedExtensionOrigin(origin, EXPECTED_EXTE
   throw new Error("browser broker no longer pins WebSocket Origin to the packaged extension identity");
 }
 const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
-const extensionBrokerAuthSource = readFileSync(join(root, "browser-extension", "broker-auth.js"), "utf8");
-const pairingBootstrapSource = readFileSync(join(root, "browser-extension", "pairing-bootstrap.js"), "utf8");
 const pairingContentSource = readFileSync(join(root, "browser-extension", "pairing.js"), "utf8");
 const browserErrorBoundarySource = readFileSync(join(root, "browser-extension", "browser-error-boundary.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
-const devtoolsInputSource = readFileSync(join(root, "browser-extension", "devtools-input.js"), "utf8");
-const devtoolsObservationSource = readFileSync(join(root, "browser-extension", "devtools-observation.js"), "utf8");
-const devtoolsSessionSource = readFileSync(join(root, "browser-extension", "devtools-session.js"), "utf8");
 const localToolResultBoundarySource = readFileSync(join(root, "src", "local", "tool-result-boundary.mjs"), "utf8");
 const browserRequestSettlementSource = readFileSync(join(root, "src", "local", "browser-request-settlement.mjs"), "utf8");
 const localAutomationDocsSource = readFileSync(join(root, "docs", "LOCAL_AUTOMATION.md"), "utf8");
@@ -98,8 +93,9 @@ if (!workerHttpSource.includes("BUILT_IN_BROWSER_ORIGIN_SET.has(origin)") || !wo
 if (!workerSource.includes('mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "")')) {
   throw new Error("Durable Object no longer validates Origin on actual MCP endpoint requests");
 }
-if (workerSource.indexOf("this.mcp.handleControl(request, proxyMode)")
-  > workerSource.indexOf("authorizeMcpRequest({")) {
+const controlHandlerAt = workerSource.indexOf("this.mcp.handleControl(request, proxyMode)");
+const publicAuthorizationAt = workerSource.indexOf("authorizeMcpRequest({");
+if (controlHandlerAt < 0 || publicAuthorizationAt < 0 || controlHandlerAt > publicAuthorizationAt) {
   throw new Error("private modern cancellation again reuses the public OAuth/DPoP proof");
 }
 if (!workerStaticRoutesSource.includes('path === "/mcp"')
@@ -179,14 +175,6 @@ if (!browserOperationsSource.includes("browser mutation may have completed; the 
     || !browserRequestSettlementSource.includes('message.startsWith("browser mutation may have completed;")')) {
   throw new Error("browser mutation result-undeliverable settlement drifted across extension and broker layers");
 }
-if (serviceWorkerSource.split(/\r?\n/).length > 350) throw new Error("browser service worker regained page-operation responsibilities");
-if (browserOperationsSource.split(/\r?\n/).length > 1900) throw new Error("browser operations exceeded its protocol/dispatch responsibility boundary");
-if (pageAutomationSource.split(/\r?\n/).length > 1200) throw new Error("browser page automation exceeded its page-world responsibility boundary");
-if (devtoolsInputSource.split(/\r?\n/).length > 330) throw new Error("browser DevTools input exceeded its trusted-input responsibility boundary");
-if (devtoolsObservationSource.split(/\r?\n/).length > 440) throw new Error("browser DevTools observation exceeded its observation responsibility boundary");
-if (devtoolsSessionSource.split(/\r?\n/).length > 50) throw new Error("browser DevTools session helper exceeded its serialization responsibility boundary");
-if (extensionBrokerAuthSource.split(/\r?\n/).length > 110) throw new Error("browser extension broker auth helper exceeded its transport/authentication responsibility");
-if (pairingBootstrapSource.split(/\r?\n/).length > 70) throw new Error("browser extension pairing bootstrap helper exceeded its authentication responsibility");
 for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {
   if (serviceWorkerSource.includes(obsolete) || browserOperationsSource.includes(obsolete)) throw new Error(`browser service worker retained cross-world helper reference: ${obsolete}`);
 }

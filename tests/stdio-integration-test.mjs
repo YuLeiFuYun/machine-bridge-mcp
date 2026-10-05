@@ -205,6 +205,33 @@ try {
   try { await stat(notificationMarker); notificationExecuted = true; } catch {}
   assert(!notificationExecuted, "stdio silently executed a tools/call notification");
 
+  for (const field of ["path", "content"]) {
+    const rejectedPath = "invalid-utf8-" + field + "-must-not-write.txt";
+    const message = { jsonrpc: "2.0", id: 910, method: "tools/call", params: {
+      _meta: currentMeta, name: "write_file",
+      arguments: { path: field === "path" ? "beforeMARKERafter" : rejectedPath,
+        content: field === "content" ? "beforeMARKERafter" : "must-not-run" },
+    } };
+    const encoded = Buffer.from(JSON.stringify(message) + "\n");
+    const marker = encoded.indexOf("MARKER");
+    child.stdin.write(Buffer.concat([encoded.subarray(0, marker), Buffer.from([0xff]), encoded.subarray(marker + 6)]));
+    const invalidUtf8 = await responseFor(null);
+    assert(invalidUtf8.error?.code === -32700, "stdio accepted malformed UTF-8 before JSON-RPC dispatch");
+    const alteredPath = field === "path" ? "before\uFFFDafter" : rejectedPath;
+    assert(!await stat(join(workspace, alteredPath)).then(() => true, error => {
+      if (error.code === "ENOENT") return false; throw error;
+    }), "stdio executed an input whose invalid bytes were replaced");
+  }
+  const unicodeMessage = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 912, method: "tools/call", params: {
+    _meta: currentMeta, name: "write_file", arguments: { path: "unicode-roundtrip.txt", content: "中文🙂" },
+  } }) + "\n");
+  const unicodeBoundary = unicodeMessage.indexOf(Buffer.from("中文🙂")) + 1;
+  child.stdin.write(unicodeMessage.subarray(0, unicodeBoundary));
+  child.stdin.write(unicodeMessage.subarray(unicodeBoundary));
+  assert((await responseFor(912)).result?.isError === false
+    && await readFile(join(workspace, "unicode-roundtrip.txt"), "utf8") === "中文🙂",
+  "stdio rejected a valid UTF-8 character split across chunks after a parse failure");
+
   child.stdin.write(`${"x".repeat(8 * 1024 * 1024 + 1024)}\n`);
   const oversizedLine = await responseFor(null, 15_000);
   assert(oversizedLine.error?.code === -32600 && oversizedLine.error?.message.includes("maximum size"), "stdio did not reject an oversized line incrementally");

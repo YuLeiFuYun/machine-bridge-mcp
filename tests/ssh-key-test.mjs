@@ -151,6 +151,32 @@ try {
   assert(await readFile(partialPath, "utf8") === "replacement-private-key",
     "partial SSH install rollback deleted a replacement private-key path");
 
+  for (const replacedPrivate of [false, true]) {
+    const generatedPath = join(root, replacedPrivate ? "generated-validation-replacement" : "generated-validation-invalid");
+    let installs = 0;
+    const failure = await captureReject(() => generateSshKeyPair({
+      privateKeyPath: generatedPath,
+      installNoReplace: async (source, target) => {
+        await link(source, target);
+        await unlink(source);
+        installs += 1;
+        if (installs !== 2) return;
+        if (replacedPrivate) {
+          await rm(generatedPath);
+          await writeFile(generatedPath, "preserve-generated-replacement", { mode: 0o600 });
+        } else await writeFile(target, "synthetic invalid generated public key", { mode: 0o600 });
+      },
+    }));
+    assert(!await exists(generatedPath + ".pub"), "failed final validation retained the newly installed public key");
+    if (replacedPrivate) {
+      assert(failure instanceof AggregateError && failure.errors[0]?.message.includes("private key")
+        && failure.message.includes("rollback was incomplete"),
+      "changed generated-key target lost validation/rollback causality");
+      assert(await readFile(generatedPath, "utf8") === "preserve-generated-replacement",
+        "post-install key rollback removed a replacement file");
+    } else assert(!await exists(generatedPath), "failed final validation orphaned the newly installed private key");
+  }
+
   const registrationState = { resources: {} };
   let lockReleased = 0;
   let saved = 0;
@@ -248,6 +274,31 @@ try {
     removeGeneratedSshKeyPair: async (key) => { rollbackCalls.push(key.privateKeyPath, key.publicKeyPath); },
   }), "synthetic state write failure");
   assert(rollbackCalls.length === 2, "state-write failure did not remove both generated SSH key files");
+
+  for (const created of [true, false]) {
+    for (const cleanupFails of [false, true]) {
+      const primary = new Error("synthetic generated-key inspection denied");
+      const cleanupError = new Error("synthetic generated-key cleanup denied");
+      let cleanup = 0;
+      let released = 0;
+      const failure = await captureReject(() => generateRegisteredSshKey({
+        workspace: root, name: "inspection-failure", targetPath: join(root, "inspection-failure"),
+      }, {
+        loadState: () => ({ resources: {} }),
+        acquireStartupLockWithWait: async () => ({ release() { released += 1; } }),
+        generateSshKeyPair: async () => ({ created, privateKeyPath: "synthetic-owned-key" }),
+        inspectResourceFile: () => { throw primary; },
+        saveState: () => { throw new Error("inspection failure must prevent registration"); },
+        removeGeneratedSshKeyPair: async () => { cleanup += 1; if (cleanupFails) throw cleanupError; },
+      }));
+      assert(cleanup === Number(created) && released === 1,
+        "inspection failure orphaned a new key, deleted an existing key, or retained its startup lock");
+      assert(created && cleanupFails
+        ? failure instanceof AggregateError && failure.errors[0] === primary && failure.errors[1] === cleanupError
+        : failure === primary,
+      "key inspection failure lost primary or rollback causality");
+    }
+  }
 
   const incompleteRollbackCalls = [];
   await expectReject(() => generateRegisteredSshKey({

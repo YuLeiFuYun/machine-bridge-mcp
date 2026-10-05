@@ -5,6 +5,7 @@ await testValidationAndPreflightFailures();
 await testRestartabilityPreflightFailureIsZeroMutation();
 await testConvergenceWait();
 await testSuccessfulHandoff();
+await testAsynchronousStopOrdering();
 await testOwnerCommitFailureStopsVerifiedCandidate();
 await testUncommittedActiveCandidateStopsWhenRecoveryCannotConverge();
 await testAuthenticationFailureRedeploysOnce();
@@ -26,6 +27,43 @@ await testServiceLockReleaseFailureAggregation();
 await testCleanupFailureAggregation();
 
 console.log("persistent runtime activation convergence and handoff test ok");
+
+async function testAsynchronousStopOrdering() {
+  for (const failedInstall of [false, true]) {
+    const events = [];
+    let settleStop;
+    const stopped = new Promise((resolvePromise) => { settleStop = () => { events.push("runtime:stopped"); resolvePromise(); }; });
+    const activation = activateWithPreflight({
+      expectedVersion: "3.0.0-beta.1", maximumAttempts: 1,
+      inspectActivationOwnership: inactiveActivationOwnership,
+      acquireStartupLock: async () => lock("startup", events),
+      acquireServiceLock: async () => lock("service", events),
+      stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false }),
+      acquireDaemonLock: async () => lock("daemon", events),
+      prepareRemoteState: async () => ({}),
+      createRuntime: () => ({ async start() {}, stop() { events.push("runtime:stop-started"); return stopped; } }),
+      installAutostart: async () => {
+        if (failedInstall) throw new Error("synthetic install failure");
+        return { ok: true };
+      },
+      startAutostart: async () => { events.push("service:start"); return { ok: true, active: true }; },
+      inspectDaemon: async () => readyCandidateDaemon(),
+      checkWorker: async () => readyCandidateWorker(),
+    });
+    const settled = activation.catch((error) => error);
+    await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+    assert(events.join(",") === "runtime:stop-started",
+      "activation released ownership or started a service while asynchronous candidate stop was pending");
+    settleStop();
+    const result = await settled;
+    assert(failedInstall ? result instanceof AggregateError && result.errors[0]?.message.includes("synthetic install failure") : result.ok === true,
+      "asynchronous candidate stop changed the primary activation outcome");
+    for (const name of ["daemon", "startup", "service"]) {
+      assert(events.indexOf(name + ":release") > events.indexOf("runtime:stopped"),
+        "activation ownership was released before runtime stop settled");
+    }
+  }
+}
 
 async function testValidationAndPreflightFailures() {
   await expectReject(() => activateWithPreflight({}), "requires acquireStartupLock");
@@ -564,43 +602,52 @@ async function testCompatibleCandidateRecoveryFailureIsObservable() {
 }
 
 async function testCandidateStartCleanupFailureAggregation() {
-  const events = [];
-  const startup = lock("startup", events);
-  const daemon = lock("daemon", events);
-  let caught;
-  try {
-    await activateWithPreflight({
-      expectedVersion: "3.0.0-beta.1",
-      inspectActivationOwnership: previousServiceActivationOwnership,
-      acquireStartupLock: async () => startup,
-      acquireServiceLock: async () => silentServiceLock(),
-      stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
-      acquireDaemonLock: async () => daemon,
-      prepareRemoteState: async () => ({}),
-      repairRemoteState: unexpected,
-      createRuntime: () => ({
-        async start() {
-          const error = new Error("unauthorized");
-          error.code = "relay_authentication_failed";
-          throw error;
-        },
-        stop() { throw new Error("candidate stop failed"); },
-      }),
-      installAutostart: unexpected,
-      startAutostart: unexpected,
-      inspectDaemon: unexpected,
-      checkWorker: unexpected,
-    });
-  } catch (error) { caught = error; }
-  assert(caught instanceof AggregateError
-    && caught.activationRecovery === undefined
-    && caught.cleanupIncomplete === true
-    && caught.errors?.length === 2
-    && caught.errors[0]?.code === "relay_authentication_failed"
-    && caught.errors[1]?.message.includes("candidate stop failed"),
-  "candidate-start cleanup failure did not preserve both errors while suppressing unsafe service recovery");
-  assert(events.join(",") === "daemon:release,startup:release",
-    `candidate-start cleanup failure leaked activation locks: ${events.join(",")}`);
+  for (const [startFails, shutdownRecovers] of [[true, false], [false, false], [true, true]]) {
+    const events = [];
+    const primary = Object.assign(new Error("candidate primary failure"), { code: "relay_authentication_failed" });
+    const shutdownFailure = new Error("candidate stop failed");
+    let stopCalls = 0, caught;
+    try {
+      await activateWithPreflight({
+        expectedVersion: "3.0.0-beta.1", candidateStartAttempts: 1,
+        inspectActivationOwnership: inactiveActivationOwnership,
+        acquireStartupLock: async () => lock("startup", events),
+        acquireServiceLock: async () => lock("service", events),
+        stopAutostart: async () => ({ ok: true, active_before: false, active: false, restore_required: false, provider: "test" }),
+        acquireDaemonLock: async () => lock("daemon", events),
+        prepareRemoteState: async () => ({}),
+        repairRemoteState: unexpected,
+        createRuntime: () => ({
+          async start() { if (startFails) throw primary; },
+          async stop() {
+            events.push(`runtime:stop:${++stopCalls}`);
+            if (!shutdownRecovers || stopCalls === 1) throw shutdownFailure;
+            events.push("runtime:stopped");
+          },
+        }),
+        installAutostart: async () => { assert(!startFails, "failed candidate startup entered installation"); throw primary; },
+        startAutostart: unexpected, inspectDaemon: unexpected, checkWorker: unexpected,
+      });
+    } catch (error) { caught = error; }
+    const causes = caught?.errors?.[0] instanceof AggregateError ? caught.errors[0].errors : caught?.errors;
+    assert(caught instanceof AggregateError && caught.cleanupIncomplete === true
+      && caught.activationRecovery === undefined && causes?.[0] === primary && causes.includes(shutdownFailure),
+    "candidate cleanup lost the primary/stop errors or attempted unsafe provider recovery");
+    assert(stopCalls === (startFails ? 2 : 1),
+      "activation discarded the failed-start runtime before its final shutdown attempt");
+    assert(events.filter((value) => value === "startup:release").length === 1
+      && events.filter((value) => value === "service:release").length === 1,
+    "activation did not release its non-runtime transaction locks exactly once");
+    if (shutdownRecovers) {
+      assert(events.filter((value) => value === "daemon:release").length === 1
+        && events.indexOf("daemon:release") > events.indexOf("runtime:stopped"),
+      "activation released daemon ownership before the retried shutdown settled");
+    } else {
+      assert(!events.includes("daemon:release") && caught.daemonOwnershipRetained === true
+        && caught.message.includes("daemon ownership retained"),
+      "failed candidate shutdown released daemon ownership or omitted its retained state");
+    }
+  }
 }
 
 async function testForegroundRefusal() {
@@ -1056,14 +1103,17 @@ async function testServiceLockReleaseFailureAggregation() {
 
 async function testCleanupFailureAggregation() {
   const events = [];
-  const startup = lock("startup", events);
+  const startup = {
+    acquired: true,
+    release() { events.push("startup:release"); throw new Error("startup release failed"); },
+  };
   const daemon = {
     acquired: true,
     release() { events.push("daemon:release"); throw new Error("daemon release failed"); },
   };
   const runtime = {
     async start() { events.push("runtime:start"); },
-    stop() { events.push("runtime:stop"); throw new Error("runtime stop failed"); },
+    async stop() { events.push("runtime:stop"); throw new Error("runtime stop failed"); },
   };
   let caught;
   try {
@@ -1082,8 +1132,10 @@ async function testCleanupFailureAggregation() {
   } catch (error) { caught = error; }
   assert(caught instanceof AggregateError && caught.errors?.length === 3
     && caught.message.includes("cleanup was incomplete"),
-  "activation cleanup failure did not preserve the primary, runtime-stop, and lock-release errors");
-  assert(events.filter((value) => value === "startup:release").length === 1, "cleanup aggregation did not release the startup lock exactly once");
+  "activation cleanup failure did not preserve the primary, runtime-stop, and startup-release errors");
+  assert(events.filter((value) => value === "startup:release").length === 1
+    && !events.includes("daemon:release") && caught.daemonOwnershipRetained === true,
+  "cleanup aggregation released daemon ownership after failed shutdown or repeated startup cleanup");
 }
 
 function readyCandidateDaemon(version = "3.0.0-beta.1") {

@@ -48,15 +48,9 @@ A proposed change that conflicts with an invariant requires an explicit owner de
 
 ## Change and release-operation ownership
 
-Repository implementation, candidate preparation, observed live verification, acceptance recording, source pull requests, live activation, Git/GitHub publication, and registry installation are distinct workflow stages with independent technical gates. They do not require separate conversational approvals. Only npm package publication requires a current explicit owner request; all other task-relevant operations proceed under standing repository authority when the effective account policy and their integrity/safety checks permit them.
+Implementation, frozen local verification, candidate preparation, activation, acceptance, GitHub publication, npm publication and soak have distinct evidence boundaries. The canonical sequence, exact commands, integrity gates and rollback rules are maintained in [RELEASING.md](RELEASING.md); do not maintain another complete procedure here.
 
-For each package change, automation runs one complete frozen-tree verification. A successful full run records an ignored owner-local receipt bound to the exact verification generation, package/runtime identity, and a short freshness window; beginning another full run clears prior evidence before tests start. `release:candidate` must consume that matching receipt and therefore does not repeat the same complete suite on the same machine. It then prepares the exact prerelease tarball, and immediately before live activation automation runs `node scripts/start-release-candidate.mjs --install-only` to re-prove current source/package modes, tarball integrity, and disposable installability without live activation. A stale receipt or failed preflight returns ownership to automation to repair, rerun full verification when required, and regenerate the candidate. Once that succeeds, automation executes `npm run release:candidate:activate -- --allow-worker-deploy` without another approval. After that command updates the Worker, verifies candidate relay readiness, replaces the login daemon, and verifies service handoff, the coding agent derives `<activated-runtime-package>` from activation `runtime_entry` and runs `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd. This bounded synthetic canary is candidate-bound, creates only a temporary reviewer account/client, retains no credential/token evidence, and must prove authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup. The coding agent then inspects the connected system through Machine Bridge. Only after both proofs may it record candidate acceptance and push through `npm run github:push`.
-
-After merge and exact-commit checks, GitHub tag/Release publication runs automatically with `npm run prerelease:release`; exact acceptance, CI, digest, main-head, remote-state reconciliation, and publication-lock gates remain mandatory. The tracked acceptance plus exact merged source are authoritative: an ignored worktree-local `.release-candidate` cache is not a post-merge prerequisite. GitHub/npm publication use their integrity-pinned hardened npm session to rematerialize private staged bytes and proceed only when package identity, SHA-1/SRI, and promotion digest exactly equal acceptance. npm publication is the sole explicit authorization boundary and uses `npm run prerelease:publish -- --owner-confirm`. TTY presence is not authorization, but npm's own Web OTP flow is process-scoped: if the registry returns an interactive one-time-authentication challenge, the canonical publish command must run in a real owner TTY so npm can wait for that challenge and retry the upload in the same process. Non-TTY publication captures challenge output, reduces it to a fixed non-secret EOTP classification, reconciles registry state, and fails with a fixed recovery instruction instead of streaming the challenge URL. After authorized publication succeeds, registry installation/activation proceeds automatically with `npm run prerelease:install -- --allow-worker-deploy`. The owner uses the prerelease for the required interval and explicitly reports whether blocking issues remain. Automation must not infer soak success from elapsed time.
-
-Stable promotion is content-preserving. `release:soak:verify` compares the packaged functional digest with the accepted prerelease. A mismatch requires another prerelease and a restarted soak. After stable candidate activation and observed verification, GitHub source publication uses `npm run release` automatically; stable npm publication remains the explicit authorization boundary through `npm run stable:publish -- --owner-confirm`.
-
-npm package publication is the sole operation requiring a separate owner decision. GitHub publication, global installation, Worker/service replacement, credential maintenance, and other task-relevant live-state changes may execute automatically under the effective policy and their existing evidence/identity/settlement safeguards. Standing authority is not a reason to perform unrelated destructive work. GitHub release commands never push `main`.
+Repository automation proceeds under the standing authority in [the repository contract](../AGENTS.md). npm package publication is the sole explicit current-task owner authorization boundary and uses `--owner-confirm`. Local review readiness does not imply external release readiness, as defined in [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md).
 
 ## Default instruction invariant
 
@@ -136,9 +130,9 @@ Operational logs are a user interface, not a dump of protocol events.
 ### Level meanings
 
 - `error`: the requested operation or long-lived service cannot continue without intervention.
-- `warn`: persistent degradation, rejected protocol data, supersession, or a service problem requiring attention.
-- `info`: successful startup, authenticated readiness, deployment, and recovery from a previously visible degradation.
-- `debug`: raw transport codes/reasons, retry timing, correlation identifiers, per-tool outcomes, and implementation diagnostics.
+- `warn`: persistent degradation, rejected protocol data, supersession, or a service problem requiring attention. A relay outage already reported at this level also has one recovery summary at the same level, closing the incident in warning-level service logs.
+- `info`: successful startup, initial authenticated readiness, and deployment.
+- `debug`: bounded transport codes and fixed classifications, retry timing, shortened correlation identifiers, per-tool outcomes, and sanitized implementation diagnostics. Peer-supplied close-reason text is not a log field.
 
 A warning must answer at least one of these questions: what is degraded, whether recovery is automatic, and what action is required if recovery fails.
 
@@ -232,7 +226,7 @@ Do not store passwords, tokens, private keys, authorization URLs, or copied secr
 
 When a local observation becomes generally true, move the sanitized lesson into tracked documentation and delete the stale local note.
 
-Historical cross-cutting audits, release follow-ups, and residual limits are recorded in [AUDIT.md](AUDIT.md); current normative behavior remains defined by this guide, `SECURITY.md`, and executable test contracts.
+Current audit conclusions and residual limits are recorded in [AUDIT.md](AUDIT.md); historical reviews remain in Git history and tags. Normative behavior remains defined by this guide, `SECURITY.md`, and executable test contracts.
 
 ## Review checklist
 

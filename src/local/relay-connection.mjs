@@ -392,12 +392,12 @@ export class RelayConnection {
     this.connectTimer?.unref?.();
 
     socket.on("open", () => {
-      this.clearTimer("connectTimer", "clearTimeout");
       if (this.socket !== socket || this.closed) {
         try { socket.close(1000, "stale daemon connection"); }
         catch { /* Stale transport ownership has already been rejected; concurrent close is harmless. */ }
         return;
       }
+      this.clearTimer("connectTimer", "clearTimeout");
       this.logger.debug?.("remote relay transport opened; awaiting device challenge");
       this.connectTiming.observe("websocket_open");
       this.connectTiming.finish();
@@ -471,7 +471,6 @@ export class RelayConnection {
       this.lastCloseCode = Number(code) || 0;
       this.logger.debug?.("remote relay transport closed", {
         close_code: this.lastCloseCode,
-        close_reason: reasonText || "<none>",
         category,
         ready: wasReady,
         connected_for_ms: connectedForMs,

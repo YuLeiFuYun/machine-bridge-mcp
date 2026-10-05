@@ -68,6 +68,24 @@ try {
   );
   assert(failedUrl.includes("#broker_port="), "CLI opener failure did not receive the pairing launch URL");
   assert.equal(failedCloseCalls, 1, "CLI opener failure did not close the pairing launch exactly once");
+
+  let changedStateLaunchCalls = 0;
+  let changedStateOpenCalls = 0;
+  const changedStateCommands = createLocalAdminCommands({
+    chooseWorkspace: async () => workspace,
+    confirm: async () => true,
+    readBrowserHealth: async () => {
+      await savePairing(state.paths.stateRoot, { ...initialPairing, port: brokerPort + 1 });
+      return health;
+    },
+    startBrowserPairingLaunch: async () => { changedStateLaunchCalls += 1; return syntheticLaunch(brokerPort); },
+    openExternal: async () => { changedStateOpenCalls += 1; },
+  });
+  await assert.rejects(changedStateCommands.browserCommand({ _: ["setup"], stateDir: stateRoot, json: true }),
+    /browser pairing state changed/, "pairing must reject state changed during health lookup");
+  assert.equal(changedStateLaunchCalls, 0, "changed pairing state created a grant for the wrong broker");
+  assert.equal(changedStateOpenCalls, 0, "changed pairing state opened the browser");
+
 } finally {
   await rm(stateRoot, { recursive: true, force: true });
   await rm(workspace, { recursive: true, force: true });

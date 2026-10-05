@@ -33,17 +33,22 @@ export async function verifyDpopProof(input: {
   const publicJwk = publicP256Jwk(header.jwk);
   if (!publicJwk) return null;
   const now = Number.isSafeInteger(input.now) ? Number(input.now) : Math.floor(Date.now() / 1000);
-  const issuedAt = Number(payload.iat);
-  const jti = String(payload.jti || "");
+  const issuedAt = payload.iat;
+  const jti = payload.jti;
+  if (typeof issuedAt !== "number" || typeof jti !== "string") return null;
   if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > DPOP_WINDOW_SECONDS) return null;
   if (!/^[A-Za-z0-9._~-]{16,200}$/.test(jti)) return null;
-  const expectedMethod = String(input.expectedMethod || input.request.method).toUpperCase();
-  const expectedUrl = normalizedHtu(input.expectedUrl || input.request.url);
-  if (String(payload.htm || "").toUpperCase() !== expectedMethod || normalizedHtu(String(payload.htu || "")) !== expectedUrl) return null;
+  if (typeof payload.htm !== "string" || typeof payload.htu !== "string") return null;
+  const expectedMethod = (input.expectedMethod || input.request.method).toUpperCase();
+  try {
+    if (payload.htm.toUpperCase() !== expectedMethod
+        || normalizedHtu(payload.htu) !== normalizedHtu(input.expectedUrl || input.request.url)) return null;
+  } catch { return null; }
   const jkt = await jwkThumbprint(publicJwk);
   if (input.expectedJkt && (!JWK_THUMBPRINT_PATTERN.test(input.expectedJkt) || input.expectedJkt !== jkt)) return null;
   if (input.accessToken) {
-    const ath = String(payload.ath || "");
+    const ath = payload.ath;
+    if (typeof ath !== "string") return null;
     if (ath !== await sha256Base64Url(input.accessToken)) return null;
   } else if (payload.ath !== undefined) {
     return null;

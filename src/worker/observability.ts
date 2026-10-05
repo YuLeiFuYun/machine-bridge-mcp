@@ -115,20 +115,15 @@ export class WorkerObservability {
   }
 
   private toolMetric(tool: string): { started: number; completed: number; failed: number; active: number } {
-    const name = sanitizeName(tool) || "unknown";
-    if (!this.tools.has(name)) {
-      if (this.tools.size >= MAX_TOOLS) return this.toolMetric("other");
-      this.tools.set(name, { started: 0, completed: 0, failed: 0, active: 0 });
-    }
+    let name = sanitizeName(tool) || "unknown";
+    if (!this.tools.has(name) && this.tools.size >= MAX_TOOLS - 1) name = "other";
+    if (!this.tools.has(name)) this.tools.set(name, { started: 0, completed: 0, failed: 0, active: 0 });
     return this.tools.get(name)!;
   }
 
   private incrementError(code: string): void {
-    const key = sanitizeName(code) || "execution_failed";
-    if (!this.errors.has(key) && this.errors.size >= MAX_ERROR_CODES) {
-      this.errors.set("other", (this.errors.get("other") ?? 0) + 1);
-      return;
-    }
+    let key = sanitizeName(code) || "execution_failed";
+    if (!this.errors.has(key) && this.errors.size >= MAX_ERROR_CODES - 1) key = "other";
     this.errors.set(key, (this.errors.get(key) ?? 0) + 1);
   }
 }

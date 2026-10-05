@@ -44,6 +44,22 @@ assert.throws(() => validateConsumerAudit({
   },
 }, 1), /high=1/);
 
+for (const [key, value] of [
+  ["low", -1], ["info", null], ["high", "0"], ["total", false], ["moderate", 0.5],
+  ["critical", Number.MAX_SAFE_INTEGER + 1], ["info", undefined],
+]) {
+  assert.throws(() => validateConsumerAudit({
+    metadata: { vulnerabilities: { ...audit.metadata.vulnerabilities, [key]: value } },
+  }), /metadata is incomplete/);
+}
+assert.throws(() => validateConsumerAudit({
+  metadata: { vulnerabilities: { ...audit.metadata.vulnerabilities, low: 1, high: -1 } },
+}), /metadata is incomplete/, "negative counts cancelled out a real vulnerability");
+for (const exitCode of [null, false, "0", 1]) {
+  assert.throws(() => validateConsumerAudit(audit, exitCode), /audit failed/);
+}
+assert.throws(() => validateConsumerAudit({ ...audit, error: { code: "fixture" } }), /metadata is incomplete/);
+
 const tree = {
   dependencies: {
     [packageName]: {
@@ -55,6 +71,47 @@ const tree = {
   },
 };
 assert.equal(validateConsumerTree(tree, { packageName, packageVersion }).dependencies, 2);
+for (const [label, mutate, expected] of [
+  ["package version array", (value) => { value.dependencies[packageName].version = [packageVersion]; }, /invalid dependency entry/],
+  ["dependency version array", (value) => { value.dependencies[packageName].dependencies.undici = { version: ["7.29.0"] }; }, /invalid dependency entry/],
+  ["malformed dependency node", (value) => { value.dependencies[packageName].dependencies.wrangler = []; }, /invalid dependency entry/],
+  ["malformed dependency map", (value) => { value.dependencies[packageName].dependencies = []; }, /invalid dependency map/],
+  ["malformed problem report", (value) => { value.problems = "invalid evidence"; }, /invalid dependency edges/],
+]) {
+  const malformed = structuredClone(tree);
+  mutate(malformed);
+  assert.throws(() => validateConsumerTree(malformed, { packageName, packageVersion }), expected, label);
+}
+assert.equal(validateConsumerTree({ ...tree, problems: [] }, { packageName, packageVersion }).dependencies, 2);
+
+// npm 12.0.2 --long leaves absent optional/peerOptional edges as {}, while retaining declarations on their parent.
+for (const declarations of [
+  { optionalDependencies: { bufferutil: "^4.0.1" } },
+  { peerDependencies: { bufferutil: "^4.0.1" }, peerDependenciesMeta: { bufferutil: { optional: true } } },
+]) {
+  const optionalTree = structuredClone(tree);
+  Object.assign(optionalTree.dependencies[packageName].dependencies.ws, {
+    ...declarations, dependencies: { bufferutil: {} },
+  });
+  assert.equal(validateConsumerTree(optionalTree, { packageName, packageVersion }).dependencies, 2);
+  for (const entry of [{ version: ["4.0.1"] }, { dependencies: {} }, []]) {
+    optionalTree.dependencies[packageName].dependencies.ws.dependencies.bufferutil = entry;
+    assert.throws(() => validateConsumerTree(optionalTree, { packageName, packageVersion }), /invalid dependency entry/);
+  }
+}
+for (const declarations of [
+  {}, { optionalDependencies: { bufferutil: ["^4.0.1"] } },
+  { peerDependencies: { bufferutil: "^4.0.1" } },
+  { peerDependencies: { bufferutil: "^4.0.1" }, peerDependenciesMeta: { bufferutil: { optional: "true" } } },
+]) {
+  const requiredTree = structuredClone(tree);
+  Object.assign(requiredTree.dependencies[packageName].dependencies.ws, {
+    ...declarations, dependencies: { bufferutil: {} },
+  });
+  assert.throws(() => validateConsumerTree(requiredTree, { packageName, packageVersion }), /invalid dependency entry/);
+}
+
+
 for (const [name, version, expected] of [
   ["wrangler", "4.131.2", /private control-plane package wrangler/],
   ["miniflare", "4.20260722.1", /private control-plane package miniflare/],
@@ -66,6 +123,19 @@ for (const [name, version, expected] of [
       [packageName]: { version: packageVersion, dependencies: { [name]: { version } } },
     },
   }, { packageName, packageVersion }), expected);
+}
+
+for (const version of ["not-a-version", "9", "9.0", "Infinity.0.0", "09.0.0", "7.29.0-beta.1", "9007199254740992.0.0"]) {
+  for (const name of ["undici", "sharp"]) {
+    assert.throws(() => validateConsumerTree({
+      dependencies: { [packageName]: { version: packageVersion, dependencies: { [name]: { version } } } },
+    }, { packageName, packageVersion }), /invalid or prerelease undici|vulnerable undici|unsupported sharp/);
+  }
+}
+for (const version of ["6.28.0", "7.29.0", "8.9.0", "9.0.0+fixture.1"]) {
+  assert.equal(validateConsumerTree({
+    dependencies: { [packageName]: { version: packageVersion, dependencies: { undici: { version } } } },
+  }, { packageName, packageVersion }).dependencies, 2);
 }
 
 const sbom = {
@@ -83,6 +153,21 @@ const sbom = {
   ],
 };
 assert.equal(validateConsumerSbom(sbom, { packageName, packageVersion }).components, 2);
+for (const [label, mutate, expected] of [
+  ["component reference array", (value) => { value.components[1]["bom-ref"] = ["ws@8.21.1"]; }, /references are missing or duplicated/],
+  ["component name array", (value) => { value.components[1].name = ["ws"]; }, /names and versions must be non-empty strings/],
+  ["component version array", (value) => { value.components[1].version = ["8.21.1"]; }, /names and versions must be non-empty strings/],
+  ["undici version array", (value) => { value.components[1].name = "undici"; value.components[1].version = ["7.29.0"]; }, /names and versions must be non-empty strings/],
+  ["dependency reference array", (value) => { value.dependencies[2].ref = ["ws@8.21.1"]; }, /invalid reference/],
+  ["edge reference array", (value) => { value.dependencies[1].dependsOn = [["ws@8.21.1"]]; }, /invalid reference/],
+  ["root reference array", (value) => { value.metadata.component["bom-ref"] = ["consumer-fixture@1.0.0"]; }, /references are missing or duplicated/],
+  ["duplicate edge", (value) => { value.dependencies[1].dependsOn.push("ws@8.21.1"); }, /invalid reference/],
+]) {
+  const malformed = structuredClone(sbom);
+  mutate(malformed);
+  assert.throws(() => validateConsumerSbom(malformed, { packageName, packageVersion }), expected, label);
+}
+
 assert.throws(() => validateConsumerSbom({
   ...sbom,
   dependencies: sbom.dependencies.filter((entry) => entry.ref !== "ws@8.21.1"),
@@ -102,5 +187,14 @@ assert.throws(() => validateConsumerSbom({
   components: [...sbom.components, { "bom-ref": "undici@7.28.0", name: "undici", version: "7.28.0" }],
   dependencies: [...sbom.dependencies, { ref: "undici@7.28.0", dependsOn: [] }],
 }, { packageName, packageVersion }), /vulnerable undici/);
+
+for (const version of ["invalid", "9", "7.29.0-beta.1"]) {
+  const ref = "undici@" + version;
+  assert.throws(() => validateConsumerSbom({
+    ...sbom,
+    components: [...sbom.components, { "bom-ref": ref, name: "undici", version }],
+    dependencies: [...sbom.dependencies, { ref, dependsOn: [] }],
+  }, { packageName, packageVersion }), /invalid or prerelease undici/);
+}
 
 console.log("consumer package security validation test ok");

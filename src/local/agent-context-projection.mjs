@@ -119,7 +119,10 @@ export function contextSkillSummaries(skills, displayPath, maxSkills, budgetChar
 
 /** @param {Array<{entrypoint: string, message: string}>} warnings @param {DisplayPath} displayPath */
 export function publicSkillWarnings(warnings, displayPath) {
-  return warnings.map((warning) => ({ entrypoint: displayPath(warning.entrypoint), message: warning.message }));
+  return warnings.map((warning) => {
+    const entrypoint = displayPath(warning.entrypoint);
+    return { entrypoint, message: warning.message.replaceAll(warning.entrypoint, () => entrypoint) };
+  });
 }
 
 /** @param {Map<string, CommandSummary>} commands @param {DisplayPath} displayPath */

@@ -37,7 +37,7 @@ export async function waitForInactiveStatus(
   readStatus,
   { attempts = DEFAULT_ATTEMPTS, delayMs = DEFAULT_DELAY_MS, sleep = delay } = {},
 ) {
-  return waitForStatus(readStatus, (status) => status?.active !== true, { attempts, delayMs, sleep });
+  return waitForStatus(readStatus, (status) => status?.active === false, { attempts, delayMs, sleep });
 }
 
 export async function waitForStatus(

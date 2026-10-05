@@ -107,32 +107,25 @@ export class BrowserComputerObservationService {
       maxFrames: normalized.max_frames, axDepth: normalized.ax_depth, includeValues: normalized.include_values, includeScreenshot: normalized.include_screenshot,
       format: normalized.screenshot_format, quality: normalized.screenshot_quality, focusQuery: normalized.focus_query,
     }, timeoutSeconds, context);
-    const imageContent = computerObservationImage(result);
+    const screenshot = result?.screenshot;
+    const image = screenshot == null ? null : parseBrowserScreenshot(screenshot.data);
+    if (screenshot != null && !image) throw new Error("browser extension returned an invalid computer observation screenshot");
     return {
       ...result,
-      capture: { ...(result.capture || {}), screenshot_sha256: screenshotSha256(imageContent) },
-      imageContent,
+      capture: { ...(result.capture || {}), screenshot_sha256: image ? createHash("sha256").update(image.bytes).digest("hex") : "" },
+      imageContent: image ? [{ type: "image", data: image.data, mimeType: image.mimeType }] : [],
     };
   }
-
 }
 
-function computerObservationImage(result) {
-  if (!result?.screenshot?.data) return [];
-  if (typeof result.screenshot.data !== "string") throw new Error("browser extension returned an invalid computer observation screenshot");
-  const match = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/.exec(result.screenshot.data);
-  if (!match || !browserScreenshotBytes(match[2], match[1])) throw new Error("browser extension returned an invalid computer observation screenshot");
-  return [{ type: "image", data: match[2], mimeType: match[1] }];
-}
-
-function screenshotSha256(imageContent) {
-  const image = (imageContent || []).find((item) => item?.type === "image" && typeof item.data === "string");
-  const bytes = image ? browserScreenshotBytes(image.data, image.mimeType) : null;
-  return bytes ? createHash("sha256").update(bytes).digest("hex") : "";
+export function parseBrowserScreenshot(value) {
+  if (typeof value !== "string" || value.length > Math.ceil(MAX_BROWSER_SCREENSHOT_BYTES / 3) * 4 + 23) return null;
+  const match = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/.exec(value);
+  const bytes = match ? browserScreenshotBytes(match[2], match[1]) : null;
+  return bytes ? { data: match[2], mimeType: match[1], bytes } : null;
 }
 
 function browserScreenshotBytes(value, mimeType) {
-  if (typeof value !== "string" || !value || value.length > Math.ceil(MAX_BROWSER_SCREENSHOT_BYTES / 3) * 4) return null;
   const bytes = Buffer.from(value, "base64");
   if (bytes.length < 3 || bytes.length > MAX_BROWSER_SCREENSHOT_BYTES || bytes.toString("base64") !== value) return null;
   if (mimeType === "image/png") {

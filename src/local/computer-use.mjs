@@ -1310,9 +1310,11 @@ function combineBrowserPostChecks(probe, diff, expectation, before, after, targe
     checks.push({ condition: "url_changed", matched: ok, evidence_source: "browser_tab_state" });
   }
   if (expectation.semantic_change !== undefined) {
-    const ok = diff?.semantic_changed === expectation.semantic_change;
+    const observed = diff?.semantic_changed;
+    const ok = typeof observed === "boolean" && observed === expectation.semantic_change;
     matched = matched && ok;
-    checks.push({ condition: "semantic_change", matched: ok, evidence_source: "browser_semantic" });
+    checks.push({ condition: "semantic_change", matched: ok, evidence_source: "browser_semantic",
+      ...(typeof observed === "boolean" ? {} : { inconclusive: true, reason: "semantic_coverage_incomplete" }) });
   }
   if (expectation.visual_change !== undefined) {
     const observed = diff?.screenshot_changed;
@@ -1450,7 +1452,8 @@ function verifyApplicationExpectation(before, after, target, expectation, diff, 
   });
   if (expectation.semantic_change !== undefined) checks.push({
     condition: "semantic_change",
-    matched: diff?.semantic_changed === expectation.semantic_change,
+    matched: typeof diff?.semantic_changed === "boolean" && diff.semantic_changed === expectation.semantic_change,
+    ...(typeof diff?.semantic_changed === "boolean" ? {} : { inconclusive: true, reason: "semantic_coverage_incomplete" }),
   });
   if (expectation.visual_change !== undefined) {
     const observed = diff?.screenshot_changed;

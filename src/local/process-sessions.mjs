@@ -6,7 +6,7 @@ import { executionEnv } from "./shell.mjs";
 import { attachChildProcessSettlement } from "./child-process-settlement.mjs";
 import { assertOwnedByContext, principalBinding, visibleToContext } from "./authority-context.mjs";
 import { recordMatchesAuthorityRevocation } from "../shared/authority-revocation.mjs";
-import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
+import { delegatedProcessCommand, delegatedProcessRuntimeDir } from "./delegated-process-sandbox.mjs";
 import { validateArgv } from "./process-contract.mjs";
 import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
@@ -106,16 +106,19 @@ export class ProcessSessionManager {
     const cwd = await this.resolveCwd(args.cwd || ".", context);
     this.prune();
     this.evictExitedForCapacity();
-    if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new Error(`process session limit reached (${MAX_PROCESS_SESSIONS})`);
+    if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new BridgeError("limit_exceeded", `process session limit reached (${MAX_PROCESS_SESSIONS})`);
     this.throwIfCancelled(context);
-    const executionEnvironment = withExecutionSurface(executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir: this.runtimeDir }), EXECUTION_SURFACE.processSession);
+    const runtimeDir = delegatedProcessRuntimeDir(this.runtimeDir, context);
+    const executionEnvironment = withExecutionSurface(executionEnv(this.workspace, { fullEnv: this.policyForContext(context).minimalEnv === false, runtimeDir, delegated: runtimeDir !== this.runtimeDir }), EXECUTION_SURFACE.processSession);
     const admitted = await acquireProcessResources(this.resourceCoordinator, argv[0], argv.slice(1), executionEnvironment, {
       cwd, priority: "interactive", waitMs: processSessionResourceWaitMs(this.resourceWaitMs, { remote: context?.authority?.origin === "relay" }), signal: context.signal,
     });
     let remoteActivityHeld = false;
     let child;
     try {
-      const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir: this.runtimeDir, context });
+      this.evictExitedForCapacity();
+      if (this.sessions.size >= MAX_PROCESS_SESSIONS) throw new BridgeError("limit_exceeded", `process session limit reached (${MAX_PROCESS_SESSIONS})`);
+      const launch = delegatedProcessCommand({ command: admitted.command, args: admitted.args, workspace: this.workspace, runtimeDir, context });
       this.throwIfCancelled(context);
       remoteActivityHeld = beginRemoteProcessSessionActivity(context, this.remoteActivityGuard);
       child = this.spawnProcess(launch.command, launch.args, { cwd, env: admitted.environment, detached: process.platform !== "win32", windowsHide: true });

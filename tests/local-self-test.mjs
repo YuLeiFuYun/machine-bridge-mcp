@@ -8,6 +8,7 @@ import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs"
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
 import { acquireRuntimeStartServiceLock, assertNoActiveJobsForUninstall, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
+import { runFixtureChild, stopFixtureChild, waitForFixtureExit, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { isTerminalManagedJobStatus } from "../src/local/managed-job-terminal.mjs";
@@ -30,6 +31,7 @@ let daemonFixtureArgv = [];
 
 await runSelfTestPhase("runtime", runtimeSelfTest);
 await runSelfTestPhase("state", stateSelfTest);
+await runSelfTestPhase("fixture lifecycle", fixtureLifecycleSelfTest);
 await runSelfTestPhase("daemon takeover", daemonTakeoverSelfTest);
 await runSelfTestPhase("active daemon policy mutation", activeDaemonPolicyMutationSelfTest);
 await runSelfTestPhase("client config default", clientConfigDefaultSelfTest);
@@ -53,12 +55,15 @@ async function runSelfTestPhase(name, callback) {
 }
 
 async function waitForSelfTestJob(manager, jobId, deadline, label) {
+  let lastState = null;
   while (Date.now() < deadline) {
     const value = manager.read({ job_id: jobId });
+    lastState = { status: value.status, current_phase: value.current_phase,
+      current_step: value.current_step, error_class: value.error_class };
     if (isTerminalManagedJobStatus(value.status) && value.artifact_cleanup_pending !== true) return value;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
   }
-  throw new Error(`${label} did not settle within the shared resource CLI self-test budget`);
+  throw new Error(`${label} did not settle within the shared resource CLI self-test budget; state=${JSON.stringify(lastState)}`);
 }
 
 function remainingSelfTestBudget(deadline, label, maximum) {
@@ -565,6 +570,88 @@ setInterval(() => {}, 2 ** 31 - 1);
   }
 }
 
+async function fixtureLifecycleSelfTest() {
+  const spawnFixture = (script) => spawn(process.execPath, ["-e", script], {
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    env: { ...process.env, NODE_V8_COVERAGE: "" },
+  });
+  const readyChild = spawnFixture('process.stdout.write("rea");setTimeout(()=>process.stdout.write("dy\\n"),25);setInterval(()=>{},1000)');
+  try {
+    await waitForFixtureReady(readyChild);
+    if (readyChild.stdout.listenerCount("data") || readyChild.listenerCount("error") || readyChild.listenerCount("exit")) {
+      throw new Error("ready fixture retained readiness listeners");
+    }
+  } finally { await stopFixtureChild(readyChild); }
+  for (const [script, timeoutMs, expected] of [
+    ['process.stdout.write("notready\\n");setInterval(()=>{},1000)', 100, "did not become ready"],
+    ["process.exit(7)", 10_000, "exited before readiness (7)"],
+  ]) {
+    const child = spawnFixture(script);
+    try {
+      let failure;
+      try { await waitForFixtureReady(child, { timeoutMs }); } catch (error) { failure = error; }
+      if (!failure?.message.includes(expected)) throw new Error("fixture readiness accepted invalid or missing evidence");
+      if (child.exitCode === null && child.signalCode === null) throw new Error("failed readiness retained its owned child");
+      if (child.stdout.listenerCount("data") || child.listenerCount("error") || child.listenerCount("exit")) {
+        throw new Error("failed fixture retained readiness or cleanup listeners");
+      }
+    } finally { await stopFixtureChild(child, 10_000, "SIGKILL"); }
+  }
+  const capturedChild = spawnFixture('process.stdout.write(Buffer.from([0xe4]));process.stdout.write(Buffer.from([0xb8,0xad]));process.stderr.write("owned-stderr");');
+  const captured = await runFixtureChild(capturedChild);
+  if (captured.code !== 0 || captured.stdout !== "中" || captured.stderr !== "owned-stderr") {
+    throw new Error("fixture completion did not drain both output streams");
+  }
+  const alreadyClosed = await runFixtureChild(capturedChild, { timeoutMs: 100 });
+  if (alreadyClosed.code !== 0) throw new Error("late fixture wait lost the observed exit");
+  for (const fault of [new Error("owned preparation fault"), null]) {
+    const child = spawnFixture("setInterval(()=>{},1000)");
+    let caught = false;
+    try { await runFixtureChild(child, { prepare: () => { throw fault; } }); }
+    catch (error) { caught = error === fault; }
+    if (!caught || child.exitCode === null && child.signalCode === null) {
+      throw new Error("fixture preparation failure lost its cause or owned cleanup");
+    }
+  }
+  for (const [script, expected, timeoutMs, prepare] of [
+    ["setInterval(()=>{},1000)", "execution budget", 100],
+    ['process.stdout.write("x".repeat(100000));setInterval(()=>{},1000)', "output budget", 10_000],
+    ["setInterval(()=>{},1000)", "execution budget", 100, () => new Promise(() => {})],
+    ["process.exit(0)", "execution budget", 100, () => new Promise(() => {})],
+  ]) {
+    const child = spawnFixture(script);
+    let failure;
+    try { await runFixtureChild(child, { timeoutMs, maxOutputBytes: 4096, prepare }); }
+    catch (error) { failure = error; }
+    if (!failure?.message.includes(expected) || child.exitCode === null && child.signalCode === null) {
+      throw new Error("fixture execution exceeded a bound without owned cleanup");
+    }
+    if (child.stdout.listenerCount("data") || child.stderr.listenerCount("data")
+        || child.listenerCount("error") || child.listenerCount("exit") || child.listenerCount("close")) {
+      throw new Error("fixture completion retained listeners");
+    }
+  }
+  const missingRoot = await mkdtemp(join(tmpdir(), "mbm-fixture-missing-"));
+  try {
+    const missingChild = spawn(join(missingRoot, "absent-executable"), [], { stdio: ["ignore", "pipe", "pipe"] });
+    let spawnFailure;
+    try { await waitForFixtureReady(missingChild); } catch (error) { spawnFailure = error; }
+    if (spawnFailure?.code !== "ENOENT") throw new Error("fixture readiness replaced the original spawn failure");
+    const missingRun = spawn(join(missingRoot, "absent-executable"), [], { stdio: ["ignore", "pipe", "pipe"] });
+    let runFailure;
+    try { await runFixtureChild(missingRun); } catch (error) { runFailure = error; }
+    if (runFailure?.code !== "ENOENT") throw new Error("fixture completion replaced the original spawn failure");
+  } finally { await rm(missingRoot, { recursive: true, force: true }); }
+  if (process.platform !== "win32") {
+    const ignoringChild = spawnFixture('process.on("SIGTERM",()=>{});process.stdout.write("ready\\n");setInterval(()=>{},1000)');
+    try {
+      await waitForFixtureReady(ignoringChild);
+      await stopFixtureChild(ignoringChild, 100);
+      if (ignoringChild.signalCode !== "SIGKILL") throw new Error("fixture cleanup did not force an unresponsive owned child");
+    } finally { await stopFixtureChild(ignoringChild, 10_000, "SIGKILL"); }
+  }
+}
+
 async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [], options = {}) {
   const fixtureEnv = { ...process.env };
   // The fixture models daemon ownership, not coverage. Inheriting V8 coverage
@@ -587,51 +674,12 @@ async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [],
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
-  let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-4096); });
-  await new Promise((resolvePromise, rejectPromise) => {
-    let stdout = "";
-    const timeout = setTimeout(() => rejectPromise(new Error(`daemon fixture did not become ready: ${stderr}`)), DAEMON_FIXTURE_TIMEOUT_MS);
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      if (stdout.includes("ready\n")) {
-        clearTimeout(timeout);
-        resolvePromise();
-      }
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timeout);
-      rejectPromise(new Error(`daemon fixture exited before readiness (${code}): ${stderr}`));
-    });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      rejectPromise(error);
-    });
-  });
+  await waitForFixtureReady(child, { timeoutMs: DAEMON_FIXTURE_TIMEOUT_MS, label: "daemon" });
   return child;
 }
 
 function waitForChildExit(child, timeoutMs = DAEMON_FIXTURE_TIMEOUT_MS) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolvePromise, rejectPromise) => {
-    let settled = false;
-    let timeout;
-    const onExit = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      child.off("exit", onExit);
-      resolvePromise();
-    };
-    timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.off("exit", onExit);
-      rejectPromise(new Error(`daemon fixture did not exit within ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.once("exit", onExit);
-    if (child.exitCode !== null || child.signalCode !== null) onExit();
-  });
+  return waitForFixtureExit(child, timeoutMs);
 }
 
 function isProcessAlive(pid) {
@@ -1059,18 +1107,38 @@ async function cliSelfTest() {
     throw new Error("automatic autostart installation mutated the provider without the machine-service lock");
   }
   const primary = new Error("runtime failed");
-  if (cleanupRuntimeStartFailure(primary, { stop() {} }, { release() {} }) !== primary) {
+  if (await cleanupRuntimeStartFailure(primary, { async stop() {} }, { release() {} }) !== primary) {
     throw new Error("successful runtime cleanup replaced the primary startup error");
   }
-  const cleanupFailure = cleanupRuntimeStartFailure(
-    primary,
-    { stop() { throw new Error("runtime stop failed"); } },
-    { release() { throw new Error("daemon lock release failed"); } },
-  );
-  if (!(cleanupFailure instanceof AggregateError) || cleanupFailure.errors?.length !== 3
-      || cleanupFailure.errors[0] !== primary) {
-    throw new Error("runtime startup cleanup did not preserve the primary and cleanup errors");
+  const stopFailure = new Error("runtime stop failed");
+  for (const stop of [
+    () => { throw stopFailure; },
+    async () => { await Promise.resolve(); throw stopFailure; },
+  ]) {
+    let released = false;
+    const failure = await cleanupRuntimeStartFailure(primary, { stop }, { release() { released = true; } });
+    if (!(failure instanceof AggregateError) || failure.errors?.length !== 2
+        || failure.errors[0] !== primary || failure.errors[1] !== stopFailure || released) {
+      throw new Error("failed runtime shutdown lost its error or released daemon ownership");
+    }
   }
+  const lockFailure = new Error("daemon lock release failed");
+  const cleanupFailure = await cleanupRuntimeStartFailure(
+    primary, { async stop() {} }, { release() { throw lockFailure; } },
+  );
+  if (!(cleanupFailure instanceof AggregateError) || cleanupFailure.errors?.length !== 2
+      || cleanupFailure.errors[0] !== primary || cleanupFailure.errors[1] !== lockFailure) {
+    throw new Error("runtime startup cleanup did not preserve the primary and lock cleanup errors");
+  }
+  let finishStop;
+  let ownershipReleased = false;
+  const stopping = new Promise((resolve) => { finishStop = resolve; });
+  const pendingCleanup = cleanupRuntimeStartFailure(primary,
+    { stop: () => stopping }, { release() { ownershipReleased = true; } });
+  await Promise.resolve();
+  if (ownershipReleased) throw new Error("startup failure released ownership before asynchronous shutdown settled");
+  finishStop();
+  if (await pendingCleanup !== primary || !ownershipReleased) throw new Error("settled startup cleanup did not release ownership");
   const parsed = parseArgs(["--no-write", "/tmp/example", "--unrestricted-paths=false", "--worker-name", "mbm-test"]);
   if (parsed.noWrite !== true || parsed._[0] !== "/tmp/example") throw new Error("boolean option consumed positional workspace");
   if (parsed.unrestrictedPaths !== false || parsed.workerName !== "mbm-test") throw new Error("CLI option parsing failed");
@@ -1122,6 +1190,10 @@ async function cliSelfTest() {
       || isIdempotentDaemonOnlyStart({ daemonOnly: true, forceWorker: true })
       || isIdempotentDaemonOnlyStart({ daemonOnly: true, workerName: "mbm-test" })) {
     throw new Error("daemon-only idempotency predicate is incorrect");
+  }
+  for (const flag of ["noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "forceWorker", "rotateSecrets"]) {
+    const explicit = parseArgs(["--daemon-only", `--${flag.replace(/[A-Z]/g, (character) => "-" + character.toLowerCase())}=false`]);
+    if (isIdempotentDaemonOnlyStart(explicit)) throw new Error("explicit false override was silently reported as an idempotent daemon-only no-op");
   }
   const windowsNpm = npmVersionCommand("win32", "C:\\Windows\\System32\\cmd.exe");
   const windowsDefaultNpm = npmVersionCommand("win32", "");

@@ -1,11 +1,25 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BridgeError } from "./errors.mjs";
+import { principalBinding } from "./authority-context.mjs";
+import { ensureOwnerOnlyDirectorySync } from "./secure-file.mjs";
 
 const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 let macosProbeResult;
+
+export function delegatedProcessRuntimeDir(runtimeDir, context = {}) {
+  const principal = context?.authority?.principal;
+  if (!principal || principal.kind !== "account" || principal.role === "owner") return runtimeDir;
+  const parent = path.join(runtimeDir, "delegated-processes");
+  const digest = createHash("sha256").update(JSON.stringify(principalBinding(context))).digest("hex");
+  const selected = path.join(parent, digest);
+  ensureOwnerOnlyDirectorySync(parent);
+  for (const name of ["", "home", "tmp", "cache"]) ensureOwnerOnlyDirectorySync(path.join(selected, name));
+  return selected;
+}
 
 export function delegatedProcessCommand({ command, args = [], workspace, runtimeDir, context = {}, platform = process.platform, forceDelegated = false } = {}) {
   const principal = context?.authority?.principal;
@@ -33,7 +47,7 @@ export function delegatedProcessIsolationStatus(platform = process.platform) {
       available: true,
       provider: "macos-sandbox-exec-deny-default",
       network: "allowed",
-      filesystem: "workspace-and-runtime-write; system-runtime-read",
+      filesystem: "workspace-and-isolated-runtime-write; system-runtime-read",
       keychain: "common Keychain CLI access denied by the behavior probe; not a complete same-user tenancy boundary",
       apple_events: "not reachable through the deny-default profile",
       residual: "sandbox-exec is a compatibility boundary, not separate OS-user tenancy; choose a narrow workspace",
@@ -78,7 +92,10 @@ export function probeMacosDelegatedSandbox(options = {}) {
   const outside = path.join(root, "outside.txt");
   const outsideWrite = path.join(root, "outside-write.txt");
   const workspaceWrite = path.join(workspace, "allowed-write.txt");
+  let globalTemporaryRoot = ""; let verified = false;
   try {
+    globalTemporaryRoot = mkdtempSync(path.join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "mbm-delegated-global-temp-probe-"));
+    const globalTemporaryWrite = path.join(globalTemporaryRoot, "blocked-global-write.txt");
     mkdirSync(workspace, { mode: 0o700 });
     mkdirSync(runtimeDir, { mode: 0o700 });
     writeFileSync(path.join(workspace, "allowed.txt"), "allowed\n", { mode: 0o600 });
@@ -96,15 +113,20 @@ export function probeMacosDelegatedSandbox(options = {}) {
     const allowedWrite = execute(["/bin/sh", "-c", `printf allowed > ${shellQuote(workspaceWrite)}`]);
     const blockedRead = execute(["/bin/cat", outside]);
     const blockedWrite = execute(["/bin/sh", "-c", `printf blocked > ${shellQuote(outsideWrite)}`]);
+    const blockedGlobalWrite = execute(["/bin/sh", "-c", `printf blocked > ${shellQuote(globalTemporaryWrite)}`]);
     const keychain = execute(["/usr/bin/security", "list-keychains"]);
-    return allowedRead.status === 0 && allowedWrite.status === 0 && existsSync(workspaceWrite)
+    verified = allowedRead.status === 0 && allowedWrite.status === 0 && existsSync(workspaceWrite)
       && blockedRead.status !== 0 && blockedWrite.status !== 0 && !existsSync(outsideWrite)
-      && keychain.status !== 0;
+      && blockedGlobalWrite.status !== 0 && !existsSync(globalTemporaryWrite) && keychain.status !== 0;
   } catch {
-    return false;
+    verified = false;
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    for (const directory of [root, globalTemporaryRoot].filter(Boolean)) {
+      try { rmSync(directory, { recursive: true, force: true }); }
+      catch { verified = false; }
+    }
   }
+  return verified;
 }
 
 function macosProfile({ workspace, runtimeDir }) {
@@ -123,7 +145,7 @@ function macosProfile({ workspace, runtimeDir }) {
     workspace,
     runtimeDir,
   ].filter(Boolean);
-  const writable = [workspace, runtimeDir, "/private/tmp"].filter(Boolean);
+  const writable = [workspace, runtimeDir].filter(Boolean);
   return [
     "(version 1)",
     "(deny default)",

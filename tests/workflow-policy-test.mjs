@@ -162,6 +162,88 @@ withFixture((fixture) => {
   expectFailure(fixture, "must not have multiple hard links");
 });
 
+for (const expression of [
+  "$" + "{{ github.event.pull_request.title }}",
+  "$" + "{{ github['event'].pull_request.title }}",
+  "$" + "{{ github.event['pull_request']['title'] }}",
+  "$" + "{{ format('{0}', github.event.pull_request.title) }}",
+  "$" + "{{ toJSON(github.event) }}",
+  "$" + "{{ (github.event.pull_request.title) }}",
+  "$" + "{{ github . event . pull_request . title }}",
+  "$" + "{{ GitHub.EVENT.pull_request.title }}",
+  "$" + "{{ github[format('ev{0}', 'ent')].pull_request.title }}",
+  "$" + "{{ toJSON(github) }}",
+]) {
+  for (const body of [`echo "${expression}"`, `|\n          echo "${expression}"`, `\n          echo "${expression}"`, `"echo\n          ${expression}"`]) {
+    withFixture((fixture) => {
+      const prefix = body.startsWith("\n") ? "      - run:" : "      - run: ";
+      replace(fixture, "ci.yml", "      - run: npm --version", prefix + body);
+      expectFailure(fixture, "interpolates github.event data directly");
+    });
+  }
+}
+
+for (const expression of [
+  "$" + "{{ github.event_name }}", "$" + "{{ github['ref'] }}",
+  "$" + "{{ format('github.event') }}", "$" + "{{ format('''github.event'' }}') }}",
+]) {
+  withFixture((fixture) => {
+    replace(fixture, "ci.yml", "      - run: npm --version", `      - run: echo "${expression}"`);
+    verifyWorkflowPolicy(fixture);
+  });
+}
+
+for (const count of [80, 8_000]) {
+  withFixture((fixture) => {
+    replace(fixture, "ci.yml", "      - run: npm --version", "      - run: echo $" + "{{ " + "'".repeat(count));
+    expectFailure(fixture, "unterminated shell expression");
+  });
+}
+
+for (const permissions of ["{ contents: write }", "read-all"]) {
+  withFixture((fixture) => {
+    replace(fixture, "ci.yml", "    timeout-minutes: 20",
+      `    timeout-minutes: 20\n    permissions: ${permissions}`);
+    expectFailure(fixture, "uses unreviewed inline permissions");
+  });
+}
+withFixture((fixture) => {
+  replace(fixture, "ci.yml", "    timeout-minutes: 20", "    timeout-minutes: 20\n    permissions: {}");
+  verifyWorkflowPolicy(fixture);
+});
+withFixture((fixture) => {
+  replace(fixture, "ci.yml", "      - run: npm --version",
+    "      - run: npm --version\n        env:\n          PR_TITLE: $" + "{{ github.event.pull_request.title }}");
+  verifyWorkflowPolicy(fixture);
+});
+
+
+for (const [before, after] of [
+  ["      - run: npm --version", '      - "run": echo $' + "{{ github.event.pull_request.title }}"],
+  ["      - run: npm --version", "      - 'run': echo $" + "{{ github.event.pull_request.title }}"],
+  ["      - run: npm --version", "      - { run: 'echo $" + "{{ github.event.pull_request.title }}' }"],
+  ["      - run: npm --version", '      - "uses": example/unreviewed@v1'],
+  ["    timeout-minutes: 20", '    timeout-minutes: 20\n    "permissions":\n      contents: write'],
+  ["    timeout-minutes: 20", '    timeout-minutes: 20\n    permissions:\n      "contents": write'],
+  ["  pull_request:\n", '  pull_request:\n  "pull_request_target":\n'],
+  ["      - run: npm --version", "      - run: &command echo $"+ "{{ github.event.pull_request.title }}"],
+  ["      - run: npm --version", "      - ? run\n        : echo $"+ "{{ github.event.pull_request.title }}"],
+  ["    steps:\n", "    steps: [{ run: echo unsafe }]\n"],
+  ["      - run: npm --version", "      - &command { run: 'echo $"+ "{{ github.event.pull_request.title }}' }"],
+  ["      - run: npm --version", "      - *command"],
+  ["      - run: npm --version", "      - !<tag:yaml.org,2002:map> { run: echo unsafe }"],
+]) {
+  withFixture((fixture) => {
+    replace(fixture, "ci.yml", before, after);
+    expectFailure(fixture, "must use plain keys and block mappings");
+  });
+}
+withFixture((fixture) => {
+  replace(fixture, "ci.yml", "      - run: npm --version",
+    '      - run: |\n          printf "%s\\n" \'"run": literal\' \'{ contents: write }\' \'*alias\'');
+  verifyWorkflowPolicy(fixture);
+});
+
 console.log(`workflow policy test ok (${verified.files.length} workflows, ${verified.actions} pinned action references)`);
 
 function verifyCheckoutAttributes() {

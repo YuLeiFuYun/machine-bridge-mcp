@@ -131,7 +131,7 @@ export class AgentContextManager {
     const selected = skillMatches[0]?.score >= 3 ? skillMatches[0].skill : null;
     let selectedSkill = null;
     if (selected && args.include_selected_skill !== false) {
-      const content = await readRegularUtf8(selected.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
+      const content = await readRegularUtf8(selected.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint", { canonicalPath: selected.entrypoint });
       selectedSkill = { ...publicSkill(selected, (value) => this.displayPath(value, context)), instructions: content.text };
     }
     const recommendedTools = recommendTools(task, {
@@ -185,10 +185,11 @@ export class AgentContextManager {
   async collectModelInstructions(state, context) {
     this.throwIfCancelled(context);
     const path = state.modelInstructionsFile;
-    const info = await lstat(path).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+    const info = await lstat(path, { bigint: true }).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
     if (!info) throw new Error(`model_instructions_file does not exist: ${path}`);
     if (info.isSymbolicLink() || !info.isFile()) throw new Error(`model_instructions_file must be a regular non-symbolic-link file: ${path}`);
-    const content = await readRegularUtf8(path, MAX_INSTRUCTION_FILE_BYTES, "model instructions file");
+    const canonical = await realpath(path);
+    const content = await readRegularUtf8(canonical, MAX_INSTRUCTION_FILE_BYTES, "model instructions file", { expectedInfo: info, canonicalPath: canonical });
     if (!content.text.trim()) throw new Error(`model_instructions_file is empty: ${path}`);
     state.modelInstructions = { scope: "model", path, bytes: content.bytes, sha256: sha256(content.text), content: content.text, precedence: 0 };
   }
@@ -217,8 +218,8 @@ export class AgentContextManager {
     if (!matches.length) throw new Error(`local skill not found: ${requested}`);
     if (matches.length > 1) throw new Error(`local skill name is ambiguous; use its id: ${requested}`);
     const skill = matches[0];
-    const content = await readRegularUtf8(skill.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint");
-    const inventory = await listSkillFiles(skill.directory, clampInteger(args.max_files, 200, 1, MAX_SKILL_FILES), context, this.throwIfCancelled);
+    const content = await readRegularUtf8(skill.entrypoint, MAX_SKILL_ENTRY_BYTES, "skill entrypoint", { canonicalPath: skill.entrypoint });
+    const inventory = await listSkillFiles(skill.directory, clampInteger(args.max_files, 200, 1, MAX_SKILL_FILES), context, this.throwIfCancelled, skill.directory);
     return {
       skill: publicSkill(skill, (value) => this.displayPath(value, context)),
       instructions: content.text,
@@ -421,7 +422,7 @@ export class AgentContextManager {
         state.instructionsTruncated = true;
         return;
       }
-      const content = await readRegularUtf8(canonical, Math.max(remaining, 1), "instruction file");
+      const content = await readRegularUtf8(canonical, Math.max(remaining, 1), "instruction file", { canonicalPath: canonical });
       if (!content.text.trim()) continue;
       state.instructionBytes += content.bytes;
       state.instructions.push({
@@ -511,11 +512,11 @@ function defaultSkillRoots(directories, home, codexHome, unrestricted) {
 }
 
 async function readOptionalConfig(configPath, allowedRoot, rejectPathAliases) {
-  const content = await readOptionalRegularUtf8(configPath, MAX_CONFIG_BYTES, "agent config");
+  const content = await readOptionalRegularUtf8(configPath, MAX_CONFIG_BYTES, "agent config", async (canonical) => {
+    assertContainedPath(await realpath(allowedRoot), canonical, "agent config path");
+    if (rejectPathAliases && canonical !== resolve(configPath)) throw new Error("agent config path must not traverse symbolic links");
+  });
   if (!content) return null;
-  const [canonical, canonicalAllowedRoot] = await Promise.all([realpath(configPath), realpath(allowedRoot)]);
-  assertContainedPath(canonicalAllowedRoot, canonical, "agent config path");
-  if (rejectPathAliases && canonical !== resolve(configPath)) throw new Error("agent config path must not traverse symbolic links");
   let parsed;
   try {
     parsed = JSON.parse(content.text);

@@ -40,7 +40,7 @@ export async function handleOuterWorkerFetch(
     if (limited) return limited;
     const stub = env.BRIDGE.getByName("default");
     const streamed = await proxyMcpResponseStream({ request, bridge: stub, ctx });
-    return streamed ?? stub.fetch(sanitizeBridgeRequest(request));
+    return streamed ?? await stub.fetch(sanitizeBridgeRequest(request));
   } catch (error) {
     if (isDurableObjectQuotaError(error)) return durableObjectQuotaResponse(request, extraOrigins);
     logOuterFetchFailure("error", "outer.fetch.failed", {

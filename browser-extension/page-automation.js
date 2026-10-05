@@ -1,5 +1,5 @@
 (() => {
-  const PAGE_AUTOMATION_VERSION = 4;
+  const PAGE_AUTOMATION_VERSION = 5;
   if (globalThis.__machineBridgePageAutomation?.version === PAGE_AUTOMATION_VERSION) return;
 
   const INTERACTIVE_SELECTOR = "a,button,input,select,textarea,[role],[contenteditable]:not([contenteditable='false']),summary";
@@ -486,8 +486,8 @@
     return { selector, timeoutMs, files };
   }
 
-  async function prepareAction(params) {
-    const element = await prepareElementForAction(params);
+  async function prepareAction(params, progress = null) {
+    const element = await prepareElementForAction(params, progress);
     try {
       const result = actionTarget(element);
       return { ok: true, element: describeElement(element, 0, false), point: result.point };
@@ -496,11 +496,12 @@
     }
   }
 
-  async function action(params) {
+  async function action(params, progress = null) {
     const prepared = validateActionPayload(params);
-    const element = await waitForActionable(prepared.selector, prepared.action, prepared.timeoutMs);
+    const element = await waitForActionable(prepared.selector, prepared.action, prepared.timeoutMs, progress);
+    await checkProgress(progress);
     assertSnapshotIdentity(element, prepared.expectedIdentity);
-    const mutationStarted = await applyOne(element, prepared.action, prepared.value, prepared.key, prepared.timeoutMs);
+    const mutationStarted = await applyOne(element, prepared.action, prepared.value, prepared.key, prepared.timeoutMs, progress);
     try {
       return { ok: true, element: describeElement(element, 0, false), input_mode: "dom" };
     } catch (error) {
@@ -509,9 +510,10 @@
     }
   }
 
-  async function prepareElementForAction(params) {
+  async function prepareElementForAction(params, progress = null) {
     const prepared = validateActionPayload(params);
-    const element = await waitForActionable(prepared.selector, prepared.action, prepared.timeoutMs);
+    const element = await waitForActionable(prepared.selector, prepared.action, prepared.timeoutMs, progress);
+    await checkProgress(progress);
     assertSnapshotIdentity(element, prepared.expectedIdentity);
     let mutationStarted = false;
     try {
@@ -522,8 +524,8 @@
       if (["click", "double_click", "hover"].includes(prepared.action)) {
         mutationStarted = true;
         scrollElementIntoView(element);
-        await waitForStableBox(element, prepared.timeoutMs);
-        await waitForPointerTarget(element, prepared.timeoutMs);
+        await waitForStableBox(element, prepared.timeoutMs, progress);
+        await waitForPointerTarget(element, prepared.timeoutMs, progress);
       } else if (prepared.action === "scroll_into_view") {
         mutationStarted = true;
         scrollElementIntoView(element);
@@ -535,15 +537,15 @@
     return element;
   }
 
-  async function fillForm(params) {
+  async function fillForm(params, progress = null) {
     const prepared = validateFormPayload(params);
     const results = [];
     const timeoutMs = prepared.timeoutMs;
     for (let index = 0; index < prepared.fields.length; index += 1) {
       const field = prepared.fields[index];
       try {
-        const element = await waitForActionable(field.selector, field.action, timeoutMs);
-        const mutationStarted = await applyOne(element, field.action, field.value, "", timeoutMs);
+        const element = await waitForActionable(field.selector, field.action, timeoutMs, progress);
+        const mutationStarted = await applyOne(element, field.action, field.value, "", timeoutMs, progress);
         let description;
         try { description = describeElement(element, index, false); }
         catch (error) { if (mutationStarted) throw domMutationUnknown("fill_form", error); throw error; }
@@ -559,7 +561,8 @@
     if (prepared.submit) {
       let submissionStarted = false;
       try {
-        const submitter = prepared.submitSelector ? await waitForActionable(prepared.submitSelector, "click", timeoutMs) : deepQuerySelectorAll("button[type='submit'],input[type='submit']", 1)[0];
+        const submitter = prepared.submitSelector ? await waitForActionable(prepared.submitSelector, "click", timeoutMs, progress) : deepQuerySelectorAll("button[type='submit'],input[type='submit']", 1)[0];
+        await checkProgress(progress);
         if (submitter) {
           submissionStarted = true;
           submitter.click();
@@ -580,10 +583,11 @@
     return { ok: true, fields: results, submitted: prepared.submit, values_exposed: false };
   }
 
-  async function uploadFiles(params) {
+  async function uploadFiles(params, progress = null) {
     const prepared = validateUploadPayload(params);
-    const input = await waitForActionable(prepared.selector, "upload", prepared.timeoutMs);
+    const input = await waitForActionable(prepared.selector, "upload", prepared.timeoutMs, progress);
     if (!(input instanceof HTMLInputElement) || input.type !== "file") throw new Error("matched element is not a file input");
+    await checkProgress(progress);
     const transfer = new DataTransfer();
     for (const item of prepared.files) {
       const binary = atob(item.data);
@@ -717,18 +721,19 @@
     return /(?:password|passwd|secret|token|api[-_ ]?key|otp|one[-_ ]?time|verification|cvc|cvv|security[-_ ]?code|card[-_ ]?number)/.test(identity);
   }
 
-  async function waitForActionable(selector, actionName, timeoutMs) {
+  async function waitForActionable(selector, actionName, timeoutMs, progress) {
     const boundedTimeoutMs = Math.max(1, timeoutMs);
     const startedAt = performance.now();
     let lastProblem = "no element matched selector";
     while (performance.now() - startedAt <= boundedTimeoutMs) {
+      await checkProgress(progress);
       const element = findOne(selector);
       if (!element && selector?.ref) throw new Error("element reference is stale; inspect the page again");
       if (element) {
         lastProblem = actionabilityProblem(element, actionName);
         if (!lastProblem) return element;
       }
-      await delay(100);
+      await delay(100, progress);
     }
     throw new Error(`element was not actionable before timeout: ${lastProblem}`);
   }
@@ -745,12 +750,12 @@
     return "";
   }
 
-  async function waitForStableBox(element, timeoutMs) {
+  async function waitForStableBox(element, timeoutMs, progress) {
     const boundedTimeoutMs = Math.max(1, timeoutMs);
     const startedAt = performance.now();
     let previous = boundingBox(element);
     while (performance.now() - startedAt <= boundedTimeoutMs) {
-      await delay(50);
+      await delay(50, progress);
       const current = boundingBox(element);
       if (current && previous && boxDistance(previous, current) <= 0.5) return current;
       previous = current;
@@ -758,17 +763,18 @@
     throw new Error("element did not become geometrically stable before timeout");
   }
 
-  async function waitForPointerTarget(element, timeoutMs) {
+  async function waitForPointerTarget(element, timeoutMs, progress) {
     const boundedTimeoutMs = Math.max(1, timeoutMs);
     const startedAt = performance.now();
     let lastProblem = "element does not receive pointer events";
     while (performance.now() - startedAt <= boundedTimeoutMs) {
+      await checkProgress(progress);
       const point = actionTarget(element).point;
       if (!point) lastProblem = "element has no usable viewport box";
       else if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) lastProblem = "element is outside the viewport";
       else if (receivesPointerEvents(element, point)) return;
       else lastProblem = "element is obscured by another element";
-      await delay(100);
+      await delay(100, progress);
     }
     throw new Error(`element was not clickable before timeout: ${lastProblem}`);
   }
@@ -809,7 +815,8 @@
     return { point: { x: left + (right - left) / 2, y: top + (bottom - top) / 2 } };
   }
 
-  async function applyOne(element, operation, value, key, timeoutMs = 10000) {
+  async function applyOne(element, operation, value, key, timeoutMs = 10000, progress = null) {
+    await checkProgress(progress);
     const wanted = operation === "check" ? true : operation === "uncheck" ? false : null;
     if (wanted !== null && Boolean(element.checked) === wanted) return false;
     let selectedOption = null;
@@ -824,8 +831,9 @@
       if (["click", "double_click", "hover"].includes(operation)) {
         mutationStarted = true;
         scrollElementIntoView(element);
-        await waitForStableBox(element, timeoutMs);
-        await waitForPointerTarget(element, timeoutMs);
+        await waitForStableBox(element, timeoutMs, progress);
+        await waitForPointerTarget(element, timeoutMs, progress);
+        await checkProgress(progress);
         if (operation === "click") element.click();
         else if (operation === "double_click") {
           element.click();
@@ -1153,16 +1161,30 @@
     return typeof value === "number" && Number.isFinite(value) ? value : fallback;
   }
 
-  function delay(ms) {
+  async function checkProgress(progress) {
+    if (progress === null || progress === undefined) return;
+    if (typeof progress?.token !== "string" || !/^[a-f0-9-]{36}$/.test(progress.token)) {
+      throw new Error("browser request progress identity is invalid");
+    }
+    const response = await globalThis.chrome?.runtime?.sendMessage?.({
+      type: "machine_bridge_internal_progress", request_token: progress.token,
+    });
+    if (response?.ok !== true || response.active !== true) throw new Error("browser request cancelled");
+  }
+
+  function delay(ms, progress = null) {
     const runtime = globalThis.chrome?.runtime;
     if (runtime && typeof runtime.sendMessage === "function") {
       const delayMs = Number.isFinite(ms) ? Math.ceil(ms) : 0;
       if (delayMs < 1 || delayMs > 250) return Promise.reject(new Error("browser action delay is invalid"));
-      return Promise.resolve(runtime.sendMessage({ type: "machine_bridge_internal_delay", delay_ms: delayMs }))
+      return Promise.resolve(runtime.sendMessage({ type: "machine_bridge_internal_delay", delay_ms: delayMs,
+          ...(progress ? { request_token: progress.token } : {}) }))
         .then((response) => {
           if (response?.ok !== true) throw new Error("browser action timing service unavailable");
+          if (progress && response.active !== true) throw new Error("browser request cancelled");
         });
     }
+    if (progress) return Promise.reject(new Error("browser request progress service unavailable"));
     return new Promise((resolve) => { setTimeout(resolve, ms); });
   }
 

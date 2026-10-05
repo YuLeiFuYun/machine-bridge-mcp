@@ -4,12 +4,12 @@ const MULTIPLE_LINK_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 export function openRegularFileSync(file, flags, options = {}) {
   const mode = Number.isInteger(options.mode) ? options.mode : undefined;
   const label = String(options.label || "path");
-  const noFollow = Number(fsConstants.O_NOFOLLOW || 0);
+  const safetyFlags = Number(fsConstants.O_NOFOLLOW || 0) | Number(fsConstants.O_NONBLOCK || 0);
   let fd;
   try {
     fd = mode === undefined
-      ? openSync(file, Number(flags) | noFollow)
-      : openSync(file, Number(flags) | noFollow, mode);
+      ? openSync(file, Number(flags) | safetyFlags)
+      : openSync(file, Number(flags) | safetyFlags, mode);
   } catch (error) {
     if (error?.code === "ELOOP") throw new Error(`${label} must not be a symbolic link`, { cause: error });
     throw error;
@@ -66,11 +66,11 @@ export function retryTransientMultipleLinksSync(callback, options = {}) {
 export function chmodRegularFileSync(file, mode, label = "path") {
   return withRegularFileSync(file, fsConstants.O_RDONLY, { label, chmod: mode, rejectMultipleLinks: true }, () => undefined);
 }
-
 export function chmodRegularFileIfIdentitySync(file, expectedIdentity, mode, label = "path") {
   return withRegularFileSync(file, fsConstants.O_RDONLY, { label, rejectMultipleLinks: true }, (fd, _info, identity) => {
     if (!sameFilesystemIdentity(expectedIdentity, identity)) throw new Error(`${label} changed before permission update`);
     setDescriptorMode(fd, mode);
+    return filesystemIdentity(fstatSync(fd, { bigint: true }), label);
   });
 }
 

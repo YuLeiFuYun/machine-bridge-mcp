@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { pruneRetiredManagedJobDirectories } from "../src/local/managed-job-directory-generation.mjs";
-import { acquireDaemonLock, acquireStartupLock, loadState, saveState, selectedWorkspace, setSelectedWorkspace } from "../src/local/state.mjs";
+import { acquireDaemonLock, acquireStartupLock, loadGlobalConfig, loadState, saveState, selectedWorkspace, setSelectedWorkspace } from "../src/local/state.mjs";
 import { historicalWorkspaceHash, isUnpopulatedProfileShell, migrateWorkspaceProfile, retireMatchingServiceOwner } from "../src/local/workspace-profile-migration.mjs";
 import { beginServiceOwnerUpdate, serviceOwnerPath } from "../src/local/service-owner.mjs";
 import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
@@ -24,6 +24,63 @@ try {
     assert.throws(() => knownWorkerNames(stateRoot), /state profile directory must be a real directory/,
       "destructive state inventory followed a symbolic-link profiles directory");
     await rm(profilesLink, { force: true });
+  }
+
+  const backupRoot = join(workspace, "backup-retention");
+  await mkdir(backupRoot, { mode: 0o700 });
+  for (const name of ["config.json.corrupt-valuable-note", "config.json.corrupt-1-bad-suffix"]) {
+    await writeFile(join(backupRoot, name), "preserve-unrelated-content", { mode: 0o600 });
+    await utimes(join(backupRoot, name), new Date(0), new Date(0));
+  }
+  for (let index = 1; index <= 3; index += 1) {
+    const backup = join(backupRoot, "config.json.corrupt-" + index + "-00000000");
+    await writeFile(backup, "old-owned-snapshot", { mode: 0o600 });
+    await utimes(backup, new Date(index * 1000), new Date(index * 1000));
+  }
+  const directoryBackup = join(backupRoot, "config.json.corrupt-4-00000000");
+  await mkdir(directoryBackup);
+  if (process.platform !== "win32") {
+    await symlink(join(backupRoot, "config.json.corrupt-valuable-note"), join(backupRoot, "config.json.corrupt-5-00000000"));
+    await link(join(backupRoot, "config.json.corrupt-valuable-note"), join(backupRoot, "config.json.corrupt-6-00000000"));
+  }
+  await writeFile(join(backupRoot, "config.json"), "{invalid", { mode: 0o600 });
+  assert.equal(loadGlobalConfig(backupRoot).schemaVersion, 1);
+  assert.equal(await readFile(join(backupRoot, "config.json.corrupt-valuable-note"), "utf8"), "preserve-unrelated-content");
+  assert.equal(await readFile(join(backupRoot, "config.json.corrupt-1-bad-suffix"), "utf8"), "preserve-unrelated-content");
+  assert((await lstat(directoryBackup)).isDirectory(), "corrupt backup pruning removed an unrelated directory");
+  const backupNames = await readdir(backupRoot);
+  assert.equal(backupNames.filter(name => /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(name)
+    && !["config.json.corrupt-4-00000000", "config.json.corrupt-5-00000000", "config.json.corrupt-6-00000000"].includes(name)).length,
+  3, "corrupt backup pruning did not retain exactly three owned regular snapshots");
+  if (process.platform !== "win32") {
+    assert((await lstat(join(backupRoot, "config.json.corrupt-5-00000000"))).isSymbolicLink());
+    assert.equal(await readFile(join(backupRoot, "config.json.corrupt-6-00000000"), "utf8"), "preserve-unrelated-content");
+  }
+
+  for (const relation of ["equal", "inside", "ancestor"]) {
+    const fixtureRoot = join(workspace, "overlap-migration-" + relation);
+    const sourceWorkspace = join(fixtureRoot, "workspace");
+    const ownStateRoot = join(fixtureRoot, "state");
+    await mkdir(sourceWorkspace, { recursive: true });
+    const ownState = loadState(sourceWorkspace, { stateDir: ownStateRoot });
+    saveState(ownState);
+    const sourceBytes = await readFile(ownState.paths.statePath, "utf8");
+    const destinationWorkspace = relation === "equal" ? ownStateRoot
+      : relation === "inside" ? join(ownStateRoot, "destination") : fixtureRoot;
+    await mkdir(destinationWorkspace, { recursive: true });
+    let consultedOrRetired = 0;
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace, destinationWorkspace, stateRoot: ownStateRoot,
+      readProvider: async () => { consultedOrRetired += 1; return { active: false }; },
+      listActiveJobs: () => [], listActiveLocks: () => [],
+      retireServiceOwner: () => { consultedOrRetired += 1; return { retired: false }; },
+    }), /must be separate, non-overlapping/,
+    "workspace migration accepted a destination overlapping its private state");
+    assert.equal(consultedOrRetired, 0, "overlap denial happened after consulting/retiring the service owner");
+    assert.equal(await readFile(ownState.paths.statePath, "utf8"), sourceBytes, "overlap denial moved or modified the original profile");
+    assert.equal(await lstat(join(ownState.paths.profileDir, "workspace-migration.json")).then(() => true, error => {
+      if (error.code === "ENOENT") return false; throw error;
+    }), false, "overlap denial published a migration marker");
   }
 
   const state = loadState(workspace, { stateDir: stateRoot });

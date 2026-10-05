@@ -9,6 +9,8 @@ import { applyCfNetworkCompatibility, CF_NETWORK_COMPATIBILITY } from "./cf-netw
 import { ensureHardenedNpm } from "./hardened-npm.mjs";
 import { withOwnerStateLock } from "./owner-state-lock.mjs";
 import { nestedNpmEnvironment } from "./npm-environment.mjs";
+import { validateNpmAudit } from "./npm-audit-report.mjs";
+import { withHardenedNpmLauncher } from "./hardened-npm-launcher.mjs";
 import { resolveNpmCli } from "./npm-cli.mjs";
 import { isPrivateToolchainIntegrityError } from "./private-toolchain-integrity.mjs";
 import {
@@ -43,40 +45,43 @@ export async function ensureWranglerToolchain(options = {}) {
     ensureOwnerOnlyDirectorySync(parent);
     return withOwnerStateLock(parent, async () => {
       const npmCli = explicitNpmCli || (await ensureHardenedNpm(parent, options.hardenedNpm || {})).cli;
-    let marker = null;
-    let installed = false;
-    try {
-      marker = readWranglerToolchainMarker(descriptor.root);
-      installed = await verifyWranglerToolchain(descriptor, (args, allowFailure = false) => runNpm(npmCli, args, descriptor.root, runCommand, options, AUDIT_TIMEOUT_MS, allowFailure));
-    } catch (error) {
-      if (!isPrivateToolchainIntegrityError(error)) throw error;
-    }
-    if (!installed) {
-      installToolchain(descriptor);
-      await runNpm(npmCli, [
-        "ci",
-        "--dry-run=false",
-        "--workspaces=false",
-        "--ignore-scripts=false",
-        "--package-lock=true",
-        "--package-lock-only=false",
-        "--omit=dev",
-        "--no-fund",
-        "--audit=false",
-      ], descriptor.root, runCommand, options, INSTALL_TIMEOUT_MS);
-      await verifyWranglerToolchain(descriptor, (args, allowFailure = false) => runNpm(npmCli, args, descriptor.root, runCommand, options, AUDIT_TIMEOUT_MS, allowFailure), true);
-      await auditToolchain(descriptor, npmCli, runCommand, options);
-      writeWranglerToolchainMarker(descriptor, now());
-      return descriptor.root;
-    }
+      return withHardenedNpmLauncher(parent, npmCli, async (bin) => {
+        const npmOptions = { ...options, env: nestedNpmEnvironment(options.env || process.env, { bin }) };
+        let marker = null;
+        let installed = false;
+        try {
+          marker = readWranglerToolchainMarker(descriptor.root);
+          installed = await verifyWranglerToolchain(descriptor, (args, allowFailure = false) => runNpm(npmCli, args, descriptor.root, runCommand, npmOptions, AUDIT_TIMEOUT_MS, allowFailure));
+        } catch (error) {
+          if (!isPrivateToolchainIntegrityError(error)) throw error;
+        }
+        if (!installed) {
+          installToolchain(descriptor);
+          await runNpm(npmCli, [
+            "ci",
+            "--dry-run=false",
+            "--workspaces=false",
+            "--ignore-scripts=false",
+            "--package-lock=true",
+            "--package-lock-only=false",
+            "--omit=dev",
+            "--no-fund",
+            "--audit=false",
+          ], descriptor.root, runCommand, npmOptions, INSTALL_TIMEOUT_MS);
+          await verifyWranglerToolchain(descriptor, (args, allowFailure = false) => runNpm(npmCli, args, descriptor.root, runCommand, npmOptions, AUDIT_TIMEOUT_MS, allowFailure), true);
+          await auditToolchain(descriptor, npmCli, runCommand, npmOptions);
+          writeWranglerToolchainMarker(descriptor, now());
+          return descriptor.root;
+        }
 
-    const checkedAt = now();
-    const auditAgeMs = checkedAt - Date.parse(String(marker?.audited_at || ""));
-    if (!wranglerToolchainMarkerMatches(marker, descriptor) || auditAgeMs < -MAX_CLOCK_SKEW_MS || auditAgeMs >= auditMaxAgeMs) {
-      await auditToolchain(descriptor, npmCli, runCommand, options);
-      writeWranglerToolchainMarker(descriptor, checkedAt);
-    }
-      return descriptor.root;
+        const checkedAt = now();
+        const auditAgeMs = checkedAt - Date.parse(String(marker?.audited_at || ""));
+        if (!wranglerToolchainMarkerMatches(marker, descriptor) || auditAgeMs < -MAX_CLOCK_SKEW_MS || auditAgeMs >= auditMaxAgeMs) {
+          await auditToolchain(descriptor, npmCli, runCommand, npmOptions);
+          writeWranglerToolchainMarker(descriptor, checkedAt);
+        }
+        return descriptor.root;
+      });
     }, {
       purpose: "wrangler-toolchain",
       fileName: TOOLCHAIN_LOCK,
@@ -146,11 +151,7 @@ async function auditToolchain(descriptor, npmCli, runCommand, options) {
   const audit = await runNpm(npmCli, ["audit", "--workspaces=false", "--omit=dev", "--audit-level=low", "--json"], descriptor.root, runCommand, options, AUDIT_TIMEOUT_MS, true);
   let report;
   try { report = JSON.parse(audit.stdout); } catch { throw new Error("Wrangler toolchain npm audit did not return valid JSON"); }
-  const vulnerabilities = report?.metadata?.vulnerabilities;
-  const total = Number(vulnerabilities?.total);
-  if (audit.code !== 0 || !Number.isFinite(total) || total !== 0) {
-    throw new Error(`Wrangler toolchain dependency audit failed (${auditSummary(vulnerabilities)})`);
-  }
+  validateNpmAudit(report, audit.code, "Wrangler toolchain");
   await runNpm(npmCli, ["audit", "signatures", "--workspaces=false"], descriptor.root, runCommand, options, AUDIT_TIMEOUT_MS);
 }
 
@@ -191,11 +192,6 @@ function parseJsonObject(bytes, label) {
   try { value = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new Error(`${label} is not valid JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value;
-}
-
-function auditSummary(value = {}) {
-  return ["critical", "high", "moderate", "low", "info"]
-    .map((key) => `${key}=${Number(value?.[key]) || 0}`).join(", ");
 }
 
 function positiveInteger(value, fallback) {

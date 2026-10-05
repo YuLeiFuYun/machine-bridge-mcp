@@ -1,5 +1,5 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
-import { authorityRevocations, authorityRevocationWireMessage } from "./authority-revocations.ts";
+import { authorityRevocations, queueDaemonHttpRevocations } from "./authority-revocations.ts";
 import type { DaemonChannel } from "./daemon-channel.ts";
 import { verifyDaemonHttpRelayRequest } from "./daemon-http-auth.ts";
 import type { DaemonHttpChannel } from "./daemon-http-channel.ts";
@@ -14,6 +14,24 @@ import type { PendingCallRegistry } from "./pending-calls.ts";
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 import { randomToken } from "./oauth-state.ts";
+
+const handshakes = new WeakMap<DaemonHttpChannel, { ids: readonly string[]; offered: boolean }>();
+
+
+async function advanceHandshake(channel: DaemonHttpChannel, storage: DurableObjectStorage, server: string, version: string): Promise<void> {
+  const records = await authorityRevocations(storage);
+  const handshake = handshakes.get(channel);
+  if (handshake && !handshake.offered && channel.queuedMessageCount === 0
+      && records.length <= relayContract.httpFallbackMaximumQueuedMessages - 2) {
+    beginDaemonResumeReconciliation(channel, handshake.ids);
+    channel.send(JSON.stringify({ type: "resume_calls", ids: handshake.ids }));
+    queueDaemonHttpRevocations(channel, records);
+    channel.send(JSON.stringify({ type: "ready_ack", server, version }));
+    handshake.offered = true;
+    return;
+  }
+  queueDaemonHttpRevocations(channel, records);
+}
 
 export async function handleDaemonHttpRelay(input: {
   request: Request;
@@ -75,13 +93,10 @@ export async function handleDaemonHttpRelay(input: {
       relayDiagnostics: sanitizeDaemonRelayDiagnostics(exchange.relayDiagnostics),
     }, now);
     if (!channel) return json({ error: "daemon_http_candidate_capacity" }, 503);
-    const queuedRevocations = await authorityRevocations(input.storage);
     input.registry.http.activate(exchange.sessionId, channel.activationToken, now);
     const rebound = input.pending.rebindInstance(exchange.instanceId, channel);
-    beginDaemonResumeReconciliation(channel, rebound);
-    channel.send(JSON.stringify({ type: "resume_calls", ids: rebound }));
-    for (const revocation of queuedRevocations) channel.send(JSON.stringify(authorityRevocationWireMessage(revocation)));
-    channel.send(JSON.stringify({ type: "ready_ack", server: input.server, version: input.version }));
+    handshakes.set(channel, { ids: rebound, offered: false });
+    await advanceHandshake(channel, input.storage, input.server, input.version);
     await input.scheduleAlarm();
     return relayResponse("probing", channel.activationToken, channel.daemonSequence, channel.outboundMessages());
   }
@@ -101,7 +116,7 @@ export async function handleDaemonHttpRelay(input: {
       if (sequence === "duplicate") continue;
       if (sequence === "gap") return invalidate(channel, input, "daemon_http_sequence_gap");
       if (message.payload.type === "https_ready") {
-        if (channel.outboundMessages().length > 0) {
+        if (!handshakes.get(channel)?.offered || channel.queuedMessageCount > 0) {
           return invalidate(channel, input, "daemon_http_ready_before_control_ack");
         }
         channel.verifyReady();
@@ -122,6 +137,7 @@ export async function handleDaemonHttpRelay(input: {
       if (!handled.ok) return invalidate(channel, input, handled.errorCode ?? "invalid_daemon_http_message");
       channel.commitDaemonSequence(message.seq);
     }
+    await advanceHandshake(channel, input.storage, input.server, input.version);
     await input.scheduleAlarm();
     if (channel.readyState === 1) notifyReadyDaemon(input.registry);
     return relayResponse(channel.readyState === 1 ? "ready" : "probing", channel.activationToken, channel.daemonSequence, channel.outboundMessages());
@@ -142,6 +158,7 @@ export async function handleDaemonHttpRelay(input: {
     if (!handled.ok) return invalidate(channel, input, handled.errorCode ?? "invalid_daemon_http_message");
     channel.commitDaemonSequence(message.seq);
   }
+  await advanceHandshake(channel, input.storage, input.server, input.version);
   await input.scheduleAlarm();
   return relayResponse("ready", channel.activationToken, channel.daemonSequence, channel.outboundMessages());
 }

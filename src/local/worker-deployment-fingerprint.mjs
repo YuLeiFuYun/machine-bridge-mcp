@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, opendirSync, realpathSync } from "node:fs";
 import path, { resolve } from "node:path";
 import { publicDeviceJwkJson } from "./device-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
@@ -7,6 +7,9 @@ import { deploymentDeviceIdentity } from "./state.mjs";
 import { packageRoot } from "./package-identity.mjs";
 
 const MAX_WORKER_DEPLOY_SOURCE_BYTES = 16 * 1024 * 1024;
+const MAX_DEPLOYMENT_FILES = 4096;
+const MAX_DEPLOYMENT_ENTRIES = 8192;
+const MAX_DEPLOYMENT_DEPTH = 64;
 const REQUIRED_DEPLOYMENT_PATHS = Object.freeze([
   "src/worker",
   "src/shared",
@@ -59,8 +62,8 @@ function addFingerprintField(hash, value) {
 function workerDeployHashFiles(root) {
   const canonicalRoot = requireRealDeploymentRoot(root);
   const files = [];
-  for (const item of REQUIRED_DEPLOYMENT_PATHS) collectRequiredHashPath(canonicalRoot, item, files);
-  if (files.length > 4096) throw new Error("Worker deployment source exceeds 4096 files");
+  const budget = { visited: 0 };
+  for (const item of REQUIRED_DEPLOYMENT_PATHS) collectRequiredHashPath(canonicalRoot, item, files, budget);
   return Object.freeze({ root: canonicalRoot, files: files.sort() });
 }
 
@@ -78,7 +81,7 @@ function requireRealDeploymentRoot(root) {
   return realpathSync(target);
 }
 
-function collectRequiredHashPath(root, relativePath, out) {
+function collectRequiredHashPath(root, relativePath, out, budget) {
   let current = root;
   const parts = relativePath.split("/");
   for (let index = 0; index < parts.length; index += 1) {
@@ -89,7 +92,7 @@ function collectRequiredHashPath(root, relativePath, out) {
       throw new Error(`Worker deployment source ancestor must be a real directory: ${current}`);
     }
   }
-  collectHashFiles(current, out);
+  collectHashFiles(current, out, budget);
 }
 
 function requiredPathInfo(target) {
@@ -100,16 +103,33 @@ function requiredPathInfo(target) {
   }
 }
 
-function collectHashFiles(target, out) {
+function collectHashFiles(target, out, budget, depth = 0) {
+  budget.visited += 1;
+  if (budget.visited > MAX_DEPLOYMENT_ENTRIES) throw new Error("Worker deployment source exceeds its entry limit");
+  if (depth > MAX_DEPLOYMENT_DEPTH) throw new Error("Worker deployment source exceeds its depth limit");
   const info = requiredPathInfo(target);
-  if (info.isSymbolicLink()) throw new Error(`Worker deployment source must not be a symbolic link: ${target}`);
+  if (info.isSymbolicLink()) throw new Error("Worker deployment source must not be a symbolic link: " + target);
   if (info.isFile()) {
-    if (/\.(ts|js|mjs|json|jsonc|yaml|yml|lock)$/.test(target)) out.push(target);
+    if (/\.(ts|js|mjs|json|jsonc|yaml|yml|lock)$/.test(target)) {
+      if (out.length >= MAX_DEPLOYMENT_FILES) throw new Error("Worker deployment source exceeds 4096 files");
+      out.push(target);
+    }
     return;
   }
-  if (!info.isDirectory()) throw new Error(`Worker deployment source must be a regular file or directory: ${target}`);
-  for (const entry of readdirSync(target, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === ".wrangler" || entry.name.endsWith(".d.ts")) continue;
-    collectHashFiles(resolve(target, entry.name), out);
+  if (!info.isDirectory()) throw new Error("Worker deployment source must be a regular file or directory: " + target);
+  // Streaming bounds enumeration allocation as well as visited entries.
+  const directory = opendirSync(target);
+  try {
+    let entry;
+    while ((entry = directory.readSync()) !== null) {
+      if (entry.name === "node_modules" || entry.name === ".wrangler" || entry.name.endsWith(".d.ts")) {
+        budget.visited += 1;
+        if (budget.visited > MAX_DEPLOYMENT_ENTRIES) throw new Error("Worker deployment source exceeds its entry limit");
+        continue;
+      }
+      collectHashFiles(resolve(target, entry.name), out, budget, depth + 1);
+    }
+  } finally {
+    directory.closeSync();
   }
 }

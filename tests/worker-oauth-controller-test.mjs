@@ -2,11 +2,13 @@ import { normalizeAccountRole } from "../src/worker/access.ts";
 import { consumeAccountAdminNonce } from "../src/worker/account-admin.ts";
 import { OAuthController } from "../src/worker/oauth-controller.ts";
 import { authorizationPage } from "../src/worker/oauth-authorization-page.ts";
-import { accountByName, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex } from "../src/worker/oauth-state.ts";
+import { accountByName, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex, validateAuthorizationRequest } from "../src/worker/oauth-state.ts";
 import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth-refresh-families.ts";
 import { oauthRefreshPersistenceEntries } from "../src/worker/oauth-refresh-persistence.ts";
 import { isCurrentOAuthStore } from "../src/worker/oauth-store-validation.ts";
 import { saveOAuthStores } from "../src/worker/oauth-token-issuance.ts";
+import { workerErrorClass } from "../src/worker/http.ts";
+import { authorityRevocations } from "../src/worker/authority-revocations.ts";
 import { OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
 
 const SERVER_NAME = "machine-bridge-mcp";
@@ -334,6 +336,31 @@ async function testAuthorizationAndTokens() {
   assert(verified?.accountId === account.account_id && verified.role === "owner", "valid access token lost account authority");
   assert(await controller.verifyAccessToken(rawToken, "https://other.example.test") === null, "access token was not bound to the MCP resource origin");
 
+  let dispatched = 0;
+  await controller.runWithCurrentAuthority(verified, () => { dispatched += 1; });
+  assert(dispatched === 1, "current authority could not transfer dispatch ownership");
+  const currentStore = await storage.get("oauth");
+  const revocations = [
+    (value) => { delete value.tokens[tokenKey]; },
+    (value) => { delete value.clients[client.client_id]; },
+    (value) => { value.accounts[account.account_id].active = false; },
+    (value) => { value.tokens[tokenKey].family_id = `mcp_family_${"f".repeat(43)}`; },
+    (value) => { value.tokens[tokenKey].expires_at = now - 1; },
+  ];
+  for (const revoke of revocations) {
+    const revoked = structuredClone(currentStore);
+    revoke(revoked);
+    await storage.put("oauth", revoked);
+    let denied;
+    try { await controller.runWithCurrentAuthority(verified, () => { dispatched += 1; }); }
+    catch (error) { denied = error; }
+    assert(denied?.code === "authorization_denied" && denied.details?.side_effects_started === false,
+      "stale authority reached dispatch after an asynchronous pre-dispatch gap");
+    assert(dispatched === 1, "revoked authority performed a daemon side effect");
+  }
+  await storage.put("oauth", currentStore);
+
+
   const invalidScopeToken = "access_token_with_invalid_scope";
   const invalidScopeKey = `sha256:${await sha256Hex(invalidScopeToken)}`;
   const invalidScopeStore = await storage.get("oauth");
@@ -493,6 +520,76 @@ async function testRefreshReplayStateBoundsAndValidation() {
   );
 }
 
+async function testRefreshCapacityAuthorityPersistence() {
+  const now = Math.floor(Date.now() / 1000);
+  const account = await createAccount({ name: "capacity-owner", role: "owner", password: PASSWORD, now });
+  const clientId = `mcp_client_${"c".repeat(43)}`, familyId = `mcp_family_${"f".repeat(43)}`;
+  const otherFamily = `mcp_family_${"z".repeat(43)}`;
+  const accessToken = `mcp_at_${"a".repeat(43)}`, controlToken = `mcp_at_${"c".repeat(43)}`;
+  const accessHash = `sha256:${await sha256Hex(accessToken)}`, controlHash = `sha256:${await sha256Hex(controlToken)}`;
+  const refreshToken = `mcp_rt_${"r".repeat(43)}`, refreshHash = `sha256:${await sha256Hex(refreshToken)}`;
+  const source = { client_id: clientId, account_id: account.account_id, account_version: account.version,
+    role: account.role, scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", family_id: familyId };
+  for (const mode of ["load", "rotate-other", "rotate-same"]) {
+    for (const failCommit of [false, true]) {
+      const oauthStore = emptyOAuthStore(), refreshStore = emptyOAuthRefreshStore();
+      oauthStore.accounts[account.account_id] = account;
+      oauthStore.clients[clientId] = { client_id: clientId, client_name: "Capacity Client", redirect_uris: [REDIRECT],
+        created_at: now, last_used_at: now, has_been_authorized: true, trusted_account_id: account.account_id,
+        trusted_account_version: account.version, trusted_role: account.role, trusted_at: now };
+      oauthStore.tokens[accessHash] = { ...source, expires_at: now + 900 };
+      oauthStore.tokens[controlHash] = { ...source, family_id: otherFamily, expires_at: now + 900 };
+      const refreshSource = { ...source, issued_at: now - 60, expires_at: now + 3_600, family_expires_at: now + 7_200 };
+      refreshStore.tokens[`sha256:${"b".repeat(64)}`] = refreshSource;
+      refreshStore.tokens[refreshHash] = { ...refreshSource, family_id: mode === "rotate-same" ? familyId : otherFamily };
+      for (let index = 0; index < (mode === "load" ? 4_100 : 4_096); index += 1) {
+        refreshStore.consumed[`sha256:${(index % 16).toString(16)}${index.toString(16).padStart(63, "0")}`] = {
+          family_id: familyId, consumed_at: now - 5_000 + index, expires_at: now + 7_200,
+        };
+      }
+      const storage = new MemoryStorage({ oauth: oauthStore, ...oauthRefreshPersistenceEntries(refreshStore) });
+      const before = JSON.stringify([...storage.values]);
+      const failure = new Error("synthetic authority queue write failure");
+      if (failCommit) {
+        const transaction = storage.transaction.bind(storage);
+        storage.transaction = (callback) => transaction(async (tx) => {
+          const put = tx.put.bind(tx);
+          tx.put = (key, value) => key === "authority-revocations" ? Promise.reject(failure) : put(key, value);
+          return callback(tx);
+        });
+      }
+      const controller = createController(storage);
+      let response, rejected;
+      try {
+        if (mode === "load") await loadOAuthRefreshStore(await storage.get("oauth"), storage);
+        else response = await controller.exchangeToken(new Request(`${BASE}/oauth/token`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken }),
+        }), BASE);
+      } catch (error) { rejected = error; }
+      if (failCommit) {
+        assert(rejected === failure || rejected?.cause === failure, "capacity persistence replaced the original queue failure");
+        assert(JSON.stringify([...storage.values]) === before, "failed capacity revocation partially committed OAuth or replay state");
+        continue;
+      }
+      if (rejected) throw rejected;
+      assert(!Object.hasOwn((await storage.get("oauth")).tokens, accessHash), "capacity eviction retained persisted family access");
+      assert(await controller.verifyAccessToken(accessToken, BASE) === null, "capacity eviction regained authority after reload");
+      assert(await controller.verifyAccessToken(controlToken, BASE) !== null, "capacity eviction revoked an unrelated family");
+      const queue = await authorityRevocations(storage);
+      assert(queue.length === 1 && queue[0].family_id === familyId && queue[0].client_id === clientId
+        && queue[0].account_id === account.account_id && queue[0].account_version === account.version,
+      "capacity eviction lost its durable principal-scoped revocation");
+      if (mode !== "load") {
+        assert(response.status === (mode === "rotate-same" ? 400 : 200), "capacity rotation returned an invalid grant outcome");
+        const body = await response.json();
+        if (mode === "rotate-same") assert(body.error === "invalid_grant", "revoked current family returned a token response");
+        else assert(await controller.verifyAccessToken(body.access_token, BASE) !== null, "unrelated capacity rotation lost its new access token");
+      }
+    }
+  }
+}
+
 async function testRefreshReplayCompaction() {
   const now = Math.floor(Date.now() / 1000);
   const oauthStore = emptyOAuthStore();
@@ -560,17 +657,27 @@ async function testOAuthStorePersistenceFailureClassification() {
   const oauthStore = emptyOAuthStore();
   const refreshStore = emptyOAuthRefreshStore();
   for (const expected of ["oauth", "refresh", "commit"]) {
-    const failKey = expected === "oauth" ? "oauth" : expected === "refresh" ? "oauth-refresh" : "";
-    const storage = {
-      async transaction(callback) {
-        const tx = { async put(key) { if (key === failKey) throw new Error("synthetic storage failure"); } };
-        await callback(tx);
-        if (expected === "commit") throw new Error("synthetic commit failure");
-      },
-    };
-    let failure;
-    try { await saveOAuthStores(oauthStore, refreshStore, storage); } catch (error) { failure = error; }
-    assert(failure?.name === `oauth_store_persist_${expected}_error`, `OAuth persistence ${expected} failure lost its bounded stage`);
+    for (const [ErrorType, kind, name] of [
+      [Error, "error"], [TypeError, "type_error"], [RangeError, "range_error"],
+      [Error, "error", `mcp_rt_${"r".repeat(43)}`],
+    ]) {
+      const cause = new ErrorType("synthetic private storage failure");
+      if (name) cause.name = name;
+      const failKey = expected === "oauth" ? "oauth" : expected === "refresh" ? "oauth-refresh" : "";
+      const storage = {
+        async transaction(callback) {
+          const tx = { async put(key) { if (key === failKey) throw cause; } };
+          await callback(tx);
+          if (expected === "commit") throw cause;
+        },
+      };
+      let failure;
+      try { await saveOAuthStores(oauthStore, refreshStore, storage); } catch (error) { failure = error; }
+      const category = `oauth_store_persist_${expected}_${kind}`;
+      assert(failure?.name === category && workerErrorClass(failure) === category,
+        `OAuth persistence ${expected} failure lost its fixed stage/kind`);
+      assert(failure?.cause === cause, "OAuth persistence replaced its private causal error");
+    }
   }
 }
 
@@ -720,8 +827,28 @@ await testAuthorizationAndTokens();
 await testMalformedRoleRepair();
 await testRefreshReplayStateBoundsAndValidation();
 await testRefreshReplayCompaction();
+await testRefreshCapacityAuthorityPersistence();
 await testOAuthStorePersistenceFailureClassification();
 await testAdminNonceStateFailsClosed();
 await testOAuthLockContainsCallbackFailure();
 await testInvalidStateFailsClosed();
 console.log("worker OAuth controller test ok");
+
+{
+  const store = emptyOAuthStore();
+  const valid = { response_type: "code", client_id: "constructor", redirect_uri: REDIRECT,
+    code_challenge: "C".repeat(43), code_challenge_method: "S256" };
+  for (const clientId of ["constructor", "__proto__", "toString"]) {
+    assert(validateAuthorizationRequest({ ...valid, client_id: clientId }, BASE, SERVER_NAME, store).status === 400,
+      "inherited OAuth client name escaped the malformed-input response");
+  }
+  for (const field of ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "scope", "resource"]) {
+    assert(validateAuthorizationRequest({ ...valid, [field]: [valid[field] ?? SERVER_NAME] }, BASE, SERVER_NAME, store).status === 400,
+      "OAuth authorization field accepted an array through string coercion");
+  }
+  const controller = createController(new MemoryStorage());
+  const response = await controller.registerClient(new Request(`${BASE}/oauth/register`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [[REDIRECT]] }),
+  }));
+  assert(response.status === 400, "OAuth redirect URI metadata accepted nested arrays");
+}

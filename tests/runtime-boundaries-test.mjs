@@ -1,3 +1,5 @@
+import { LocalRuntime } from "../src/local/runtime.mjs";
+import { LifecycleController } from "../src/local/lifecycle.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +22,7 @@ import { settleDurableProcessAcceptance } from "../src/local/durable-process-ini
 import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, parseSystemSleepIntervals, systemSleepDiagnostic } from "../src/local/system-sleep-diagnostics.mjs";
 
 await testRuntimeReporting();
+await testConcurrentRuntimeStop();
 testProcessSessionStatusAuthority();
 await testDurableProcessInitialSettlement();
 testSystemSleepDiagnostics();
@@ -32,6 +35,68 @@ await testRuntimeCapabilities();
 await testRuntimeResourceService();
 await testPathInspectionFailures();
 console.log("runtime boundary services test ok");
+
+async function testConcurrentRuntimeStop() {
+  for (const failStop of [false, true]) {
+    const runtimeDir = await mkdtemp(join(tmpdir(), "mbm-runtime-stop-"));
+    try {
+      let settle;
+      const primary = new Error("synthetic shutdown failure");
+      let gate = new Promise((resolvePromise, rejectPromise) => { settle = () => failStop ? rejectPromise(primary) : resolvePromise(); });
+      let drains = 0;
+      const events = [];
+      const runtime = Object.assign(Object.create(LocalRuntime.prototype), {
+        lifecycle: new LifecycleController(), runtimeDir, activeRelayCalls: new Map(),
+        relayShutdownDrain: { begin() { drains += 1; return gate; }, stop() {} },
+        relay: { stop() {} }, relayCallRecovery: { stop() {} },
+        managedJobManager: { stopRunnerExitRecovery() {} },
+        callRegistry: { async cancelAllAndWait(reason) {
+          assert(reason === "runtime stopped", "runtime stopped calls without a cancellation reason");
+          await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+          events.push("calls");
+        } },
+        processTracker: { async drain(signal) {
+          assert(signal === "SIGKILL" && events.join(",") === "calls", "runtime drained processes before calls settled");
+          await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+          events.push("processes");
+        } },
+        processSessionManager: { async clearAndWait() {
+          assert(events.join(",") === "calls,processes", "runtime cleared process sessions before processes settled");
+          await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+          events.push("sessions");
+        } },
+        remoteActivityIdleSleepGuard: { stop() {} },
+        securityAudit: { async close() {
+          assert(events.join(",") === "calls,processes,sessions", "runtime closed audit before execution settled");
+          events.push("audit");
+        } }, browserBridgeManager: { stop() { events.push("browser"); } },
+      });
+      let settled = 0;
+      const callers = [runtime.stop(), runtime.stop(), runtime.stop()].map((promise) => promise.finally(() => { settled += 1; }));
+      const results = Promise.allSettled(callers);
+      await new Promise((resolvePromise) => { setImmediate(resolvePromise); });
+      assert(settled === 0 && drains === 1 && runtime.lifecycle.snapshot().state === "stopping"
+        && await pathEntryIfExists(runtimeDir), "concurrent stop caller returned before the shared runtime cleanup");
+      settle();
+      const outcomes = await results;
+      if (failStop) {
+        assert(outcomes.every((value) => value.status === "rejected" && value.reason === primary)
+          && runtime.lifecycle.snapshot().state === "stop_failed" && await pathEntryIfExists(runtimeDir),
+        "concurrent stop callers lost the shared failure or claimed cleanup had completed");
+        gate = Promise.resolve();
+        await runtime.stop();
+        assert(drains === 2, "failed runtime stop could not be retried");
+      } else assert(outcomes.every((value) => value.status === "fulfilled"), "successful runtime cleanup did not settle all stop callers");
+      assert(events.join(",") === "calls,processes,sessions,audit,browser", "runtime shutdown skipped an ownership teardown phase");
+      assert(runtime.lifecycle.snapshot().state === "stopped" && !await pathEntryIfExists(runtimeDir),
+        "runtime shutdown did not remove its private artifacts after settlement");
+      await runtime.stop();
+      assert(drains === (failStop ? 2 : 1), "completed runtime cleanup was repeated");
+    } finally {
+      await rm(runtimeDir, { recursive: true, force: true });
+    }
+  }
+}
 
 function testSystemSleepDiagnostics() {
   const intervals = parseSystemSleepIntervals([

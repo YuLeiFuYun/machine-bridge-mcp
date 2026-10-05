@@ -258,18 +258,10 @@ export async function acquireRuntimeStartServiceLock(args = {}, acquireLock = ac
 
 export function isIdempotentDaemonOnlyStart(args) {
   if (!args.daemonOnly || args.json) return false;
-  return !Boolean(
-    args.profile
-    || args.execMode
-    || args.rotateSecrets
-    || args.forceWorker
-    || args.workerName
-    || args.noWrite
-    || args.noExec
-    || args.fullEnv
-    || args.unrestrictedPaths
-    || args.absolutePaths
-  );
+  return ![
+    "profile", "execMode", "rotateSecrets", "forceWorker", "workerName",
+    "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
+  ].some((key) => Object.hasOwn(args, key));
 }
 
 async function startRemoteRuntime({ args, workspace, state, daemonLock, logger, dependencies = {} }) {
@@ -295,18 +287,20 @@ async function startRemoteRuntime({ args, workspace, state, daemonLock, logger, 
     }
     keepProcessAlive({ daemon: runtime, lock: daemonLock, logger });
   } catch (error) {
-    throw cleanupRuntimeStartFailure(error, runtime, daemonLock);
+    throw await cleanupRuntimeStartFailure(error, runtime, daemonLock);
   }
 }
 
-export function cleanupRuntimeStartFailure(error, runtime, daemonLock) {
-  const cleanupErrors = [];
-  try { runtime?.stop?.(); } catch (failure) { cleanupErrors.push(failure); }
-  try { daemonLock?.release?.(); } catch (failure) { cleanupErrors.push(failure); }
-  return cleanupErrors.length
-    ? new AggregateError([error, ...cleanupErrors],
-      "runtime startup failed and local cleanup was incomplete")
-    : error;
+export async function cleanupRuntimeStartFailure(error, runtime, daemonLock) {
+  try { await runtime?.stop?.(); }
+  catch (failure) {
+    return new AggregateError([error, failure], "runtime startup failed and shutdown was incomplete; daemon ownership retained");
+  }
+  try { daemonLock?.release?.(); }
+  catch (failure) {
+    return new AggregateError([error, failure], "runtime startup failed and daemon lock cleanup was incomplete");
+  }
+  return error;
 }
 
 async function prepareRemoteState({ args, workspace, state, logger, onRemotePrepared, provisionInitialOwner = true,
@@ -525,7 +519,7 @@ async function doctorCommand(args) {
   try {
     runtimeDiagnostics = await diagnosticRuntime.diagnoseRuntime();
   } finally {
-    diagnosticRuntime.stop();
+    await diagnosticRuntime.stop();
   }
   for (const check of runtimeDiagnostics.checks) checks.push(doctorRuntimeCheckProjection(check));
   console.log(JSON.stringify({

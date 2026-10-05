@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runFixtureChild, stopFixtureChild, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
@@ -84,9 +85,17 @@ async function atomicExclusiveCreateTest() {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   }));
-  const childResults = children.map(waitForChild);
-  await writeFile(barrier, "go\n", "utf8");
-  const results = await Promise.all(childResults);
+  const allResults = Promise.allSettled(children.map((child) => runFixtureChild(child, { label: "exclusive contender" })));
+  try { await writeFile(barrier, "go\n", "utf8"); }
+  catch (error) {
+    await Promise.allSettled(children.map((child) => stopFixtureChild(child, 10_000, "SIGKILL")));
+    await allResults;
+    throw error;
+  }
+  const settled = await allResults;
+  const failures = settled.filter((result) => result.status === "rejected").map((result) => result.reason);
+  if (failures.length) throw new AggregateError(failures, "exclusive contender fixtures failed");
+  const results = settled.map((result) => result.value);
   const winners = results.filter((result) => result.code === 0);
   assert(winners.length === 1, `exclusive create produced ${winners.length} winners`);
   assert(results.every((result) => result.code === 0 || result.code === 3), `exclusive create contender failed unexpectedly: ${JSON.stringify(results)}`);
@@ -142,13 +151,16 @@ async function atomicReplacementTest() {
   const moduleUrl = pathToFileURL(join(root, "src", "local", "exclusive-file.mjs")).href;
   await writeFile(helper, `import { replaceFileAtomicallySync } from ${JSON.stringify(moduleUrl)};\nconst target = process.argv[2];\nfor (let revision = 1; revision <= 250; revision += 1) replaceFileAtomicallySync(target, JSON.stringify({ revision, payload: 'x'.repeat(8192) }) + '\\n');\n`, "utf8");
   const child = spawnFixtureNode([helper, target], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
-  const childResult = waitForChild(child);
-  while (child.exitCode === null) {
-    const parsed = JSON.parse(await readFile(target, "utf8"));
-    assert(Number.isInteger(parsed.revision) && parsed.payload.length === 8192, "atomic replacement exposed partial content");
-    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 1); });
-  }
-  const result = await childResult;
+  const result = await runFixtureChild(child, {
+    label: "atomic replacement", timeoutMs: 30_000,
+    async prepare() {
+      while (child.exitCode === null && child.signalCode === null) {
+        const parsed = JSON.parse(await readFile(target, "utf8"));
+        assert(Number.isInteger(parsed.revision) && parsed.payload.length === 8192, "atomic replacement exposed partial content");
+        await new Promise((resolvePromise) => { setTimeout(resolvePromise, 1); });
+      }
+    },
+  });
   assert(result.code === 0, `atomic replacement fixture failed: ${result.stderr}`);
   const final = JSON.parse(await readFile(target, "utf8"));
   assert(final.revision === 250, "atomic replacement lost the final update");
@@ -274,25 +286,27 @@ async function startupWaitTest() {
   await mkdir(workspace, { recursive: true });
   const helper = join(workspace, "hold-lock.mjs");
   const stateUrl = pathToFileURL(join(root, "src", "local", "state.mjs")).href;
-  await writeFile(helper, `import { acquireStartupLock, loadState } from ${JSON.stringify(stateUrl)};\nconst [workspace, stateRoot] = process.argv.slice(2);\nconst state = loadState(workspace, { stateDir: stateRoot });\nconst lock = acquireStartupLock(state, { operation: "fixture" });\nif (!lock.acquired) process.exit(4);\nprocess.stdout.write("locked\\n");\nsetTimeout(() => { lock.release(); process.exit(0); }, 1000);\n`, "utf8");
+  await writeFile(helper, `import { acquireStartupLock, loadState } from ${JSON.stringify(stateUrl)};\nconst [workspace, stateRoot] = process.argv.slice(2);\nconst state = loadState(workspace, { stateDir: stateRoot });\nconst lock = acquireStartupLock(state, { operation: "fixture" });\nif (!lock.acquired) process.exit(4);\nprocess.stdout.write("ready\\n");\nsetTimeout(() => { lock.release(); process.exit(0); }, 1000);\n`, "utf8");
   const child = spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-  const childResult = waitForChild(child);
-  await waitForOutput(child, "locked", 5000);
-  const state = loadState(workspace, { stateDir: stateRoot });
-  const messages = [];
-  const started = Date.now();
-  const lock = await acquireStartupLockWithWait(state, {
-    operation: "parent",
-    timeoutMs: 3000,
-    pollMs: 20,
-    logger: { info(message) { messages.push(message); } },
+  const result = await runFixtureChild(child, {
+    label: "startup lock",
+    async prepare() {
+      await waitForFixtureReady(child, { timeoutMs: 5000, label: "startup lock" });
+      const state = loadState(workspace, { stateDir: stateRoot });
+      const messages = [];
+      const started = Date.now();
+      const lock = await acquireStartupLockWithWait(state, {
+        operation: "parent", timeoutMs: 3000, pollMs: 20,
+        logger: { info(message) { messages.push(message); } },
+      });
+      try {
+        assert(lock.acquired, "startup wait did not acquire the released lock");
+        assert(Date.now() - started >= 100, "startup wait returned before the competing operation released its lock");
+        assert(messages.some((message) => message.includes("waiting for")) && messages.some((message) => message.includes("continuing")), "startup wait progress messages are incomplete");
+        assert(!messages.some((message) => /\bpid\s+\d+\b/i.test(message)), "default startup wait log exposed the competing process identifier");
+      } finally { lock.release(); }
+    },
   });
-  assert(lock.acquired, "startup wait did not acquire the released lock");
-  assert(Date.now() - started >= 100, "startup wait returned before the competing operation released its lock");
-  assert(messages.some((message) => message.includes("waiting for")) && messages.some((message) => message.includes("continuing")), "startup wait progress messages are incomplete");
-  assert(!messages.some((message) => /\bpid\s+\d+\b/i.test(message)), "default startup wait log exposed the competing process identifier");
-  lock.release();
-  const result = await childResult;
   assert(result.code === 0, `startup lock fixture failed: ${result.stderr}`);
 }
 
@@ -340,10 +354,10 @@ async function maintenanceLockTest() {
 const [workspace, stateRoot] = process.argv.slice(2);
 try { loadState(workspace, { stateDir: stateRoot }); process.exit(0); } catch (error) { process.stderr.write(String(error?.message || error)); process.exit(7); }
 `, "utf8");
-  const blocked = await waitForChild(spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
+  const blocked = await runFixtureChild(spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
   assert(blocked.code === 7 && blocked.stderr.includes("state maintenance is active"), "foreign state load was not blocked by maintenance");
   maintenance.release();
-  const allowed = await waitForChild(spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
+  const allowed = await runFixtureChild(spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
   assert(allowed.code === 0, `state load remained blocked after maintenance release: ${allowed.stderr}`);
 
   const existingJobs = new ManagedJobManager({
@@ -378,29 +392,30 @@ function finish(code) {
   lock.release();
   process.exit(code);
 }
-process.stdout.write("locked\\n");
+process.stdout.write("ready\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (value) => { if (String(value).includes("release")) finish(0); });
 process.stdin.on("end", () => finish(0));
 process.stdin.resume();
 `, "utf8");
   const holderProcess = spawnFixtureNode([holder, workspace, stateRoot], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-  const holderResult = waitForChild(holderProcess);
-  await waitForOutput(holderProcess, "locked", MAINTENANCE_HOLDER_READY_MS);
-  let completedHolder;
   try {
-    expectThrow(() => loadGlobalConfig(stateRoot), "state maintenance is active");
-    expectThrow(() => existingJobs.start({ steps: [{ argv: [process.execPath, "-e", ""] }] }), "state maintenance is active");
-    await expectReject(existingBrowser.status(), "state maintenance is active");
-  } finally {
-    holderProcess.stdin.end("release\n");
-    completedHolder = await holderResult;
-  }
-  assert(completedHolder.code === 0, `maintenance holder failed: ${completedHolder.stderr}`);
-  assert(existingJobs.list().jobs.length === 0, "blocked managed-job start created persistent state");
-  const browserStatus = await existingBrowser.status();
-  assert(browserStatus.running !== false, "browser manager did not recover after maintenance release");
-  existingBrowser.stop();
+    const completedHolder = await runFixtureChild(holderProcess, {
+      label: "maintenance holder", timeoutMs: MAINTENANCE_HOLDER_READY_MS + 10_000,
+      async prepare() {
+        await waitForFixtureReady(holderProcess, { timeoutMs: MAINTENANCE_HOLDER_READY_MS, label: "maintenance holder" });
+        try {
+          expectThrow(() => loadGlobalConfig(stateRoot), "state maintenance is active");
+          expectThrow(() => existingJobs.start({ steps: [{ argv: [process.execPath, "-e", ""] }] }), "state maintenance is active");
+          await expectReject(existingBrowser.status(), "state maintenance is active");
+        } finally { holderProcess.stdin.end("release\n"); }
+      },
+    });
+    assert(completedHolder.code === 0, `maintenance holder failed: ${completedHolder.stderr}`);
+    assert(existingJobs.list().jobs.length === 0, "blocked managed-job start created persistent state");
+    const browserStatus = await existingBrowser.status();
+    assert(browserStatus.running !== false, "browser manager did not recover after maintenance release");
+  } finally { await existingBrowser.stop(); }
 }
 
 async function machineServiceLockTest() {
@@ -561,50 +576,6 @@ async function hardLinkLockTest() {
   try { readDaemonLockOwner(file); } catch (error) { ownerFailure = error; }
   assert(String(ownerFailure?.message || "").includes("multiple hard links") && existsSync(file) && existsSync(alias),
     "daemon lock owner reader accepted a multiply-linked lock");
-}
-
-function waitForChild(child) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    let stderr = "";
-    let settled = false;
-    const finish = (code, signal) => {
-      if (settled) return;
-      settled = true;
-      resolvePromise({ code, signal, stderr });
-    };
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      rejectPromise(error);
-    };
-    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
-    child.once("error", fail);
-    child.once("close", finish);
-    if (child.exitCode !== null || child.signalCode !== null) {
-      setImmediate(() => { finish(child.exitCode, child.signalCode); });
-    }
-  });
-}
-
-function waitForOutput(child, expected, timeoutMs) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    let text = "";
-    let stderr = "";
-    const timeout = setTimeout(() => rejectPromise(new Error(`timed out waiting for child output: ${text}; stderr=${stderr}`)), timeoutMs);
-    child.stdout.on("data", (chunk) => {
-      text += String(chunk);
-      if (!text.includes(expected)) return;
-      clearTimeout(timeout);
-      resolvePromise();
-    });
-    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
-    child.once("error", (error) => { clearTimeout(timeout); rejectPromise(error); });
-    child.once("exit", (code) => {
-      if (text.includes(expected)) return;
-      clearTimeout(timeout);
-      rejectPromise(new Error(`child exited ${code} before output '${expected}'; stderr=${stderr}`));
-    });
-  });
 }
 
 function expectThrow(callback, pattern) {

@@ -15,8 +15,12 @@ import {
   loadConsumedRefreshShards,
   mergeLegacyAndShardedConsumed,
   OAUTH_REFRESH_STORE_KEY,
+  oauthRefreshPersistenceEntries,
   saveOAuthRefreshStore,
 } from "./oauth-refresh-persistence.ts";
+import { refreshFamilyAuthority } from "./oauth-refresh-authority.ts";
+import { putWithAuthorityRevocations } from "./authority-revocations.ts";
+import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
 export { OAUTH_REFRESH_STORE_KEY } from "./oauth-refresh-persistence.ts";
 
 const MAX_CONSUMED_REFRESH_TOKENS = 4096;
@@ -85,8 +89,11 @@ export async function loadOAuthRefreshStore(
       changed = true;
     }
   }
-  if (pruneOAuthRefreshReplayState(store, oauthStore)) changed = true;
-  if (changed || migrated || legacyConsumedPresent) await saveOAuthRefreshStore(storage, store);
+  const revocations: AuthorityRevocation[] = [];
+  if (pruneOAuthRefreshReplayState(store, oauthStore, revocations)) changed = true;
+  if (revocations.length > 0) {
+    await putWithAuthorityRevocations(storage, { oauth: oauthStore, ...oauthRefreshPersistenceEntries(store) }, revocations);
+  } else if (changed || migrated || legacyConsumedPresent) await saveOAuthRefreshStore(storage, store);
   return store;
 }
 
@@ -99,7 +106,7 @@ export function recordConsumedRefreshToken(
   expiresAt: number,
   consumedAt = Math.floor(Date.now() / 1000),
   accessScope = source.scope,
-): void {
+): AuthorityRevocation[] {
   if (!TOKEN_HASH_PATTERN.test(tokenHash) || !FAMILY_ID_PATTERN.test(source.family_id)) {
     throw new Error("consumed refresh-token identity is invalid");
   }
@@ -115,7 +122,9 @@ export function recordConsumedRefreshToken(
     source: { ...source },
     access_scope: accessScope,
   };
-  pruneOAuthRefreshReplayState(store, oauthStore);
+  const revocations: AuthorityRevocation[] = [];
+  pruneOAuthRefreshReplayState(store, oauthStore, revocations);
+  return revocations;
 }
 
 export function consumedRefreshRetrySource(
@@ -132,13 +141,17 @@ export function recordConsumedRefreshRetry(marker: ConsumedOAuthRefreshToken): v
   marker.retry_issues = current + 1;
 }
 
-export function pruneOAuthRefreshReplayState(store: OAuthRefreshStore, oauthStore?: OAuthStore): boolean {
+export function pruneOAuthRefreshReplayState(
+  store: OAuthRefreshStore, oauthStore?: OAuthStore, revocations: AuthorityRevocation[] = [],
+): boolean {
   let changed = false;
   const consumed = Object.entries(store.consumed).sort((left, right) => (
     left[1].consumed_at - right[1].consumed_at || left[0].localeCompare(right[0])
   ));
   while (consumed.length > MAX_CONSUMED_REFRESH_TOKENS) {
     const [tokenHash, marker] = consumed.shift()!;
+    const authority = oauthStore ? refreshFamilyAuthority(marker.source, oauthStore, store.tokens, marker.family_id) : undefined;
+    if (authority) revocations.push(authority);
     revokeRefreshFamilyRecords(oauthStore, store, marker.family_id, marker.expires_at);
     delete store.consumed[tokenHash];
     changed = true;

@@ -297,7 +297,7 @@ function runNpm(args, cwd, npmExecutable = npmCli) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: "utf8",
-    env: nestedNpmEnvironment(process.env),
+    env: nestedNpmEnvironment(process.env, { bin: npmSession?.bin }),
     timeout: 300_000,
     killSignal: "SIGKILL",
     windowsHide: true,

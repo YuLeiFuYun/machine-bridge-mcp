@@ -21,6 +21,21 @@ assert.equal(cfAuthenticationResult(authenticated).authenticated, true);
 assert.equal(cfDeploymentAccount(cfAuthenticationResult(authenticated), {}), "1".repeat(32));
 assert.throws(() => cfDeploymentAccount({ accounts: [] }, {}), /CLOUDFLARE_ACCOUNT_ID/);
 assert.throws(() => cfDeploymentAccount({ accounts: [{ id: "1".repeat(32) }] }, { CLOUDFLARE_ACCOUNT_ID: "2".repeat(32) }), /accessible/);
+
+for (const id of [["1".repeat(32)], { value: "1".repeat(32) }, null, 111]) {
+  const result = cfAuthenticationResult({ code: 0, stdout: JSON.stringify({ authenticated: true, accounts: [{ id }] }) });
+  assert.deepEqual(result.accounts, [], "cf account ID was accepted through scalar coercion");
+}
+for (const tokenValid of ["true", "false", 1, [], null]) {
+  assert.equal(cfAuthenticationResult({ code: 0, stdout: JSON.stringify({ authenticated: true, tokenValid }) }).authenticated, false);
+}
+for (const configured of [["1".repeat(32)], 111, "", null]) {
+  assert.throws(() => cfDeploymentAccount({ accounts: [] }, { CLOUDFLARE_ACCOUNT_ID: configured }), /accessible/);
+}
+assert.equal(cfDeploymentAccount(cfAuthenticationResult({ code: 0, stdout: JSON.stringify({
+  authenticated: true, accounts: [{ id: "A".repeat(32) }],
+}) }), { CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) }), "a".repeat(32), "hex case changed account identity");
+
 let probes = 0;
 const loginCalls = [];
 const loggedIn = await ensureCfAuthenticated({
@@ -101,6 +116,26 @@ try {
       },
     }), /must not be a symbolic link/);
   }
+
+  const deepRoot = join(source, "src/worker/deep");
+  let deepest = deepRoot;
+  for (let depth = 0; depth < 66; depth += 1) { deepest = join(deepest, "d"); mkdirSync(deepest, { recursive: true }); }
+  assert.throws(() => workerDeploymentSourceSnapshot(source), /depth limit/, "unbounded recursion was accepted");
+  rmSync(deepRoot, { recursive: true, force: true });
+  const broadRoot = join(source, "src/worker/broad");
+  mkdirSync(broadRoot);
+  for (let index = 0; index < 8193; index += 1) writeFileSync(join(broadRoot, "ignored-" + index + ".txt"), "");
+  assert.throws(() => workerDeploymentSourceSnapshot(source), /entry limit/, "ignored files bypassed traversal budget");
+  rmSync(broadRoot, { recursive: true, force: true });
+  const fileRoot = join(source, "src/worker/files");
+  mkdirSync(fileRoot);
+  const originalCount = workerDeploymentSourceSnapshot(source).files.length;
+  for (let index = originalCount; index < 4096; index += 1) writeFileSync(join(fileRoot, "file-" + index + ".ts"), "");
+  assert.equal(workerDeploymentSourceSnapshot(source).files.length, 4096, "valid file-count boundary was rejected");
+  writeFileSync(join(fileRoot, "one-more.ts"), "");
+  assert.throws(() => workerDeploymentSourceSnapshot(source), /4096 files/, "file-count overflow was accepted");
+  rmSync(fileRoot, { recursive: true, force: true });
+
   assert.deepEqual(readFileSync(join(source, "src/worker/index.ts"), "utf8"), "changed after snapshot\n");
 } finally {
   rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 30 });

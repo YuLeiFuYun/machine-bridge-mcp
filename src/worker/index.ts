@@ -33,7 +33,7 @@ import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dis
 import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, type AuthorizedToken } from "./access.ts";
 import { OAuthController } from "./oauth-controller.ts";
-import { authorityRevocations, authorityRevocationWireMessage } from "./authority-revocations.ts";
+import { authorityRevocations, authorityRevocationWireMessage, deliverAuthorityRevocations } from "./authority-revocations.ts";
 import { decorateProjectOverview } from "./authority.ts";
 import { validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
 import { workerAuthorityContext, workerToolsForRole } from "./worker-tool-authority.ts";
@@ -57,7 +57,7 @@ import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "
 import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.197";
+const SERVER_VERSION = "3.0.0-beta.198";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -172,13 +172,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     if (cancelledSubscriptions > 0) {
       this.observability.event("info", "authority.revocation.subscriptions_cancelled", { subscriptions: cancelledSubscriptions });
     }
-    for (const socket of this.daemonRegistry.readyChannels()) {
-      for (const revocation of queued) {
-        if (trySendDaemonChannel(socket, authorityRevocationWireMessage(revocation))) continue;
-        await this.invalidateDaemonChannel(socket, "failed to deliver authority revocation", "daemon_transport_error");
-        break;
-      }
-    }
+    await deliverAuthorityRevocations(this.daemonRegistry.readyChannels(), queued,
+      (channel) => this.invalidateDaemonChannel(channel, "failed to deliver authority revocation", "daemon_transport_error"));
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -562,38 +557,43 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     const recovery = daemonToolRecovery(name, args);
     let result!: Promise<unknown>; let sent = false;
     try {
-      if (signal?.aborted) {
-        throw new WorkerToolError("cancelled", "tool call cancelled before daemon dispatch", false, { side_effects_started: false });
-      }
-      assertWorkerPendingCallAdmission(this.pending.snapshot(), name);
-      result = this.pending.register({
-        id,
-        socket,
-        daemonInstanceId,
-        clientRequestKey: requestKey,
-        authority: {
-          accountId: authorized.accountId, accountVersion: authorized.accountVersion,
-          clientId: authorized.clientId, familyId: authorized.familyId,
-        },
-        tool: name,
-        ...(recovery ? { recovery } : {}),
-        timeoutMs: dispatchBudget.settlementTimeoutMs,
-        onTimeout: (record) => this.daemonCallTimeout(record, name),
-        redeliverAfterProvenMissing: (record, channel) => {
-          const remainingExecutionMs = Math.min(dispatchBudget.executionTimeoutMs,
-            Math.floor(record.startedAt + dispatchBudget.executionTimeoutMs - performance.now()));
-          const redeliveryArgs = daemonToolRedeliveryArguments(name, args, remainingExecutionMs);
-          if (!redeliveryArgs) return false;
-          return trySendDaemonChannel(channel, {
-            type: "tool_call", id: record.id, tool: name, arguments: redeliveryArgs, timeout_ms: remainingExecutionMs,
-            authorization: {
-              account_id: authorized.accountId, account_version: authorized.accountVersion,
-              client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
-            },
-          });
-        },
-        signal,
-        onAbort: (record) => this.daemonCallCancellation(record),
+      await this.oauth.runWithCurrentAuthority(authorized, () => {
+        if (signal?.aborted) {
+          throw new WorkerToolError("cancelled", "tool call cancelled before daemon dispatch", false, { side_effects_started: false });
+        }
+        if (socket.readyState !== 1 || !this.daemonRegistry.readyAttachment(socket)) {
+          throw new WorkerToolError("unavailable", "local daemon changed before dispatch; retry the call", true,
+            { side_effects_started: false });
+        }
+        assertWorkerPendingCallAdmission(this.pending.snapshot(), name);
+        result = this.pending.register({
+          id,
+          socket,
+          daemonInstanceId,
+          clientRequestKey: requestKey,
+          authority: {
+            accountId: authorized.accountId, accountVersion: authorized.accountVersion,
+            clientId: authorized.clientId, familyId: authorized.familyId,
+          },
+          tool: name,
+          ...(recovery ? { recovery } : {}),
+          timeoutMs: dispatchBudget.settlementTimeoutMs,
+          onTimeout: (record) => this.daemonCallTimeout(record, name),
+          redeliverAfterProvenMissing: (record, channel) => {
+            const remainingExecutionMs = Math.min(dispatchBudget.executionTimeoutMs,
+              Math.floor(record.startedAt + dispatchBudget.executionTimeoutMs - performance.now()));
+            const redeliveryArgs = daemonToolRedeliveryArguments(name, args, remainingExecutionMs);
+            if (!redeliveryArgs) return false;
+            return trySendDaemonChannel(channel, {
+              type: "tool_call", id: record.id, tool: name, arguments: redeliveryArgs, timeout_ms: remainingExecutionMs,
+              authorization: {
+                account_id: authorized.accountId, account_version: authorized.accountVersion,
+                client_id: authorized.clientId, family_id: authorized.familyId, role: authorized.role,
+              },
+            });
+          },
+          signal,
+          onAbort: (record) => this.daemonCallCancellation(record),
       });
       try {
         sent = trySendDaemonChannel(socket, {
@@ -604,6 +604,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
           },
         });
       } catch { sent = false; }
+      });
     } catch (error) {
       if (error instanceof PendingCallRegistrationError) {
         throw new WorkerToolError(error.code, error.message, error.retryable);

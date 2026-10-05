@@ -1,4 +1,4 @@
-import { closeSync, constants as fsConstants, fstatSync, readdirSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import {
@@ -67,4 +67,47 @@ function assertOwnerPrivateMode({ info }) {
   if (process.platform !== "win32" && (Number(info.mode) & 0o077) !== 0) {
     throw new Error("exclusive publication file is not owner-private");
   }
+}
+
+export function snapshotFileIdentitySync(file) {
+  const opened = openRegularFileSync(file, fsConstants.O_RDONLY, { verifyPathIdentity: true, rejectMultipleLinks: true });
+  try { return opened.identity; } finally { closeSync(opened.fd); }
+}
+
+export async function publishFileLinkWithIdentity(source, target, publish, record, expectedSourceIdentity = null) {
+  const opened = openRegularFileSync(source, fsConstants.O_RDONLY, { verifyPathIdentity: true, rejectMultipleLinks: true });
+  try {
+    if (expectedSourceIdentity && !sameFilesystemIdentity(expectedSourceIdentity, opened.identity)) {
+      throw new Error("file snapshot changed before publication; preserved for inspection");
+    }
+    await publish(source, target);
+    record.targetCreated = true;
+    const info = fstatSync(opened.fd, { bigint: true });
+    const identity = filesystemIdentity(info, "published file snapshot");
+    const current = lstatSync(target, { bigint: true });
+    if (!info.isFile() || info.nlink !== 2n || !current.isFile() || current.nlink !== 2n
+        || !sameFilesystemIdentity(identity, filesystemIdentity(current))) {
+      throw new Error("published target changed before confirmation; preserved for inspection");
+    }
+    record.targetIdentity = identity;
+  } finally { closeSync(opened.fd); }
+}
+
+export async function removeLinkedFileSnapshot(file, expectedIdentity, remove) {
+  let current;
+  try { current = lstatSync(file, { bigint: true }); } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!current.isFile() || current.nlink !== 2n || !sameFilesystemIdentity(expectedIdentity, filesystemIdentity(current))) {
+    throw new Error("linked file snapshot changed before removal; preserved for inspection");
+  }
+  await remove(file, { force: true });
+}
+
+export async function restoreFileSnapshotNoReplace(backup, target, publish, remove, expectedIdentity) {
+  if (!expectedIdentity) throw new Error("file snapshot identity is unavailable; preserved for inspection");
+  const restored = {};
+  await publishFileLinkWithIdentity(backup, target, publish, restored, expectedIdentity);
+  await removeLinkedFileSnapshot(backup, restored.targetIdentity, remove);
 }

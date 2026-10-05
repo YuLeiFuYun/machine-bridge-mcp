@@ -115,7 +115,7 @@ Long-lived runtime objects bind to the principal that created them:
 - OAuth client ID;
 - refresh-token family ID.
 
-The binding applies to interactive processes, retained command-output sessions, and managed jobs. Another account, client, or refresh family cannot read, continue, send input to, cancel, or terminate those objects.
+The binding applies to interactive processes, retained command-output sessions, and managed jobs. Delegated principals cannot read or control another account, client, or refresh family's objects. Local owner CLI/stdio retains global object administration. Hosted managed-job recovery additionally requires purpose-scoped capabilities bound to the accepting principal, even for owner accounts; see [MULTI_ACCOUNT.md](MULTI_ACCOUNT.md#object-ownership).
 
 ## Device-root authorization
 

@@ -1,3 +1,6 @@
+import type { DaemonChannel } from "./daemon-channel.ts";
+import { trySendDaemonChannel } from "./daemon-channel.ts";
+import type { DaemonHttpChannel } from "./daemon-http-channel.ts";
 import { normalizeAuthorityRevocation, type AuthorityRevocation } from "../shared/authority-revocation.mjs";
 import { randomToken } from "./oauth-state.ts";
 
@@ -38,21 +41,23 @@ export async function putWithAuthorityRevocations(
   if (Object.hasOwn(writes, AUTHORITY_REVOCATIONS_KEY)) {
     throw new Error("protected writes cannot replace the authority revocation queue");
   }
-  if (revocations.length === 0) {
-    await storage.transaction(async (transaction) => {
-      await writeEntries(transaction, writes);
-    });
-    return;
-  }
+  await storage.transaction(async (transaction) => {
+    await writeAuthorityRevocations(transaction, revocations, now);
+    await writeEntries(transaction, writes);
+  });
+}
+
+export async function writeAuthorityRevocations(
+  storage: RevocationTransaction, revocations: readonly AuthorityRevocation[],
+  now = Math.floor(Date.now() / 1000),
+): Promise<void> {
+  if (revocations.length === 0) return;
   const candidates = revocations.map((revocation) => recordFromRevocation(
     normalizeAuthorityRevocationInput(revocation), randomToken("revoke"), now,
   ));
-  await storage.transaction(async (transaction) => {
-    const queue = await readQueue(transaction);
-    for (const candidate of candidates) mergeRevocation(queue, candidate);
-    await writeEntries(transaction, writes);
-    await transaction.put(AUTHORITY_REVOCATIONS_KEY, queue);
-  });
+  const queue = await readQueue(storage);
+  for (const candidate of candidates) mergeRevocation(queue, candidate);
+  await storage.put(AUTHORITY_REVOCATIONS_KEY, queue);
 }
 
 async function writeEntries(
@@ -90,8 +95,7 @@ export function authorityRevocationWireMessage(record: AuthorityRevocationRecord
 }
 
 export function authorityRevocationAckId(value: unknown): string {
-  const id = String(value || "");
-  return REVOCATION_ID.test(id) ? id : "";
+  return typeof value === "string" && REVOCATION_ID.test(value) ? value : "";
 }
 
 function normalizeAuthorityRevocationInput(value: AuthorityRevocation): AuthorityRevocation {
@@ -157,18 +161,48 @@ function validQueue(value: unknown): value is AuthorityRevocationQueue {
     && queue.schema_version === AUTHORITY_REVOCATION_SCHEMA
     && Array.isArray(queue.records)
     && queue.records.length <= MAX_AUTHORITY_REVOCATIONS
-    && queue.records.every(validRecord);
+    && queue.records.every(validRecord)
+    && new Set(queue.records.map((record) => record.id)).size === queue.records.length;
 }
 
 function validRecord(value: unknown): value is AuthorityRevocationRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (!Object.keys(record).every((key) => RECORD_FIELDS.has(key))
-      || !REVOCATION_ID.test(String(record.id || "")) || !Number.isSafeInteger(record.queued_at) || Number(record.queued_at) <= 0) return false;
+      || typeof record.id !== "string" || !REVOCATION_ID.test(record.id) || !Number.isSafeInteger(record.queued_at) || Number(record.queued_at) <= 0) return false;
   return Boolean(normalizeAuthorityRevocation({
     account_id: record.account_id,
     account_version: record.account_version,
     client_id: record.client_id,
     family_id: record.family_id,
   }));
+}
+
+export function queueDaemonHttpRevocations(
+  channel: DaemonHttpChannel,
+  records: readonly AuthorityRevocationRecord[],
+): void {
+  for (const record of records) {
+    if (channel.hasQueuedRevocation(record.id)) continue;
+    if (!channel.send(JSON.stringify(authorityRevocationWireMessage(record)), true)) break;
+  }
+}
+
+export async function deliverAuthorityRevocations(
+  channels: readonly DaemonChannel[],
+  records: readonly AuthorityRevocationRecord[],
+  onUnavailable: (channel: DaemonChannel) => Promise<void>,
+): Promise<void> {
+  for (const channel of channels) {
+    if (channel.daemonTransport === "https") {
+      try { queueDaemonHttpRevocations(channel as DaemonHttpChannel, records); }
+      catch { await onUnavailable(channel); }
+      continue;
+    }
+    for (const record of records) {
+      if (trySendDaemonChannel(channel, authorityRevocationWireMessage(record))) continue;
+      await onUnavailable(channel);
+      break;
+    }
+  }
 }

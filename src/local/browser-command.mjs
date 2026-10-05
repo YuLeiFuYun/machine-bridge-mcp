@@ -21,7 +21,9 @@ export function normalizeBrowserAction(value) {
 
 export function browserPairingLaunchCommand(url, platform = process.platform) {
   if (platform === "darwin") return { cmd: "open", argv: [url] };
-  if (platform === "win32") return { cmd: "cmd.exe", argv: ["/d", "/s", "/c", "start", "", url] };
+  if (platform === "win32") return {
+    cmd: "powershell.exe", argv: ["-NoProfile", "-NonInteractive", "-Command", `Start-Process -FilePath '${url.replaceAll("'", "''")}'`],
+  };
   return { cmd: "xdg-open", argv: [url] };
 }
 

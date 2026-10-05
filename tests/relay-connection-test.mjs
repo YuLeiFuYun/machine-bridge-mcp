@@ -377,7 +377,11 @@ const firstSessionDelivery = connection.sendForSession({ type: "tool_result", id
 assert(firstSessionDelivery.ok === true, "current relay session rejected a bound result");
 
 const warningCountBeforeBriefClose = countLevel(events, "warn");
-sockets[0].remoteClose(1006, "");
+const untrustedCloseReason = "SyntheticPrivateOwner SyntheticPrivateWorkspace";
+sockets[0].remoteClose(1006, untrustedCloseReason);
+assert(!JSON.stringify(events).includes(untrustedCloseReason)
+  && events.filter(event => event.message === "remote relay transport closed").every(event => !Object.hasOwn(event.fields || {}, "close_reason")),
+"untrusted WebSocket close reason escaped into relay logs");
 scheduler.advance(5);
 assert(sockets.length === 2, "relay did not schedule a reconnect");
 sockets[1].open();
@@ -2037,4 +2041,23 @@ function hasRawCloseFields(fields) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const connection = new RelayConnection({ workerUrl: "https://relay.example.invalid", WebSocketClass: FakeSocket,
+    scheduler, now: () => scheduler.now, connectTimeoutMs: 50, proxyAgentForUrl: () => ({}), logger: {} });
+  connection.start();
+  const stale = connection.socket;
+  stale.remoteClose(1006, "");
+  connection.clearTimer("reconnectTimer", "clearTimeout");
+  connection.connect();
+  const current = connection.socket;
+  const deadline = connection.connectTimer;
+  stale.open();
+  assert(connection.socket === current && connection.connectTimer === deadline && scheduler.tasks.has(deadline),
+    "stale WebSocket open cancelled the replacement generation deadline");
+  scheduler.advance(50);
+  assert(current.terminated, "replacement generation no longer timed out after a stale open");
+  connection.stop();
 }

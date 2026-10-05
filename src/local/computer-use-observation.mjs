@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { browserSemanticContent, comparableSemanticCoverage } from "./computer-use-observation-contract.mjs";
 
 const MAX_DELTA_ENTRIES = 24;
 const MAX_APPLICATION_POST_ELEMENTS = 24;
@@ -110,9 +111,14 @@ export function observationDiff(before, after, beforePrivateState = null, afterP
   const processChanged = before.surface === "application"
     ? applicationProcessEpochChanged(beforePrivateState, afterPrivateState)
     : null;
-  const semanticChanged = before.surface === "browser"
-    ? semanticFingerprint(before) !== semanticFingerprint(after)
-    : processChanged === true || semanticDelta.added_count > 0 || semanticDelta.removed_count > 0 || semanticDelta.changed_count > 0;
+  const documentChanged = before.surface === "browser" && browserDocumentEpochChanged(before, after) === true;
+  const includeAccessibility = hasAccessibilitySemantics(before) && hasAccessibilitySemantics(after);
+  const semanticChanged = processChanged === true || documentChanged || semanticDelta.changed_count > 0
+    ? true
+    : !comparableSemanticCoverage(before, after, beforePrivateState, afterPrivateState) ? null
+      : before.surface === "browser"
+        ? semanticFingerprint(before, includeAccessibility) !== semanticFingerprint(after, includeAccessibility)
+        : semanticDelta.added_count > 0 || semanticDelta.removed_count > 0;
   return {
     target_changed: JSON.stringify(before.target) !== JSON.stringify(after.target) || processChanged === true,
     process_changed: processChanged,
@@ -575,7 +581,7 @@ function browserElementSummary(element) {
     frame_id: Number.isInteger(element?.frame_id) ? element.frame_id : null,
     role: boundedText(element?.role, 200),
     name: boundedText(element?.name || element?.label || element?.placeholder, 500),
-    visible: element?.visible === true,
+    visible: typeof element?.visible === "boolean" ? element.visible : null,
     enabled: element?.enabled === true,
     editable: element?.editable === true,
     checked: element?.checked === true,
@@ -597,16 +603,16 @@ function applicationElementSummary(element) {
     checked: typeof element?.checked === "boolean" ? element.checked : null,
     selected: typeof element?.selected === "boolean" ? element.selected : null,
     expanded: typeof element?.expanded === "boolean" ? element.expanded : null,
-    visible: element?.visible === true,
+    visible: typeof element?.visible === "boolean" ? element.visible : null,
     sensitive: element?.sensitive === true,
     bounding_box: boundedBox(element?.bounding_box),
   };
 }
 
 function equivalentField(left, right, field) {
+  if (field === "visible" && (typeof left !== "boolean" || typeof right !== "boolean")) return true;
   if (field !== "bounding_box" && field !== "_machine_owner_window_bounds") return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
-  if (!left && !right) return true;
-  if (!left || !right) return false;
+  if (!left || !right) return true;
   const tolerance = field === "_machine_owner_window_bounds" ? 1 : 2;
   return ["x", "y", "width", "height"].every((key) => nearNumber(left[key], right[key], tolerance));
 }
@@ -701,8 +707,8 @@ function validSha256(value) {
   return /^[a-f0-9]{64}$/.test(digest) ? digest : "";
 }
 
-function semanticFingerprint(observation) {
-  return createHash("sha256").update(JSON.stringify({ target: observation.target, semantic: observation.semantic })).digest("hex");
+function semanticFingerprint(observation, includeAccessibility) {
+  return createHash("sha256").update(JSON.stringify(browserSemanticContent(observation, includeAccessibility))).digest("hex");
 }
 
 function isPositiveViewport(value) {
@@ -766,4 +772,8 @@ function nearNumber(left, right, tolerance) {
   return typeof left === "number" && Number.isFinite(left)
     && typeof right === "number" && Number.isFinite(right)
     && Math.abs(left - right) <= tolerance;
+}
+
+function hasAccessibilitySemantics(observation) {
+  return Boolean(observation.semantic?.accessibility && observation.semantic.accessibility.available !== false);
 }

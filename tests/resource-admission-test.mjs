@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { waitForFixtureExit } from "./fixtures/child-fixture.mjs";
 import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -1536,7 +1537,7 @@ try {
       assert.equal(snapshot.active_leases, 1, "explicit release dropped a still-live isolated process group");
     } finally {
       try { process.kill(-detachedChild.pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") detachedCleanupError = error; }
-      if (detachedChild.exitCode === null) await new Promise((resolvePromise) => { detachedChild.once("close", resolvePromise); });
+      await waitForFixtureExit(detachedChild);
     }
     if (detachedCleanupError) throw detachedCleanupError;
     snapshot = await coordinator.snapshot({ cwd: root });
@@ -1564,7 +1565,7 @@ try {
           "a live numeric process group overrode process-generation evidence and kept a stale lease alive");
       } finally {
         try { process.kill(-reusedGroupChild.pid, "SIGKILL"); } catch (error) { if (error?.code !== "ESRCH") reusedGroupCleanupError = error; }
-        if (reusedGroupChild.exitCode === null) await new Promise((resolvePromise) => { reusedGroupChild.once("close", resolvePromise); });
+        await waitForFixtureExit(reusedGroupChild);
       }
       if (reusedGroupCleanupError) throw reusedGroupCleanupError;
     }

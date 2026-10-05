@@ -47,7 +47,7 @@ export async function installWindowsTask(spec, logger = console, options = {}) {
 export async function startWindowsTask(logger = console, options = {}) {
   const run = requiredRun(options.run);
   const before = await statusWindowsTask({ ...options, run });
-  if (before.installed === null) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "task_status_unavailable", status: before };
+  if (before.installed === null || before.active === null) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "task_status_unavailable", status: before };
   if (before.installed === false) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "not_installed", status: before };
   if (before.active === true) {
     const existing = await stableWindowsStatus(() => statusWindowsTask({ ...options, run }), options);
@@ -58,6 +58,7 @@ export async function startWindowsTask(logger = console, options = {}) {
         active_before: true, active: true, already_running: true, reason: "already_running", status: existing.status,
       };
     }
+    if (existing.status?.active !== false) return { ok: false, provider: "schtasks", task: WINDOWS_TASK, reason: "task_status_unavailable", status: existing.status };
   }
   const command = await run("schtasks", ["/Run", "/TN", WINDOWS_TASK]);
   const after = await waitForWindowsStatus(
@@ -162,26 +163,31 @@ export async function statusWindowsTask(options = {}) {
     return { ok: false, provider: "schtasks", task: WINDOWS_TASK, installed: false, active: false, state: "missing" };
   }
   if (result?.code !== 0) {
-    return { ok: false, provider: "schtasks", task: WINDOWS_TASK, installed: null, active: null, state: "unknown", query: result };
+    return unavailableWindowsTaskStatus(result);
   }
   let payload;
   try { payload = JSON.parse(String(result.stdout || "")); } catch {
-    return { ok: false, provider: "schtasks", task: WINDOWS_TASK, installed: null, active: null, state: "unknown", query: result };
+    return unavailableWindowsTaskStatus(result);
   }
-  const state = String(payload?.state || "").trim().toLowerCase();
+  const state = typeof payload?.state === "string" ? payload.state.trim().toLowerCase() : "";
+  if (!["unknown", "queued", "disabled", "ready", "running"].includes(state)) return unavailableWindowsTaskStatus(result);
   const lastResult = Number(payload?.last_result);
   const lastRunTime = typeof payload?.last_run_time === "string" ? payload.last_run_time : null;
-  const active = state === "running";
+  const active = state === "running" ? true : ["ready", "disabled"].includes(state) ? false : null;
   return {
-    ok: true,
+    ok: active !== null,
     provider: "schtasks",
     task: WINDOWS_TASK,
     installed: true,
     active,
-    state: state || "unknown",
+    state,
     last_result: Number.isFinite(lastResult) ? lastResult : null,
     last_run_time: lastRunTime,
   };
+}
+
+function unavailableWindowsTaskStatus(query) {
+  return { ok: false, provider: "schtasks", task: WINDOWS_TASK, installed: null, active: null, state: "unknown", query };
 }
 
 function completedSince(before, after) {

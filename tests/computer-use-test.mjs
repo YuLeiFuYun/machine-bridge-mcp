@@ -383,6 +383,8 @@ async function browserObservationReturnsNativeImage() {
   const result = await manager.observe({ surface: "browser" });
   assert(result.$mcp, "browser observation with screenshot must return native MCP content");
   assert.equal(result.$mcp.content[1].type, "image");
+  assert.equal(result.$mcp.content[1].data, PNG_A_BASE64);
+  assert.equal(result.$mcp.content[1].mimeType, "image/png");
   assert.match(result.$mcp.structuredContent.snapshot_id, /^cu_/);
   assert.equal(result.$mcp.structuredContent.capture.atomic, false);
 }
@@ -1693,7 +1695,7 @@ async function visualPointDispatchIsSnapshotBound() {
   assert.equal(pointCall.args.normalized_y, 0.25);
   assert.equal(pointCall.args.document_epoch, "doc-e-v1");
   assert.deepEqual(pointCall.args.viewport, { width: 800, height: 600, scale: 1 });
-  assert.equal(pointCall.args.screenshot_sha256, "a".repeat(64));
+  assert.equal(pointCall.args.screenshot_sha256, PNG_A_SHA256);
   assert.equal(pointCall.args.screenshot_format, "png");
   assert.equal(pointCall.args.screenshot_quality, 90);
 }
@@ -1762,7 +1764,7 @@ async function visualPointDragIsSnapshotBound() {
   assert.equal(pointCalls[0].args.normalized_y, 0.3);
   assert.equal(pointCalls[0].args.destination_normalized_x, 0.8);
   assert.equal(pointCalls[0].args.destination_normalized_y, 0.7);
-  assert.equal(pointCalls[0].args.screenshot_sha256, "a".repeat(64));
+  assert.equal(pointCalls[0].args.screenshot_sha256, PNG_A_SHA256);
   assert.equal(acted.dispatch.destination_point.normalized_x, 0.8);
   assert.equal(acted.dispatch.destination_point.normalized_y, 0.7);
 }
@@ -1792,7 +1794,7 @@ async function visualPointScrollIsSnapshotBound() {
   assert.equal(pointCalls[0].args.normalized_y, 0.65);
   assert.equal(pointCalls[0].args.delta_x, -80);
   assert.equal(pointCalls[0].args.delta_y, 640);
-  assert.equal(pointCalls[0].args.screenshot_sha256, "a".repeat(64));
+  assert.equal(pointCalls[0].args.screenshot_sha256, PNG_A_SHA256);
   assert.equal(acted.dispatch.scroll_delta.delta_x, -80);
   assert.equal(acted.dispatch.scroll_delta.delta_y, 640);
 }
@@ -2126,6 +2128,8 @@ async function applicationObservationReturnsWindowScreenshot() {
   const result = await manager.observe({ surface: "application", application: "Notes" });
   assert(result.$mcp, "application window screenshot must return native MCP image content");
   assert.equal(result.$mcp.content[1].type, "image");
+  assert.equal(result.$mcp.content[1].data, PNG_A_BASE64);
+  assert.equal(result.$mcp.content[1].mimeType, "image/png");
   assert.equal(result.$mcp.structuredContent.capture.screenshot, true);
   assert.equal(result.$mcp.structuredContent.capture.screenshot_source, "macos_window");
   assert.equal(result.$mcp.structuredContent.capture.screenshot_sha256, PNG_A_SHA256);
@@ -4653,7 +4657,8 @@ function browserStub({ inspectQueue, tabUrl = null, calls = [], actError = null,
         : observedEpoch;
       observedHistoryEntryKey = String(next._machine_history_entry_key || observedHistoryEntryKey);
       if (!tabUrl) initialUrl = initialUrl || next.url;
-      const screenshotHash = args.include_screenshot === false ? "" : (hashes.shift() || "a".repeat(64));
+      // Explicit hashes model capture drift independently of the valid image fixture.
+      const screenshotHash = args.include_screenshot === false ? "" : (hashes.shift() || PNG_A_SHA256);
       const trustedNodes = [];
       const frameTreeById = new Map();
       for (const frame of next.frames || []) {
@@ -4690,7 +4695,7 @@ function browserStub({ inspectQueue, tabUrl = null, calls = [], actError = null,
           screenshot_sha256: screenshotHash,
           coherence: "test",
         },
-        imageContent: args.include_screenshot === false ? [] : [{ type: "image", data: "AA==", mimeType: "image/png" }],
+        imageContent: args.include_screenshot === false ? [] : [{ type: "image", data: PNG_A_BASE64, mimeType: "image/png" }],
       };
     },
     async documentState(args) {
@@ -5064,4 +5069,122 @@ function appCheckboxSnapshot(checked) {
     truncated: false,
     menus_included: false,
   };
+}
+
+await semanticMetadataCannotConfirmAnEffect();
+await incompleteSemanticCoverageCannotConfirmPresenceChanges();
+
+async function semanticMetadataCannotConfirmAnEffect() {
+  for (const expected of [true, false]) {
+    const before = browserSnapshot("https://example.test/unchanged-metadata", "e-metadata", "doc-metadata");
+    const after = structuredClone(before);
+    before.frames[0].document = { ...before.frames[0].document, tracked_refs: 1, selection_strategy: "salience", focus_query_applied: false };
+    after.max_elements = 180;
+    after.selection = { strategy: "salience+focus_query", returned_elements: 1 };
+    after.frames[0].document = { ...before.frames[0].document, tracked_refs: 2, selection_strategy: "salience+focus_query", focus_query_applied: true };
+    after.frames[0].elements[0].salience_score = 900;
+    after.frames[0].elements[0].focus_match_score = 800;
+    const manager = managerWith({ browser: browserStub({ inspectQueue: [before, after] }) });
+    const observation = await manager.observe({ surface: "browser", include_screenshot: false });
+    const result = await manager.act({ surface: "browser", snapshot_id: observation.snapshot_id,
+      action: "click", target: { ref: "e-metadata" }, expect: { semantic_change: expected }, post_screenshot: "never" });
+    assert.equal(result.observed_diff.semantic_changed, false, "capture metadata was mistaken for page change");
+    assert.equal(result.effect_status, expected ? "not_observed" : "confirmed");
+  }
+}
+
+async function incompleteSemanticCoverageCannotConfirmPresenceChanges() {
+  for (const expected of [true, false]) {
+    const before = browserSnapshot("https://example.test/incomplete-semantics", "e-partial", "doc-partial");
+    before.frames[0].elements.push({ ...before.frames[0].elements[0], ref: "e-other", name: "Other" });
+    const after = structuredClone(before);
+    after.frames[0].elements.pop();
+    after.frames[0].truncated = true;
+    const manager = managerWith({ browser: browserStub({ inspectQueue: [before, after] }) });
+    const observation = await manager.observe({ surface: "browser", include_screenshot: false });
+    const result = await manager.act({ surface: "browser", snapshot_id: observation.snapshot_id,
+      action: "click", target: { ref: "e-partial" }, expect: { semantic_change: expected }, post_screenshot: "never" });
+    assert.equal(result.observed_diff.semantic_changed, null, "incomplete sampling was mistaken for known page change");
+    assert.equal(result.effect_status, "unknown");
+    assert.equal(result.verification.inconclusive, true);
+  }
+  const before = { surface: "application", target: { application: "synthetic", process_name: "synthetic" },
+    semantic: { elements: [{ identifier: "one", role: "AXButton", name: "One" }, { identifier: "two", role: "AXButton", name: "Two" }], truncated: false } };
+  const after = { ...before, semantic: { elements: before.semantic.elements.slice(0, 1), truncated: true } };
+  const privateState = { application_process_id: 1, application_process_generation: "synthetic" };
+  assert.equal(observationDiff(before, after, privateState, privateState).semantic_changed, null,
+    "application omitted controls were treated as a confirmed semantic effect");
+  const changed = structuredClone(after);
+  changed.semantic.elements[0].focused = true;
+  assert.equal(observationDiff(before, changed, privateState, privateState).semantic_changed, true,
+    "an observed shared control state change must remain evidence even with partial coverage");
+}
+
+await incompleteApplicationSemanticEffectStaysUnknown();
+
+async function incompleteApplicationSemanticEffectStaysUnknown() {
+  for (const expected of [true, false]) {
+    const initial = { process_name: "Synthetic", _machine_process_id: 123, _machine_process_generation: "synthetic-generation",
+      frontmost: false, truncated: false, menus_included: false, elements: [
+        { identifier: "one", role: "AXButton", name: "One", enabled: true, focused: false },
+        { identifier: "two", role: "AXButton", name: "Two", enabled: true, focused: false },
+      ] };
+    let dispatched = false, dispatchCalls = 0, clock = 0;
+    const applications = {
+      visualPointCapability: () => ({ available: false }),
+      async inspectApplication() {
+        return structuredClone(dispatched ? { ...initial, truncated: true, elements: initial.elements.slice(0, 1) } : initial);
+      },
+      async operateApplication() { dispatched = true; dispatchCalls += 1; return { ok: true }; },
+    };
+    const manager = new ComputerUseManager({ authorizeTool() {}, appAutomationManager: applications,
+      browserBridgeManager: {}, now: () => clock, sleep: async (delay) => { clock += delay; } });
+    const observation = await manager.observe({ surface: "application", application: "Synthetic", include_screenshot: false });
+    const result = await manager.act({ surface: "application", snapshot_id: observation.snapshot_id,
+      action: "click", target: { ref: observation.semantic.elements[0].ref },
+      expect: { semantic_change: expected }, post_screenshot: "never" });
+    assert.equal(result.observed_diff.semantic_changed, null, "application sampling difference was reported as an effect");
+    assert.equal(result.effect_status, "unknown");
+    assert.equal(result.verification.inconclusive, true);
+    assert.equal(dispatchCalls, 1, "inconclusive observation replayed the application mutation");
+  }
+}
+
+await applicationGeometryOmissionCannotConfirmAnEffect();
+
+async function applicationGeometryOmissionCannotConfirmAnEffect() {
+  for (const expected of [true, false]) {
+    const bounds = { x: 0, y: 0, width: 100, height: 100 };
+    const generation = "synthetic-geometry-generation";
+    let clock = 0, dispatched = 0;
+    const applications = {
+      visualPointCapability: () => ({ available: false }),
+      async captureApplication() {
+        return { _machine_process_id: 123, _machine_process_generation: generation, window: { id: 11, bounds },
+          screenshot: { source: "macos_window", mime_type: "image/png", data: "iVBORw0KGgo=" } };
+      },
+      async inspectApplication() {
+        return { process_name: "Synthetic", _machine_process_id: 123, _machine_process_generation: generation,
+          _machine_window_state_checked: true, _machine_window: { id: 11, bounds, process_id: 123, process_generation: generation },
+          frontmost: false, truncated: false, menus_included: false, elements: [
+            { identifier: "one", role: "AXButton", name: "One", enabled: true, focused: false,
+              screen_box: { x: 10, y: 10, width: 20, height: 20 }, window_screen_box: bounds },
+          ] };
+      },
+      async operateApplication() { dispatched += 1; return { ok: true }; },
+    };
+    const manager = new ComputerUseManager({ authorizeTool() {}, appAutomationManager: applications, browserBridgeManager: {},
+      now: () => clock, sleep: async (delay) => { clock += delay; } });
+    const initial = await manager.observe({ surface: "application", application: "Synthetic" });
+    const before = initial.$mcp.structuredContent;
+    assert(before.semantic.elements[0].bounding_box, "fixture must capture actual window-local geometry before dispatch");
+    const result = await manager.act({ surface: "application", snapshot_id: before.snapshot_id, action: "click",
+      target: { ref: before.semantic.elements[0].ref }, expect: { semantic_change: expected }, post_screenshot: "never" });
+    assert.equal(result.observed_diff.semantic_changed, null, "omitted geometry was mistaken for control movement");
+    assert.equal(result.observed_diff.semantic_delta.changed_count, 0);
+    assert.equal(result.effect_status, "unknown");
+    assert.equal(result.verification.inconclusive, true);
+    assert.equal(result.post_observation.semantic.elements[0].visible, null, "unknown visibility was reported as false");
+    assert.equal(dispatched, 1, "missing geometry replayed the application mutation");
+  }
 }

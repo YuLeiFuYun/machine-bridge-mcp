@@ -85,22 +85,9 @@ Example:
 }
 ```
 
-Copy-paste setup on macOS/Linux:
+Create the model file with the preferences you need, and merge the fields above into an existing global configuration. Preserve unrelated commands and settings. On macOS/Linux, keep both files owner-only:
 
 ```sh
-mkdir -p ~/.config/machine-bridge-mcp
-cat > ~/.config/machine-bridge-mcp/MODEL.md <<'PROMPT'
-# Personal preferences
-
-- Respond in Chinese unless I request another language.
-- Explain non-obvious architectural decisions and report validation results.
-PROMPT
-cat > ~/.config/machine-bridge-mcp/agent.json <<'JSON'
-{
-  "version": 1,
-  "model_instructions_file": "~/.config/machine-bridge-mcp/MODEL.md"
-}
-JSON
 chmod 600 ~/.config/machine-bridge-mcp/agent.json ~/.config/machine-bridge-mcp/MODEL.md
 ```
 
@@ -197,7 +184,7 @@ description: Review a release without publishing it.
 ---
 ```
 
-The entrypoint requires non-empty `name` and `description`. Invalid bundles are skipped with bounded warnings. Symlinked skill directories are followed after canonical policy validation; symbolic-link entrypoint files are rejected. Traversal, depth, entries, summaries, content, and inventory are bounded.
+The entrypoint requires non-empty `name` and `description`. Invalid bundles are skipped with warnings capped at 1,000 characters. Warnings retain a useful diagnosis and respect the active path-display policy, including long paths and literal dollar signs. Stable symlinked skill directories are followed after canonical policy validation; symbolic-link entrypoint files are rejected. Directory identity is rechecked around opening and enumeration. Instruction and skill reads bind the opened regular file to its checked identity and reject observed replacement, size or timestamp changes; configuration paths are validated before content is read. Inventory rejects entries whose observed regular-file type changes before metadata collection. These checks do not isolate the filesystem from concurrent writers. Traversal, depth, entries, summaries, content, and inventory are bounded.
 
 No persistent skill or project-context index is trusted as authoritative. `session_bootstrap`, `agent_context`, and `resolve_task_capabilities` rebuild the relevant context; skill-list/load calls rescan effective roots. The refresh fingerprint binds the target/scope, configuration paths, instruction source/precedence/content identity, skill source identity, and complete registered-command definition including cwd, foreground timeout, execution mode, and managed-job timeout. A matching `known_refresh_fingerprint` permits response compaction only; task ranking, effective-policy filtering, installed-application matching, and route scoring still run. Newly created or edited files are visible without restarting the daemon or changing the MCP tool catalog.
 
@@ -223,7 +210,7 @@ Directly invoking `npm run`, `pnpm run`, `yarn run`, or `bun run` does not make 
 
 ## Recommended host workflow
 
-1. consume MCP initialization instructions, including the built-in baseline and automatic project facts;
+1. consume the static `server/discover` instructions; request `session_bootstrap` when built-in agreements and automatic project facts are needed;
 2. when the task needs refreshed instructions, local skill/command discovery, or application/browser route selection, call `resolve_task_capabilities` with the complete user task and target path; otherwise use the already exposed direct tool;
 3. apply explicit global/project instructions over lower-precedence defaults;
 4. follow the selected skill only after checking relevance;

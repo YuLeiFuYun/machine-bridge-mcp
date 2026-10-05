@@ -157,7 +157,7 @@ function runActivation(entry, args) {
 function runNpm(args) {
   const result = spawnSync(process.execPath, [npmCli, ...args], {
     cwd: root,
-    env: nestedNpmEnvironment(process.env),
+    env: nestedNpmEnvironment(process.env, { bin: npmSession?.bin }),
     encoding: "utf8",
     timeout: 300_000,
     killSignal: "SIGKILL",

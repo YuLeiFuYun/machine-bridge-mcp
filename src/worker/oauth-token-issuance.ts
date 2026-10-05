@@ -1,15 +1,10 @@
 import {
-  pruneClientRecordByExpiry,
-  pruneRecordByExpiry,
-  randomToken,
-  sha256Hex,
-  type OAuthCode,
-  type OAuthRefreshStore,
-  type OAuthRefreshToken,
-  type OAuthStore,
+  pruneClientRecordByExpiry, pruneRecordByExpiry, randomToken, sha256Hex,
+  type OAuthCode, type OAuthRefreshStore, type OAuthRefreshToken, type OAuthStore,
 } from "./oauth-state.ts";
 import { HttpError, json, workerErrorClass } from "./http.ts";
 import { writeOAuthRefreshPersistenceEntries } from "./oauth-refresh-persistence.ts";
+import { writeAuthorityRevocations } from "./authority-revocations.ts";
 import { deriveRefreshReplacementPair } from "./oauth-token-derivation.ts";
 import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
 
@@ -105,12 +100,14 @@ export function tokenResponse(issued: IssuedTokenPair, scope: string, dpopJkt?: 
 
 export async function saveOAuthStores(
   oauthStore: OAuthStore, refreshStore: OAuthRefreshStore, storage: DurableObjectStorage,
+  revocations: readonly AuthorityRevocation[] = [],
 ): Promise<void> {
   let stage = "oauth";
   try {
     await storage.transaction(async (tx) => {
       await tx.put("oauth", oauthStore); stage = "refresh";
-      await writeOAuthRefreshPersistenceEntries(tx, refreshStore); stage = "commit";
+      await writeOAuthRefreshPersistenceEntries(tx, refreshStore);
+      await writeAuthorityRevocations(tx, revocations); stage = "commit";
     });
   } catch (error) {
     const wrapped = new Error("OAuth store persistence failed", { cause: error });

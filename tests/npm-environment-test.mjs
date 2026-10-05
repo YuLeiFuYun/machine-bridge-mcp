@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { resolveNpmGlobalPrefix } from "../scripts/npm-global-prefix.mjs";
 
@@ -43,6 +43,15 @@ for (const key of Object.keys(source).filter((value) => !["PATH", "npm_config_re
 }
 assert.equal(source.npm_config_dry_run, "true", "nested npm environment mutated its caller");
 assert.throws(() => nestedNpmEnvironment(null), /environment record/);
+const bin = resolve("synthetic-private-npm");
+const lifecycle = nestedNpmEnvironment({ Path: "/first", PATH: "/second", HTTPS_PROXY: source.HTTPS_PROXY }, { bin });
+assert.equal(lifecycle.PATH, [bin, "/first", "/second"].join(delimiter));
+assert.equal(Object.hasOwn(lifecycle, "Path"), false, "lifecycle retained a competing Windows PATH alias");
+assert.equal(lifecycle.HTTPS_PROXY, source.HTTPS_PROXY, "lifecycle lost the configured proxy");
+assert.equal(nestedNpmEnvironment({}, { bin }).PATH, bin);
+for (const invalidBin of ["relative-bin", null, [bin], bin + delimiter + "other", bin + "\nother"]) {
+  assert.throws(() => nestedNpmEnvironment({}, { bin: invalidBin }), /absolute PATH entry/);
+}
 
 let prefixInvocation = null;
 const globalPrefix = resolveNpmGlobalPrefix("/synthetic/npm-cli.js", {

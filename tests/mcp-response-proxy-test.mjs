@@ -1,4 +1,6 @@
+import nodeAssert from "node:assert/strict";
 import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
+import { jsonRpcResponseStream } from "../src/worker/mcp-response-stream.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { acceptsEventStream } from "../src/worker/mcp-http-accept.ts";
 import { proxyMcpResponseStream } from "../src/worker/mcp-response-proxy.ts";
@@ -12,6 +14,7 @@ import {
   withProxyHeaders,
 } from "../src/worker/mcp-stream-proxy-contract.ts";
 
+await testJsonRpcStreamSettlement();
 await testPublicReaderCancellation();
 await testRequestSignalCancellation();
 await testAlreadyAbortedRequest();
@@ -26,6 +29,60 @@ await testEligibility();
 testAcceptNegotiation();
 testStreamProxyContractEdges();
 console.log("MCP response proxy test ok");
+
+async function testJsonRpcStreamSettlement() {
+  const readWithDeadline = async (reader) => {
+    let timer;
+    try {
+      return await Promise.race([reader.read(), new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("JSON-RPC stream settlement timed out")), 1000);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  const cases = [
+    [() => Promise.resolve({ result: true }), () => ({ error: { code: -32603 } }), { result: true }],
+    [() => Promise.reject(new Error("private failure")), () => ({ error: { code: -32603, message: "internal error" } }), { error: { code: -32603, message: "internal error" } }],
+    [() => Promise.resolve({ result: 1n }), () => ({}), null],
+    [() => { const circular = {}; circular.self = circular; return Promise.resolve(circular); }, () => ({}), null],
+    [() => Promise.reject(new Error("private failure")), () => { throw new Error("private projection failure"); }, null],
+    [() => Promise.reject(new Error("private failure")), () => ({ error: 1n }), null],
+  ];
+  for (const [result, onError, expected] of cases) {
+    let cancelled = 0;
+    const response = jsonRpcResponseStream(result(), { onError, onCancel() { cancelled += 1; } });
+    const reader = response.body.getReader();
+    try {
+      assert(new TextDecoder().decode((await readWithDeadline(reader)).value) === ": connected\n\n",
+        "JSON-RPC stream lost its opening frame");
+      if (expected === null) {
+        await nodeAssert.rejects(readWithDeadline(reader), error => error.message === "JSON-RPC response stream failed",
+          "serialization or error projection failure retained a stream or disclosed private error text");
+      } else {
+        assert(new TextDecoder().decode((await readWithDeadline(reader)).value) === "event: message\ndata: " + JSON.stringify(expected) + "\n\n",
+          "JSON-RPC stream changed the result or projected error");
+        assert((await readWithDeadline(reader)).done === true, "JSON-RPC response completion left its stream open");
+      }
+      assert(cancelled === 0, "settled JSON-RPC response replayed client cancellation");
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+  let resolveResult, errorProjections = 0, cancellations = 0;
+  const result = new Promise(resolve => { resolveResult = resolve; });
+  const response = jsonRpcResponseStream(result, {
+    onCancel() { cancellations += 1; },
+    onError() { errorProjections += 1; return {}; },
+  });
+  const reader = response.body.getReader();
+  try {
+    await readWithDeadline(reader);
+    await reader.cancel();
+    resolveResult({ result: 1n });
+    await Promise.resolve();
+    assert(cancellations === 1 && errorProjections === 0, "client cancellation leaked late JSON-RPC result handling");
+  } finally { reader.releaseLock(); }
+}
 
 async function testPublicReaderCancellation() {
   const fixture = proxyFixture();

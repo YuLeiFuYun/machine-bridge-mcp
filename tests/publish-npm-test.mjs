@@ -274,22 +274,36 @@ assert(mismatchCalls === 3, "npm upload was attempted after detecting an immutab
 
 let acceptanceNpmCli = "";
 let implicitAcceptanceRuns = 0;
+let acceptanceSessionDisposed = false;
+const lifecycleBin = join(tmpdir(), "mbm-synthetic-npm-bin");
 const implicitAcceptance = await publishCurrentNpmPackage(root, "prerelease", {
   ...acceptedOptions,
   acceptance: undefined,
-  npmCli: "/synthetic/hardened/npm-cli.js",
+  createSession: async () => ({
+    cli: "/synthetic/hardened/npm-cli.js", bin: lifecycleBin,
+    dispose() { acceptanceSessionDisposed = true; },
+  }),
   capture: true,
   verifyAcceptance(repository, options) {
     assert(repository === root, "npm publication acceptance verification escaped the repository root");
     acceptanceNpmCli = options.npmCli;
+    assert(options.env.PATH.startsWith(lifecycleBin), "acceptance lost the session npm launcher");
     return accepted;
   },
-  run(command, args) { implicitAcceptanceRuns += 1; return successfulStage(args); },
+  prepareCandidate(repository, acceptance, options) {
+    assert(options.env.PATH.startsWith(lifecycleBin), "candidate preparation lost the session npm launcher");
+    return { path: candidatePath, dispose() {} };
+  },
+  run(command, args, options) {
+    assert(options.env.PATH.startsWith(lifecycleBin), "npm lifecycle stage escaped the session npm launcher");
+    implicitAcceptanceRuns += 1;
+    return successfulStage(args);
+  },
   readPublished: () => publishedRecord(),
 });
 assert(implicitAcceptance.alreadyPublished === true
   && acceptanceNpmCli === "/synthetic/hardened/npm-cli.js"
-  && implicitAcceptanceRuns === 3,
+  && implicitAcceptanceRuns === 3 && acceptanceSessionDisposed,
 "npm publication acceptance revalidation did not use the hardened npm session after exact dependency installation");
 
 const cleanupFailure = await publishCurrentNpmPackage(root, "prerelease", {
@@ -357,25 +371,48 @@ async function testPublicationTimeoutTerminatesDescendants() {
   const descendant = [
     "const { writeFileSync } = require('node:fs');",
     "process.on('SIGTERM', () => {});",
-    "setTimeout(() => writeFileSync(process.argv[1], 'leaked'), 500);",
-    "setInterval(() => {}, 1000);",
+    "const control = process.env.MBM_PUBLISH_TIMEOUT_CONTROL === 'true';",
+    "setTimeout(() => { writeFileSync(process.argv[1], 'ran'); if (control) process.exit(0); }, control ? 50 : 3000);",
+    "setTimeout(() => process.exit(0), 4000);",
+    "process.send('ready');",
   ].join(" ");
-  await writeFile(fixture, [
-    "import { spawn } from 'node:child_process';",
-    `spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.env.MBM_PUBLISH_TIMEOUT_MARKER], { stdio: 'ignore' });`,
-    "setInterval(() => {}, 1000);",
-  ].join("\n"));
   try {
-    const result = await runNpmPublicationProcess(process.execPath, [fixture], {
+    await writeFile(fixture, [
+      "import { spawn } from 'node:child_process';",
+      "process.on('SIGTERM', () => {});",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.env.MBM_PUBLISH_TIMEOUT_MARKER], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+      "child.on('message', message => { if (message === 'ready') console.log('descendant-ready'); });",
+      "child.on('error', () => process.exit(1));",
+      "child.on('exit', code => process.exit(code ?? 1));",
+      "setTimeout(() => process.exit(1), 5000);",
+    ].join("\n"));
+    const options = {
       cwd: root,
       env: { ...process.env, MBM_PUBLISH_TIMEOUT_MARKER: marker },
       stdio: "pipe",
-      timeout: 100,
       maxBuffer: 1024 * 1024,
+    };
+    const control = await runNpmPublicationProcess(process.execPath, [fixture], {
+      ...options,
+      env: { ...options.env, MBM_PUBLISH_TIMEOUT_CONTROL: "true" },
+      timeout: 10_000,
     });
+    assert(control.status === 0 && !control.error
+      && control.stdout.includes("descendant-ready\n") && existsSync(marker),
+    "publication descendant readiness/effect control did not execute");
+    await rm(marker);
+
+    const result = await runNpmPublicationProcess(process.execPath, [fixture], {
+      ...options,
+      env: { ...options.env, MBM_PUBLISH_TIMEOUT_CONTROL: "false" },
+      timeout: 2000,
+    });
+    // Both fixtures have independent finite lifetimes, including assertion failure.
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 4100); });
+    assert(result.stdout.includes("descendant-ready\n"),
+      "publication timeout fixture never reached resistant descendant readiness");
     assert(result.error?.code === "ETIMEDOUT" && result.signal === "SIGKILL",
       "publication process-tree timeout did not settle as an explicit hard deadline");
-    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 800); });
     assert(!existsSync(marker),
       "publication timeout returned while a resistant npm lifecycle descendant could still continue work");
   } finally {

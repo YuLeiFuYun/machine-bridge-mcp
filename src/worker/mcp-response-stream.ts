@@ -7,21 +7,20 @@ export function jsonRpcResponseStream(
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(encoder.encode(": connected\n\n"));
+      const finish = (message: () => Record<string, unknown>) => {
+        if (!writable) return;
+        writable = false;
+        try {
+          controller.enqueue(encoder.encode(sseMessage(message())));
+          controller.close();
+        } catch {
+          try { controller.error(new Error("JSON-RPC response stream failed")); }
+          catch { /* Client already closed the response stream. */ }
+        }
+      };
       void result.then(
-        (message) => {
-          if (!writable) return;
-          try { controller.enqueue(encoder.encode(sseMessage(message))); } catch { writable = false; }
-          if (!writable) return;
-          writable = false;
-          try { controller.close(); } catch { /* Client already closed the response stream. */ }
-        },
-        (error) => {
-          if (!writable) return;
-          try { controller.enqueue(encoder.encode(sseMessage(options.onError(error)))); } catch { writable = false; }
-          if (!writable) return;
-          writable = false;
-          try { controller.close(); } catch { /* Client already closed the response stream. */ }
-        },
+        (message) => finish(() => message),
+        (error) => finish(() => options.onError(error)),
       );
     },
     cancel() {

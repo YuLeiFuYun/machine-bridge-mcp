@@ -38,21 +38,13 @@ Repository tests are verification inputs, not npm tarball entries under the curr
 
 ## Required prerelease flow for an npm-package change
 
-1. choose a `dev`, `beta`, or `rc` version; version 3 and later must not begin as stable;
-2. update changelog, audit notes, and documentation;
-3. run targeted and one complete frozen-tree check, dependency audits, Worker dry-run, privacy review, `npm run sbom:test`, and package inspection; the successful full check writes a short-lived exact-generation receipt under ignored `.project-local/`;
-4. inspect the complete diff and run `npm run release:candidate`; it must consume that matching receipt and does not repeat the complete suite;
-5. run `node scripts/start-release-candidate.mjs --install-only`; this non-live preflight must still match current source/package modes and install the exact tarball disposably, otherwise repair and regenerate the candidate;
-6. run `npm run release:candidate:activate -- --allow-worker-deploy` through the local control plane after the install-only preflight succeeds; no additional conversational approval is required;
-7. after activation, derive `<activated-runtime-package>` from activation `runtime_entry`, run `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` as direct argv from the checkout cwd, then verify the Worker, candidate relay, verified service daemon, exact version, representative behavior, and relevant failure paths through Machine Bridge;
-8. only after the candidate-bound canary and observed live verification both succeed, record exact candidate acceptance;
-9. commit and push only with `npm run github:push`, then complete review and required checks;
-10. create the GitHub Prerelease with `npm run prerelease:release` once exact-commit and release-integrity gates pass;
-11. stop only for npm publication authorization; when explicitly authorized, run `npm run prerelease:publish -- --owner-confirm`; if npm returns an interactive one-time-authentication challenge, rerun that same canonical command in a real owner TTY and complete the challenge while the process remains running, without passing OTPs/tokens/challenge URLs through automation; then continue automatically with `npm run prerelease:install -- --allow-worker-deploy`;
-12. use the published prerelease for at least seven days for a major, three days for a minor, or one day for a patch;
-13. every blocking defect increments the prerelease number and restarts the interval;
-14. after explicit owner confirmation, record the soak result; stable promotion must pass `npm run release:soak:verify` and preserve the functional promotion digest;
-15. activate and observe the exact stable candidate, repeat acceptance and review, then run `npm run release` automatically; `npm run stable:publish -- --owner-confirm` remains the separately authorized npm-publication operation.
+Follow the canonical procedure in [docs/RELEASING.md](docs/RELEASING.md); it owns the exact commands, receipts, compensation boundaries, and publication state machine.
+
+1. Select a `dev`, `beta`, or `rc` version and synchronize package metadata, changelog, audit notes, and affected documentation.
+2. Complete focused regressions, one frozen-tree full check, dependency audits, Worker dry-run, privacy review, SBOM validation, and package/diff inspection. Candidate preparation must consume the matching full-verification receipt rather than repeat the suite.
+3. Prepare the exact candidate, prove disposable installability, activate it through the local control plane, and observe candidate-bound OAuth and representative live behavior before recording acceptance. These operations proceed under standing repository authority when their technical gates pass.
+4. Complete guarded source publication, pull-request review, and exact-commit checks. npm publication alone requires explicit current-task authorization and the canonical `--owner-confirm` command; interactive authentication stays in an owner terminal.
+5. Begin formal soak only after the exact published prerelease is installed and activated. A blocking fix restarts it; owner-confirmed soak and an unchanged functional digest are required for stable promotion. The canonical procedure defines the interval and stable gates.
 
 Automated checks do not prove candidate acceptance or soak success. The agent observes the live candidate; the owner reports the real soak outcome. Release evidence contains bounded release metadata only and no private user content. npm package publication is the sole operation that requires a separate current-task conversational authorization; other task-relevant release operations proceed under standing repository authority when their technical gates pass.
 

@@ -81,6 +81,7 @@ await windowsStartTest();
 await windowsCompletedStartTest();
 await windowsTransientStartTest();
 await windowsUnknownStatusTest();
+await windowsUncertainStateTest();
 await windowsStopTest();
 await windowsUninstallTest();
 await windowsLauncherRemovalTest();
@@ -644,6 +645,51 @@ async function windowsUnknownStatusTest() {
   const stopped = await stopWindowsTask(quietLogger(), { run: unavailable });
   assert.equal(stopped.ok, false);
   assert.equal(stopped.reason, "task_status_unavailable");
+}
+
+async function windowsUncertainStateTest() {
+  for (const state of ["Unknown", "Queued"]) {
+    let commands = 0;
+    const run = async command => {
+      if (command === "schtasks") { commands += 1; return { code: 0 }; }
+      return scheduledTaskResult(state);
+    };
+    const status = await statusWindowsTask({ run });
+    assert.equal(status.installed, true);
+    assert.equal(status.active, null, "uncertain/queued task state proved inactivity");
+    assert.equal(status.ok, false);
+    const started = await startWindowsTask(quietLogger(), { run });
+    assert.equal(started.ok, false);
+    assert.equal(commands, 0, "uncertain/queued task triggered a duplicate start");
+    const stopped = await stopWindowsTask(quietLogger(), { run, statusAttempts: 2, sleep: async () => {} });
+    assert.equal(stopped.ok, false, "uncertain/queued task proved a completed stop");
+    assert.equal(commands, 1);
+  }
+  for (const payload of [null, [], {}, { state: 4 }, { state: "unrecognized" }]) {
+    let commands = 0;
+    const run = async command => {
+      if (command === "schtasks") { commands += 1; return { code: 0 }; }
+      return { code: 0, stdout: JSON.stringify(payload) };
+    };
+    const status = await statusWindowsTask({ run });
+    assert.equal(status.installed, null, "malformed successful status query invented installation evidence");
+    assert.equal(status.active, null);
+    assert.equal((await startWindowsTask(quietLogger(), { run })).ok, false);
+    assert.equal((await stopWindowsTask(quietLogger(), { run })).ok, false);
+    assert.equal(commands, 0, "malformed status query caused a service mutation");
+  }
+  let queries = 0;
+  const delayed = await stopWindowsTask(quietLogger(), {
+    statusAttempts: 4, sleep: async () => {},
+    run: async command => {
+      if (command === "schtasks") return { code: 0 };
+      queries += 1;
+      return scheduledTaskResult(queries < 4 ? "Queued" : "Ready");
+    },
+  });
+  assert.equal(delayed.ok, true);
+  assert.equal(queries, 4, "queued-to-ready stop did not wait for explicit inactive evidence");
+  assert.equal(delayed.restore_required, true);
 }
 
 async function windowsStopTest() {

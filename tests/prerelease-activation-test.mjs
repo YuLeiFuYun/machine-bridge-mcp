@@ -14,6 +14,9 @@ try {
     "activation recovery detail mapping drifted");
   expectThrow(() => canonicalActivationRecoveryDetail("unknown_recovery"), "reason is invalid");
   expectThrow(() => canonicalActivationRecoveryDetail(7), "reason is invalid");
+  for (const reason of ["__proto__", "constructor", "toString", "hasOwnProperty", ["relay_authentication_failed"]]) {
+    expectThrow(() => canonicalActivationRecoveryDetail(reason), "reason is invalid");
+  }
   expectThrow(() => normalizeActivationRecovery({ recovered: "false", reason: null, detail: null }), "flag is invalid");
   expectThrow(() => normalizeActivationRecovery({ recovered: true, reason: "relay_authentication_failed", detail: "" }), "detail is invalid");
   expectThrow(() => normalizeActivationRecovery({ recovered: true, reason: "relay_authentication_failed", detail: "bad\nline" }), "detail is invalid");

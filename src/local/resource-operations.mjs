@@ -33,9 +33,9 @@ export async function generateRegisteredSshKey(
       type: "ed25519",
       comment: comment || `machine-mcp:${name}`,
     });
-    const inspected = inspectResourceFn(key.privateKeyPath);
-    state.resources[name] = inspected;
     try {
+      const inspected = inspectResourceFn(key.privateKeyPath);
+      state.resources[name] = inspected;
       saveStateFn(state);
     } catch (error) {
       if (key.created) {

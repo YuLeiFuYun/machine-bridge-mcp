@@ -1,6 +1,9 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { renameSync, symlinkSync } from "node:fs";
+import fs, { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { publicSkillWarnings } from "../src/local/agent-context-projection.mjs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import {
   discoverLocalSkills, listSkillFiles, parseSkillMetadata,
 } from "../src/local/agent-skill-discovery.mjs";
@@ -21,6 +24,7 @@ try {
   await writeFile(validText, "hello", "utf8");
   const valid = await readRegularUtf8(validText, 5, "valid text");
   assert(valid.text === "hello" && valid.bytes === 5, "bounded UTF-8 reader lost text or byte count");
+  assert((await readOptionalRegularUtf8(validText, 5, "optional text")).text === "hello", "optional text reader lost stable path-alias support");
   await expectReject(() => readRegularUtf8(validText, 4, "valid text"), "exceeds maximum size");
   await expectReject(() => readRegularUtf8(root, 1024, "directory text"), "not a regular file");
   await expectReject(() => readOptionalRegularUtf8(root, 1024, "optional directory"), "not a regular file");
@@ -93,6 +97,10 @@ try {
     assert(String(error.message).includes("cancelled scan"), "skill scan lost cancellation error");
   });
 
+  await testPrivateSkillWarning();
+  await testDirectoryReplacementBoundary("discover");
+  await testDirectoryReplacementBoundary("inventory");
+  await testSkillFilesystemBoundaries(await realpath(root));
   console.log("agent boundary test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -139,4 +147,155 @@ async function expectReject(operation, expected) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function testPrivateSkillWarning() {
+  const directory = join(workspace, "warning-skill");
+  await mkdir(directory);
+  await writeFile(join(directory, "SKILL.md"), Buffer.from([0xff]));
+  const discovered = await discoverLocalSkills(discoveryOptions({ skillRoots: [directory] }));
+  const warnings = publicSkillWarnings(discovered.warnings, (path) => relative(canonicalWorkspace, path));
+  assert(warnings.length === 1 && warnings[0].message.includes("not valid UTF-8"),
+    "malformed skill did not retain a useful warning");
+  assert(warnings[0].entrypoint === warnings[0].message.split(": ").at(-1),
+    "skill warning message and entrypoint did not use the same path projection");
+  assert(!JSON.stringify(warnings).includes(canonicalWorkspace),
+    "malformed skill warning disclosed the restricted workspace's absolute path");
+}
+
+async function testDirectoryReplacementBoundary(mode) {
+  const directory = join(workspace, "race-" + mode);
+  const child = join(directory, "child");
+  await mkdir(child, { recursive: true });
+  const canonicalChild = await realpath(child);
+  let replaced = false;
+  await withFilesystemHook("realpath", (original) => async (...args) => {
+    if (args[0] === canonicalChild && !replaced) {
+      renameSync(child, child + "-original");
+      symlinkSync(outside, child, process.platform === "win32" ? "junction" : "dir");
+      replaced = true;
+    }
+    return original(...args);
+  }, () => expectReject(() => mode === "discover"
+    ? discoverLocalSkills(discoveryOptions({ skillRoots: [directory] }))
+    : listSkillFiles(directory, 10, {}, () => {}), "outside the configured workspace"));
+  assert(replaced, "directory replacement fixture did not reach the queued scan boundary");
+}
+
+async function testSkillFilesystemBoundaries(testRoot) {
+  const fixture = async (name) => {
+    const workspace = join(testRoot, "boundaries", name, "workspace");
+    const directory = join(workspace, "skills"), outside = join(testRoot, "boundaries", name, "outside");
+    await mkdir(directory, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(directory, "SKILL.md"), "---\nname: owned-inside\ndescription: Ordinary fixture.\n---\n");
+    await writeFile(join(outside, "SKILL.md"), "---\nname: owned-outside\ndescription: External fixture.\n---\n");
+    await writeFile(join(outside, "outside.txt"), "Synthetic metadata.");
+    return { workspace, directory, outside };
+  };
+  const discover = (value) => discoverLocalSkills({
+    skillRoots: [value.directory], query: "", maxResults: 10, workspace: value.workspace,
+    unrestricted: false, displayPath: () => "<fixture>", context: {}, throwIfCancelled() {},
+  });
+  const stable = await fixture("stable");
+  assert((await discover(stable)).skills[0]?.name === "owned-inside", "ordinary skill discovery failed");
+  assert((await listSkillFiles(stable.directory, 10, {}, () => {})).files.length === 1, "ordinary skill inventory failed");
+
+  const inventory = await fixture("directory-open");
+  let opened = false, closed = false;
+  await withFilesystemHook("opendir", (original) => async (...args) => {
+    if (args[0] !== inventory.directory) return original(...args);
+    opened = true;
+    await fs.rename(inventory.directory, inventory.directory + "-held");
+    await symlink(inventory.outside, inventory.directory, process.platform === "win32" ? "junction" : "dir");
+    const handle = await original(...args), close = handle.close.bind(handle);
+    handle.close = async (...closeArgs) => { closed = true; return close(...closeArgs); };
+    return handle;
+  }, async () => {
+    await expectReject(() => listSkillFiles(inventory.directory, 10, {}, () => {}), "changed during traversal");
+  });
+  assert(opened && closed, "changed-directory rejection leaked its opened directory handle");
+
+  const summary = await fixture("skill-file-open");
+  let intercepted = false, fileClosed = false;
+  await withFilesystemHook("open", (original) => async (...args) => {
+    if (args[0] !== join(summary.directory, "SKILL.md")) return original(...args);
+    intercepted = true;
+    await fs.rename(summary.directory, summary.directory + "-held");
+    await symlink(summary.outside, summary.directory, process.platform === "win32" ? "junction" : "dir");
+    const handle = await original(...args), close = handle.close.bind(handle);
+    handle.close = async (...closeArgs) => { fileClosed = true; return close(...closeArgs); };
+    return handle;
+  }, async () => {
+    const result = await discover(summary);
+    assert(result.skills.length === 0 && result.warnings.length === 1
+      && result.warnings[0].message.includes("changed during read"),
+    "replaced skill parent exposed outside metadata or lost its bounded warning");
+  });
+  assert(intercepted && fileClosed, "changed-file rejection leaked its opened file handle");
+
+  const preselected = await fixture("canonical-path-replacement");
+  const selectedEntrypoint = join(preselected.directory, "SKILL.md");
+  await fs.rename(preselected.directory, preselected.directory + "-held");
+  await symlink(preselected.outside, preselected.directory, process.platform === "win32" ? "junction" : "dir");
+  await expectReject(() => readRegularUtf8(selectedEntrypoint, 1024, "selected skill", { canonicalPath: selectedEntrypoint }), "changed during read");
+  await expectReject(() => listSkillFiles(preselected.directory, 10, {}, () => {}, preselected.directory), "changed during traversal");
+
+  const changedKind = await fixture("entry-kind-replacement");
+  const changedKindPath = join(changedKind.directory, "SKILL.md");
+  let kindChanged = false;
+  await withFilesystemHook("lstat", (original) => async (...args) => {
+    if (args[0] === changedKindPath && !kindChanged) {
+      kindChanged = true;
+      await fs.rename(changedKindPath, changedKindPath + "-held");
+      await mkdir(changedKindPath);
+    }
+    return original(...args);
+  }, () => expectReject(() => listSkillFiles(changedKind.directory, 10, {}, () => {}), "skill file changed during traversal"));
+  assert(kindChanged, "file-kind replacement fixture did not reach the native stat boundary");
+
+  const replaced = await fixture("same-path-replacement");
+  const replacementPath = join(replaced.directory, "SKILL.md");
+  await withFilesystemHook("open", (original) => async (...args) => {
+    if (args[0] === replacementPath) {
+      await fs.rename(replacementPath, replacementPath + "-held");
+      await writeFile(replacementPath, "---\nname: replacement\ndescription: Replacement fixture.\n---\n");
+    }
+    return original(...args);
+  }, () => expectReject(() => readRegularUtf8(replacementPath, 1024, "owned file"), "changed during read"));
+
+  const modified = await fixture("during-read");
+  const modifiedPath = join(modified.directory, "SKILL.md");
+  await withFilesystemHook("open", (original) => async (...args) => {
+    const handle = await original(...args);
+    if (args[0] === modifiedPath) {
+      const read = handle.read.bind(handle);
+      handle.read = async (...readArgs) => {
+        const result = await read(...readArgs);
+        await writeFile(modifiedPath, "changed after read");
+        return result;
+      };
+    }
+    return handle;
+  }, () => expectReject(() => readRegularUtf8(modifiedPath, 1024, "owned file"), "changed during read"));
+
+  let optionalOpened = false;
+  await withFilesystemHook("open", (original) => async (...args) => {
+    if (args[0] === join(stable.directory, "SKILL.md")) optionalOpened = true;
+    return original(...args);
+  }, () => expectReject(() => readOptionalRegularUtf8(join(stable.directory, "SKILL.md"), 1024, "optional file", () => {
+    throw new Error("fixture path rejected");
+  }), "fixture path rejected"));
+  assert(!optionalOpened, "optional-file boundary validation ran after opening the file");
+  assert(await readOptionalRegularUtf8(join(stable.directory, "missing.md"), 1024, "missing file", () => {
+    throw new Error("missing files must not invoke canonical validation");
+  }) === null, "absent optional file lost its null result");
+}
+
+async function withFilesystemHook(name, createHook, callback) {
+  const original = fs[name];
+  fs[name] = createHook(original);
+  syncBuiltinESMExports();
+  try { return await callback(); }
+  finally { fs[name] = original; syncBuiltinESMExports(); }
 }

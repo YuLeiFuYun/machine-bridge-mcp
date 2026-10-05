@@ -332,7 +332,11 @@ export function workerErrorClass(error: unknown): string {
   if (error instanceof HttpError) return error.code;
   if (error instanceof TypeError) return "type_error";
   if (error instanceof RangeError) return "range_error";
-  if (error instanceof Error) return error.name.replace(/[^A-Za-z0-9_-]/g, "_").toLowerCase().slice(0, 64) || "error";
+  if (error instanceof Error) {
+    const name = error.name;
+    return typeof name === "string" && /^oauth_store_persist_(oauth|refresh|commit)_(error|type_error|range_error|unknown_error)$/.test(name)
+      ? name : "error";
+  }
   return "unknown_error";
 }
 

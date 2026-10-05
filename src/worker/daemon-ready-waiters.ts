@@ -12,12 +12,12 @@ type WaitOptions = Readonly<{
 }>;
 
 export async function waitForReadyDaemon(registry: ReadyDaemonRegistry, options: WaitOptions = {}): Promise<DaemonChannel> {
+  if (options.signal?.aborted) throw cancelledError();
   const waiters = readyWaiterSet(registry);
   const hadWaiters = waiters.size > 0;
   const immediate = readyDaemonChannels(registry)[0];
   if (immediate && !hadWaiters) return immediate;
   const graceMs = positiveInteger(options.graceMs, relayContract.newCallReconnectGraceMs);
-  if (options.signal?.aborted) throw cancelledError();
   const tool = String(options.tool || "unknown");
   assertReadyWaiterReadJobCapacity(waiters, tool, options.authority, options.activeReadJobCallsForAccount);
   const byTool: Record<string, number> = { ...(options.pending?.by_tool ?? {}) };

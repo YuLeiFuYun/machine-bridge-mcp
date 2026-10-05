@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { McpController } from "../src/worker/mcp-controller.ts";
+import { MCP_SERVER_CAPABILITIES } from "../src/worker/worker-mcp-config.ts";
 import {
   MAX_ACTIVE_MCP_SUBSCRIPTIONS, MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT,
   MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS, McpSubscriptionCapacity,
@@ -70,7 +71,7 @@ requestCancellations.cancel("stream:capacity-overflow-later");
 assert.equal(cancellationFailClosedEvents, 2,
   "a later cancellation fail-closed window did not emit fresh observability");
 const controller = new McpController({
-  capabilities: { tools: { listChanged: true } },
+  capabilities: MCP_SERVER_CAPABILITIES,
   serverInfo,
   instructions: "Use tools.",
   supportedVersions: [MCP_PROTOCOL_VERSION],
@@ -134,9 +135,21 @@ assert.equal(resources.result.resources[0].mimeType, MCP_APP_MIME_TYPE);
 const monitorResource = await jsonResult(await handle(request("resources/read", { uri: JOB_MONITOR_RESOURCE_URI })));
 assert.equal(monitorResource.result.contents[0].uri, JOB_MONITOR_RESOURCE_URI);
 assert.equal(monitorResource.result.contents[0].mimeType, MCP_APP_MIME_TYPE);
-const missingResource = await handle(request("resources/read", { uri: "ui://machine-bridge/not-found" }));
+assert.equal(resources.result.ttlMs, 0);
+assert(Object.hasOwn(discover.result.capabilities, "resources"), "resource routes were tested without the production capability declaration");
+const resourceTemplatesResponse = await handle(request("resources/templates/list", {}));
+assert.equal(resourceTemplatesResponse.status, 200);
+const resourceTemplates = await jsonResult(resourceTemplatesResponse);
+assert.deepEqual(resourceTemplates.result.resourceTemplates, []);
+assert.equal(resourceTemplates.result.ttlMs, 0);
+assert.equal(resourceTemplates.result.cacheScope, "public");
+const privateResourceUri = "ui://machine-bridge/owned-private-" + "x".repeat(65536);
+const missingResource = await handle(request("resources/read", { uri: privateResourceUri }));
 assert.equal(missingResource.status, 400);
-assert.equal((await missingResource.json()).error.code, -32602);
+const missingResourceText = await missingResource.text();
+assert.equal(JSON.parse(missingResourceText).error.code, -32602);
+assert(!missingResourceText.includes("owned-private-") && Buffer.byteLength(missingResourceText) < 1024,
+  "unknown resource error reflected private input or grew with its URI");
 const removed = await handle(request("initialize", {}));
 assert.equal(removed.status, 404);
 assert.equal((await removed.json()).error.code, -32601);

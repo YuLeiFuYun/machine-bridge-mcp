@@ -81,13 +81,13 @@ function output(command, args, options = {}) {
 }
 
 
-async function runNpmScript(npmCli, task) {
+async function runNpmScript(npmSession, task) {
   await runExecutable(process.execPath, [
-    npmCli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false",
+    npmSession.cli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false",
     "--if-present=false", "--prefix", root, task,
   ], {
     cwd: root,
-    env: nestedNpmEnvironment(process.env),
+    env: nestedNpmEnvironment(process.env, { bin: npmSession.bin }),
     timeoutMs: 20 * 60 * 1000,
     hardTimeout: true,
   });
@@ -345,7 +345,7 @@ async function publishCurrent({ prereleaseMode = false } = {}) {
   let candidate = null;
   let verificationError = null;
   try {
-    await runNpmScript(npmSession.cli, "version:check");
+    await runNpmScript(npmSession, "version:check");
     ensureClean();
     acceptance = assertLocalAcceptance(npmSession.cli);
     if (!parsedVersion.prerelease && requiresSoakForStable(pkg.version)) assertStableSoak(npmSession.cli);

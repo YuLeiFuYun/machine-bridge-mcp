@@ -18,7 +18,7 @@ export function runtimeRelayConnectionOptions(runtime, input) {
       helloMessage: async (welcome, relayStatus) => ({
         type: "hello", instance_id: runtime.relayInstanceId, tools: runtime.tools(), policy: runtime.policy,
         protocol_versions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
-        relay_diagnostics: relayHandshakeDiagnostics(runtime.relay?.status?.() || relayStatus),
+        relay_diagnostics: handshakeDiagnostics(runtime, relayStatus, "websocket"),
         authentication: await createDaemonAuthentication(currentSessionIdentity(), welcome, runtime.relayInstanceId),
       }),
       onMessage,
@@ -30,12 +30,9 @@ export function runtimeRelayConnectionOptions(runtime, input) {
       deviceIdentity: currentSessionIdentity(),
       deviceIdentityProvider: currentSessionIdentity,
       instanceId: runtime.relayInstanceId,
-      descriptor: () => ({
+      descriptor: (relayStatus) => ({
         tools: runtime.tools(), policy: runtime.policy,
-        relayDiagnostics: {
-          ...relayHandshakeDiagnostics(runtime.relay?.status?.() || {}),
-          transport: "https",
-        },
+        relayDiagnostics: handshakeDiagnostics(runtime, relayStatus, "https"),
       }),
       ownedCallIds: () => runtime.relayOwnedCallIds(),
       onMessage,
@@ -43,4 +40,14 @@ export function runtimeRelayConnectionOptions(runtime, input) {
     onDisconnect: (event) => runtime.handleRelayDisconnect(event),
     onReady: (event) => runtime.handleRelayReady(event),
   };
+}
+
+function handshakeDiagnostics(runtime, relayStatus = {}, transport) {
+  const aggregate = runtime.relay?.status?.() || {};
+  return relayHandshakeDiagnostics({
+    ...aggregate, ...relayStatus, transport,
+    recent_outages: aggregate.recent_outages ?? relayStatus.recent_outages,
+    https_fallback_last_takeover_ms: aggregate.https_fallback_last_takeover_ms ?? relayStatus.https_fallback_last_takeover_ms,
+    https_fallback_last_takeover_outage_number: aggregate.https_fallback_last_takeover_outage_number ?? relayStatus.https_fallback_last_takeover_outage_number,
+  });
 }
