@@ -58,7 +58,7 @@ try {
       "delegated runtime survived an account/client/family authority change");
   }
   const privateProfile = macosDelegatedSandboxProfile({ workspace, runtimeDir: privateRuntime });
-  const writableRoots = [...privateProfile.matchAll(/\(allow file-write\* \(subpath ("(?:\\.|[^"])*")\)\)/g)].map((match) => JSON.parse(match[1]));
+  const writableRoots = [...privateProfile.matchAll(/\(allow file-write\* \(subpath ("(?:\\.|[^"\\])*")\)\)/g)].map((match) => JSON.parse(match[1]));
   const ownerCache = path.join(runtimeDir, "macos-background-input");
   assert(writableRoots.every((allowed) => {
     const relative = path.relative(allowed, ownerCache);

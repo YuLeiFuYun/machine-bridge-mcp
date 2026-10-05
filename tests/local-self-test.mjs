@@ -55,12 +55,15 @@ async function runSelfTestPhase(name, callback) {
 }
 
 async function waitForSelfTestJob(manager, jobId, deadline, label) {
+  let lastState = null;
   while (Date.now() < deadline) {
     const value = manager.read({ job_id: jobId });
+    lastState = { status: value.status, current_phase: value.current_phase,
+      current_step: value.current_step, error_class: value.error_class };
     if (isTerminalManagedJobStatus(value.status) && value.artifact_cleanup_pending !== true) return value;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
   }
-  throw new Error(`${label} did not settle within the shared resource CLI self-test budget`);
+  throw new Error(`${label} did not settle within the shared resource CLI self-test budget; state=${JSON.stringify(lastState)}`);
 }
 
 function remainingSelfTestBudget(deadline, label, maximum) {

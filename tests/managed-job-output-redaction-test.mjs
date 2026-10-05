@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { redactManagedJobOutput } from "../src/local/managed-job-output-redaction.mjs";
 
 const emptyContext = {
@@ -48,7 +49,7 @@ assert(redactManagedJobOutput(Buffer.from("value=abcdef"), overlappingCrossClass
   "/tmp/managed-job-redaction-runtime") === "value=<redacted-resource:longLiteral>",
 "byte-first redaction let a shorter resource value expose the suffix of a longer literal secret");
 
-const shortPath = "/tmp/managed-job-redaction-prefix";
+const shortPath = resolve("/tmp/managed-job-redaction-prefix");
 const longPath = shortPath + "-long";
 const overlappingPaths = {
   bytes: {}, paths: { short: shortPath, long: longPath }, sourcePaths: {}, temporaryPaths: {}, redactions: {},
