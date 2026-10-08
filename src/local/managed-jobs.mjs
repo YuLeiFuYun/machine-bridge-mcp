@@ -26,7 +26,8 @@ import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { createManagedJobRunnerExitRecovery } from "./managed-job-runner-exit-recovery.mjs";
 import { relaunchDependencyWaitManagedJob, relaunchInterruptedManagedJob } from "./managed-job-relaunch.mjs";
 import { managedJobIdempotencyDigest, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./managed-job-idempotency.mjs";
-import { assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity, isKnownManagedJobStatus, managedJobTransitionConflict } from "./managed-job-state-validation.mjs";
+import { assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity, managedJobTransitionConflict } from "./managed-job-state-validation.mjs";
+import { managedJobRecoveryAttempts, MAX_MANAGED_JOB_RECOVERY_ATTEMPTS } from "./managed-job-recovery-history.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
 import { retiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
 import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
@@ -38,7 +39,6 @@ import {
 } from "./managed-job-terminal.mjs";
 export { launchRunner } from "./managed-job-runner.mjs";
 const MAX_PLAN_BYTES = 1024 * 1024;
-const MAX_RECOVERY_ATTEMPTS = 3;
 
 export class ManagedJobManager {
   constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true, runnerEnvironmentOverrides = {}, runnerSpawnProcess = null }) {
@@ -252,6 +252,8 @@ export class ManagedJobManager {
           approval: launch ? "mcp" : "review-only",
           plan_sha256: planSha256,
           cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
+          recovery_attempts: 0,
+          recovery_history: [],
           dependency_total: (plan.depends_on || []).length,
           dependency_pending_count: dependencyResolution.pending,
           ...(plan.continuation_mode === "task_supervisor" ? { continuation_mode: "task_supervisor" } : {}),
@@ -340,7 +342,7 @@ export class ManagedJobManager {
     const result = this.read(args, context, { skipReconcile: true });
     if (isTerminalManagedJobStatus(String(result?.status || ""))) {
       try { clearTransientProcessRecoveryPending(dir); }
-      catch { /* Failed downgrade only retains stronger recovery priority during the bounded grace interval. */ }
+      catch (error) { this.logger.warn?.("managed job delivered-result recovery marker could not be downgraded", { error_class: resourceErrorClass(error) }); }
     }
     return result;
   }
@@ -438,6 +440,7 @@ export class ManagedJobManager {
     const initial = readJson(file, 256 * 1024);
     if (!initial) return;
     assertManagedJobDirectoryIdentity(dir, initial);
+    assertKnownManagedJobStatus(initial);
     if (initial.status === "staged") return;
     if (isTerminalManagedJobStatus(initial.status)) {
       scrubTerminalJobArtifacts(dir, initial);
@@ -447,18 +450,7 @@ export class ManagedJobManager {
       throw new BridgeError("integrity_error", "managed job status is invalid");
     }
     if (runnerProcessIsCurrent(initial, dir)) return;
-    const terminalResult = readJson(join(dir, "result.json"), 4 * 1024 * 1024, "job result");
-    if (terminalResult && !isTerminalManagedJobResult(terminalResult, initial.job_id)) {
-      throw new BridgeError("integrity_error", "managed job result is invalid or belongs to another job");
-    }
-    if (terminalResult) {
-      const recoveredStatus = terminalStatusFromResult(initial, terminalResult, {
-        resultPersisted: true, updatedAt: new Date().toISOString(),
-      });
-      atomicWriteJson(file, recoveredStatus, 256 * 1024);
-      scrubTerminalJobArtifacts(dir, recoveredStatus);
-      return;
-    }
+    if (reconcileTerminalResult(dir, file, initial)) return;
     const updated = Date.parse(initial.updated_at || initial.created_at || "");
     if (Number.isFinite(updated) && Date.now() - updated < 10_000) return;
 
@@ -469,13 +461,15 @@ export class ManagedJobManager {
       const status = readJson(file, 256 * 1024);
       if (!status) return;
       assertManagedJobDirectoryIdentity(dir, status);
+      assertKnownManagedJobStatus(status);
       if (status.status === "staged" || isTerminalManagedJobStatus(status.status)) return;
       if (!ACTIVE_JOB_STATES.has(status.status)) {
         throw new BridgeError("integrity_error", "managed job status is invalid");
       }
       if (runnerProcessIsCurrent(status, dir)) return;
-      const recoveryAttempts = Number(status.recovery_attempts || 0);
-      if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+      if (reconcileTerminalResult(dir, file, status)) return;
+      const recoveryAttempts = managedJobRecoveryAttempts(status);
+      if (recoveryAttempts >= MAX_MANAGED_JOB_RECOVERY_ATTEMPTS) {
         const childState = managedJobActiveChildRecoveryState(managedJobActiveChildFile(dir));
         if (childState !== "ready") {
           if (childState === "current") this.runnerExitRecovery.observe(dir);
@@ -486,7 +480,7 @@ export class ManagedJobManager {
       }
       if (status.status === "queued" && status.current_phase === "dependency_wait") {
         relaunchDependencyWaitManagedJob({
-          dir, statusFile: file, status, recoveryAttempts,
+          dir, statusFile: file, status,
           logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
           runnerSpawnProcess: this.runnerSpawnProcess,
           onRunnerExit: () => this.runnerExitRecovery.observe(dir),
@@ -494,7 +488,7 @@ export class ManagedJobManager {
         return;
       }
       const runnerPid = relaunchInterruptedManagedJob({
-        dir, statusFile: file, status, recoveryAttempts, recoveryToken: recoveryLock.token,
+        dir, statusFile: file, status, recoveryToken: recoveryLock.token,
         logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
         runnerSpawnProcess: this.runnerSpawnProcess,
         onRunnerExit: () => this.runnerExitRecovery.observe(dir),
@@ -531,6 +525,20 @@ export class ManagedJobManager {
       capacity.release();
     }
   }
+}
+
+function reconcileTerminalResult(dir, statusFile, status) {
+  const result = readJson(join(dir, "result.json"), 4 * 1024 * 1024, "job result");
+  if (!result) return false;
+  if (!isTerminalManagedJobResult(result, status.job_id)) {
+    throw new BridgeError("integrity_error", "managed job result is invalid or belongs to another job");
+  }
+  const recovered = terminalStatusFromResult(status, result, {
+    resultPersisted: true, updatedAt: new Date().toISOString(),
+  });
+  atomicWriteJson(statusFile, recovered, 256 * 1024);
+  scrubTerminalJobArtifacts(dir, recovered);
+  return true;
 }
 
 function cancelManagedJob(manager, args = {}, context = {}) {
@@ -602,7 +610,10 @@ export function activeManagedJobs(jobRoot) {
       jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: "integrity_error" });
       continue;
     }
-    if (status && !isKnownManagedJobStatus(status.status)) {
+    let validStatus = true;
+    try { if (status) assertKnownManagedJobStatus(status); }
+    catch { validStatus = false; }
+    if (!validStatus) {
       jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: "integrity_error" });
       continue;
     }
@@ -663,8 +674,8 @@ function failRunnerLaunch(dir, status, error) {
 function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
   const now = new Date().toISOString();
   const result = {
-    job_id: status.job_id, name: status.name, status: "recovery_exhausted", recovered: true,
-    steps: [], finally_steps: [], error_class: "recovery_exhausted", cleanup_error_class: "recovery_exhausted",
+    job_id: status.job_id, name: status.name, status: "recovery_exhausted",
+    steps: [], finally_steps: [], error_class: "recovery_exhausted", cleanup_error_class: null,
     recovery_attempts: recoveryAttempts, finished_at: now,
   };
   const terminal = persistManagedJobTerminal({

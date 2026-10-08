@@ -7,6 +7,7 @@ import { COVERAGE_FIXTURE_TESTS, directNodeInvocation, runVerificationPlan } fro
 import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { rerunVerificationUnderIdleSleepGuard } from "./verification-idle-sleep-guard.mjs";
 import { runWithStableGeneration } from "./verification-generation-guard.mjs";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 import {
   captureVerificationRunGeneration,
   captureVerifiedSourceGeneration,
@@ -22,13 +23,15 @@ if (guardedExitCode !== null) process.exit(guardedExitCode);
 
 const mode = process.argv[2] || "full";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const tasks = checkTasks(mode);
 const packageScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts || {};
-const coverageTaskNames = mode === "full" ? coverageTasksForPlan(tasks, packageScripts) : new Set();
 const serialFastTasks = new Set(SERIAL_FAST_CHECK_TASKS);
 const parallelFastTasks = new Set(FAST_CHECK_TASKS.filter((task) => !serialFastTasks.has(task)));
+let tasks = [];
+let coverageTaskNames = new Set();
 let fullCoverage = null;
 try {
+  tasks = checkTasks(mode);
+  coverageTaskNames = mode === "full" ? coverageTasksForPlan(tasks, packageScripts) : new Set();
   if (mode === "full") {
     clearFullVerificationReceipt(root);
     fullCoverage = createFullCoverageContext(root, tasks, coverageTaskNames);
@@ -55,7 +58,7 @@ try {
   if (mode === "full") writeFullVerificationReceipt(root, captureVerifiedSourceGeneration(root));
 } catch (error) {
   if (error?.message && !String(error.message).startsWith("verification task failed:")) {
-    console.error(error.message);
+    console.error(releaseDiagnostic(error.message, 1200));
   }
   process.exitCode = Number(error?.exitCode) || 1;
 } finally {

@@ -7,7 +7,7 @@ const HOSTED_EXPLICIT_TAB_TOOLS = new Set([
   "browser_fill_form", "browser_screenshot", "browser_upload_files", "computer_observe",
 ]);
 
-export function staleSchemaCompatibilityResult(
+export function staleSchemaGuidanceResult(
   request: JsonRpcRequest,
   issues: readonly ValidationIssue[] | undefined,
   serverInfo: Record<string, unknown>,

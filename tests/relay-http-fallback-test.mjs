@@ -210,6 +210,16 @@ async function testDedicatedHttpFallbackProxy() {
 
   const proxyMarker = { kind: "synthetic-relay-proxy" };
   const requests = [];
+  assert.throws(() => new DaemonHttpRelayConnection({ workerUrl: [ORIGIN] }), /invalid Worker URL/,
+    "HTTP fallback coerced an array into an authenticated Worker origin");
+  await assert.rejects(
+    postDaemonHttpRelay({
+      url: [targetUrl], headers: {}, body: "{}", timeoutMs: 100, maximumResponseBytes: 1024,
+      selectProxy: () => ({ agent: null, mode: "direct" }),
+    }),
+    (error) => error?.code === "daemon_http_invalid_url",
+    "HTTP relay adapter coerced a non-string URL instead of returning its fixed invalid-URL error",
+  );
   const result = await postDaemonHttpRelay({
     url: targetUrl,
     headers: { "Content-Type": "application/json" },

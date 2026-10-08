@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runVerificationPlan } from "../scripts/check-runner.mjs";
 import { verificationChildEnvironment } from "../scripts/verification-environment.mjs";
 import {
@@ -13,6 +15,19 @@ import { runWithStableGeneration } from "../scripts/verification-generation-guar
 
 const root = await mkdtemp(join(tmpdir(), "mbm-check-runner-test-"));
 try {
+  const runChecksEntry = fileURLToPath(new URL("../scripts/run-checks.mjs", import.meta.url));
+  const privateMode = `ghp_${"R".repeat(36)}`;
+  const topLevelFailure = spawnSync(process.execPath, [runChecksEntry, privateMode], {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, [VERIFICATION_IDLE_SLEEP_GUARD_ENV]: "1" },
+  });
+  assert.notEqual(topLevelFailure.status, 0, "run-checks accepted an invalid private check mode");
+  assert(!String(topLevelFailure.stderr).includes(privateMode)
+    && String(topLevelFailure.stderr).includes("<redacted-access-token>"),
+  "run-checks top-level failure reflected credential-shaped input");
+
   const isolatedEnvironment = verificationChildEnvironment({
     MBM_RELAY_PROXY: "http://127.0.0.1:17891",
     MBM_RELAY_FALLBACK_PROXY: "",
@@ -41,6 +56,7 @@ try {
   await writeFile(fakeNpm, `
 const task = process.argv.at(-1);
 const nl = String.fromCharCode(10);
+const privatePath = ["", "Users", "private-runner", "secret.txt"].join("/");
 if (task === "noisy-success") {
   process.stdout.write("S".repeat(200000));
   process.stderr.write("W".repeat(200000));
@@ -53,7 +69,7 @@ if (task === "noisy-success") {
   process.exitCode = 0;
 } else {
   process.stdout.write("BEGIN-STDOUT" + nl + "O".repeat(200000) + nl + "END-STDOUT" + nl);
-  process.stderr.write("BEGIN-STDERR" + nl + "E".repeat(200000) + nl + "END-STDERR" + nl);
+  process.stderr.write("BEGIN-STDERR" + nl + privatePath + nl + "E".repeat(200000) + nl + "END-STDERR" + nl);
   process.exitCode = 7;
 }
 `, "utf8");
@@ -99,6 +115,8 @@ if (task === "noisy-success") {
   }), /verification task failed/);
   assert(failureErr.value.includes("BEGIN-STDOUT") && failureErr.value.includes("END-STDOUT"), "failure stdout did not preserve diagnostic head and tail");
   assert(failureErr.value.includes("BEGIN-STDERR") && failureErr.value.includes("END-STDERR"), "failure stderr did not preserve diagnostic head and tail");
+  assert(!failureErr.value.includes("private-runner") && failureErr.value.includes("<home>/secret.txt"),
+    "failure diagnostics exposed a private home path from child output");
   assert(failureErr.value.includes("[truncated "), "failure output did not disclose omitted bytes");
   assert(Buffer.byteLength(failureErr.value) < 140 * 1024, "failure diagnostics exceeded the two-stream bound");
 

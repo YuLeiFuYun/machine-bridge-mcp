@@ -27,14 +27,14 @@ import { normalizeResourceProjectIdentity, resourceProjectContentionKey, resourc
 import { sampleResourceHostAsync } from "../src/local/resource-host-snapshot.mjs";
 import { validateResourceRequest } from "../src/local/resource-request-contract.mjs";
 import { applyResourceProcessPriority } from "../src/local/resource-process-priority.mjs";
-import { currentProcessStartTimeMs, sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
+import { currentProcessStartTimeMs, processStartTimeFromSnapshot, sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
 import { resourceLeaseIsStale, resourceLeaseOwnerStatus } from "../src/local/resource-lease-liveness.mjs";
 import { packageName, packageVersion } from "../src/local/package-identity.mjs";
 import { releaseProcessResourcesQuietly } from "../src/local/resource-process-admission.mjs";
 import { foregroundResourceWaitMs, processSessionResourceWaitMs } from "../src/local/resource-foreground-wait.mjs";
 import { releaseControlExecutableIsTrusted } from "../src/local/resource-release-control-executable.mjs";
 import { releaseControlWorkspaceForCommand, releaseControlWorkspaceMatches } from "../src/local/resource-release-control-workspace.mjs";
-import { RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recovery.mjs";
+import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recovery.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
@@ -815,6 +815,8 @@ const largerChild = resourceLease("c".repeat(32), 200, { ...parentEnvelope, cpu:
 const siblingChild = resourceLease("d".repeat(32), 300, { ...parentEnvelope, cpu: 2 }, hierarchyNow - 60_000);
 const processParents = parseResourceProcessParents("100 1\n150 100\n200 100\n300 100\n400 100\n");
 assert(processParents, "process parent snapshot did not parse");
+assert.equal(parseResourceProcessParents(`${Number.MAX_SAFE_INTEGER + 1} 1\n100 ${Number.MAX_SAFE_INTEGER + 1}\n`), null,
+  "process ancestry accepted precision-losing PID evidence");
 let observedProcessParentProbe = null;
 assert.deepEqual(await sampleResourceProcessParentsAsync({
   run: async (command, args) => {
@@ -877,6 +879,12 @@ const parsedProcessStarts = await sampleProcessStartTimesAsync({
 });
 assert(Math.abs(parsedProcessStarts[String(process.pid)] - currentProcessStartedAt) < 2,
   "async process-start snapshot did not parse process identity evidence");
+assert.deepEqual(await sampleProcessStartTimesAsync({
+  platform: "win32",
+  run: async () => ({ ok: true, stdout: `${Number.MAX_SAFE_INTEGER + 1}|2026-01-01T00:00:00.000Z\n` }),
+}), {}, "process-start snapshot accepted a precision-losing PID");
+assert.equal(processStartTimeFromSnapshot({ "4242": "1767225600000" }, 4242), null,
+  "process-start snapshot coerced a string timestamp into process identity evidence");
 let processStartSnapshotCalls = 0;
 const cachedProcessStarts = cachedResourceProcessSnapshotSamplerAsync(
   async () => { processStartSnapshotCalls += 1; return parsedProcessStarts; },
@@ -1086,9 +1094,11 @@ assert.equal(siblingContention.reason, "project_resource_busy", "same-key siblin
 const validRequest = { ...cargo, contention_key: null };
 assert.equal(validateResourceRequest(validRequest), validRequest);
 assert.throws(() => validateResourceRequest(null), /resource request is invalid/);
+assert.throws(() => validateResourceRequest({ ...validRequest, family: [validRequest.family] }), /contract is invalid/);
 assert.throws(() => validateResourceRequest({ ...validRequest, cpu: Number.NaN }), /resource request cpu is invalid/);
 assert.throws(() => validateResourceRequest({ ...validRequest, compiler_jobs: 0 }), /compiler jobs are invalid/);
 assert.throws(() => validateResourceRequest({ ...validRequest, contention_key: "not-a-key" }), /contention key is invalid/);
+assert.throws(() => validateResourceRequest({ ...validRequest, contention_key: ["a".repeat(32)] }), /contention key is invalid/);
 
 let decision = evaluateResourceAdmission(green, [], cargo, Date.now());
 assert.equal(decision.admitted, true);
@@ -1441,6 +1451,45 @@ try {
   assert.equal(priorFileWaits, 1, "resource transaction lock did not wait for a live prior owner-state file lock");
   rmSync(priorFileRoot, { recursive: true, force: true });
 
+  const coercedTransactionRoot = join(root, "coerced-transaction-lock-fixture");
+  mkdirSync(coercedTransactionRoot, { mode: 0o700 });
+  const coercedTransactionLock = join(coercedTransactionRoot, "transaction.lock");
+  writeFileSync(coercedTransactionLock, `${JSON.stringify({
+    pid: process.pid,
+    token: ["b".repeat(32)],
+    purpose: "resource-coordinator",
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(
+    () => withResourceTransactionLock(coercedTransactionRoot, () => {
+      throw new Error("coerced transaction authority entered its critical section");
+    }, { timeoutMs: 25, random: () => 0, sleep: async () => {} }),
+    /owner-state lock is invalid/,
+    "resource transaction lock coerced an array token into ownership authority",
+  );
+  rmSync(coercedTransactionRoot, { recursive: true, force: true });
+
+  const unsafePid = Number.MAX_SAFE_INTEGER + 1;
+  const unsafeTransactionRoot = join(root, "unsafe-pid-transaction-lock-fixture");
+  mkdirSync(unsafeTransactionRoot, { mode: 0o700 });
+  const unsafeTransactionLock = join(unsafeTransactionRoot, "transaction.lock");
+  writeFileSync(unsafeTransactionLock, `${JSON.stringify({
+    pid: unsafePid,
+    token: "c".repeat(32),
+    purpose: "resource-coordinator",
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(
+    () => withResourceTransactionLock(unsafeTransactionRoot, () => {
+      throw new Error("unsafe transaction PID entered its critical section");
+    }, { timeoutMs: 25, random: () => 0, sleep: async () => {} }),
+    /owner-state lock is invalid/,
+    "resource transaction lock treated an unsafe integer PID as reclaimable ownership evidence",
+  );
+  rmSync(unsafeTransactionRoot, { recursive: true, force: true });
+
   const publicationRoot = join(root, "publication-hardlink-fixture");
   mkdirSync(publicationRoot, { mode: 0o700 });
   const publicationLock = join(publicationRoot, "transaction.lock");
@@ -1495,6 +1544,68 @@ try {
   assert.equal(await lease.release(), true);
   snapshot = await coordinator.snapshot({ cwd: root });
   assert.equal(snapshot.active_leases, 0);
+
+  const coercedLeaseId = "1".repeat(32);
+  const coercedLeasePath = join(root, "leases", `lease_${coercedLeaseId}.json`);
+  writeFileSync(coercedLeasePath, `${JSON.stringify({
+    schema_version: 1,
+    lease_id: coercedLeaseId,
+    token: ["2".repeat(64)],
+    acquired_at: new Date(now).toISOString(),
+    bound_at: null,
+    project_hash: "3".repeat(24),
+    owner: { kind: "provisional", pid: process.pid, process_started_at: new Date(currentProcessStartTimeMs()).toISOString() },
+    request: { ...cargo, contention_key: null },
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(() => coordinator.snapshot({ cwd: root }), /resource coordinator lease is invalid/,
+    "resource lease coerced an array token into durable ownership authority");
+  rmSync(coercedLeasePath, { force: true });
+
+  const unsafeLeaseId = "6".repeat(32);
+  const unsafeLeasePath = join(root, "leases", `lease_${unsafeLeaseId}.json`);
+  writeFileSync(unsafeLeasePath, `${JSON.stringify({
+    schema_version: 1,
+    lease_id: unsafeLeaseId,
+    token: "7".repeat(64),
+    acquired_at: new Date(now).toISOString(),
+    bound_at: null,
+    project_hash: "8".repeat(24),
+    owner: { kind: "provisional", pid: unsafePid, process_started_at: new Date(currentProcessStartTimeMs()).toISOString() },
+    request: { ...cargo, contention_key: null },
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(() => coordinator.snapshot({ cwd: root }), /resource coordinator lease ownership is invalid/,
+    "resource lease silently reclaimed an unsafe integer owner PID instead of retaining invalid state");
+  rmSync(unsafeLeasePath, { force: true });
+
+  const coercedWaiterId = "4".repeat(32);
+  const coercedWaiterPath = join(root, "waiters", `wait_${coercedWaiterId}.json`);
+  writeFileSync(coercedWaiterPath, `${JSON.stringify({
+    schema_version: 1,
+    waiter_id: coercedWaiterId,
+    token: ["5".repeat(64)],
+    enqueued_at: new Date(now).toISOString(),
+    expires_at: new Date(now + 60_000).toISOString(),
+    owner: { pid: process.pid, process_started_at: new Date(currentProcessStartTimeMs()).toISOString() },
+    request: { ...cargo, contention_key: null },
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(() => coordinator.snapshot({ cwd: root }), /resource coordinator waiter is invalid/,
+    "resource waiter coerced an array token into durable queue authority");
+  rmSync(coercedWaiterPath, { force: true });
+
+  const unsafeWaiterId = "9".repeat(32);
+  const unsafeWaiterPath = join(root, "waiters", `wait_${unsafeWaiterId}.json`);
+  writeFileSync(unsafeWaiterPath, `${JSON.stringify({
+    schema_version: 1,
+    waiter_id: unsafeWaiterId,
+    token: "a".repeat(64),
+    enqueued_at: new Date(now).toISOString(),
+    expires_at: new Date(now + 60_000).toISOString(),
+    owner: { pid: unsafePid, process_started_at: new Date(currentProcessStartTimeMs()).toISOString() },
+    request: { ...cargo, contention_key: null },
+  })}\n`, { mode: 0o600 });
+  await assert.rejects(() => coordinator.snapshot({ cwd: root }), /resource coordinator waiter ownership is invalid/,
+    "resource waiter silently pruned an unsafe integer owner PID instead of retaining invalid state");
+  rmSync(unsafeWaiterPath, { force: true });
 
   const unboundedNinja = resourceCommandProfile("ninja", ["-j0", "all"]);
   const idleGreen = { ...green, cpu_busy_cores: 0, load1: 0 };
@@ -1603,33 +1714,28 @@ try {
   assert.equal(await import("node:fs").then((fs) => fs.existsSync(replacementStaging)), false, "dead replacement staging file was not recovered");
   await replacementLease.release();
 
-  const legacyLease = await coordinator.acquire(cargo, { cwd: root });
-  const legacyTarget = join(root, "leases", `lease_${legacyLease.id}.json`);
-  const legacyValue = JSON.parse(readFileSync(legacyTarget, "utf8"));
-  legacyValue.owner = {
-    kind: "provisional",
-    pid: 99999999,
-    process_started_at: new Date(now - 60_000).toISOString(),
-  };
-  legacyValue.acquired_at = new Date(now - 60_000).toISOString();
-  writeFileSync(legacyTarget, `${JSON.stringify(legacyValue)}\n`, { mode: 0o600 });
-  const legacyStaging = join(root, "leases", `.lease_${legacyLease.id}.json.skt8wwdl.tmp`);
-  writeFileSync(legacyStaging, "", { mode: 0o600 });
-  snapshot = await coordinator.snapshot({ cwd: root });
-  assert.equal(snapshot.active_leases, 0, "stale legacy Workflow Bundle lease survived migration recovery");
-  assert.equal(await import("node:fs").then((fs) => fs.existsSync(legacyStaging)), false,
-    "legacy Workflow Bundle staging artifact was not recovered");
-
-  const liveLegacyLease = await coordinator.acquire(cargo, { cwd: root });
-  const liveLegacyStaging = join(root, "leases", `.lease_${liveLegacyLease.id}.json.abcdefgh.tmp`);
-  writeFileSync(liveLegacyStaging, "", { mode: 0o600 });
+  const retiredLegacyLease = await coordinator.acquire(cargo, { cwd: root });
+  const retiredLegacyStaging = join(root, "leases", `.lease_${retiredLegacyLease.id}.json.abcdefgh.tmp`);
+  writeFileSync(retiredLegacyStaging, "", { mode: 0o600 });
   await assert.rejects(
     () => coordinator.snapshot({ cwd: root }),
-    (error) => error?.code === RESOURCE_STAGING_BUSY_CODE && /legacy resource coordinator staging file is still owned by a live publisher/.test(error.message),
-    "live legacy Workflow Bundle publisher staging was reclaimed",
+    /resource coordinator lease directory contains an unexpected entry/,
+    "retired Workflow Bundle staging grammar remained an accepted recovery protocol",
   );
-  rmSync(liveLegacyStaging, { force: true });
-  await liveLegacyLease.release();
+  assert.equal(readFileSync(retiredLegacyStaging, "utf8"), "", "retired staging evidence was destructively removed");
+  rmSync(retiredLegacyStaging, { force: true });
+  await retiredLegacyLease.release();
+
+  const invalidPublisherName = `.lease_${"a".repeat(32)}.json.99999999999999999999999999.${"b".repeat(16)}.tmp`;
+  const invalidPublisherStaging = join(root, "leases", invalidPublisherName);
+  writeFileSync(invalidPublisherStaging, "", { mode: 0o600 });
+  assert.throws(
+    () => recoverResourceDirectoryStaging(join(root, "leases"), [{ name: invalidPublisherName, isFile: () => true }], "lease"),
+    /staging publisher PID is invalid/,
+    "overflowed PID was treated as proof that an uncommitted staging artifact could be deleted",
+  );
+  assert.equal(readFileSync(invalidPublisherStaging, "utf8"), "", "invalid PID caused destructive staging cleanup");
+  rmSync(invalidPublisherStaging);
 
   const orphanId = "e".repeat(32);
   const orphanStaging = join(root, "leases", `.lease_${orphanId}.json.99999999.${"f".repeat(16)}.tmp`);

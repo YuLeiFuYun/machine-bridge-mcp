@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
+import { managedJobRecoveryHistory } from "./managed-job-recovery-history.mjs";
 
 export function isKnownManagedJobStatus(value) {
   return value === "staged" || ACTIVE_JOB_STATES.has(value) || isTerminalManagedJobStatus(value);
@@ -16,6 +17,7 @@ export function assertKnownManagedJobStatus(status) {
   if (!isKnownManagedJobStatus(status?.status)) {
     throw new BridgeError("integrity_error", "managed job status is invalid");
   }
+  managedJobRecoveryHistory(status);
 }
 
 export function managedJobTransitionConflict() {

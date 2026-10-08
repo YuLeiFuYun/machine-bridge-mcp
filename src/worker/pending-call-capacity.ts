@@ -84,7 +84,7 @@ export function pendingReadJobCallsForAccount(
   records: Iterable<Readonly<{ tool: string; owner_account_id?: string }>>,
   accountId: string,
 ): number {
-  const key = String(accountId || "");
+  const key = typeof accountId === "string" ? accountId : "";
   if (!key) return 0;
   let active = 0;
   for (const record of records) {

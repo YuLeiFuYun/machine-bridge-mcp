@@ -111,7 +111,7 @@ function leaseAncestors(parentByLeaseId, first) {
 function processOwnerPid(lease) { return lease?.owner?.kind === "process" ? normalizePid(lease.owner.pid) : 0; }
 function leaseId(lease) { return typeof lease?.lease_id === "string" && lease.lease_id ? lease.lease_id : null; }
 function parentPid(parents, pid) { return normalizePid(parents?.[String(pid)] ?? parents?.[pid]); }
-function normalizePid(value) { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : 0; }
+function normalizePid(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0; }
 function requestVector(request = {}) { return Object.fromEntries(RESOURCE_KEYS.map((key) => [key, Math.max(0, finite(request[key]))])); }
 function finite(value) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0; }
 function emptyVector() { return { cpu: 0, io: 0, memory_mb: 0, disk_reserve_bytes: 0 }; }

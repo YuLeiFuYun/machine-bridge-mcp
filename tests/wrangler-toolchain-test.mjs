@@ -13,6 +13,8 @@ import {
   ensureWranglerToolchain,
   wranglerToolchainDescriptor,
 } from "../src/local/wrangler-toolchain.mjs";
+import { wranglerToolchainMarkerMatches } from "../src/local/wrangler-toolchain-verification.mjs";
+import { validateInstalledWranglerToolchainTree } from "../src/local/wrangler-toolchain-installed-tree.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-wrangler-toolchain-test-"));
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -76,6 +78,27 @@ try {
   assert.equal(fake.count("ci"), 1, "concurrent toolchain initialization installed more than once");
   assert.equal(fake.count("audit"), 1, "initial toolchain audit did not run exactly once");
   assert.equal(fake.count("signatures"), 1, "initial registry signature verification did not run exactly once");
+  const firstDescriptor = wranglerToolchainDescriptor({ packageRoot, stateRoot });
+  const firstMarker = JSON.parse(readFileSync(join(first, ".machine-bridge-mcp-toolchain.json"), "utf8"));
+  assert.equal(wranglerToolchainMarkerMatches(firstMarker, firstDescriptor), true);
+  assert.equal(wranglerToolchainMarkerMatches({ ...firstMarker, audited_at: [firstMarker.audited_at] }, firstDescriptor), false,
+    "coerced audited timestamp bypassed private toolchain marker validation");
+  assert.throws(() => validateInstalledWranglerToolchainTree({
+    problems: [],
+    dependencies: {
+      cf: { version: "1.0.0-beta.5" },
+      wrangler: { version: "4.144.0", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
+      undici: { version: "7.29.1" },
+      sharp: { version: "0.35.5" },
+      esbuild: { version: "0.28.1" },
+      workerd: { version: "1.20260926.1" },
+    },
+  }, {
+    cf: "1.0.0-beta.5", wrangler: "4.144.0", undici: "7.29.1", sharp: "0.35.5",
+    esbuild: "0.28.1", workerd: "1.20260926.1",
+  }),
+  /invalid dependency node/,
+  "malformed nested dependency node hid an unverified dependency subtree behind a patched Sharp sibling");
 
   const callsBeforeMaintenance = fake.total();
   await withForeignMaintenanceLock(stateRoot, async () => {
@@ -145,6 +168,68 @@ try {
       now: () => nowMs,
     }),
     /undici versions 7\.28\.0 do not match 7\.29\.1/,
+  );
+
+  const vulnerableSharp = createFakeNpmRunner({ sharp: "0.35.4" });
+  await assert.rejects(
+    ensureWranglerToolchain({
+      packageRoot,
+      stateRoot: toolchainState(root, "vulnerable-sharp-state"),
+      controlRoot,
+      npmCli,
+      runCommand: vulnerableSharp.run,
+      now: () => nowMs,
+    }),
+    /sharp versions 0\.35\.4 do not match 0\.35\.5/,
+    "vulnerable Sharp installation passed the private toolchain integrity check",
+  );
+
+  const wrongWorkerd = createFakeNpmRunner({ workerd: "1.20260925.1" });
+  await assert.rejects(
+    ensureWranglerToolchain({
+      packageRoot,
+      stateRoot: toolchainState(root, "wrong-workerd-state"),
+      controlRoot,
+      npmCli,
+      runCommand: wrongWorkerd.run,
+      now: () => nowMs,
+    }),
+    /workerd versions 1\.20260925\.1 do not match 1\.20260926\.1/,
+    "unexpected Workerd installation passed the private toolchain integrity check",
+  );
+
+  for (const [name, settings, message] of [
+    ["coerced-sharp", { sharp: ["0.35.5"] }, /sharp version must be a string/],
+    ["invalid-problems", { lsProblems: "invalid dependency edges" }, /dependency tree contains invalid edges/],
+    ["invalid-npm", { npmVersion: "not-a-version" }, /valid npm 12 or newer version/],
+    ["invalid-npm-hex", { npmVersion: "0x0c.0.2" }, /valid npm 12 or newer version/],
+    ["invalid-npm-overflow", { npmVersion: "99999999999999999999.0.0" }, /valid npm 12 or newer version/],
+  ]) {
+    await assert.rejects(
+      ensureWranglerToolchain({
+        packageRoot,
+        stateRoot: toolchainState(root, name),
+        controlRoot,
+        npmCli,
+        runCommand: createFakeNpmRunner(settings).run,
+        now: () => nowMs,
+      }),
+      message,
+      `invalid private toolchain evidence passed validation: ${name}`,
+    );
+  }
+  const leakedNpmOutput = "SYNTHETIC_PRIVATE_LOG_OUTPUT_SENTINEL";
+  await assert.rejects(
+    ensureWranglerToolchain({
+      packageRoot,
+      stateRoot: toolchainState(root, "invalid-npm-output"),
+      controlRoot,
+      npmCli,
+      runCommand: createFakeNpmRunner({ invalidLsOutput: leakedNpmOutput }).run,
+      now: () => nowMs,
+    }),
+    (error) => /returned invalid JSON/.test(error.message) && !error.message.includes(leakedNpmOutput),
+    "invalid npm JSON reflected private command output in a toolchain error",
   );
 
   const invalidTreeState = toolchainState(root, "invalid-tree-state");
@@ -233,7 +318,9 @@ function createFakeNpmRunner(options = {}) {
     cf: options.cf || "1.0.0-beta.5",
     wrangler: options.wrangler || "4.144.0",
     undici: options.undici || "7.29.1",
-    sharp: options.sharp || "0.35.4",
+    sharp: options.sharp || "0.35.5",
+    esbuild: options.esbuild || "0.28.1",
+    workerd: options.workerd || "1.20260926.1",
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
@@ -249,7 +336,7 @@ function createFakeNpmRunner(options = {}) {
       const npmArgs = args.slice(1);
       if (npmArgs[0] === "--version") {
         calls.push("version");
-        return result(0, "12.0.2\n");
+        return result(0, `${options.npmVersion || "12.0.2"}\n`);
       }
       if (npmArgs[0] === "ci") {
         calls.push("ci");
@@ -269,10 +356,13 @@ function createFakeNpmRunner(options = {}) {
       }
       if (npmArgs[0] === "ls") {
         calls.push("ls");
+        if (options.invalidLsOutput) return result(1, "{", options.invalidLsOutput);
         return result(Number(options.lsCode || 0), JSON.stringify({
           ...(options.lsProblems ? { problems: options.lsProblems } : {}),
           dependencies: {
             cf: { version: versions.cf },
+            esbuild: { version: versions.esbuild },
+            workerd: { version: versions.workerd },
             wrangler: {
               version: versions.wrangler,
               dependencies: {

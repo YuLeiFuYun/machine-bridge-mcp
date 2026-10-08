@@ -20,6 +20,7 @@ export function canonicalPackageDigest(projectRoot, packValue) {
   if (pack.name !== pkg.name || pack.version !== pkg.version) {
     throw new Error("npm pack identity does not match package.json");
   }
+  if (typeof pack.filename !== "string") throw new Error("npm pack filename is invalid");
 
   const index = trackedIndex(projectRoot);
   const entries = pack.files.map((entry) => normalizeEntry(entry, index));
@@ -35,7 +36,7 @@ export function canonicalPackageDigest(projectRoot, packValue) {
   addField(hash, "machine-bridge-mcp-package-content-v1");
   addField(hash, pkg.name);
   addField(hash, pkg.version);
-  addField(hash, String(pack.filename || ""));
+  addField(hash, pack.filename);
   for (const entry of entries) {
     addField(hash, entry.path);
     const bytes = blobs.get(entry.oid);
@@ -65,11 +66,11 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
       || acceptance.filename !== pack.filename) {
     throw new Error("local candidate acceptance package identity does not match npm pack");
   }
-  if (!/^[0-9a-f]{40}$/.test(String(acceptance.shasum || ""))
-      || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(acceptance.integrity || ""))) {
+  if (typeof acceptance.shasum !== "string" || !/^[0-9a-f]{40}$/.test(acceptance.shasum)
+      || typeof acceptance.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(acceptance.integrity)) {
     throw new Error("local candidate acceptance tarball hashes are malformed");
   }
-  if (!Number.isFinite(Date.parse(String(acceptance.accepted_at || "")))) {
+  if (typeof acceptance.accepted_at !== "string" || !Number.isFinite(Date.parse(acceptance.accepted_at))) {
     throw new Error("local candidate acceptance timestamp is invalid");
   }
   if (acceptance.package_content_sha256 !== expectedDigest) {
@@ -83,7 +84,8 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
 }
 
 function normalizeEntry(entry, index) {
-  const path = String(entry?.path || "").replaceAll("\\", "/");
+  if (typeof entry?.path !== "string") throw new Error("npm pack metadata contains a non-string path");
+  const path = entry.path.replaceAll("\\", "/");
   if (!path || path.startsWith("/") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw new Error(`npm pack metadata contains unsafe path: ${path || "<empty>"}`);
   }

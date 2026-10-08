@@ -78,22 +78,32 @@ export function validatePrereleaseActivation(value) {
   if (schemaVersion !== ACTIVATION_SCHEMA_VERSION) {
     throw new Error("unsupported prerelease activation schema");
   }
+  for (const field of ["package_name", "package_version", "source", "shasum", "integrity", "promotion_content_sha256", "activated_at"]) {
+    if (typeof value[field] !== "string") throw new Error(`prerelease activation ${field} must be a string`);
+  }
   const parsed = assertSoakEligiblePrerelease(value.package_version);
   if (value.package_name !== "machine-bridge-mcp") throw new Error("prerelease activation package name is invalid");
   if (!SOURCES.has(value.source)) throw new Error("prerelease activation source is invalid");
-  if (!/^[0-9a-f]{40}$/.test(String(value.shasum || ""))) throw new Error("prerelease activation SHA-1 is invalid");
-  if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(value.integrity || ""))) throw new Error("prerelease activation integrity is invalid");
-  if (!/^[0-9a-f]{64}$/.test(String(value.promotion_content_sha256 || ""))) throw new Error("prerelease activation promotion digest is invalid");
-  const activatedAt = Date.parse(String(value.activated_at || ""));
+  if (!/^[0-9a-f]{40}$/.test(value.shasum)) throw new Error("prerelease activation SHA-1 is invalid");
+  if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(value.integrity)) throw new Error("prerelease activation integrity is invalid");
+  if (!/^[0-9a-f]{64}$/.test(value.promotion_content_sha256)) throw new Error("prerelease activation promotion digest is invalid");
+  const activatedAt = Date.parse(value.activated_at);
   if (!Number.isFinite(activatedAt)) throw new Error("prerelease activation timestamp is invalid");
   if (value.source === "npm-prerelease") {
     if (value.npm_dist_tag !== parsed.npmTag) throw new Error("prerelease activation npm dist-tag is invalid");
-    const publishedAt = Date.parse(String(value.published_at || ""));
+    if (typeof value.published_at !== "string") throw new Error("prerelease activation publication timestamp is invalid");
+    const publishedAt = Date.parse(value.published_at);
     if (!Number.isFinite(publishedAt) || publishedAt > activatedAt + 5 * 60 * 1000) throw new Error("prerelease activation publication timestamp is invalid");
   }
-  const workspaceHash = String(value.workspace_hash || "");
+  if (value.workspace_hash !== undefined && typeof value.workspace_hash !== "string") {
+    throw new Error("prerelease activation workspace hash is invalid");
+  }
+  const workspaceHash = value.workspace_hash || "";
   if (workspaceHash && !/^[0-9a-f]{24}$/.test(workspaceHash)) throw new Error("prerelease activation workspace hash is invalid");
-  const runtimeEntry = String(value.runtime_entry || "");
+  if (value.runtime_entry !== undefined && typeof value.runtime_entry !== "string") {
+    throw new Error("prerelease activation runtime entry must be absolute");
+  }
+  const runtimeEntry = value.runtime_entry || "";
   if (runtimeEntry && !isAbsolute(runtimeEntry)) throw new Error("prerelease activation runtime entry must be absolute");
   const activationRecovery = normalizeActivationRecovery(value);
   const globalPackageRollbackBaseline = value.global_package_rollback_baseline === undefined
@@ -151,8 +161,11 @@ function validateGlobalPackageRollbackBaseline(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("prerelease activation global package rollback baseline is invalid");
   }
-  const version = String(value.version || "");
-  const entry = String(value.entry || "");
+  if (typeof value.version !== "string" || typeof value.entry !== "string") {
+    throw new Error("prerelease activation global package rollback baseline is invalid");
+  }
+  const version = value.version;
+  const entry = value.entry;
   if (!version || !entry || !isAbsolute(entry)) {
     throw new Error("prerelease activation global package rollback baseline is invalid");
   }

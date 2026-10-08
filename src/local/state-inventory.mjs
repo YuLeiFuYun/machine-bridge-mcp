@@ -3,13 +3,14 @@ import { resolve } from "node:path";
 import { activeManagedJobs } from "./managed-jobs.mjs";
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { activeManagedJobLock } from "./managed-job-lock.mjs";
+import { readOwnerStateLock } from "./owner-state-lock.mjs";
 import { inspectProcessInstance } from "./process-identity.mjs";
 import { inspectPathIfPresentSync, readBoundedRegularFileSync } from "./secure-file.mjs";
 import { activeOwnerStateLocks } from "./state-owner-lock-inventory.mjs";
 import { STATE_SCHEMA_VERSION, expandHome, readDaemonLockOwner, resolveWorkspace } from "./state.mjs";
+import { isWorkerName } from "./worker-identity-contract.mjs";
 
 const PROFILE_NAME = /^[a-f0-9]{24}$/;
-const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const MAX_STATE_BYTES = 2 * 1024 * 1024;
 
 export function knownWorkerNames(stateRoot) {
@@ -34,7 +35,7 @@ export function knownWorkerNames(stateRoot) {
     const previousNames = Array.isArray(state?.worker?.previousNames) ? state.worker.previousNames : [];
     for (const name of [currentName, ...previousNames]) {
       if (!name) continue;
-      if (typeof name !== "string" || !WORKER_NAME.test(name)) {
+      if (!isWorkerName(name)) {
         throw new Error(`profile ${entry.name} contains an invalid Worker name; local state was kept for inspection`);
       }
       names.add(name);
@@ -106,12 +107,11 @@ export function activeStateLocks(stateRoot) {
     for (const [kind, name] of [
       ["daemon", "daemon.lock"],
       ["startup", "startup.lock"],
-      ["operation-authorization", "operation-authorization.lock"],
       ["security-audit", "security-audit.lock"],
     ]) {
       const lockPath = resolve(profileDir, name);
       if (!inspectPathIfPresentSync(lockPath, `${kind} lock`)) continue;
-      const owner = readDaemonLockOwner(lockPath);
+      const owner = kind === "security-audit" ? readOwnerStateLock(lockPath, "security-audit").owner : readDaemonLockOwner(lockPath);
       if (!owner) {
         active.push({ kind, pid: null, path: lockPath, reason: "invalid_or_unreadable_lock" });
         continue;

@@ -1,8 +1,7 @@
 import { lstatSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
+import { filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
-import { recoverLegacyWorkflowBundleLeaseStaging } from "./resource-legacy-staging-recovery.mjs";
 
 const STAGING = /^\.(?<target>(?<kind>lease|wait)_[a-f0-9]{32}\.json)\.(?<pid>[1-9][0-9]*)\.(?<nonce>[a-f0-9]{16})\.tmp$/;
 const FINAL = Object.freeze({ lease: /^lease_[a-f0-9]{32}\.json$/, wait: /^wait_[a-f0-9]{32}\.json$/ });
@@ -16,11 +15,11 @@ export function recoverResourceDirectoryStaging(dir, entries, kind, processStart
     if (entry.isFile() && expected.test(entry.name)) continue;
     const match = entry.isFile() ? STAGING.exec(entry.name) : null;
     if (match?.groups?.kind === kind) {
-      recoverStagingAlias(dir, entry.name, match.groups.target, Number(match.groups.pid), processStarts);
-      recovered = true;
-      continue;
-    }
-    if (recoverLegacyWorkflowBundleLeaseStaging(dir, entry, kind, processStarts)) {
+      const publisherPid = Number(match.groups.pid);
+      if (!Number.isSafeInteger(publisherPid) || publisherPid <= 0) {
+        throw new Error("resource coordinator staging publisher PID is invalid; retaining state for inspection");
+      }
+      recoverStagingAlias(dir, entry.name, match.groups.target, publisherPid, processStarts);
       recovered = true;
       continue;
     }
@@ -71,7 +70,11 @@ function verifyPair(stagingPath, targetPath, staging, target, requireSameObject)
 function inspect(file, label) {
   const info = lstatSync(file, { bigint: true });
   if (info.isSymbolicLink() || !info.isFile()) throw new Error(`${label} must be a regular file`);
-  return { nlink: info.nlink, identity: filesystemIdentity(info, label), modified_at: Number(info.mtimeMs) };
+  return {
+    nlink: info.nlink,
+    identity: filesystemIdentity(info, label),
+    modified_at: new Date(filesystemTimeMs(info.mtimeMs, `${label} modification time`)).toISOString(),
+  };
 }
 function inspectOptional(file, label) {
   try { return inspect(file, label); }

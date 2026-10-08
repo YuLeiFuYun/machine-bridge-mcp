@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -281,9 +282,16 @@ async function main() {
     verbose: process.env.MBM_OFFICIAL_CONFORMANCE_VERBOSE === "1",
     expectedFailures: process.env.MBM_OFFICIAL_CONFORMANCE_BASELINE,
   });
-  process.stdout.write(result.stdout);
-  process.stderr.write(result.stderr);
+  writeConformanceOutput(process.stdout, result.stdout);
+  writeConformanceOutput(process.stderr, result.stderr);
   process.exitCode = result.code;
+}
+
+function writeConformanceOutput(stream, value) {
+  if (!value) return;
+  for (const line of String(value).split(/\r?\n/)) {
+    if (line) stream.write(`${releaseDiagnostic(line, 8192)}\n`);
+  }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) await main();

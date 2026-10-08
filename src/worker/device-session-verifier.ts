@@ -36,12 +36,16 @@ export async function verifyDeviceSessionCertificate(input: {
     return null;
   }
   if (value.scheme !== DEVICE_SESSION_CERTIFICATE_SCHEME) return null;
-  const issuedAt = Number(value.issued_at);
-  const expiresAt = Number(value.expires_at);
-  const nonce = String(value.nonce || "");
-  const rootKeyId = String(value.root_key_id || "");
-  const signature = decodeBase64Url(String(value.signature || ""), 64);
-  if (!signature || !Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt)) return null;
+  if (typeof value.issued_at !== "number" || !Number.isSafeInteger(value.issued_at)
+      || typeof value.expires_at !== "number" || !Number.isSafeInteger(value.expires_at)
+      || typeof value.nonce !== "string" || typeof value.root_key_id !== "string"
+      || typeof value.signature !== "string") return null;
+  const issuedAt = value.issued_at;
+  const expiresAt = value.expires_at;
+  const nonce = value.nonce;
+  const rootKeyId = value.root_key_id;
+  const signature = decodeBase64Url(value.signature, 64);
+  if (!signature) return null;
   if (issuedAt > input.now + 5 * 60 || expiresAt <= input.now) return null;
   if (expiresAt <= issuedAt || expiresAt - issuedAt > DEVICE_SESSION_MAX_LIFETIME_SECONDS) return null;
   if (!/^[A-Za-z0-9_-]{24,128}$/.test(nonce)) return null;

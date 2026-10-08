@@ -7,6 +7,7 @@ import { COVERAGE_FIXTURE_TESTS, directNodeInvocation } from "./check-runner.mjs
 import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { mergeFunctionExecutions } from "./coverage-range-merge.mjs";
 import { verificationChildEnvironment } from "./verification-environment.mjs";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CRITICAL_SCRIPT_FILES = new Set(["scripts/release-publication-guard.mjs", "scripts/verification-generation-guard.mjs", "scripts/verification-state.mjs"]);
@@ -32,8 +33,8 @@ try {
       maxBuffer: 16 * 1024 * 1024,
     });
     if (run.status !== 0) {
-      process.stdout.write(run.stdout || "");
-      process.stderr.write(run.stderr || "");
+      writeDiagnostic(process.stdout, run.stdout);
+      writeDiagnostic(process.stderr, run.stderr);
       throw new Error(`coverage fixture failed: ${test}`);
     }
   }
@@ -384,4 +385,11 @@ function collectCoverage(directory) {
 
 function percent(covered, total) {
   return total ? covered * 100 / total : 100;
+}
+
+function writeDiagnostic(stream, value) {
+  if (!value) return;
+  for (const line of String(value).split(/\r?\n/)) {
+    if (line) stream.write(`${releaseDiagnostic(line, 4096)}\n`);
+  }
 }

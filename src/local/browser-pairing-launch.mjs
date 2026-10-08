@@ -5,11 +5,11 @@ import { createBrowserPairingGrant } from "./browser-pairing-grant.mjs";
 const LAUNCH_TTL_MS = 30_000;
 
 export async function startBrowserPairingLaunch({ brokerPort, extensionToken, timeoutMs = LAUNCH_TTL_MS, serverFactory = createServer } = {}) {
-  const targetPort = Number(brokerPort);
-  if (!Number.isInteger(targetPort) || targetPort < 1024 || targetPort > 65535) throw new Error("browser pairing broker port is invalid");
+  const targetPort = brokerPort;
+  if (!Number.isSafeInteger(targetPort) || targetPort < 1024 || targetPort > 65535) throw new Error("browser pairing broker port is invalid");
   const grant = createBrowserPairingGrant(extensionToken, targetPort);
-  const ttl = Number(timeoutMs);
-  if (!Number.isInteger(ttl) || ttl < 1 || ttl > LAUNCH_TTL_MS) throw new Error("browser pairing launch timeout is invalid");
+  const ttl = timeoutMs;
+  if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > LAUNCH_TTL_MS) throw new Error("browser pairing launch timeout is invalid");
 
   let listenerPort = 0;
   let closed = false;

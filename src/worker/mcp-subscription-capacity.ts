@@ -8,7 +8,7 @@ export class McpSubscriptionCapacity {
   private readonly openedAccounts = new Set<string>();
 
   reserve(accountId: string): (() => void) | null {
-    const key = String(accountId || "");
+    const key = typeof accountId === "string" ? accountId : "";
     const accountActive = this.byAccount.get(key) ?? 0;
     if (!key || this.active >= MAX_ACTIVE_MCP_SUBSCRIPTIONS
         || accountActive >= MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT) return null;
@@ -26,7 +26,7 @@ export class McpSubscriptionCapacity {
   }
 
   markOpened(accountId: string): void {
-    const key = String(accountId || "");
+    const key = typeof accountId === "string" ? accountId : "";
     if (!key || (this.byAccount.get(key) ?? 0) <= 0) return;
     this.openedAccounts.delete(key);
     while (this.openedAccounts.size >= MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS) {
@@ -38,7 +38,7 @@ export class McpSubscriptionCapacity {
   }
 
   snapshot(accountId: string): Readonly<{ activeForAccount: number; openedForAccount: boolean }> {
-    const key = String(accountId || "");
+    const key = typeof accountId === "string" ? accountId : "";
     return Object.freeze({
       activeForAccount: key ? this.byAccount.get(key) ?? 0 : 0,
       openedForAccount: Boolean(key && this.openedAccounts.has(key)),

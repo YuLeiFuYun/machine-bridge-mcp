@@ -653,6 +653,17 @@ async function testCallRegistry() {
   const accountId = `acct_${"r".repeat(32)}`;
   const clientId = `mcp_client_${"r".repeat(43)}`;
   const familyId = `mcp_family_${"r".repeat(43)}`;
+  authority.open({ callId: "invalid-kind", tool: "read_file", origin: "relay" });
+  assert(authority.bindPrincipal("invalid-kind", { kind: "unexpected" }) === false,
+    "unknown principal kind was misattributed as local authority");
+  authority.finish("invalid-kind");
+  authority.open({ callId: "invalid-authority", tool: "read_file", origin: "relay" });
+  assert(authority.bindPrincipal("invalid-authority", {
+    kind: "account", accountId: [accountId], accountVersion: 4, clientId, familyId, role: "operator",
+  }) === false, "malformed account principal crossed the call-attribution boundary");
+  assert(authority.cancelAuthority({ accountId, accountVersion: 4, clientId, familyId }) === 0,
+    "malformed account principal created revocable authority metadata");
+  authority.finish("invalid-authority");
   authority.open({ callId: "family-call", tool: "run_process", origin: "relay" });
   authority.bindPrincipal("family-call", { kind: "account", accountId, accountVersion: 4, clientId, familyId, role: "operator" });
   authority.open({ callId: "new-version", tool: "read_file", origin: "relay" });
@@ -788,6 +799,7 @@ async function testToolExecutor() {
   let authorizedRelayActivityStarts = 0;
   let authorizedRelayActivityEnds = 0;
   let authorizedHandlerRuns = 0;
+  let authorizedRiskClassifications = 0;
   const activityExecutor = new ToolExecutor({
     handlers: { read_file: async ({ path }) => {
       authorizedHandlerRuns += 1;
@@ -796,7 +808,10 @@ async function testToolExecutor() {
     } },
     policyGate: gate,
     accountAccessGate,
-    operationAuthorizer: { async authorize() { return { allowed: true, source: "trusted-owner", category: "ordinary operation", scopes: [] }; } },
+    operationAuthorizer: { async authorize() {
+      authorizedRiskClassifications += 1;
+      return { allowed: true, source: "trusted-owner", category: "ordinary operation", scopes: [] };
+    } },
     callRegistry: new CallRegistry({ maximum: 2 }),
     observability: new RuntimeObservability(),
     logger: { event() {} },
@@ -808,9 +823,12 @@ async function testToolExecutor() {
   }) === "authorized", "authorized relay activity did not reach its handler");
   assert(authorizedRelayActivityStarts === 1 && authorizedRelayActivityEnds === 1 && authorizedHandlerRuns === 1,
     "authorized schema-valid relay activity did not hold one balanced auxiliary activity lease");
+  assert(authorizedRiskClassifications === 1, "schema-valid relay activity did not reach operation authorization exactly once");
   await expectReject(() => activityExecutor.execute("read_file", {}, {
     callId: "invalid-activity", origin: "relay", authorization: { role: "owner" },
   }), "invalid_request", "tool arguments do not match the input schema");
+  assert(authorizedRiskClassifications === 1,
+    "schema-invalid relay traffic reached operation risk/path authorization before static argument validation");
   await expectReject(() => activityExecutor.execute("read_file", { path: "denied.txt" }, {
     callId: "denied-activity", origin: "relay", authorization: { role: "viewer" },
   }), "policy_denied", "account denied");
@@ -888,6 +906,102 @@ async function testToolExecutor() {
     "security audit was not queued independently from result delivery");
   releaseAudit(true);
   await Promise.resolve();
+
+  let blockedMutationRuns = 0;
+  const unavailableAuditExecutor = new ToolExecutor({
+    handlers: {
+      exec_command: async () => { blockedMutationRuns += 1; return "should-not-run"; },
+      read_file: async () => "diagnostic-ok",
+    },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "remote execution", targetHash: "" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    securityAudit: { async flush() { return false; }, record() { return Promise.resolve(false); } },
+    logger: { event() {} },
+  });
+  const auditUnavailable = await expectReject(() => unavailableAuditExecutor.execute("exec_command", { command: "true" }, {
+    callId: "audit-unavailable-mutation", origin: "relay", authorization: { role: "owner" },
+  }), "unavailable", "security audit is unavailable");
+  assert(auditUnavailable.retryable === true && auditUnavailable.details?.reason === "security_audit_unavailable"
+    && blockedMutationRuns === 0,
+  "known-unhealthy security audit did not block a remote mutation before dispatch");
+  assert(await unavailableAuditExecutor.execute("read_file", { path: "fixture.txt" }, {
+    callId: "audit-unavailable-read", origin: "relay", authorization: { role: "owner" },
+  }) === "diagnostic-ok", "security audit failure blocked read-only recovery diagnostics");
+
+  let missingAuditMutationRuns = 0;
+  const missingAuditExecutor = new ToolExecutor({
+    handlers: { exec_command: async () => { missingAuditMutationRuns += 1; return "should-not-run"; } },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "remote execution", targetHash: "" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    logger: { event() {} },
+  });
+  await expectReject(() => missingAuditExecutor.execute("exec_command", { command: "true" }, {
+    callId: "audit-missing-mutation", origin: "relay", authorization: { role: "owner" },
+  }), "unavailable", "security audit is unavailable");
+  assert(missingAuditMutationRuns === 0,
+    "missing security-audit dependency bypassed the remote mutation pre-dispatch boundary");
+
+  const mutationAuditOrder = [];
+  let healthyMutationRuns = 0;
+  const healthyAuditExecutor = new ToolExecutor({
+    handlers: { exec_command: async () => { healthyMutationRuns += 1; mutationAuditOrder.push("handler"); return "mutation-ok"; } },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "remote execution", targetHash: "" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    securityAudit: {
+      async flush() { mutationAuditOrder.push("flush"); return true; },
+      record(input) { mutationAuditOrder.push(input.outcome); return Promise.resolve(true); },
+    },
+    logger: { event() {} },
+  });
+  assert(await healthyAuditExecutor.execute("exec_command", { command: "true" }, {
+    callId: "audit-healthy-mutation", origin: "relay", authorization: { role: "owner" },
+  }) === "mutation-ok" && healthyMutationRuns === 1,
+  "healthy audit pre-dispatch barrier did not allow exactly one remote mutation");
+  assert(mutationAuditOrder.slice(0, 3).join(",") === "flush,dispatch_intent,handler"
+    && mutationAuditOrder.includes("completed"),
+  "remote mutation handler ran before its durable audit intent or lost its terminal audit event");
+
+  const ambiguousAudit = [];
+  const ambiguousAuditExecutor = new ToolExecutor({
+    handlers: {
+      git_status: async () => {
+        throw new BridgeError("execution_failed", "ambiguous mutation settlement", {
+          retryable: false,
+          details: {
+            request_delivery: "sent",
+            side_effects_started: "unknown",
+            effect_settlement: "unknown",
+            termination_requested: false,
+          },
+        });
+      },
+    },
+    policyGate: gate,
+    accountAccessGate,
+    operationAuthorizer: { async authorize() { return { allowed: true, category: "ordinary operation", targetHash: "" }; } },
+    callRegistry: new CallRegistry({ maximum: 2 }),
+    observability: new RuntimeObservability(),
+    securityAudit: { record(input) { ambiguousAudit.push(input); return Promise.resolve(true); } },
+    logger: { event() {} },
+  });
+  await expectReject(() => ambiguousAuditExecutor.execute("git_status", {}, {
+    callId: "ambiguous-audit", origin: "relay", authorization: { role: "owner" },
+  }), "execution_failed", "ambiguous mutation settlement");
+  assert(ambiguousAudit.length === 1
+    && ambiguousAudit[0].requestDelivery === "sent"
+    && ambiguousAudit[0].sideEffectsStarted === "unknown"
+    && ambiguousAudit[0].effectSettlement === "unknown"
+    && ambiguousAudit[0].terminationRequested === false,
+  "security audit attribution lost fixed ambiguous-side-effect settlement metadata");
 
   const order = [];
   const pipeline = composeMiddleware([
@@ -2333,33 +2447,57 @@ async function testProcessTracker() {
   assert(scheduledCount === 2, "settled process escalation was not released from the tracker");
 
   const drainTerminations = [];
+  const drainEscalations = [];
+  const drainSettlements = [];
   const drainTracker = new ProcessTracker({
     terminate(child, signal) { drainTerminations.push({ child, signal }); return true; },
+    terminateWithEscalation(child, options) {
+      drainEscalations.push({ child, graceMs: options.graceMs });
+      drainSettlements.push(options.onTerminationSettled);
+      return `drain-timer-${drainEscalations.length}`;
+    },
   });
   const drainingChild = { pid: 301 };
   drainTracker.track(drainingChild, "drain");
   const drained = drainTracker.drain("SIGKILL", 100);
   await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
-  assert(drainTerminations.length === 1 && drainTerminations[0].signal === "SIGKILL",
-    "process tracker drain did not request forced termination");
+  assert(drainTerminations.length === 0 && drainEscalations.length === 1 && drainEscalations[0].graceMs === 0,
+    "process tracker drain bypassed ownership-checked forced escalation");
   drainTracker.untrack(drainingChild);
+  let drainSettled = false;
+  void drained.then(() => { drainSettled = true; });
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
+  assert(drainSettled === false, "process tracker drain returned while descendant escalation ownership was still pending");
+  drainSettlements[0]();
   await drained;
   const lateChild = { pid: 302 };
   drainTracker.track(lateChild, "late-during-drain");
-  assert(drainTerminations.length === 2 && drainTerminations[1].child === lateChild,
+  assert(drainEscalations.length === 2 && drainEscalations[1].child === lateChild && drainEscalations[1].graceMs === 0,
     "process tracker allowed a new child to escape after runtime drain began");
   drainTracker.untrack(lateChild);
+  drainSettlements[1]();
 
   let stalledDrainRequests = 0;
-  const stalledDrainTracker = new ProcessTracker({ terminate() { stalledDrainRequests += 1; return true; } });
+  const stalledDrainSettlements = [];
+  const stalledDrainTracker = new ProcessTracker({
+    terminateWithEscalation(_child, options) {
+      stalledDrainRequests += 1;
+      stalledDrainSettlements.push(options.onTerminationSettled);
+      return `stalled-timer-${stalledDrainRequests}`;
+    },
+  });
   const stalledDrainChild = { pid: 303 };
   stalledDrainTracker.track(stalledDrainChild, "stalled-drain");
   await expectReject(() => stalledDrainTracker.drain("SIGKILL", 20), "unavailable", "process shutdown did not settle");
   assert(stalledDrainTracker.snapshot().active_processes === 1,
     "failed process drain discarded the only retained ownership handle");
+  assert(stalledDrainTracker.snapshot().termination_escalations_pending === 1,
+    "failed process drain discarded its pending ownership-checked escalation");
+  stalledDrainSettlements[0]();
   const retriedDrain = stalledDrainTracker.drain("SIGKILL", 100);
   assert(stalledDrainRequests === 2, "failed process drain permanently suppressed a later termination retry");
   stalledDrainTracker.untrack(stalledDrainChild);
+  stalledDrainSettlements[1]();
   await retriedDrain;
   timerTracker.terminateCall("timed-again", { force: true });
   assert(clearedTimers.join(",") === "timer-2", "forced process termination did not clear the pending escalation timer");

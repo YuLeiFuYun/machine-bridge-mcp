@@ -24,7 +24,7 @@ export async function exchangeOAuthToken(
   const hasDpop = Boolean(request.headers.get("DPoP"));
   const dpop = hasDpop ? await verifyDpopProof({ request, expectedMethod: "POST", expectedUrl: request.url }) : null;
   if (hasDpop && !dpop) return json({ error: "invalid_dpop_proof" }, 400);
-  const grantType = String(body.grant_type ?? "");
+  const grantType = typeof body.grant_type === "string" ? body.grant_type : "";
   if (grantType === "authorization_code") return exchangeAuthorizationCode(body, base, options, dpop || undefined);
   if (grantType === "refresh_token") return exchangeRefreshToken(body, base, options, dpop || undefined);
   return json({ error: "unsupported_grant_type" }, 400);
@@ -36,9 +36,9 @@ async function exchangeAuthorizationCode(
   options: OAuthTokenExchangeOptions,
   dpop?: VerifiedDpopProof,
 ): Promise<Response> {
-  const code = String(body.code ?? "");
-  const verifier = String(body.code_verifier ?? "");
-  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) {
+  const code = typeof body.code === "string" ? body.code : "";
+  const verifier = typeof body.code_verifier === "string" ? body.code_verifier : "";
+  if (!code || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) {
     return json({ error: "invalid_grant", error_description: "invalid code_verifier" }, 400);
   }
   let stage: AuthorizationCodeStage = "lock";
@@ -50,10 +50,13 @@ async function exchangeAuthorizationCode(
       const refreshStore = await loadOAuthRefreshStore(oauthStore, options.storage);
       const record = oauthStore.codes[code];
       if (!record) return json({ error: "invalid_grant" }, 400);
-      if (String(body.client_id ?? "") !== record.client_id || String(body.redirect_uri ?? "") !== record.redirect_uri) {
+      if (typeof body.client_id !== "string" || body.client_id !== record.client_id
+          || typeof body.redirect_uri !== "string" || body.redirect_uri !== record.redirect_uri) {
         return json({ error: "invalid_grant", error_description: "client or redirect mismatch" }, 400);
       }
-      if (String(body.resource ?? record.resource) !== record.resource || record.resource !== `${base}/mcp`) {
+      const resource = body.resource === undefined ? record.resource
+        : typeof body.resource === "string" ? body.resource : null;
+      if (resource !== record.resource || record.resource !== `${base}/mcp`) {
         return json({ error: "invalid_target", error_description: "resource mismatch" }, 400);
       }
       if (normalizeOAuthScope(record.scope, options.serverName) !== record.scope) {
@@ -114,6 +117,6 @@ export async function currentOAuthTokenAuthority(
     }
     return {
       tokenKey: key, accountId: account.account_id,
-      accountVersion: account.version, clientId: record.client_id, familyId: String(record.family_id || ""), dpopJkt: String(record.dpop_jkt || ""), role: account.role,
+      accountVersion: account.version, clientId: record.client_id, familyId: record.family_id ?? "", dpopJkt: record.dpop_jkt ?? "", role: account.role,
     };
 }

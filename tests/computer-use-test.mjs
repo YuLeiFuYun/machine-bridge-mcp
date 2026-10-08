@@ -467,7 +467,7 @@ async function malformedApplicationPreflightEvidenceFailsClosed() {
   await assert.rejects(
     () => manager.act({
       surface: "application", snapshot_id: observed.snapshot_id, action: "focus", target: { ref: "a0" },
-      include_post_screenshot: false,
+      post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
@@ -494,7 +494,7 @@ async function postObservationCancellationPreservesCompletedDispatch() {
     action: "click",
     target: { ref: "e-post-cancel" },
     input_mode: "dom",
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed", "post-observation cancellation overwrote a completed browser dispatch");
   assert.equal(acted.effect_status, "unknown");
@@ -527,13 +527,13 @@ async function concurrentComputerActsCannotShareSnapshotAuthority() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const first = manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-lease" },
-    input_mode: "dom", include_post_screenshot: false,
+    input_mode: "dom", post_screenshot: "never",
   });
   await dispatchStarted;
   await assert.rejects(
     () => manager.act({
       surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-lease" },
-      input_mode: "dom", include_post_screenshot: false,
+      input_mode: "dom", post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "snapshot_missing_or_expired",
   );
@@ -549,7 +549,7 @@ async function concurrentComputerActsCannotShareSnapshotAuthority() {
   await assert.rejects(
     () => manager.act({
       surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-lease" },
-      input_mode: "dom", include_post_screenshot: false,
+      input_mode: "dom", post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "snapshot_missing_or_expired",
   );
@@ -581,7 +581,7 @@ async function crossFrameSemanticRefUsesPrivateBackendBinding() {
   assert.equal(Object.hasOwn(publicElement, "_machine_cdp_frame_id"), false, "Computer Use leaked its private CDP frame binding");
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-frame" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch.coordinate_source, "cdp_content_quad");
   assert.equal(acted.dispatch.cross_frame_trusted, true);
@@ -594,7 +594,7 @@ async function crossFrameSemanticRefUsesPrivateBackendBinding() {
   assert.equal(backend.args.extension_ref, "e-frame");
   assert.equal(backend.args.expected_ref_identity.role, "button");
   assert.equal(backend.args.expected_ref_identity.name, "Continue");
-  assert.equal(calls.some((entry) => entry.kind === "act"), false, "bound subframe ref unexpectedly fell back to the legacy browser action path");
+  assert.equal(calls.some((entry) => entry.kind === "act"), false, "bound subframe ref unexpectedly fell back to the DOM ref action path");
 }
 
 async function mediumConfidenceBackendBindingIsIgnored() {
@@ -610,17 +610,17 @@ async function mediumConfidenceBackendBindingIsIgnored() {
     "medium-confidence correlation inflated the executable fused-ref capability count");
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-medium" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
-  assert.equal(acted.dispatch.tab_metadata_verified, null,
-    "legacy browser action without metadata verification evidence was not preserved as unknown");
+  assert.equal(acted.dispatch.tab_metadata_verified, false,
+    "browser action without metadata verification evidence was not treated as unverified");
   assert.equal(calls.some((entry) => entry.kind === "backend-act"), false,
     "daemon promoted a medium-confidence AX correlation into snapshot-bound trusted input");
-  const legacy = calls.find((entry) => entry.kind === "act");
-  assert.equal(Boolean(legacy), true,
+  const domAction = calls.find((entry) => entry.kind === "act");
+  assert.equal(Boolean(domAction), true,
     "medium-confidence ref did not fall back to the existing semantic ref action path");
-  assert.equal(legacy.args.expected_ref_identity.role, "button");
-  assert.equal(legacy.args.expected_ref_identity.name, "Continue");
+  assert.equal(domAction.args.expected_ref_identity.role, "button");
+  assert.equal(domAction.args.expected_ref_identity.name, "Continue");
 }
 
 async function crossFrameFillUsesPrivateBackendBinding() {
@@ -645,7 +645,7 @@ async function crossFrameFillUsesPrivateBackendBinding() {
     action: "fill",
     target: { ref: "e-frame-fill" },
     value: "person@example.com",
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch.coordinate_source, "cdp_dom_focus");
   assert.equal(acted.dispatch.cross_frame_trusted, true);
@@ -671,7 +671,7 @@ async function crossFrameCheckIsIdempotentAndTrusted() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "check", target: { ref: "e-frame-check" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.effect_status, "confirmed");
   assert.equal(acted.dispatch.coordinate_source, "cdp_dom_focus");
@@ -687,7 +687,7 @@ async function crossFrameCheckIsIdempotentAndTrusted() {
   const checkedObserved = await checkedManager.observe({ surface: "browser", include_screenshot: false });
   const noop = await checkedManager.act({
     surface: "browser", snapshot_id: checkedObserved.snapshot_id, action: "check", target: { ref: "e-frame-check" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(noop.effect_status, "confirmed");
   assert.equal(noop.dispatch.coordinate_source, "cdp_ax_state_noop");
@@ -717,7 +717,7 @@ async function crossFrameCheckNoopStillUsesBackendIdentityGate() {
   await assert.rejects(
     () => manager.act({
       surface: "browser", snapshot_id: observed.snapshot_id, action: "check",
-      target: { ref: "e-frame-check-identity" }, include_post_screenshot: false,
+      target: { ref: "e-frame-check-identity" }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
@@ -744,7 +744,7 @@ async function crossFrameCheckHandlesLastHopDesiredStateRace() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "check", target: { ref: "e-frame-check-race" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.effect_status, "confirmed");
   assert.equal(acted.dispatch.coordinate_source, "cdp_dom_focus");
@@ -769,7 +769,7 @@ async function crossFrameSubmitUsesTrustedBackendBinding() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "submit", target: { ref: "e-frame-submit" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch.coordinate_source, "cdp_dom_focus");
   const backend = calls.find((entry) => entry.kind === "backend-act");
@@ -791,7 +791,7 @@ async function backendTrustedUnavailableFallsBackOnlyInAutoMode() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-auto-backend" },
-    include_post_screenshot: false, input_mode: "auto",
+    post_screenshot: "never", input_mode: "auto",
   });
   assert.equal(acted.dispatch.input_mode, "trusted", "auto fallback did not reach the existing browser action path");
   assert.equal(calls.some((entry) => entry.kind === "backend-act"), true);
@@ -809,7 +809,7 @@ async function backendTrustedUnavailableFallsBackOnlyInAutoMode() {
   await assert.rejects(
     () => strictManager.act({
       surface: "browser", snapshot_id: strictObserved.snapshot_id, action: "click", target: { ref: "e-strict-backend" },
-      include_post_screenshot: false, input_mode: "trusted",
+      post_screenshot: "never", input_mode: "trusted",
     }),
     (error) => error instanceof BridgeError && error.code === "unavailable" && error.details?.reason === "snapshot_backend_trusted_input_unavailable",
   );
@@ -834,7 +834,7 @@ async function quarantinedTrustedBackendFallsBackToDomInAutoMode() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-quarantined-backend" },
-    include_post_screenshot: false, input_mode: "auto",
+    post_screenshot: "never", input_mode: "auto",
   });
   assert.equal(acted.dispatch.input_mode, "dom", "Computer Use did not preserve the daemon-side quarantine fallback transport");
   assert.equal(acted.dispatch.trusted_input_fallback, true, "Computer Use did not expose the trusted-input quarantine fallback");
@@ -855,7 +855,7 @@ async function backendPostFocusFailureNeverFallsBackInAutoMode() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "submit", target: { ref: "e-focus-unknown" },
-    input_mode: "auto", include_post_screenshot: false,
+    input_mode: "auto", post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown");
   assert.equal(acted.effect_status, "unknown");
@@ -881,7 +881,7 @@ async function backendPostDispatchWaitFailureNeverFallsBackInAutoMode() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-wait-unknown" },
-    input_mode: "auto", wait_for: "complete", include_post_screenshot: false,
+    input_mode: "auto", wait_for: "complete", post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown", "post-dispatch wait failure was not classified as an unknown dispatch");
   assert.equal(acted.effect_status, "unknown");
@@ -906,7 +906,7 @@ async function domMutationFailureStaysUnknownInComputerUse() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-dom-unknown" },
-    input_mode: "dom", include_post_screenshot: false,
+    input_mode: "dom", post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown", "DOM mutation uncertainty was not preserved by Computer Use");
   assert.equal(acted.effect_status, "unknown");
@@ -930,7 +930,7 @@ async function browserNavigationMutationFailureStaysUnknownInComputerUse() {
     snapshot_id: observed.snapshot_id,
     action: "navigate",
     url: "https://example.test/next",
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown");
   assert.equal(acted.effect_status, "unknown");
@@ -958,7 +958,7 @@ async function browserObserveAndVerifiedAction() {
     action: "click",
     target: { ref: "e7" },
     expect: { text: "Done", url_changed: true },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "confirmed");
@@ -997,7 +997,7 @@ async function browserPostObservationCanBeFull() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-full" },
-    include_post_screenshot: false, post_observation_detail: "full",
+    post_screenshot: "never", post_observation_detail: "full",
   });
   assert.equal(acted.post_observation_detail, "full");
   assert(Array.isArray(acted.post_observation.semantic.frames), "explicit full post observation did not retain browser frames");
@@ -1012,7 +1012,7 @@ async function semanticDeltaReportsStableRefChanges() {
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
-    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-delta" }, include_post_screenshot: false,
+    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-delta" }, post_screenshot: "never",
   });
   assert.equal(acted.observed_diff.document_epoch_changed, false);
   assert.equal(acted.observed_diff.semantic_delta.changed_count, 1);
@@ -1034,7 +1034,7 @@ async function browserContinuationRejectsSemanticIdentityDrift() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click",
-    target: { ref: "e-identity-continuation" }, include_post_screenshot: false,
+    target: { ref: "e-identity-continuation" }, post_screenshot: "never",
   });
   assert.equal(acted.observed_diff.document_epoch_changed, false);
   assert.equal(acted.observed_diff.frame_epoch_changed, false);
@@ -1055,7 +1055,7 @@ async function browserContinuationRejectsSiblingFrameRefCollision() {
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
-    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-shared" }, include_post_screenshot: false,
+    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-shared" }, post_screenshot: "never",
   });
   assert.equal(acted.observed_diff.document_epoch_changed, false);
   assert.equal(acted.observed_diff.frame_epoch_changed, true);
@@ -1074,7 +1074,7 @@ async function browserContinuationRejectsChildFrameEpochReplacement() {
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
-    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-child-reused" }, include_post_screenshot: false,
+    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-child-reused" }, post_screenshot: "never",
   });
   assert.equal(acted.observed_diff.document_epoch_changed, false, "child-frame replacement was incorrectly promoted to a top-document replacement");
   assert.equal(acted.observed_diff.frame_epoch_changed, true);
@@ -1103,7 +1103,7 @@ async function browserTargetStateRejectsPostIdentityDrift() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "check", target: { ref: "e-post-identity" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "not_observed",
@@ -1128,7 +1128,7 @@ async function browserTargetStateMissingFromTruncatedPostIsInconclusive() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "check", target: { ref: "e-post-truncated" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "unknown",
@@ -1152,7 +1152,7 @@ async function browserTargetStateMissingFrameFromTruncatedPostIsInconclusive() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "check", target: { ref: "e-post-frame-truncated" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "unknown");
@@ -1167,7 +1167,7 @@ async function missingPostObservationRequiresReobserve() {
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
-    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-missing" }, include_post_screenshot: false,
+    surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-missing" }, post_screenshot: "never",
   });
   assert.equal(acted.post_snapshot_id, null);
   assert.equal(acted.continuation.available, false);
@@ -1184,7 +1184,7 @@ async function postOnlyBrowserExpectationWithoutPostStateStaysUnknown() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-pending" },
-    expect: { semantic_change: true }, include_post_screenshot: false,
+    expect: { semantic_change: true }, post_screenshot: "never",
   });
   assert.equal(acted.effect_status, "unknown", "missing post observation falsely confirmed a post-only browser expectation");
   assert.equal(acted.verification.matched, false);
@@ -1201,7 +1201,7 @@ async function mixedBrowserExpectationWithoutPostStateStaysUnknown() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-mixed" },
-    expect: { text: "Done", url_changed: true }, include_post_screenshot: false,
+    expect: { text: "Done", url_changed: true }, post_screenshot: "never",
   });
   assert.equal(acted.effect_status, "unknown", "successful browser wait incorrectly substituted for a missing url_changed post check");
   assert.equal(acted.verification.wait_matched, true);
@@ -1218,7 +1218,7 @@ async function explicitSemanticChangeCanConfirmEffect() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-sem" },
-    expect: { semantic_change: true }, include_post_screenshot: false,
+    expect: { semantic_change: true }, post_screenshot: "never",
   });
   assert.equal(acted.effect_status, "confirmed");
   assert.equal(acted.verification.post_checks[0].condition, "semantic_change");
@@ -1234,7 +1234,7 @@ async function unobservedExpectedEffectUsesPostSnapshotBeforeRetry() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-not" },
-    expect: { semantic_change: true }, include_post_screenshot: false,
+    expect: { semantic_change: true }, post_screenshot: "never",
   });
   assert.equal(acted.effect_status, "not_observed");
   assert.equal(acted.retry_guidance.disposition, "use_post_snapshot");
@@ -1347,7 +1347,7 @@ async function postScreenshotPoliciesAreValidated() {
       surface: "browser", snapshot_id: id, action: "click", target: { ref: "e-policy" },
       post_screenshot: "always", include_post_screenshot: true,
     }),
-    (error) => error instanceof BridgeError && error.code === "invalid_request" && /mutually exclusive/.test(error.message),
+    (error) => error instanceof BridgeError && error.code === "invalid_request" && /no longer supported/.test(error.message),
   );
   await assert.rejects(
     () => manager.act({
@@ -1368,7 +1368,7 @@ async function staleBrowserSnapshotIsRejectedBeforeDispatch() {
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   await assert.rejects(
-    () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e1" }, include_post_screenshot: false }),
+    () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e1" }, post_screenshot: "never" }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
   assert.equal(calls.some((entry) => entry.kind === "act"), false, "stale snapshots must fail before dispatch");
@@ -1382,7 +1382,7 @@ async function staleBrowserSnapshotIsRejectedBeforeDispatch() {
   const coercibleUrlObserved = await coercibleUrlManager.observe({ surface: "browser", include_screenshot: false });
   await assert.rejects(
     () => coercibleUrlManager.act({
-      surface: "browser", snapshot_id: coercibleUrlObserved.snapshot_id, action: "click", target: { ref: "e-live-url" }, include_post_screenshot: false,
+      surface: "browser", snapshot_id: coercibleUrlObserved.snapshot_id, action: "click", target: { ref: "e-live-url" }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
@@ -1398,7 +1398,7 @@ async function staleBrowserSnapshotIsRejectedBeforeDispatch() {
   const coercibleEpochObserved = await coercibleEpochManager.observe({ surface: "browser", include_screenshot: false });
   await assert.rejects(
     () => coercibleEpochManager.act({
-      surface: "browser", snapshot_id: coercibleEpochObserved.snapshot_id, action: "click", target: { ref: "e-live-epoch" }, include_post_screenshot: false,
+      surface: "browser", snapshot_id: coercibleEpochObserved.snapshot_id, action: "click", target: { ref: "e-live-epoch" }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
@@ -1413,7 +1413,7 @@ async function staleBrowserSnapshotIsRejectedBeforeDispatch() {
   const coercibleIdentityObserved = await coercibleIdentityManager.observe({ surface: "browser", include_screenshot: false });
   await assert.rejects(
     () => coercibleIdentityManager.act({
-      surface: "browser", snapshot_id: coercibleIdentityObserved.snapshot_id, action: "click", target: { ref: "e-ref-identity" }, include_post_screenshot: false,
+      surface: "browser", snapshot_id: coercibleIdentityObserved.snapshot_id, action: "click", target: { ref: "e-ref-identity" }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
@@ -1431,7 +1431,7 @@ async function sameUrlReloadSnapshotIsRejectedBeforeDispatch() {
   const manager = managerWith({ browser });
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   await assert.rejects(
-    () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e11" }, include_post_screenshot: false }),
+    () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e11" }, post_screenshot: "never" }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
   assert.equal(calls.some((entry) => entry.kind === "act"), false, "same-URL document replacement must fail before dispatch");
@@ -1663,7 +1663,7 @@ async function browserRefIdentityDriftMapsToStaleWithoutReplay() {
       action: "click",
       target: { ref: "e-identity" },
       input_mode: "dom",
-      include_post_screenshot: false,
+      post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError
       && error.code === "conflict"
@@ -1687,7 +1687,7 @@ async function visualPointDispatchIsSnapshotBound() {
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "click",
     target: { point: { x: 0.5, y: 0.25, space: "normalized_viewport" } },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   const pointCall = calls.find((entry) => entry.kind === "point-act");
@@ -1713,7 +1713,7 @@ async function visualPointRejectsCoercibleSnapshotAuthority() {
     { x: 0.5, y: 0.25, space: ["normalized_viewport"] },
   ]) {
     await assert.rejects(
-      () => manager.act({ surface: "browser", snapshot_id: snapshotId, action: "click", target: { point }, include_post_screenshot: false }),
+      () => manager.act({ surface: "browser", snapshot_id: snapshotId, action: "click", target: { point }, post_screenshot: "never" }),
       (error) => error instanceof BridgeError && error.code === "invalid_request",
     );
   }
@@ -1732,7 +1732,7 @@ async function visualPointRejectsCoercibleSnapshotAuthority() {
   await assert.rejects(
     () => malformedManager.act({
       surface: "browser", snapshot_id: malformedObserved.$mcp.structuredContent.snapshot_id, action: "click",
-      target: { point: { x: 0.5, y: 0.25 } }, include_post_screenshot: false,
+      target: { point: { x: 0.5, y: 0.25 } }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict",
   );
@@ -1753,7 +1753,7 @@ async function visualPointDragIsSnapshotBound() {
     action: "drag",
     target: { point: { x: 0.2, y: 0.3 } },
     destination: { point: { x: 0.8, y: 0.7 } },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "unknown", "drag dispatch without an explicit post-condition was promoted to effect success");
@@ -1783,7 +1783,7 @@ async function visualPointScrollIsSnapshotBound() {
     target: { point: { x: 0.35, y: 0.65 } },
     delta_x: -80,
     delta_y: 640,
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "unknown", "scroll dispatch without an explicit post-condition was promoted to effect success");
@@ -1816,7 +1816,7 @@ async function semanticRefDragUsesBothTrustedBindings() {
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "drag",
     target: { ref: "e-source" }, destination: { ref: "e-destination" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   const backendCalls = calls.filter((entry) => entry.kind === "backend-act");
@@ -1840,7 +1840,7 @@ async function semanticRefScrollUsesTrustedBinding() {
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "scroll",
     target: { ref: "e-scroll" }, delta_x: 0, delta_y: 520,
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   const backendCalls = calls.filter((entry) => entry.kind === "backend-act");
@@ -1872,7 +1872,7 @@ async function malformedLowerLayerDispatchEvidenceIsNotCoerced() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "scroll", target: { ref: "e-evidence" },
-    delta_x: 20, delta_y: 300, include_post_screenshot: false,
+    delta_x: 20, delta_y: 300, post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(Object.hasOwn(acted.dispatch, "point"), false,
@@ -1894,7 +1894,7 @@ async function browserDragRejectsMixedEndpointEvidence() {
     () => manager.act({
       surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "drag",
       target: { ref: "e-mixed" }, destination: { point: { x: 0.8, y: 0.8 } },
-      include_post_screenshot: false,
+      post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "invalid_request" && /both use refs or both use normalized points/.test(error.message),
   );
@@ -1919,7 +1919,7 @@ async function browserDragRejectsUnsafeOptionsBeforeDispatch() {
     await assert.rejects(
       () => manager.act({
         surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "drag",
-        target: { point: { x: 0.2, y: 0.2 } }, include_post_screenshot: false,
+        target: { point: { x: 0.2, y: 0.2 } }, post_screenshot: "never",
         ...fixture.extra,
       }),
       fixture.pattern,
@@ -1942,7 +1942,7 @@ async function browserDragUnknownDispatchIsNotReplayed() {
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "drag",
     target: { point: { x: 0.2, y: 0.2 } }, destination: { point: { x: 0.8, y: 0.8 } },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown", "partial drag failure was not preserved as ambiguous dispatch");
   assert.equal(acted.retry_guidance.same_action_retry_allowed, false, "partial drag failure allowed same-action retry");
@@ -1969,7 +1969,7 @@ async function browserScrollRejectsUnsafeOptionsBeforeDispatch() {
     await assert.rejects(
       () => manager.act({
         surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "scroll",
-        target: { point: { x: 0.4, y: 0.4 } }, include_post_screenshot: false,
+        target: { point: { x: 0.4, y: 0.4 } }, post_screenshot: "never",
         ...fixture.extra,
       }),
       fixture.pattern,
@@ -1992,7 +1992,7 @@ async function browserScrollUnknownDispatchIsNotReplayed() {
   const acted = await manager.act({
     surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "scroll",
     target: { point: { x: 0.5, y: 0.5 } }, delta_y: 600,
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown", "wheel response loss was not preserved as ambiguous dispatch");
   assert.equal(acted.retry_guidance.same_action_retry_allowed, false, "ambiguous scroll allowed same-action retry");
@@ -2014,7 +2014,7 @@ async function visualPointViewportDriftIsRejected() {
   await assert.rejects(
     () => manager.act({
       surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "click",
-      target: { point: { x: 0.4, y: 0.4 } }, include_post_screenshot: false,
+      target: { point: { x: 0.4, y: 0.4 } }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "stale_snapshot",
   );
@@ -2045,7 +2045,7 @@ async function legacySnapshotCannotDispatchVisualPoint() {
   await assert.rejects(
     () => manager.act({
       surface: "browser", snapshot_id: observed.$mcp.structuredContent.snapshot_id, action: "click",
-      target: { point: { x: 0.5, y: 0.5 } }, include_post_screenshot: false,
+      target: { point: { x: 0.5, y: 0.5 } }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "visual_snapshot_not_actionable",
   );
@@ -2066,7 +2066,7 @@ async function unknownDispatchCanStillBeEffectConfirmed() {
     action: "click",
     target: { ref: "e2" },
     expect: { text: "Complete" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "unknown");
   assert.equal(acted.effect_status, "confirmed", "effect verification must be independent from dispatch certainty");
@@ -2086,7 +2086,7 @@ async function unverifiedMutationStaysUnknown() {
     snapshot_id: observed.snapshot_id,
     action: "click",
     target: { ref: "e4" },
-    include_post_screenshot: false,
+    post_screenshot: "never",
   });
   assert.equal(acted.dispatch_status, "completed");
   assert.equal(acted.effect_status, "unknown", "successful event dispatch must not be promoted to business-effect success");
@@ -3596,7 +3596,7 @@ async function applicationStateActionsCannotWeakenDesiredStateExpectation() {
   await assert.rejects(
     () => browserManager.act({
       surface: "browser", snapshot_id: browserObserved.snapshot_id, action: "check", target: { ref: "e-check-contract" },
-      expect: { target_state: "unchecked" }, include_post_screenshot: false,
+      expect: { target_state: "unchecked" }, post_screenshot: "never",
     }),
     (error) => error instanceof BridgeError && error.code === "invalid_request" && /requires expect\.target_state=checked/.test(error.message),
   );
@@ -4009,7 +4009,7 @@ async function arbitraryUnknownPhrasesRemainDefinite() {
     await assert.rejects(
       () => manager.act({
         surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e-preflight" },
-        input_mode: "dom", include_post_screenshot: false,
+        input_mode: "dom", post_screenshot: "never",
       }),
       /browser preflight outcome is unknown before dispatch/,
       "arbitrary browser error phrase was accepted as a fixed mutation settlement marker",
@@ -4540,7 +4540,7 @@ async function surfaceSpecificArgumentsAreRejected() {
     { surface: "browser", snapshot_id: observed.snapshot_id, action: "scroll", target: { ref: "e1" }, delta_x: null, delta_y: 10 },
   ];
   for (const args of invalidActs) {
-    const callArgs = Object.hasOwn(args, "post_screenshot") ? args : { ...args, include_post_screenshot: false };
+    const callArgs = Object.hasOwn(args, "post_screenshot") ? args : { ...args, post_screenshot: "never" };
     await assert.rejects(() => manager.act(callArgs),
       (error) => error instanceof BridgeError && error.code === "invalid_request");
   }
@@ -4548,7 +4548,7 @@ async function surfaceSpecificArgumentsAreRejected() {
     "coercible Computer Use action authority reached the browser mutation backend");
   const valid = await manager.act({
     surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e1" },
-    input_mode: "dom", include_post_screenshot: false,
+    input_mode: "dom", post_screenshot: "never",
   });
   assert.equal(valid.dispatch_status, "completed", "pre-dispatch argument rejection consumed the otherwise valid snapshot authority");
   assert.equal(calls.filter((entry) => entry.kind === "act").length, 1,
@@ -4611,7 +4611,7 @@ async function expiredSnapshotsCannotBeUsed() {
   const observed = await manager.observe({ surface: "browser", include_screenshot: false });
   now += 10 * 60 * 1000 + 1;
   await assert.rejects(
-    () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e9" }, include_post_screenshot: false }),
+    () => manager.act({ surface: "browser", snapshot_id: observed.snapshot_id, action: "click", target: { ref: "e9" }, post_screenshot: "never" }),
     (error) => error instanceof BridgeError && error.code === "conflict" && error.details?.reason === "snapshot_missing_or_expired",
   );
 }

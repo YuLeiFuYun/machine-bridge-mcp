@@ -13,20 +13,20 @@ export function managedJobFinalStatus({ recover, cancelled, mainError, cleanupEr
 }
 
 export function isTerminalManagedJobStatus(value) {
-  return TERMINAL_JOB_STATUSES.has(String(value || ""));
+  return typeof value === "string" && TERMINAL_JOB_STATUSES.has(value);
 }
 
 export function isTerminalManagedJobResult(value, expectedJobId = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if (!isTerminalManagedJobStatus(value.status)) return false;
   if (expectedJobId && value.job_id !== expectedJobId) return false;
-  if (!Number.isFinite(Date.parse(String(value.finished_at || "")))) return false;
+  if (typeof value.finished_at !== "string" || !Number.isFinite(Date.parse(value.finished_at))) return false;
   if (!Array.isArray(value.steps) || !Array.isArray(value.finally_steps)) return false;
   return true;
 }
 
 export function terminalStatusFromResult(status, result, options = {}) {
-  if (!isTerminalManagedJobResult(result, String(status?.job_id || ""))) {
+  if (typeof status?.job_id !== "string" || !isTerminalManagedJobResult(result, status.job_id)) {
     throw new Error("managed job terminal result is invalid or belongs to another job");
   }
   const resultPersisted = options.resultPersisted !== false;
@@ -39,6 +39,7 @@ export function terminalStatusFromResult(status, result, options = {}) {
     finished_at: result.finished_at,
     updated_at: options.updatedAt || result.finished_at,
     error_class: result.error_class || result.cleanup_error_class || null,
+    cleanup_error_class: result.cleanup_error_class || null,
     result_persisted: resultPersisted,
     terminal_record_error_class: resultPersisted ? null : boundedErrorClass(options.terminalRecordErrorClass),
     artifact_cleanup_pending: true,

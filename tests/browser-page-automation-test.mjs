@@ -109,6 +109,7 @@ const document = {
 
 const context = vm.createContext({
   document,
+  crypto: webcrypto,
   location: { href: "https://example.test/form" },
   navigation,
   innerWidth: 800,
@@ -136,7 +137,7 @@ const context = vm.createContext({
 });
 vm.runInContext(source, context, { filename: "page-automation.js" });
 const api = context.__machineBridgePageAutomation;
-assert(api?.version === 5 && typeof api.inspect === "function" && typeof api.historyAction === "function",
+assert(api?.version === 6 && typeof api.inspect === "function" && typeof api.historyAction === "function",
   "page automation module did not expose its versioned fixed API");
 
 for (const [payload, expected] of [
@@ -574,7 +575,7 @@ const staleApi = Object.freeze({ action: async () => ({ stale: true }) });
 Object.defineProperty(context, "__machineBridgePageAutomation", { value: staleApi, configurable: true });
 vm.runInContext(source, context, { filename: "page-automation-upgrade.js" });
 assert(context.__machineBridgePageAutomation !== staleApi
-  && context.__machineBridgePageAutomation?.version === 5
+  && context.__machineBridgePageAutomation?.version === 6
   && typeof context.__machineBridgePageAutomation.action === "function",
   "stale page automation instance was not replaced by the current versioned module");
 
@@ -593,6 +594,7 @@ const textDocument = {
 };
 const textContext = vm.createContext({
   document: textDocument,
+  crypto: webcrypto,
   location: { href: "https://example.test/text" },
   innerWidth: 800,
   innerHeight: 600,
@@ -636,6 +638,7 @@ function assert(condition, message) {
 }
 
 async function testRendererRequestCancellation() {
+  const operationContractSource = await readFile(new URL("../browser-extension/browser-operation-contract.js", import.meta.url), "utf8");
   const operationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
   const sender = { tab: { id: 1 }, frameId: 0 };
   const savedChrome = context.chrome;
@@ -663,6 +666,7 @@ async function testRendererRequestCancellation() {
         } },
       },
     });
+    vm.runInContext(operationContractSource, operationsContext, { filename: "browser-operation-contract.js" });
     vm.runInContext(operationsSource, operationsContext, { filename: "browser-operations-cancellation.js" });
     const operations = operationsContext.__machineBridgeBrowserOperations;
     context.chrome = { runtime: { sendMessage(message) {

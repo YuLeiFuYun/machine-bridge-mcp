@@ -5,8 +5,9 @@ import { classifyOperationalError } from "./log.mjs";
 const MAX_CLOSE_REASON_CHARS = 128;
 
 export function normalizeWorkerUrl(value) {
+  if (typeof value !== "string") throw new Error("invalid Worker URL");
   let url;
-  try { url = new URL(String(value || "")); } catch { throw new Error("invalid Worker URL"); }
+  try { url = new URL(value); } catch { throw new Error("invalid Worker URL"); }
   if (url.protocol !== "https:") throw new Error("Worker URL must use HTTPS");
   if (url.username || url.password) throw new Error("Worker URL must not contain credentials");
   if (url.pathname !== "/" || url.search || url.hash) throw new Error("Worker URL must be an origin without a path, query, or fragment");

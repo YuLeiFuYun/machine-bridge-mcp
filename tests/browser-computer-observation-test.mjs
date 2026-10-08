@@ -9,6 +9,7 @@ import { BrowserComputerObservationService } from "../src/local/browser-computer
 import { BrowserOperationService } from "../src/local/browser-operation-service.mjs";
 import { BridgeError } from "../src/local/errors.mjs";
 
+const contractSource = await readFile(new URL("../browser-extension/browser-operation-contract.js", import.meta.url), "utf8");
 const source = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
 
 await localServiceHashesReturnedScreenshotBytes();
@@ -2011,6 +2012,7 @@ function createContext(devtoolsObservation, overrides = {}) {
     clearTimeout,
     console,
   });
+  vm.runInContext(contractSource, context, { filename: "browser-operation-contract.js" });
   vm.runInContext(source, context, { filename: "browser-operations.js" });
   return context;
 }

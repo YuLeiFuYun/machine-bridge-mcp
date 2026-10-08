@@ -133,7 +133,10 @@ assert(sanitizePortableLogText("capability_routing=enabled", { maxChars: 1000 })
   "safe capability metadata was over-redacted");
 
 
-for (const key of ["client%5fsecret", "%74oken", "c%6fde", "API%2dKEY", "private%5fkey", "bad%zz"]) {
+for (const key of [
+  "client%5fsecret", "%74oken", "c%6fde", "API%2dKEY", "private%5fkey", "grant",
+  "recovery_key", "control_key", "extension_token", "runtime_token", "bad%zz",
+]) {
   const input = "https://example.invalid/?" + key + "=synthetic-query-value&view=summary";
   const clean = sanitizePortableLogText(input, { maxChars: 1000 });
   assert(!clean.includes("synthetic-query-value") && clean.includes("view=summary"),
@@ -144,6 +147,11 @@ for (const key of ["client%5fsecret", "%74oken", "c%6fde", "API%2dKEY", "private
     assert(!output.lines.join("").includes("synthetic-query-value"), "logger bypassed query redaction");
   }
 }
+const pairingUrl = `http://127.0.0.1:49152/pair#broker_port=39393&grant=${"G".repeat(43)}&grant_type=authorization_code`;
+const sanitizedPairingUrl = sanitizePortableLogText(pairingUrl, { maxChars: 1000 });
+assert(!sanitizedPairingUrl.includes("G".repeat(43)) && sanitizedPairingUrl.includes("grant=<redacted>")
+  && sanitizedPairingUrl.includes("grant_type=authorization_code"),
+"pairing grant URL redaction leaked the grant or over-redacted the harmless grant_type parameter");
 const privateKeyBegin = ["-----BEGIN", "RSA PRIVATE KEY-----"].join(" ");
 for (const ending of ["", "\n" + privateKeyBegin.replace("BEGIN", "END")]) {
   assert(!sanitizePortableLogText(privateKeyBegin + "\nsynthetic-private-key-body" + ending, { maxChars: 1000 })

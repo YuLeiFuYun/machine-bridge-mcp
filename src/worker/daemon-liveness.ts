@@ -21,7 +21,7 @@ export interface DaemonLivenessFields {
 }
 
 export function daemonLastSeenMs(attachment: DaemonLivenessFields | undefined | null): number {
-  return Date.parse(attachment?.lastSeenAt || "");
+  return exactTimestampMs(attachment?.lastSeenAt);
 }
 
 export function isLiveDaemonAttachment(
@@ -43,7 +43,7 @@ export function daemonLivenessDeadlineMs(attachment: DaemonLivenessFields | unde
 
 export function daemonReadyDeadlineMs(attachment: DaemonLivenessFields | undefined | null): number {
   if (!attachment || attachment.role !== "probing") return Number.NaN;
-  const connectedAt = Date.parse(attachment.connectedAt || "");
+  const connectedAt = exactTimestampMs(attachment.connectedAt);
   if (!Number.isFinite(connectedAt)) return Number.NaN;
   return connectedAt + DAEMON_READY_TIMEOUT_MS;
 }
@@ -58,8 +58,14 @@ export function withDaemonLastSeenAt<T extends DaemonLivenessFields>(
 export const DAEMON_HELLO_TIMEOUT_MS = 10_000;
 
 export function isFreshDaemonCandidate(connectedAt: string, now = Date.now()): boolean {
-  const timestamp = Date.parse(connectedAt);
+  const timestamp = exactTimestampMs(connectedAt);
   if (!Number.isFinite(timestamp)) return false;
   const age = now - timestamp;
   return age >= 0 && age <= DAEMON_HELLO_TIMEOUT_MS;
+}
+
+function exactTimestampMs(value: unknown): number {
+  if (typeof value !== "string") return Number.NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : Number.NaN;
 }

@@ -1566,7 +1566,7 @@ function sanitizeDispatchResult(surface, value) {
       tab_id: Number.isSafeInteger(value.tab_id) && value.tab_id > 0 ? value.tab_id : null,
       url: typeof value.url === "string" ? value.url : "",
       title: typeof value.title === "string" ? value.title : "",
-      tab_metadata_verified: typeof value.tab_metadata_verified === "boolean" ? value.tab_metadata_verified : null,
+      tab_metadata_verified: value.tab_metadata_verified === true,
       ...(point ? { point } : {}),
       ...(destinationPoint ? { destination_point: destinationPoint } : {}),
       ...(scrollDelta ? { scroll_delta: scrollDelta } : {}),

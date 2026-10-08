@@ -91,9 +91,21 @@ async function testOAuthStoreDeepValidation() {
   valid.auth_failures[failureKey] = { count: 1, window_started: now, blocked_until: 0, last_attempt: now };
   assert(isCurrentOAuthStore(valid), "production-shaped nonempty OAuth store failed deep validation");
 
+  for (const mutate of [
+    (store) => { store.accounts[account.account_id].role = "OWNER"; },
+    (store) => { store.clients[clientId].trusted_role = "OWNER"; },
+    (store) => { store.codes[codeKey].role = "OWNER"; },
+    (store) => { store.tokens[tokenKey].role = "OWNER"; },
+  ]) {
+    const nonCanonicalRole = structuredClone(valid);
+    mutate(nonCanonicalRole);
+    assert(!isCurrentOAuthStore(nonCanonicalRole),
+      "non-canonical persisted OAuth role remained current-schema readable");
+  }
+
   const legacyClient = structuredClone(valid);
   delete legacyClient.clients[clientId].registration_revision;
-  assert(isCurrentOAuthStore(legacyClient), "legacy OAuth client without a registration revision became unreadable");
+  assert(!isCurrentOAuthStore(legacyClient), "legacy OAuth client without a registration revision remained current-schema readable");
 
   const malformedRevision = structuredClone(valid);
   malformedRevision.clients[clientId].registration_revision = 0;
@@ -101,9 +113,9 @@ async function testOAuthStoreDeepValidation() {
 
   const persistedShortName = structuredClone(valid);
   persistedShortName.accounts[account.account_id].name = "v";
-  assert(isCurrentOAuthStore(persistedShortName), "existing short account identity became unreadable during current-store validation");
-  assert(accountByName(persistedShortName, "V")?.account_id === account.account_id,
-    "existing short account identity became unusable for authorization lookup after upgrade");
+  assert(!isCurrentOAuthStore(persistedShortName), "retired short account identity remained current-schema readable");
+  assert(accountByName(persistedShortName, "V") === null,
+    "retired short account identity remained usable for authorization lookup");
   let rejectedShortCreation = false;
   try { await createAccount({ name: "v", role: "reviewer", password: PASSWORD, now }); }
   catch (error) { rejectedShortCreation = /3-64 lowercase/.test(String(error?.message || "")); }
@@ -183,7 +195,7 @@ async function testStoreAndRegistration() {
 }
 
 
-async function testStaleRegistrationFailsFast() {
+async function testStaleRegistrationRequiresRepair() {
   const storage = new MemoryStorage();
   const controller = createController(storage);
   const registration = await controller.registerClient(registrationRequest("203.0.113.44"));
@@ -198,13 +210,13 @@ async function testStaleRegistrationFailsFast() {
     code_challenge: "C".repeat(43), code_challenge_method: "S256",
     scope: `${SERVER_NAME} offline_access`, resource: `${BASE}/mcp`, state: "stale-registration",
   })) authorizeUrl.searchParams.set(key, value);
-  const response = await controller.authorizeGet(new Request(authorizeUrl), BASE);
-  const body = await response.text();
-  assert(response.status === 409, "stale OAuth client registration did not fail before account authorization");
-  assert(body.includes("Recreate this app before authorizing it again"), "stale OAuth client failure did not explain the required recovery");
+  let rejected = false;
+  try { await controller.authorizeGet(new Request(authorizeUrl), BASE); }
+  catch (error) { rejected = error?.status === 503 && error?.code === "oauth_state_schema_mismatch"; }
+  assert(rejected, "stale OAuth client registration was interpreted as a current OAuth store");
   const persisted = await storage.get("oauth");
   assert(Object.keys(persisted.codes).length === 0 && Object.keys(persisted.tokens).length === 0,
-    "stale OAuth client authorization created credentials before failing");
+    "stale OAuth client state created credentials before current-schema rejection");
 }
 
 
@@ -378,7 +390,8 @@ async function testAuthorizationAndTokens() {
   assert(!(tokenKey in (await storage.get("oauth")).tokens), "expired access token was not pruned from persistent state");
 }
 
-async function testMalformedRoleRepair() {
+async function testMalformedRoleRejection() {
+  assert(normalizeAccountRole(["owner"]) === null, "Worker coerced an array account role into owner authority");
   for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
     assert(normalizeAccountRole(inherited) === null, `Worker accepted inherited account role ${inherited}`);
   }
@@ -396,13 +409,16 @@ async function testMalformedRoleRepair() {
     tokens: { [tokenKey]: { client_id: clientId, account_id: account.account_id, account_version: account.version, role: "constructor", scope: SERVER_NAME, resource: `${BASE}/mcp`, version: "token-version", expires_at: now + 300 } },
     auth_failures: {},
   } });
-  const repaired = await createController(storage).oauthStore();
-  const repairedAccount = repaired.accounts[account.account_id];
-  assert(repairedAccount.role === "reviewer" && repairedAccount.active === false, "malformed account role was not repaired fail-closed");
-  assert(repairedAccount.version === account.version + 1, "malformed account repair did not invalidate existing credentials");
-  assert(Object.keys(repaired.codes).length === 0 && Object.keys(repaired.tokens).length === 0, "malformed account repair retained credentials");
+  const before = JSON.stringify(await storage.get("oauth"));
+  let rejected = null;
+  try { await createController(storage).oauthStore(); } catch (error) { rejected = error; }
+  assert(rejected?.status === 503 && rejected?.code === "oauth_state_schema_mismatch",
+    "malformed persisted account role was not rejected at the current-schema boundary");
   const persisted = await storage.get("oauth");
-  assert(persisted.accounts[account.account_id].active === false, "malformed account repair was not persisted");
+  assert(JSON.stringify(persisted) === before,
+    "malformed persisted account role was rewritten despite current-schema rejection");
+  assert((await authorityRevocations(storage)).length === 0,
+    "schema rejection incorrectly emitted an authority revocation for state that was never accepted");
 }
 
 async function testRefreshReplayStateBoundsAndValidation() {
@@ -441,22 +457,12 @@ async function testRefreshReplayStateBoundsAndValidation() {
   assert(refreshStore.revoked_families[familyId]?.reason === "replay", "tombstone eviction did not revoke its refresh family");
   assert(Object.keys(oauthStore.tokens).length === 0 && Object.keys(refreshStore.tokens).length === 0, "tombstone eviction retained active family credentials");
 
-  const legacyV2 = structuredClone(refreshStore);
-  legacyV2.schema_version = 2;
-  for (const marker of Object.values(legacyV2.consumed)) {
-    delete marker.retry_until;
-    delete marker.retry_issues;
-    delete marker.source;
-    delete marker.access_scope;
-  }
-  const migratedStorage = new MemoryStorage({ "oauth-refresh": legacyV2 });
-  const migrated = await loadOAuthRefreshStore(oauthStore, migratedStorage);
-  assert(migrated.schema_version === 3, "schema-2 refresh state did not migrate without credential loss");
-  assert(Object.keys(migrated.consumed).length === 4_096, "schema-2 consumed replay markers were lost during sharded migration");
-  assert(Object.keys((await migratedStorage.get("oauth-refresh")).consumed).length === 0,
-    "migrated refresh main value retained high-cardinality consumed replay state");
-  assert([...migratedStorage.values.keys()].some((key) => key.startsWith("oauth-refresh-consumed:")),
-    "migrated refresh state did not persist consumed replay shards");
+  const retiredV2 = structuredClone(refreshStore);
+  retiredV2.schema_version = 2;
+  await expectReject(
+    () => loadOAuthRefreshStore(oauthStore, new MemoryStorage({ "oauth-refresh": retiredV2 })),
+    "oauth_refresh_state_schema_mismatch",
+  );
 
   const malformed = emptyOAuthRefreshStore();
   malformed.consumed[`sha256:${"a".repeat(64)}`] = {
@@ -464,7 +470,9 @@ async function testRefreshReplayStateBoundsAndValidation() {
     consumed_at: 0,
     expires_at: consumedAt + 1,
   };
-  const storage = new MemoryStorage({ "oauth-refresh": malformed });
+  const malformedEntries = oauthRefreshPersistenceEntries(emptyOAuthRefreshStore());
+  malformedEntries["oauth-refresh"] = malformed;
+  const storage = new MemoryStorage(malformedEntries);
   await expectReject(() => loadOAuthRefreshStore(emptyOAuthStore(), storage), "oauth_refresh_state_schema_mismatch");
 
   const malformedRetryScope = emptyOAuthRefreshStore();
@@ -477,45 +485,47 @@ async function testRefreshReplayStateBoundsAndValidation() {
     source: { ...source },
     access_scope: `${SERVER_NAME} unexpected_scope`,
   };
-  await expectReject(
-    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage({ "oauth-refresh": malformedRetryScope })),
-    "oauth_refresh_state_schema_mismatch",
-  );
+  await expectReject(() => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage(oauthRefreshPersistenceEntries(malformedRetryScope))),
+    "oauth_refresh_state_schema_mismatch");
 
   const unknownRefreshField = emptyOAuthRefreshStore();
   unknownRefreshField.future_payload = "unexpected";
-  await expectReject(
-    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage({ "oauth-refresh": unknownRefreshField })),
-    "oauth_refresh_state_schema_mismatch",
-  );
+  const unknownRefreshEntries = oauthRefreshPersistenceEntries(emptyOAuthRefreshStore());
+  unknownRefreshEntries["oauth-refresh"] = unknownRefreshField;
+  await expectReject(() => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage(unknownRefreshEntries)),
+    "oauth_refresh_state_schema_mismatch");
 
   const unknownMarkerField = emptyOAuthRefreshStore();
   unknownMarkerField.consumed[`sha256:${"c".repeat(64)}`] = {
     family_id: source.family_id, consumed_at: consumedAt, expires_at: consumedAt + 100, future_payload: "unexpected",
   };
-  await expectReject(
-    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage({ "oauth-refresh": unknownMarkerField })),
-    "oauth_refresh_state_schema_mismatch",
-  );
+  await expectReject(() => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage(oauthRefreshPersistenceEntries(unknownMarkerField))),
+    "oauth_refresh_state_schema_mismatch");
 
   const shardedRoot = emptyOAuthRefreshStore();
   const shardHash = `sha256:a${"0".repeat(63)}`;
   const shardMarker = { family_id: source.family_id, consumed_at: consumedAt, expires_at: consumedAt + 100 };
+  const incompleteShards = oauthRefreshPersistenceEntries(shardedRoot);
+  delete incompleteShards["oauth-refresh-consumed:7"];
   await expectReject(
-    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage({
-      "oauth-refresh": shardedRoot,
-      "oauth-refresh-consumed:2": { schema_version: 1, records: { [shardHash]: shardMarker }, future_payload: "unexpected" },
-    })),
+    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage(incompleteShards)),
     "oauth_refresh_state_schema_mismatch",
   );
+  const unknownShardEnvelope = oauthRefreshPersistenceEntries(shardedRoot);
+  unknownShardEnvelope["oauth-refresh-consumed:2"] = {
+    schema_version: 1, records: { [shardHash]: shardMarker }, future_payload: "unexpected",
+  };
   await expectReject(
-    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage({
-      "oauth-refresh": shardedRoot,
-      "oauth-refresh-consumed:2": {
-        schema_version: 1,
-        records: { [shardHash]: { ...shardMarker, future_payload: "unexpected" } },
-      },
-    })),
+    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage(unknownShardEnvelope)),
+    "oauth_refresh_state_schema_mismatch",
+  );
+  const unknownShardMarker = oauthRefreshPersistenceEntries(shardedRoot);
+  unknownShardMarker["oauth-refresh-consumed:2"] = {
+    schema_version: 1,
+    records: { [shardHash]: { ...shardMarker, future_payload: "unexpected" } },
+  };
+  await expectReject(
+    () => loadOAuthRefreshStore(emptyOAuthStore(), new MemoryStorage(unknownShardMarker)),
     "oauth_refresh_state_schema_mismatch",
   );
 }
@@ -536,6 +546,8 @@ async function testRefreshCapacityAuthorityPersistence() {
       oauthStore.accounts[account.account_id] = account;
       oauthStore.clients[clientId] = { client_id: clientId, client_name: "Capacity Client", redirect_uris: [REDIRECT],
         created_at: now, last_used_at: now, has_been_authorized: true, trusted_account_id: account.account_id,
+        registration_identity: `hmac-sha256:${"c".repeat(64)}`,
+        registration_revision: OAUTH_CLIENT_REGISTRATION_REVISION,
         trusted_account_version: account.version, trusted_role: account.role, trusted_at: now };
       oauthStore.tokens[accessHash] = { ...source, expires_at: now + 900 };
       oauthStore.tokens[controlHash] = { ...source, family_id: otherFamily, expires_at: now + 900 };
@@ -614,7 +626,7 @@ async function testRefreshReplayCompaction() {
   }
   const expandedBytes = new TextEncoder().encode(JSON.stringify(refreshStore)).byteLength;
   assert(expandedBytes > 2_000_000, "refresh replay fixture no longer exercises a storage-sized expanded state");
-  const storage = new MemoryStorage({ "oauth-refresh": refreshStore });
+  const storage = new MemoryStorage(oauthRefreshPersistenceEntries(refreshStore));
   const compacted = await loadOAuthRefreshStore(oauthStore, storage);
   assert(Object.values(compacted.consumed).every((marker) => (
     marker.source === undefined && marker.retry_until === undefined
@@ -821,10 +833,10 @@ function assert(condition, message) {
 await testStoreAndRegistration();
 await testOAuthStoreCapacityBudget();
 await testOAuthStoreDeepValidation();
-await testStaleRegistrationFailsFast();
+await testStaleRegistrationRequiresRepair();
 await testAuthorizationPageRendering();
 await testAuthorizationAndTokens();
-await testMalformedRoleRepair();
+await testMalformedRoleRejection();
 await testRefreshReplayStateBoundsAndValidation();
 await testRefreshReplayCompaction();
 await testRefreshCapacityAuthorityPersistence();

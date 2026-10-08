@@ -16,6 +16,7 @@ export class SecurityAuditLog {
     this.file = this.root ? auditFilePath(this.root) : "";
     this.now = typeof now === "function" ? now : Date.now;
     this.identityKey = identityKey ? Buffer.from(identityKey) : randomBytes(32);
+    this.pseudonymEpoch = randomBytes(32).toString("hex");
     this.worker = null;
     this.workerReady = false;
     this.closed = false;
@@ -54,19 +55,14 @@ export class SecurityAuditLog {
     return new Promise((resolvePromise) => {
       this.pending.set(id, { resolve: resolvePromise, kind: "record" });
       try {
-        this.worker.postMessage({ type: "record", id, input: projectAuditInput(input, this.identityKey), nowMs: Number(this.now()) });
+        this.worker.postMessage({ type: "record", id, input: projectAuditInput(input, this.identityKey, this.pseudonymEpoch), nowMs: this.now() });
       } catch (error) {
-        this.pending.delete(id);
-        this.droppedRecords += 1;
-        this.cachedSnapshot = unhealthyAuditSnapshot(error);
-        resolvePromise(false);
+        this.handleWorkerFailure(error);
       }
     });
   }
 
-  flush() {
-    return this.barrier("flush");
-  }
+  flush() { return this.barrier("flush"); }
 
   async close({ timeoutMs = CLOSE_TIMEOUT_MS } = {}) {
     if (this.closed) return true;
@@ -102,15 +98,16 @@ export class SecurityAuditLog {
     };
   }
 
+  markUnavailable(error) { if (this.worker) this.handleWorkerFailure(error); }
+
   barrier(type, allowClosed = false) {
     if (!this.worker || (this.closed && !allowClosed)) return Promise.resolve(false);
     const id = this.nextId++;
     return new Promise((resolvePromise) => {
       this.pending.set(id, { resolve: resolvePromise, kind: type });
       try { this.worker.postMessage({ type, id }); }
-      catch {
-        this.pending.delete(id);
-        resolvePromise(false);
+      catch (error) {
+        this.handleWorkerFailure(error);
       }
     });
   }
@@ -136,7 +133,9 @@ export class SecurityAuditLog {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
-    if (message.type === "flushed" || message.type === "closed") pending.resolve(true);
+    if (message.type === "flushed" || message.type === "closed") {
+      pending.resolve(this.droppedRecords === 0 && this.cachedSnapshot.healthy === true);
+    }
   }
 
   handleWorkerFailure(error) {
@@ -186,8 +185,7 @@ function disabledSnapshot() {
     chain_verified: true,
   };
 }
-
-function projectAuditInput(input, identityKey) {
+function projectAuditInput(input, identityKey, pseudonymEpoch) {
   const principal = input?.principal && typeof input.principal === "object" ? input.principal : {};
   return {
     outcome: input?.outcome,
@@ -198,6 +196,12 @@ function projectAuditInput(input, identityKey) {
     inputBytes: input?.inputBytes,
     outputBytes: input?.outputBytes,
     errorCode: input?.errorCode,
+    requestDelivery: input?.requestDelivery,
+    sideEffectsStarted: input?.sideEffectsStarted,
+    effectSettlement: input?.effectSettlement,
+    terminationRequested: input?.terminationRequested,
+    pseudonymEpoch,
+    operationRef: runtimePrivateReference(identityKey, input?.operationId),
     principal: {
       kind: principal.kind,
       accountId: runtimePrivateReference(identityKey, principal.accountId),
@@ -210,6 +214,6 @@ function projectAuditInput(input, identityKey) {
 }
 
 function runtimePrivateReference(key, value) {
-  if (!value) return null;
-  return createHmac("sha256", key).update(String(value)).digest("hex");
+  if (typeof value !== "string" || !value) return null;
+  return createHmac("sha256", key).update(value).digest("hex");
 }

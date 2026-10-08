@@ -1,6 +1,9 @@
 // @ts-check
 
 import { managedJobDependencyCount } from "./managed-job-dependency-metadata.mjs";
+import {
+  managedJobRecoveryAttempts, managedJobRecoveryHistory, managedJobRecoveryHistoryComplete,
+} from "./managed-job-recovery-history.mjs";
 
 /**
  * Return the review-safe job plan projection. Resource paths and values are absent by contract.
@@ -56,7 +59,7 @@ export function projectManagedJobResult(result, { includeResourceAdmissionTiming
  * Return the stable public status shape without runner identity or internal paths.
  * @param {{job_id?: unknown, name?: unknown, continuation_mode?: unknown, status?: unknown, created_at?: unknown, started_at?: unknown,
  * finished_at?: unknown, current_phase?: unknown, current_step?: unknown, approval?: unknown, plan_sha256?: unknown,
- * cleanup_guarantee?: unknown, error_class?: unknown, recovery_attempts?: unknown, result_persisted?: unknown,
+ * cleanup_guarantee?: unknown, error_class?: unknown, cleanup_error_class?: unknown, recovery_attempts?: unknown, recovery_history?: unknown, result_persisted?: unknown,
  * terminal_record_error_class?: unknown, artifact_cleanup_pending?: unknown, artifact_cleanup_error_class?: unknown,
  * dependency_total?: unknown, dependency_pending_count?: unknown}} status
  */
@@ -75,7 +78,10 @@ export function publicStatus(status) {
     plan_sha256: status.plan_sha256 ?? null,
     cleanup_guarantee: status.cleanup_guarantee ?? "best-effort-finally-and-recovery",
     error_class: status.error_class ?? null,
-    recovery_attempts: Number(status.recovery_attempts || 0),
+    cleanup_error_class: status.cleanup_error_class ?? null,
+    recovery_attempts: managedJobRecoveryAttempts(status),
+    recovery_history: managedJobRecoveryHistory(status),
+    recovery_history_complete: managedJobRecoveryHistoryComplete(status),
     result_persisted: typeof status.result_persisted === "boolean" ? status.result_persisted : null,
     terminal_record_error_class: status.terminal_record_error_class ?? null,
     artifact_cleanup_pending: status.artifact_cleanup_pending === true,

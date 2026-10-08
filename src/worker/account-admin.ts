@@ -7,6 +7,7 @@ import {
   accountByName, createAccount, publicAccount, replaceAccountPassword, revokeAccountCredentials,
   updateAccount, type AccountRecord, type OAuthStore,
 } from "./oauth-state.ts";
+import { ACCOUNT_ID_PATTERN } from "./oauth-record-contract.ts";
 
 const BODY_LIMIT_BYTES = 64 * 1024;
 const MAX_ACCOUNTS = 64;
@@ -139,7 +140,7 @@ async function create(
 }
 
 async function update(body: Record<string, unknown>, store: OAuthStore, save: (revocation?: AuthorityRevocation) => Promise<void>, now: number): Promise<Response> {
-  const account = store.accounts[String(body.account_id ?? "")];
+  const account = store.accounts[accountIdFromBody(body)];
   if (!account) return json({ error: "account_not_found" }, 404);
   const previousVersion = account.version;
   const removesLastOwner = account.active && account.role === "owner" && activeOwnerCount(store) === 1
@@ -159,7 +160,7 @@ async function update(body: Record<string, unknown>, store: OAuthStore, save: (r
 }
 
 async function remove(body: Record<string, unknown>, store: OAuthStore, save: (revocation?: AuthorityRevocation) => Promise<void>): Promise<Response> {
-  const accountId = String(body.account_id ?? "");
+  const accountId = accountIdFromBody(body);
   const account = store.accounts[accountId];
   if (!account) return json({ error: "account_not_found" }, 404);
   if (account.active && account.role === "owner" && activeOwnerCount(store) === 1) return json({ error: "last_owner_required" }, 409);
@@ -172,7 +173,7 @@ async function remove(body: Record<string, unknown>, store: OAuthStore, save: (r
 async function rotatePassword(request: Request, store: OAuthStore, save: (revocation?: AuthorityRevocation) => Promise<void>, now: number): Promise<Response> {
   if (request.method !== "POST") return methodNotAllowed("POST");
   const body = await parseRequestBody(request, BODY_LIMIT_BYTES);
-  const account = store.accounts[String(body.account_id ?? "")];
+  const account = store.accounts[accountIdFromBody(body)];
   if (!account) return json({ error: "account_not_found" }, 404);
   const previousVersion = account.version;
   try {
@@ -187,6 +188,9 @@ async function rotatePassword(request: Request, store: OAuthStore, save: (revoca
 
 function activeOwnerCount(store: OAuthStore): number {
   return Object.values(store.accounts).filter((account) => account.active && account.role === "owner").length;
+}
+function accountIdFromBody(body: Record<string, unknown>): string {
+  return typeof body.account_id === "string" && ACCOUNT_ID_PATTERN.test(body.account_id) ? body.account_id : "";
 }
 
 function hex(bytes: Uint8Array): string {

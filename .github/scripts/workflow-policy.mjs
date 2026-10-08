@@ -4,6 +4,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readBoundedRegularFileSync } from "../../src/local/secure-file.mjs";
+import { releaseDiagnostic } from "../../scripts/release-diagnostic.mjs";
 import { REQUIRED_WORKFLOWS, verifyWorkflowSet } from "./workflow-policy-contract.mjs";
 import { countWorkflowActions, verifyWorkflowSource } from "./workflow-policy-rules.mjs";
 
@@ -72,7 +73,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const result = verifyWorkflowPolicy(root);
     console.log(`workflow policy verified (${result.files.length} workflows, ${result.actions} pinned action references)`);
   } catch (error) {
-    console.error(`workflow policy verification failed: ${error?.message || error}`);
+    console.error(`workflow policy verification failed: ${releaseDiagnostic(error?.message || error, 1200)}`);
     process.exitCode = 1;
   }
 }

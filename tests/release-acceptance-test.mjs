@@ -61,6 +61,10 @@ try {
     accepted_at: "2026-07-18T12:00:00.000Z",
   };
   verifyAcceptanceRecord(record, metadata);
+  for (const field of ["accepted_at", "package_content_sha256", "promotion_content_sha256"]) {
+    expectThrow(() => verifyAcceptanceRecord({ ...record, [field]: [record[field]] }, metadata),
+      field === "accepted_at" ? "timestamp is invalid" : "digest");
+  }
   expectThrow(() => verifyAcceptanceRecord({ ...record, package_content_sha256: "" }, metadata), "portable package-content digest");
   expectThrow(() => verifyAcceptanceRecord({ ...record, promotion_content_sha256: "" }, metadata), "promotion-content digest");
   expectThrow(() => verifyAcceptanceRecord({ ...record, machine_path: "/Users/example/private" }, metadata), "unsupported fields");

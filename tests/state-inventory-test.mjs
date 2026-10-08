@@ -298,10 +298,14 @@ try {
   for (const [name, owner] of [
     ["array", []],
     ["pid", { pid: 0, token: "a".repeat(32), purpose: "metadata-pid", startedAt: new Date().toISOString(), processStartedAt: new Date().toISOString() }],
+    ["unsafe-pid", { pid: Number.MAX_SAFE_INTEGER + 1, token: "a".repeat(32), purpose: "metadata-unsafe-pid", startedAt: new Date().toISOString(), processStartedAt: new Date().toISOString() }],
     ["token", { pid: process.pid, token: "not-a-token", purpose: "metadata-token", startedAt: new Date().toISOString(), processStartedAt: new Date().toISOString() }],
+    ["token-array", { pid: process.pid, token: ["a".repeat(32)], purpose: "metadata-token-array", startedAt: new Date().toISOString(), processStartedAt: new Date().toISOString() }],
     ["purpose", { pid: process.pid, token: "a".repeat(32), purpose: "wrong-purpose", startedAt: new Date().toISOString(), processStartedAt: new Date().toISOString() }],
     ["started", { pid: process.pid, token: "a".repeat(32), purpose: "metadata-started", startedAt: "invalid", processStartedAt: new Date().toISOString() }],
+    ["started-array", { pid: process.pid, token: "a".repeat(32), purpose: "metadata-started-array", startedAt: [new Date().toISOString()], processStartedAt: new Date().toISOString() }],
     ["process-started", { pid: process.pid, token: "a".repeat(32), purpose: "metadata-process-started", startedAt: new Date().toISOString(), processStartedAt: "invalid" }],
+    ["process-started-array", { pid: process.pid, token: "a".repeat(32), purpose: "metadata-process-started-array", startedAt: new Date().toISOString(), processStartedAt: [new Date().toISOString()] }],
   ]) {
     const purpose = `metadata-${name}`;
     const fileName = `${purpose}.lock`;
@@ -428,6 +432,16 @@ try {
     "managed-job recovery lock reclaimed an old bounded-read failure as malformed metadata",
   );
   assert((await readFileSafe(oversizedRecoveryLock)).length === 1025, "managed-job recovery lock read failure removed the existing lock");
+  await rm(oversizedRecoveryLock, { force: true });
+  await writeFile(oversizedRecoveryLock, "{malformed", "utf8");
+  await utimes(oversizedRecoveryLock, oldRecoveryLock, oldRecoveryLock);
+  assert.throws(
+    () => acquireRecoveryLock(stagedJobDir),
+    /managed-job lock is malformed/,
+    "managed-job recovery lock reclaimed malformed ownership metadata by age alone",
+  );
+  assert((await readFileSafe(oversizedRecoveryLock)).toString("utf8") === "{malformed",
+    "malformed managed-job recovery lock was deleted or changed");
   await rm(oversizedRecoveryLock, { force: true });
 
   assert.deepEqual(activeStateJobs(stateRoot), []);
@@ -615,8 +629,19 @@ async function testWorkspaceProfileMigration() {
       stateSha256: createHash("sha256").update(stateBuf).digest("hex"),
       createdAt: new Date().toISOString(),
     };
-    await writeFile(join(srcProfile, "workspace-migration.json"), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(join(srcProfile, "workspace-migration.json"), `${JSON.stringify({ ...marker, createdAt: [marker.createdAt] }, null, 2)}\n`, { mode: 0o600 });
     await rename(srcProfile, dstProfile);
+    await assert.rejects(() => migrateWorkspaceProfile({
+      sourceWorkspace: resumeSource,
+      destinationWorkspace: resumeDestination,
+      stateRoot: resumeRoot,
+      readProvider: async () => ({ active: false }),
+      listActiveJobs: () => [],
+      listActiveLocks: () => [],
+      retireServiceOwner: () => ({ retired: false }),
+    }), /workspace migration marker does not match/,
+    "workspace migration coerced a non-string marker timestamp into resume authority");
+    await writeFile(join(dstProfile, "workspace-migration.json"), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
     const resumedResult = await migrateWorkspaceProfile({
       sourceWorkspace: resumeSource,
       destinationWorkspace: resumeDestination,
@@ -720,6 +745,25 @@ async function testWorkspaceMigrationOwnerRetirement() {
     }, null, 2)}\n`, { mode: 0o600 });
     assert.throws(() => retireMatchingServiceOwner({ sourceWorkspace: source, stateRoot }, { controlRoot }), /regular file when present/,
       "workspace migration accepted a present symlink as a historical service entry script");
+    await rm(serviceOwnerPath({ controlRoot }), { force: true });
+
+    const coercedEntry = join(source, "coerced-entry.mjs");
+    await writeFile(coercedEntry, "// retained historical entry\n", { mode: 0o755 });
+    await writeFile(serviceOwnerPath({ controlRoot }), `${JSON.stringify({
+      schemaVersion: 1,
+      status: "committed",
+      transactionId: "BBBBBBBBBBBBBBBBBBBBBBBB",
+      workspace: source,
+      stateRoot,
+      entryScript: coercedEntry,
+      version: "3.0.0-beta.174",
+      createdAt: [now],
+      committedAt: now,
+    }, null, 2)}\n`, { mode: 0o600 });
+    assert.throws(() => retireMatchingServiceOwner({ sourceWorkspace: source, stateRoot }, { controlRoot }), /timestamps are invalid/,
+      "workspace migration coerced an array service-owner timestamp before retiring ownership evidence");
+    assert.equal(await lstat(serviceOwnerPath({ controlRoot })).then(() => true, () => false), true,
+      "invalid service-owner timestamp caused ownership evidence removal");
     await rm(serviceOwnerPath({ controlRoot }), { force: true });
 
     const mismatch = beginServiceOwnerUpdate({

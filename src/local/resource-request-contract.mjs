@@ -5,7 +5,7 @@ const PRIORITIES = new Set(["interactive", "ordinary", "background"]);
 
 export function validateResourceRequest(request) {
   if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("resource request is invalid");
-  if (!FAMILY.test(String(request.family || "")) || !RESOURCE_CLASSES.has(request.resource_class)
+  if (typeof request.family !== "string" || !FAMILY.test(request.family) || !RESOURCE_CLASSES.has(request.resource_class)
       || !PRIORITIES.has(request.priority) || request.heavy !== true
       || typeof request.unbounded !== "boolean" || typeof request.serialize_project !== "boolean") {
     throw new Error("resource request contract is invalid");
@@ -17,7 +17,8 @@ export function validateResourceRequest(request) {
   if (request.compiler_jobs !== null && (!Number.isInteger(request.compiler_jobs) || request.compiler_jobs < 1 || request.compiler_jobs > 1024)) {
     throw new Error("resource request compiler jobs are invalid");
   }
-  if (request.contention_key !== null && !CONTENTION_KEY.test(String(request.contention_key || ""))) {
+  if (request.contention_key !== null
+      && (typeof request.contention_key !== "string" || !CONTENTION_KEY.test(request.contention_key))) {
     throw new Error("resource request contention key is invalid");
   }
   return request;

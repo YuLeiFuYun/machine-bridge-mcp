@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, rmSync, symlinkSync } from "node:fs";
+import { closeSync, fstatSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { runFixtureChild } from "./fixtures/child-fixture.mjs";
 import { createHash } from "node:crypto";
@@ -36,7 +36,7 @@ import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/m
 import { managedJobTransitionConflict } from "../src/local/managed-job-state-validation.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
-import { processState } from "../src/local/process-identity.mjs";
+import { currentProcessStartTimeMs, processStartTimeMs, processState } from "../src/local/process-identity.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const MANAGED_JOB_TEST_WAIT_MS = 480_000;
@@ -94,6 +94,36 @@ function testManagedJobContinuationProjection() {
   const supervisorStatus = publicStatus({ job_id: "job-supervisor", name: "supervisor", continuation_mode: "task_supervisor", status: "running" });
   assert(!Object.hasOwn(ordinaryStatus, "continuation_mode") && supervisorStatus.continuation_mode === "task_supervisor",
     "public managed-job status projection lost the finite task-supervisor authority boundary");
+  assert(ordinaryStatus.recovery_attempts === 0 && Array.isArray(ordinaryStatus.recovery_history)
+    && ordinaryStatus.recovery_history.length === 0 && ordinaryStatus.recovery_history_complete === true,
+    "managed-job status did not expose an explicit empty recovery attribution record");
+  const priorVersionStatus = publicStatus({ job_id: "job-prior", name: "prior", status: "interrupted", recovery_attempts: 1 });
+  assert(priorVersionStatus.recovery_history.length === 0 && priorVersionStatus.recovery_history_complete === false,
+    "managed-job status fabricated missing prior-version recovery attribution");
+  const suffixStatus = publicStatus({
+    job_id: "job-suffix", name: "suffix", status: "interrupted", recovery_attempts: 3,
+    recovery_history: [
+      { attempt: 2, at: new Date().toISOString(), reason: "runner_interrupted" },
+      { attempt: 3, at: new Date().toISOString(), reason: "dependency_wait_runner_interrupted" },
+    ],
+  });
+  assert(suffixStatus.recovery_history_complete === false && suffixStatus.recovery_history.map((entry) => entry.attempt).join(",") === "2,3",
+    "managed-job status did not preserve a valid attributable recovery-history suffix");
+  let gappedRecovery = null;
+  try {
+    publicStatus({
+      job_id: "bad-gap", status: "interrupted", recovery_attempts: 3,
+      recovery_history: [
+        { attempt: 1, at: new Date().toISOString(), reason: "runner_interrupted" },
+        { attempt: 3, at: new Date().toISOString(), reason: "runner_interrupted" },
+      ],
+    });
+  } catch (error) { gappedRecovery = error; }
+  assert(gappedRecovery?.code === "integrity_error", "managed-job status accepted a gapped recovery-history suffix");
+  let invalidRecovery = null;
+  try { publicStatus({ job_id: "bad", status: "running", recovery_attempts: "1" }); }
+  catch (error) { invalidRecovery = error; }
+  assert(invalidRecovery?.code === "integrity_error", "managed-job status coerced a string recovery attempt count");
 }
 
 function testManagedJobContinuationModeValidation() {
@@ -147,6 +177,34 @@ async function testTransientRecoveryMarkerBoundaries() {
       "terminal transient process persisted its cleared private recovery marker");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+
+  const warningRoot = await mkdtemp(join(tmpdir(), "mbm-transient-recovery-warning-"));
+  const warnings = [];
+  try {
+    const manager = createManagedJobTestManager({
+      jobRoot: warningRoot, workspace: process.cwd(),
+      policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {}, recover: false,
+      logger: { warn(message, fields) { warnings.push({ message, fields }); } },
+    });
+    const staged = manager.createJob({
+      name: "transient recovery warning",
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
+    manager.cancel({ job_id: staged.job_id });
+    const originalRead = manager.read.bind(manager);
+    manager.read = (...args) => {
+      const value = originalRead(...args);
+      writeFileSync(join(warningRoot, staged.job_id, "status.json"), "{invalid-json\n", { mode: 0o600 });
+      return value;
+    };
+    const delivered = await manager.readHosted({ job_id: staged.job_id });
+    assert(delivered.status === "cancelled_before_start"
+      && warnings.some((entry) => entry.message === "managed job delivered-result recovery marker could not be downgraded"
+        && entry.fields?.error_class === "resource_unavailable"),
+    "delivered transient recovery-marker storage failure was not recorded without replacing the successful read result");
+  } finally {
+    await rm(warningRoot, { recursive: true, force: true });
   }
 }
 
@@ -222,6 +280,34 @@ async function testManagedJobDependencyReadRecoveryPolicy() {
   const jobId = `job_${"r".repeat(24)}`;
   const witness = { job_id: jobId, plan_sha256: "a".repeat(64), created_at: "2026-08-27T00:00:00.000Z" };
   const succeeded = { ...witness, status: "succeeded", result_persisted: true };
+  assert(managedJobDependencySucceeded({ ...succeeded, status: ["succeeded"] }) === false,
+    "dependency success coerced a non-string persisted status");
+  let malformedWitnessFailure = null;
+  try {
+    await waitForManagedJobDependencies({
+      jobRoot: "synthetic",
+      dependencyIds: [jobId],
+      witnesses: [{ ...witness, job_id: [jobId] }],
+      readStatus: async () => succeeded,
+      sleep: async () => {},
+      now: () => 0,
+    });
+  } catch (error) { malformedWitnessFailure = error; }
+  assert(malformedWitnessFailure?.errorClass === "dependency_state_invalid",
+    "dependency witness coerced a non-string persisted job id");
+  let malformedStatusFailure = null;
+  try {
+    await waitForManagedJobDependencies({
+      jobRoot: "synthetic",
+      dependencyIds: [jobId],
+      witnesses: [witness],
+      readStatus: async () => ({ ...succeeded, status: ["succeeded"] }),
+      sleep: async () => {},
+      now: () => 0,
+    });
+  } catch (error) { malformedStatusFailure = error; }
+  assert(malformedStatusFailure?.errorClass === "dependency_state_invalid",
+    "dependency gate coerced a non-string persisted status into executable state");
   let clockMs = 0;
   let attempts = 0;
   const recovered = await waitForManagedJobDependencies({
@@ -533,7 +619,6 @@ async function settleDependencyFixture(manager, jobId, terminalStatus, errorClas
     job_id: jobId,
     name: status.name,
     status: terminalStatus,
-    recovered: false,
     steps: [],
     finally_steps: [],
     error_class: errorClass,
@@ -676,9 +761,11 @@ async function testRunnerClaimBoundary() {
 
   for (const [name, claim] of [
     ["string-pid", { pid: String(process.pid), startedAt: new Date().toISOString(), processStartedAt }],
+    ["array-started-at", { pid: process.pid, startedAt: [new Date().toISOString()], processStartedAt }],
     ["invalid-started-at", { pid: process.pid, startedAt: "not-a-time", processStartedAt }],
     ["invalid-process-start", { pid: process.pid, startedAt: new Date().toISOString(), processStartedAt: "not-a-time" }],
     ["invalid-launch-token", { pid: process.pid, startedAt: new Date().toISOString(), launchToken: "not-a-token", committed: true }],
+    ["array-launch-token", { pid: process.pid, startedAt: new Date().toISOString(), launchToken: [token], committed: true }],
     ["invalid-commit-marker", { pid: process.pid, startedAt: new Date().toISOString(), launchToken: token, committed: "yes" }],
   ]) {
     const invalidClaimDir = join(root, `runner-owner-${name}`);
@@ -689,6 +776,30 @@ async function testRunnerClaimBoundary() {
       "runner claim is invalid",
     );
   }
+
+  const missingRunnerClaimDir = join(root, "runner-owner-missing-claim");
+  await mkdir(missingRunnerClaimDir, { recursive: true });
+  const statusStartedAt = new Date().toISOString();
+  assert(runnerProcessIsCurrent({
+    runner_pid: String(process.pid),
+    runner_process_started_at: processStartedAt,
+    started_at: statusStartedAt,
+  }, missingRunnerClaimDir) === false, "managed-job liveness coerced a string fallback PID from status state");
+  assert(runnerProcessIsCurrent({
+    runner_pid: process.pid,
+    runner_process_started_at: [processStartedAt],
+    started_at: statusStartedAt,
+  }, missingRunnerClaimDir) === false, "managed-job liveness coerced an array fallback process timestamp from status state");
+  assert(runnerProcessIsCurrent({
+    runner_pid: process.pid,
+    runner_process_started_at: processStartedAt,
+    started_at: [statusStartedAt],
+  }, missingRunnerClaimDir) === false, "managed-job liveness coerced an array fallback ownership timestamp from status state");
+  assert(runnerProcessIsCurrent({
+    runner_pid: process.pid,
+    runner_process_started_at: processStartedAt,
+    started_at: statusStartedAt,
+  }, missingRunnerClaimDir) === true, "managed-job liveness rejected a valid exact fallback owner after strict field validation");
 
   const asyncRunnerDir = join(root, "runner-owner-async");
   await mkdir(asyncRunnerDir, { recursive: true });
@@ -942,6 +1053,26 @@ async function testManagedJobAccountRecoveryCapacity() {
     && !String(integrityError?.message || "").includes(integrityRoot)
     && !String(integrityError?.message || "").includes(accountA.authority.principal.accountId),
   "unclassifiable retained state did not fail account recovery quota closed with a privacy-safe integrity error");
+  await rm(join(integrityRoot, malformedId), { recursive: true, force: true });
+  const coercedBindingId = `job_${"B".repeat(24)}`;
+  await mkdir(join(integrityRoot, coercedBindingId), { mode: 0o700 });
+  await writeFile(join(integrityRoot, coercedBindingId, "status.json"), `${JSON.stringify({
+    job_id: coercedBindingId, name: "coerced account binding", status: "staged",
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    retention_class: "transient_process", transient_recovery_pending: true,
+    owner_kind: "account", owner_account_id: [accountA.authority.principal.accountId],
+    owner_account_version: accountA.authority.principal.accountVersion,
+    owner_client_id: accountA.authority.principal.clientId,
+    owner_family_id: accountA.authority.principal.familyId,
+    owner_role: accountA.authority.principal.role,
+  })}\n`, { mode: 0o600 });
+  let coercedBindingError = null;
+  try {
+    integrityManager.createJob({ name: "coerced quota binding probe", steps: [{ argv: [process.execPath, "-e", ""] }] },
+      { launch: false, retentionClass: "transient_process" }, accountA);
+  } catch (error) { coercedBindingError = error; }
+  assert(coercedBindingError?.code === "integrity_error" && coercedBindingError?.retryable === false,
+    "coerced persisted account binding was ignored instead of failing pending-recovery attribution closed");
 
   const concurrentRoot = join(root, "account-pending-recovery-concurrent-jobs");
   const concurrentManager = createManagedJobTestManager({
@@ -1496,6 +1627,11 @@ async function testManagedJobDependencies() {
   const recoveryCheckpoint = manager.read({ job_id: recoveryDownstream.job_id });
   assert(["queued", "running"].includes(recoveryCheckpoint.status) && recoveryCheckpoint.recovery_attempts === 1,
     "dead dependency-wait runner was not relaunched as the original pre-execution job");
+  assert(recoveryCheckpoint.recovery_history?.length === 1
+    && recoveryCheckpoint.recovery_history[0].attempt === 1
+    && recoveryCheckpoint.recovery_history[0].reason === "dependency_wait_runner_interrupted"
+    && Number.isFinite(Date.parse(recoveryCheckpoint.recovery_history[0].at)),
+  "dependency-wait runner recovery lost bounded reason/time attribution");
   await settleDependencyFixture(manager, recoveryUpstream.job_id, "succeeded");
   const recoveryResult = await waitForJob(manager, recoveryDownstream.job_id);
   assert(recoveryResult.status === "succeeded" && recoveryResult.recovery_attempts === 1
@@ -1545,6 +1681,9 @@ async function testManagedJobDependencies() {
   }
   assert(autonomousStatus?.recovery_attempts === 1 && Number(autonomousStatus?.runner_pid) > 0,
     "same-daemon runner exit did not autonomously relaunch a dependency-wait runner");
+  assert(autonomousStatus?.recovery_history?.length === 1
+    && autonomousStatus.recovery_history[0].reason === "dependency_wait_runner_interrupted",
+  "same-daemon dependency-wait recovery lost its attribution record");
   await settleDependencyFixture(manager, orphanGate.job_id, "failed", "execution_failed");
   const orphanResult = await waitForJob(manager, orphanDownstream.job_id);
   assert(orphanResult.status === "failed" && orphanResult.error_class === "dependency_failed"
@@ -1658,31 +1797,42 @@ async function testManagedJobActiveChildSafety() {
     "unverifiable active-child ownership was signalled or deleted instead of failing closed");
 
   const unverifiedFile = join(activeRoot, "active-child-unverified.json");
-  const unverifiedClaim = publishManagedJobActiveChild(unverifiedFile, { pid: 515151, exitCode: null, signalCode: null }, {
+  expectThrow(() => publishManagedJobActiveChild(unverifiedFile, { pid: 515151, exitCode: null, signalCode: null }, {
     processStartTime: () => null,
     isAlive: () => true,
     processState: () => "running",
     now: () => startedAt,
     randomBytes: () => Buffer.alloc(16, 9),
+  }), "child process identity could not be verified");
+  assert(!(await exists(unverifiedFile)),
+    "unverified live active child published an ownership claim that crash recovery could not safely enforce");
+  const exitedWithoutIdentity = publishManagedJobActiveChild(unverifiedFile, { pid: 515151, exitCode: 0, signalCode: null }, {
+    processStartTime: () => null,
+    isAlive: () => false,
+    processState: () => "unknown",
   });
-  assert(unverifiedClaim?.processIdentityVerified === false,
-    "active child without an observable process start time did not retain explicit unverified identity state");
-  let unverifiedTerminateCalls = 0;
-  let unverifiedError = null;
-  try {
-    await terminateManagedJobActiveChild(unverifiedFile, {
+  assert(exitedWithoutIdentity === null && !(await exists(unverifiedFile)),
+    "already-settled child required unverifiable ownership evidence");
+
+  const coercedClaimFile = join(activeRoot, "active-child-coerced-token.json");
+  await writeFile(coercedClaimFile, `${JSON.stringify({
+    schema_version: 1,
+    pid: 616161,
+    token: ["a".repeat(32)],
+    startedAt: new Date(startedAt).toISOString(),
+    processStartedAt: new Date(startedAt).toISOString(),
+    processIdentityVerified: true,
+    processGroupIsolated: process.platform !== "win32",
+  })}\n`, { mode: 0o600 });
+  await expectReject(
+    terminateManagedJobActiveChild(coercedClaimFile, {
       inspectProcess: () => ({ current: true, alive: true, reason: "current_process" }),
       processState: () => "running",
-      terminate: () => { unverifiedTerminateCalls += 1; return true; },
-    });
-  } catch (error) { unverifiedError = error; }
-  assert(unverifiedError && unverifiedTerminateCalls === 0 && await exists(unverifiedFile),
-    "unverified active-child identity was treated as destructive recovery authority instead of remaining ambiguous");
-  assert(managedJobActiveChildRecoveryReady(unverifiedFile, {
-    inspectProcess: () => ({ current: false, alive: false, reason: "not_running" }),
-    processState: () => "unknown",
-  }) === true && !(await exists(unverifiedFile)),
-  "stopped child with unverified launch identity did not become safely recoverable once liveness was definitively absent");
+      terminate: () => { throw new Error("coerced active-child authority reached process termination"); },
+    }),
+    "managed job active child claim is invalid",
+  );
+  await rm(coercedClaimFile, { force: true });
 }
 
 function testDependencyPlanBackwardCompatibility() {
@@ -2060,6 +2210,18 @@ try {
   await writeFile(join(unprovenFailureDir, "plan.json"), "must-remain-without-terminal-record-error-class\n", { mode: 0o600 });
   await utimes(unprovenFailureDir, invalidStatusTime, invalidStatusTime);
 
+  const coercedFailureId = `job_${"W".repeat(24)}`;
+  const coercedFailureDir = join(inconsistentTerminalRoot, coercedFailureId);
+  await mkdir(coercedFailureDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(coercedFailureDir, "status.json"), `${JSON.stringify({
+    job_id: coercedFailureId, name: "coerced terminal persistence evidence", status: "failed",
+    created_at: invalidStatusTime.toISOString(), updated_at: invalidStatusTime.toISOString(),
+    finished_at: [invalidStatusTime.toISOString()],
+    result_persisted: false, terminal_record_error_class: ["storage_limit"],
+  })}\n`, { mode: 0o600 });
+  await writeFile(join(coercedFailureDir, "plan.json"), "must-remain-after-coerced-terminal-evidence\n", { mode: 0o600 });
+  await utimes(coercedFailureDir, invalidStatusTime, invalidStatusTime);
+
   const mismatchedFinishedId = `job_${"V".repeat(24)}`;
   const mismatchedFinishedDir = join(inconsistentTerminalRoot, mismatchedFinishedId);
   await mkdir(mismatchedFinishedDir, { recursive: true, mode: 0o700 });
@@ -2086,12 +2248,14 @@ try {
     "prune scrubbed or evicted terminal state whose persisted result evidence was missing");
   assert(await exists(join(unprovenFailureDir, "plan.json")),
     "prune trusted result_persisted=false without terminal-record failure evidence");
+  assert(await exists(join(coercedFailureDir, "plan.json")),
+    "prune coerced non-string terminal persistence evidence into cleanup authority");
   assert(await exists(join(mismatchedFinishedDir, "plan.json")),
     "prune trusted same-status terminal files from different finished_at generations");
-  assert(inconsistentTerminalWarnings.filter((entry) => entry.fields?.error_class === "integrity_error").length >= 3,
+  assert(inconsistentTerminalWarnings.filter((entry) => entry.fields?.error_class === "integrity_error").length >= 4,
     "terminal evidence mismatches were retained without integrity-class diagnostics");
   const inconsistentActive = activeManagedJobs(inconsistentTerminalRoot);
-  assert([inconsistentTerminalId, unprovenFailureId, mismatchedFinishedId].every((jobId) => inconsistentActive.some((job) =>
+  assert([inconsistentTerminalId, unprovenFailureId, coercedFailureId, mismatchedFinishedId].every((jobId) => inconsistentActive.some((job) =>
     job.job_id === jobId && job.status === "unreadable" && job.runner_alive === true && job.error_class === "integrity_error")),
   "state inventory did not block removal for corrupted terminal evidence");
 
@@ -2264,7 +2428,7 @@ try {
   })}\n`, { mode: 0o600 });
   expectThrow(() => manager.read({ job_id: reconstructedId }), "managed job result is invalid");
   await writeFile(join(reconstructedDir, "result.json"), `${JSON.stringify({
-    job_id: reconstructedId, name: "terminal result recovery", status: "failed", recovered: false,
+    job_id: reconstructedId, name: "terminal result recovery", status: "failed",
     steps: [], finally_steps: [], error_class: "execution_failed", cleanup_error_class: null,
     finished_at: reconstructedFinishedAt,
   }, null, 2)}\n`, { mode: 0o600 });
@@ -2274,14 +2438,14 @@ try {
   assert(reconstructed.result_persisted === true && reconstructed.artifact_cleanup_pending === false, "reconstructed terminal status lost persistence metadata");
   assert(!(await exists(join(reconstructedDir, "plan.json"))), "terminal result recovery retained the sensitive execution plan");
   await writeFile(join(reconstructedDir, "result.json"), `${JSON.stringify({
-    job_id: reconstructedId, name: "terminal result recovery", status: "succeeded", recovered: false,
+    job_id: reconstructedId, name: "terminal result recovery", status: "succeeded",
     steps: [], finally_steps: [], error_class: null, cleanup_error_class: null, finished_at: reconstructedFinishedAt,
   })}\n`, { mode: 0o600 });
   expectThrow(() => manager.read({ job_id: reconstructedId }), "managed job terminal status and result are inconsistent");
   await rm(join(reconstructedDir, "result.json"), { force: true });
   expectThrow(() => manager.read({ job_id: reconstructedId }), "managed job terminal result is missing");
   await writeFile(join(reconstructedDir, "result.json"), `${JSON.stringify({
-    job_id: reconstructedId, name: "terminal result recovery", status: "failed", recovered: false,
+    job_id: reconstructedId, name: "terminal result recovery", status: "failed",
     steps: [], finally_steps: [], error_class: "execution_failed", cleanup_error_class: null,
     finished_at: reconstructedFinishedAt,
   })}\n`, { mode: 0o600 });
@@ -2342,6 +2506,21 @@ try {
   const expiredDiskText = (await Promise.all(["status.json", "result.json"].map((name) => readFile(join(expiredDir, name), "utf8")))).join("\n");
   assert(!expiredDiskText.includes("must-be-scrubbed") && !expiredDiskText.includes("sensitive-stdin"), "expired staged audit records retained sensitive plan content");
 
+  const malformedExpiry = manager.stage({
+    name: "malformed staged timestamp",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  });
+  const malformedExpiryDir = join(jobRoot, malformedExpiry.job_id);
+  const malformedExpiryStatusFile = join(malformedExpiryDir, "status.json");
+  const malformedExpiryStatus = JSON.parse(await readFile(malformedExpiryStatusFile, "utf8"));
+  malformedExpiryStatus.created_at = [new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()];
+  await writeFile(malformedExpiryStatusFile, `${JSON.stringify(malformedExpiryStatus)}\n`, { mode: 0o600 });
+  manager.list({ limit: 50 });
+  const retainedMalformedExpiry = JSON.parse(await readFile(malformedExpiryStatusFile, "utf8"));
+  assert(retainedMalformedExpiry.status === "staged" && await exists(join(malformedExpiryDir, "plan.json")),
+    "staged retention coerced malformed created_at evidence into destructive expiry authority");
+  manager.cancel({ job_id: malformedExpiry.job_id });
+
   const degradedExpiry = manager.stage({
     name: "expired staged result persistence failure",
     steps: [{ argv: [process.execPath, "-e", ""], stdin: "must-be-scrubbed-on-result-failure" }],
@@ -2386,6 +2565,8 @@ try {
   }), "capture_output must be redacted or discard");
   expectThrow(() => manager.stage({ name: "bad finally", steps: [{ argv: [process.execPath, "-e", ""] }], finally_steps: "" }), "finally_steps must contain 0-16 steps");
   expectThrow(() => manager.stage({ name: "bad temp", steps: [{ argv: [process.execPath, "-e", ""] }], temporary_files: 0 }), "temporary_files must contain 0-16 files");
+  expectThrow(() => manager.stage({ name: "bad temp name", steps: [{ argv: [process.execPath, "-e", ""] }], temporary_files: [{ name: ["helper"], content: "" }] }), "resource name must be a string");
+  expectThrow(() => manager.stage({ name: "bad resource alias", steps: [{ argv: [process.execPath, "-e", ""], env_resources: { MBM_BAD: ["test-secret"] } }] }), "resource name must be a string");
   expectThrow(() => manager.stage({ name: "bad bool", steps: [{ argv: [process.execPath, "-e", ""], allow_failure: "true" }] }), "allow_failure must be a boolean");
   expectThrow(() => manager.stage({ name: "bad timeout", steps: [{ argv: [process.execPath, "-e", ""], timeout_seconds: "60" }] }), "timeout_seconds must be an integer between 1 and 21600");
   const hundredMinuteStage = manager.stage({
@@ -2401,6 +2582,7 @@ try {
     steps: [{ argv: [process.execPath, "-e", ""], timeout_seconds: 21_601 }],
   }), "timeout_seconds must be an integer between 1 and 21600");
   expectThrow(() => manager.stage({ name: "bad executable", temporary_files: [{ name: "helper.js", content: "", executable: "true" }], steps: [{ argv: [process.execPath, "-e", ""] }] }), "temporary_files[0].executable must be a boolean");
+  expectThrow(() => inspectResourceFile([secretFile]), "resource path must be a string");
 
   const stagedMarker = join(workspace, "staged-review-only.txt");
   const staged = manager.stage({
@@ -2474,9 +2656,21 @@ try {
   }
 
   const transitionLock = join(jobRoot, locked.job_id, "transition.lock");
-  await writeFile(transitionLock, `${process.pid}\n`, { mode: 0o600 });
+  await writeFile(transitionLock, `${JSON.stringify({
+    pid: process.pid,
+    token: "b".repeat(32),
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+  })}\n`, { mode: 0o600 });
   expectThrow(() => manager.inspectLocal({ job_id: locked.job_id }), "job state is being modified");
   expectThrow(() => manager.cancel({ job_id: locked.job_id }), "job state is being modified");
+  await rm(transitionLock, { force: true });
+
+  await writeFile(transitionLock, "{malformed", { mode: 0o600 });
+  expectThrow(() => manager.inspectLocal({ job_id: locked.job_id }), "managed-job lock is malformed");
+  expectThrow(() => manager.cancel({ job_id: locked.job_id }), "managed-job lock is malformed");
+  assert((await readFile(transitionLock, "utf8")) === "{malformed",
+    "malformed managed-job transition lock was deleted or rewritten by inspection/cancellation");
   await rm(transitionLock, { force: true });
   manager.cancel({ job_id: locked.job_id });
 
@@ -2506,11 +2700,40 @@ try {
     steps: [{ argv: [process.execPath, "-e", ""] }],
   });
   const staleTransitionLock = join(jobRoot, staleReusedPid.job_id, "transition.lock");
-  await writeFile(staleTransitionLock, `${process.pid}\n`, { mode: 0o600 });
+  await writeFile(staleTransitionLock, `${JSON.stringify({
+    pid: process.pid,
+    token: "c".repeat(32),
+    startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs() - 60_000).toISOString(),
+  })}\n`, { mode: 0o600 });
   const oldTime = new Date(Date.now() - 10 * 60_000);
   await utimes(staleTransitionLock, oldTime, oldTime);
   const staleCancellation = manager.cancel({ job_id: staleReusedPid.job_id });
   assert(staleCancellation.status === "cancelled_before_start", "stale transition lock with a reused live PID was not reclaimed");
+
+  for (const [name, mutation] of [
+    ["array token", { token: ["a".repeat(32)] }],
+    ["array timestamp", { startedAt: [new Date().toISOString()] }],
+  ]) {
+    const malformedLock = manager.stage({
+      name: `stale ${name} transition lock`,
+      steps: [{ argv: [process.execPath, "-e", ""] }],
+    });
+    const malformedLockPath = join(jobRoot, malformedLock.job_id, "transition.lock");
+    await writeFile(malformedLockPath, `${JSON.stringify({
+      pid: process.pid,
+      token: "a".repeat(32),
+      startedAt: new Date().toISOString(),
+      processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+      ...mutation,
+    })}\n`, { mode: 0o600 });
+    await utimes(malformedLockPath, oldTime, oldTime);
+    expectThrow(() => manager.cancel({ job_id: malformedLock.job_id }), "managed-job lock is malformed");
+    assert(await exists(malformedLockPath),
+      `stale transition lock with ${name} was reclaimed by age despite malformed ownership metadata`);
+    await rm(malformedLockPath, { force: true });
+    manager.cancel({ job_id: malformedLock.job_id });
+  }
 
   const stdinMutationMarker = join(workspace, "stdin-mutation-once.txt");
   const stdinCleanupMarker = join(workspace, "stdin-cleanup-once.txt");
@@ -2682,7 +2905,7 @@ try {
     " const file=fs.readFileSync(p);",
     " const stdin=Buffer.concat(chunks);",
     " const alt=v=>process.platform==='win32'?v.replaceAll('\\\\','/'):v.replaceAll('/','\\\\');",
-    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('hex')+'\\n'+p+'\\n'+alt(p)+'\\n'+process.env.MBM_SOURCE_PATH+'\\n'+alt(process.env.MBM_SOURCE_PATH)+'\\n');",
+    " process.stdout.write(file.toString()+process.env.MBM_JOB_SECRET+'\\n'+stdin.toString()+file.toString('base64')+'\\n'+file.toString('base64url')+'\\n'+file.toString('hex')+'\\n'+p+'\\n'+alt(p)+'\\n'+process.env.MBM_SOURCE_PATH+'\\n'+alt(process.env.MBM_SOURCE_PATH)+'\\n');",
     " process.exit(7);",
     "});",
   ].join("");
@@ -2731,6 +2954,7 @@ try {
   const serialized = JSON.stringify(failed);
   assert(!serialized.includes(secret), "job result exposed raw resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64")), "job result exposed base64 resource content");
+  assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("base64url")), "job result exposed base64url resource content");
   assert(!serialized.includes(Buffer.from(`${secret}\n`).toString("hex")), "job result exposed hex resource content");
   assert(!serialized.includes(secretFile) && !serialized.includes(sourcePathAlias), "job result exposed a registered resource path alias");
   const expectedRedactionMarkers = ["redacted-resource:test-secret", "resource:test-secret", "resource-source:test-secret"];
@@ -2947,7 +3171,12 @@ try {
   await writeFile(statusFile, `${JSON.stringify(stale, null, 2)}
 `, { mode: 0o600 });
   const staleRecoveryLock = join(recoverableDir, "recovery.lock");
-  await writeFile(staleRecoveryLock, `${process.pid}
+  await writeFile(staleRecoveryLock, `${JSON.stringify({
+    pid: process.pid,
+    token: "e".repeat(32),
+    startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs() - 60_000).toISOString(),
+  })}
 `, { mode: 0o600 });
   const oldRecoveryTime = new Date(Date.now() - 10 * 60_000);
   await utimes(staleRecoveryLock, oldRecoveryTime, oldRecoveryTime);
@@ -3002,6 +3231,10 @@ try {
     try { coordinator.waiters = await readdir(join(coordinatorRoot, "waiters")); } catch {}
     throw new Error(`expected recovered cleanup, got ${recovered.status}; result=${JSON.stringify(recovered.result || null)}; runner_stderr=${runnerStderr}; coordinator=${JSON.stringify(coordinator)}`);
   }
+  assert(recovered.recovery_attempts === 1 && recovered.recovery_history?.length === 1
+    && recovered.recovery_history[0].reason === "runner_interrupted"
+    && Number.isFinite(Date.parse(recovered.recovery_history[0].at)),
+  "interrupted managed-job recovery lost bounded reason/time attribution");
   assert(await readFile(recoveryMarker, "utf8") === "x", "concurrent recovery launched duplicate finally execution");
   assert(concurrentRecoveryManager.read({ job_id: recoverable.job_id }).status === "recovered", "concurrent manager did not observe recovered terminal state");
   assert(!(await exists(join(recoverableDir, "plan.json"))), "recovered job retained its execution plan");
@@ -3069,7 +3302,7 @@ try {
     changedResourceJob.job_id,
     new Set(["recovery_failed"]),
   );
-  assert(changedRecovery.status === "recovery_failed" && changedRecovery.result?.recovered === true,
+  assert(changedRecovery.status === "recovery_failed" && !Object.hasOwn(changedRecovery.result || {}, "recovered"),
     `resource reconstruction failure was misreported after recovery: ${changedRecovery.status}`);
   assert(changedRecovery.result?.error_class && changedRecovery.result.cleanup_error_class === null,
     "resource reconstruction failure lost its main-error evidence or invented a cleanup failure");
@@ -3104,9 +3337,14 @@ try {
 `, { mode: 0o600 });
   const exhaustedManager = createManagedJobTestManager({ jobRoot, workspace, policy: { allowWrite: true, execMode: "direct", minimalEnv: true }, resources: {} });
   const exhausted = exhaustedManager.read({ job_id: exhaustedId });
-  assert(exhausted.status === "recovery_exhausted" && exhausted.recovery_attempts === 3, "recovery limit did not become terminal");
+  assert(exhausted.status === "recovery_exhausted" && exhausted.recovery_attempts === 3
+    && exhausted.recovery_history_complete === false,
+  "recovery limit did not preserve prior-version attribution incompleteness");
   assert(exhausted.result_persisted === true && exhausted.artifact_cleanup_pending === false && exhausted.result?.status === "recovery_exhausted",
     "recovery exhaustion bypassed the crash-consistent terminal evidence contract");
+  assert(exhausted.error_class === "recovery_exhausted" && exhausted.cleanup_error_class === null
+    && exhausted.result?.cleanup_error_class === null,
+  "recovery exhaustion was misattributed as a cleanup failure");
   assert(!(await exists(join(exhaustedDir, "plan.json"))) && !(await exists(join(exhaustedDir, "runner.pid"))), "recovery exhaustion retained active metadata");
 
   const foreignClaimId = `job_${"U".repeat(24)}`;
@@ -3152,8 +3390,12 @@ try {
       await waitForConfirmedRunnerClaim(join(corruptFatalDir, "runner.pid"), corruptFatalRunner.pid);
       await writeFile(join(corruptFatalDir, "status.json"), "{not-json\n", { mode: 0o600 });
       // Release the recovery handshake only after corrupt state is installed.
+      const recoveryOwnerStartedAtMs = processStartTimeMs(corruptFatalRunner.pid);
       await writeFile(join(corruptFatalDir, "recovery.lock"), JSON.stringify({
         pid: corruptFatalRunner.pid, token: "d".repeat(32),
+        startedAt: new Date().toISOString(),
+        processStartedAt: Number.isFinite(recoveryOwnerStartedAtMs) && recoveryOwnerStartedAtMs > 0
+          ? new Date(recoveryOwnerStartedAtMs).toISOString() : null,
       }) + "\n", { mode: 0o600 });
     },
   });

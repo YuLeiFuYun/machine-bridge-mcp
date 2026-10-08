@@ -5,6 +5,7 @@ import { publicDeviceJwkJson } from "./device-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { deploymentDeviceIdentity } from "./state.mjs";
 import { packageRoot } from "./package-identity.mjs";
+import { isOAuthTokenVersion, isWorkerName } from "./worker-identity-contract.mjs";
 
 const MAX_WORKER_DEPLOY_SOURCE_BYTES = 16 * 1024 * 1024;
 const MAX_DEPLOYMENT_FILES = 4096;
@@ -23,19 +24,29 @@ const REQUIRED_DEPLOYMENT_PATHS = Object.freeze([
 
 export function workerDeploymentFingerprint(state, options = {}) {
   const source = options.sourceSnapshot || workerDeploymentSourceSnapshot(options.packageRoot || packageRoot);
+  const worker = exactDeploymentWorkerIdentity(state);
   const keyMaterial = [
     publicDeviceJwkJson(deploymentDeviceIdentity(state)),
-    String(state.worker.oauthTokenVersion || ""),
+    worker.oauthTokenVersion,
   ].join("\0");
   const fingerprint = createHmac("sha256", keyMaterial);
   addFingerprintField(fingerprint, "mbm-worker-deploy-cf-v6");
-  addFingerprintField(fingerprint, String(state.worker.name || ""));
+  addFingerprintField(fingerprint, worker.name);
   addFingerprintField(fingerprint, String(source.files.length));
   for (const file of source.files) {
     addFingerprintField(fingerprint, file.path);
     addFingerprintField(fingerprint, file.content);
   }
   return fingerprint.digest("hex");
+}
+
+function exactDeploymentWorkerIdentity(state) {
+  const worker = state?.worker;
+  if (!worker || typeof worker !== "object" || Array.isArray(worker)
+      || !isWorkerName(worker.name) || !isOAuthTokenVersion(worker.oauthTokenVersion)) {
+    throw new Error("Worker deployment identity is invalid");
+  }
+  return worker;
 }
 
 export function workerDeploymentSourceSnapshot(root = packageRoot) {

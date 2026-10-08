@@ -1,6 +1,7 @@
 import nodeAssert from "node:assert/strict";
 import { handleOuterWorkerFetch } from "../src/worker/worker-entry.ts";
 import { DaemonHttpChannel } from "../src/worker/daemon-http-channel.ts";
+import { normalizeDaemonHttpExchange } from "../src/worker/daemon-http-protocol.ts";
 import { queueDaemonHttpRevocations } from "../src/worker/authority-revocations.ts";
 import { PendingCallRegistry } from "../src/worker/pending-calls.ts";
 import { pendingCallReconnectSettlement } from "../src/worker/pending-call-reconnect-settlement.ts";
@@ -28,7 +29,7 @@ import { daemonToolRedeliveryArguments } from "../src/worker/daemon-tool-redeliv
 import { issueManagedJobCapability, verifyManagedJobCapability } from "../src/worker/managed-job-capability.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../src/worker/managed-job-hosted-authority.ts";
 import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../src/worker/tool-catalog.ts";
-import { staleSchemaCompatibilityResult } from "../src/worker/mcp-stale-schema-compat.ts";
+import { staleSchemaGuidanceResult } from "../src/worker/mcp-stale-schema-guidance.ts";
 import { workerAuthorityContext, workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 import { daemonToolRecovery } from "../src/worker/tool-call-recovery.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -124,8 +125,30 @@ function testDurableStorage() {
   return storage;
 }
 
+function testDaemonHttpExchangeTypes() {
+  const value = {
+    protocol: 1,
+    session_id: `relay_http_${"s".repeat(43)}`,
+    instance_id: `daemon_${"d".repeat(16)}`,
+    ack_worker_seq: 1,
+    takeover_websocket: false,
+    owned_call_ids: [],
+    messages: [],
+    tools: [],
+    policy: {},
+    relay_diagnostics: {},
+  };
+  nodeAssert(normalizeDaemonHttpExchange(value)?.ackWorkerSeq === 1,
+    "valid daemon HTTP acknowledgement was rejected");
+  for (const ack of ["1", false, [1]]) {
+    nodeAssert.equal(normalizeDaemonHttpExchange({ ...value, ack_worker_seq: ack }), null,
+      "daemon HTTP protocol coerced a non-number acknowledgement sequence");
+  }
+}
+
 
 testWorkerToolAuthorityProjection();
+testDaemonHttpExchangeTypes();
 await testRequestKeyReuse();
 await testAuthorityRevocationPending();
 await testRegistrationFailures();
@@ -1106,6 +1129,13 @@ async function testDaemonReadyWaiters() {
 }
 
 async function testDaemonSocketIsolation() {
+  const malformedRole = new TestWebSocket();
+  malformedRole.serializeAttachment({ role: ["daemon"], connectedAt: new Date().toISOString() });
+  const malformedRoleRegistry = new DaemonSocketRegistry({ getWebSockets: () => [malformedRole] });
+  assert(malformedRoleRegistry.attachment(malformedRole) === undefined
+    && malformedRoleRegistry.readyChannels().length === 0,
+  "non-string daemon socket role crossed the persisted authority boundary through string coercion");
+
   const candidate = new TestWebSocket();
   candidate.serializeAttachment({ role: "candidate", connectedAt: new Date().toISOString() });
   const registry = new DaemonSocketRegistry({ getWebSockets: () => [candidate] });
@@ -1603,7 +1633,7 @@ async function testRelayTimeoutContract() {
       && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
     `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
-  assert(workerToolSchemaGeneration === 27, "hosted result-budget contract did not advance the tool schema generation to 27");
+  assert(workerToolSchemaGeneration === 28, "hosted current tool schema generation is not 28");
   assert(String(serverInfoTool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)
     && workspaceTools.every((tool) => String(tool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)),
   "host-visible tool descriptions omitted the current schema generation marker");
@@ -1868,6 +1898,15 @@ async function testRelayTimeoutContract() {
   }, capabilityAuthority, capabilityKeyMaterial);
   assert(Array.isArray(projectedDependencyArgs.depends_on) && projectedDependencyArgs.continuation_mode === "task_supervisor" && !("dependency_recovery" in projectedDependencyArgs),
     "hosted dependency authorization material crossed the Worker/daemon boundary");
+  let coercedDependencyError;
+  try {
+    await hostedManagedJobDaemonArguments("start_job", {
+      depends_on: [[capabilityJobId]], dependency_recovery: { [capabilityJobId]: recoveryKey }, steps: [{ argv: ["true"] }],
+    }, capabilityAuthority, capabilityKeyMaterial);
+  } catch (error) { coercedDependencyError = error; }
+  assert(coercedDependencyError instanceof WorkerToolError && coercedDependencyError.code === "invalid_request"
+    && coercedDependencyError.details?.side_effects_started === false,
+  "hosted dependency authority coerced a non-string dependency id before daemon dispatch");
   let wrongCapabilityError;
   try {
     await hostedManagedJobDaemonArguments("read_job", {
@@ -2147,11 +2186,11 @@ async function testRelayTimeoutContract() {
     && remoteReadProcessDescription.includes("local/stdio read capacity is unchanged")
     && !remoteReadProcessDescription.includes("poll again"),
   "remote read_process description lost server-paced same-response follow-up limits");
-  const staleReadFileMaximum = staleSchemaCompatibilityResult(
+  const staleReadFileMaximum = staleSchemaGuidanceResult(
     { jsonrpc: "2.0", id: "stale-read-file-max", method: "tools/call", params: { name: "read_file", arguments: { path: "fixture.txt", max_bytes: 1024 * 1024 } } },
     [{ instancePath: "/max_bytes", keyword: "maximum", message: "must be <= 65536" }], {},
   );
-  const staleReadProcessMaximum = staleSchemaCompatibilityResult(
+  const staleReadProcessMaximum = staleSchemaGuidanceResult(
     { jsonrpc: "2.0", id: "stale-read-process-max", method: "tools/call", params: { name: "read_process", arguments: { session_id: "proc_fixture", max_bytes: 256 * 1024 } } },
     [{ instancePath: "/max_bytes", keyword: "maximum", message: "must be <= 32768" }], {},
   );
@@ -2159,7 +2198,7 @@ async function testRelayTimeoutContract() {
     && JSON.stringify(staleReadFileMaximum).includes("schema_refresh_recommended")
     && JSON.stringify(staleReadProcessMaximum).includes("cached read_process max_bytes")
     && JSON.stringify(staleReadProcessMaximum).includes("schema_refresh_recommended"),
-  "stale schema max_bytes compatibility did not return bounded refresh guidance for generation 27");
+  "stale max_bytes schemas did not return bounded refresh guidance");
   const immediateReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 0 });
   const defaultReadBudget = daemonToolTimeoutBudget("read_process", {});
   const maximumReadBudget = daemonToolTimeoutBudget("read_process", { wait_ms: 1_000 });
@@ -2559,13 +2598,13 @@ async function testWorkerContinuityEvidence() {
     last_socket_disconnect: { at: "2026-08-28T14:21:56.296Z", planned: false, kind: "close", close_code: 1006, was_clean: false },
     last_request_abort_at: "2026-08-28T14:22:00.000Z",
   });
-  const legacy = await readWorkerContinuityEvidence(storage);
-  assert(legacy.schema_version === 2 && legacy.planned_drains === 7 && legacy.planned_drain_calls === 9
-    && legacy.last_planned_drain_at === "2026-08-28T14:20:00.000Z" && legacy.last_request_abort_at === "2026-08-28T14:22:00.000Z"
-    && legacy.socket_disconnects === 0 && legacy.unplanned_socket_disconnects === 0
-    && legacy.ready_socket_disconnects === 0 && legacy.unplanned_ready_socket_disconnects === 0
-    && legacy.last_socket_disconnect === null && legacy.last_ready_socket_disconnect === null,
-  "schema-v2 migration lost compatible non-socket evidence or retained legacy unqualified socket counters");
+  const retired = await readWorkerContinuityEvidence(storage);
+  assert(retired.schema_version === 2 && retired.planned_drains === 0 && retired.planned_drain_calls === 0
+    && retired.last_planned_drain_at === null && retired.last_request_abort_at === null
+    && retired.socket_disconnects === 0 && retired.unplanned_socket_disconnects === 0
+    && retired.ready_socket_disconnects === 0 && retired.unplanned_ready_socket_disconnects === 0
+    && retired.last_socket_disconnect === null && retired.last_ready_socket_disconnect === null,
+  "retired continuity schema was still interpreted by the current runtime");
   values.set("worker-continuity-evidence", {
     schema_version: 99, planned_drains: 7, last_socket_disconnect: { at: "private", kind: "other" },
   });
@@ -2724,6 +2763,18 @@ function testDaemonLiveness() {
   }) === now + DAEMON_LIVENESS_TIMEOUT_MS, "liveness deadline must be lastSeen + timeout");
   assert(isFreshDaemonCandidate(new Date(now - 1_000).toISOString(), now), "fresh candidate should be accepted");
   assert(!isFreshDaemonCandidate(new Date(now - 20_000).toISOString(), now), "stale candidate should be rejected");
+  assert(!isFreshDaemonCandidate([new Date(now - 1_000).toISOString()], now),
+    "coercible candidate timestamp was accepted as liveness evidence");
+  assert(!isLiveDaemonAttachment({
+    role: "daemon",
+    connectedAt: new Date(now - 1_000).toISOString(),
+    lastSeenAt: [new Date(now - 1_000).toISOString()],
+  }, now), "coercible lastSeenAt value was accepted as liveness evidence");
+  assert(Number.isNaN(daemonLivenessDeadlineMs({
+    role: "daemon",
+    connectedAt: new Date(now - 1_000).toISOString(),
+    lastSeenAt: "2026-07-17T12:00:00Z",
+  })), "non-canonical daemon liveness timestamp was accepted");
   const touched = withDaemonLastSeenAt({
     role: "daemon",
     connectedAt: "2026-07-17T11:00:00.000Z",
@@ -2935,6 +2986,16 @@ async function testWorkerStaticRoutes() {
   }));
   assert(oauthNetworkKey.startsWith("stateful:oauth:network:") && !oauthNetworkKey.includes("192.0.2.10"),
     "anonymous stateful rate-limit key exposed or mis-scoped the network identity");
+  for (const path of ["/oauth/token", "/admin/accounts", "/daemon/ws"]) {
+    const withIrrelevantCredential = await statefulRateLimitKey(new Request(`https://example.test${path}`, {
+      headers: { "cf-connecting-ip": "192.0.2.10", authorization: "Bearer attacker-selected-bucket" },
+    }));
+    const withoutCredential = await statefulRateLimitKey(new Request(`https://example.test${path}`, {
+      headers: { "cf-connecting-ip": "192.0.2.10" },
+    }));
+    assert(withIrrelevantCredential === withoutCredential,
+      `irrelevant Authorization header bypassed the network rate-limit bucket for ${path}`);
+  }
   let observedRateLimitKey = "";
   const allowed = await admitStatefulRequest(new Request("https://example.test/mcp", {
     headers: { authorization: "Bearer synthetic-secret-one" },
@@ -2968,7 +3029,7 @@ async function test_outer_async_gateway_failure_escapes() {
  const limiter={limit:async()=>({success:true})};
  const response=await handleOuterWorkerFetch(new Request("https://relay.example.invalid/daemon/http",{method:"POST"}),{
  BRIDGE:{getByName(){return{fetch:async()=>{throw new Error("synthetic gateway failure");}};}},
- STATEFUL_GLOBAL_RATE_LIMITER:limiter,STATEFUL_RATE_LIMITER:limiter}, {waitUntil(){}},{server:"machine-bridge-mcp",version:"3.0.0-beta.198"});
+ STATEFUL_GLOBAL_RATE_LIMITER:limiter,STATEFUL_RATE_LIMITER:limiter}, {waitUntil(){}},{server:"machine-bridge-mcp",version:"3.0.0-test"});
  nodeAssert.equal(response.status,502);
 }
 

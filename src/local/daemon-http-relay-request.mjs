@@ -5,7 +5,14 @@ import { proxyAgentForRelayHttp } from "./network-proxy.mjs";
 
 export function postDaemonHttpRelay({ url, headers, body, timeoutMs, maximumResponseBytes, signal, request: requestOverride, selectProxy = proxyAgentForRelayHttp }) {
   return new Promise((resolve, reject) => {
-    const target = new URL(String(url));
+    let target;
+    try {
+      if (typeof url !== "string") throw new TypeError("relay URL must be a string");
+      target = new URL(url);
+    } catch {
+      reject(relayRequestError("daemon_http_invalid_url", "daemon HTTP relay URL is invalid"));
+      return;
+    }
     const client = target.protocol === "https:" ? https : target.protocol === "http:" ? http : null;
     if (!client) { reject(relayRequestError("daemon_http_invalid_url", "daemon HTTP relay URL must use HTTP or HTTPS")); return; }
     let proxy;

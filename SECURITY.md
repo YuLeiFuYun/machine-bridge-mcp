@@ -71,7 +71,7 @@ The roles are:
 - `operator`: workspace-confined mutation and direct process execution;
 - `owner`: complete bridge authority within the daemon policy ceiling.
 
-No approval ID, refresh token, reconnect, client registration, or legacy lease can expand a role. Out-of-role operations fail with `authorization_denied`.
+No approval ID, refresh token, reconnect, or client registration can expand a role. Out-of-role operations fail with `authorization_denied`.
 
 The Worker filters the stable discovery catalog by account role. Discovery is not authorization: each call is separately intersected with the current end-to-end-ready daemon capability ceiling, and the local runtime independently recomputes the role and policy boundary before dispatch. Account disablement, role change, password rotation, account removal, client revocation, token-version rotation, and refresh-family replay invalidate the appropriate credentials.
 
@@ -189,7 +189,7 @@ After trusted input dispatch begins, an ambiguous failure is reported as unknown
 
 Computer Use screenshots share the ordinary MCP result-size boundary. When an image would make an observation result too large, the image is omitted before the snapshot ID is published and pixel-action authority is disabled. When a post-action image would overflow the same boundary, it is removed from the returned/stored post snapshot while the already-established mutation settlement and bounded continuation handle are preserved; the result never turns that dispatched action into a generic retryable size failure. Semantic state may still be returned. The experimental macOS background visual backend is disabled unless explicitly configured and successfully probed; Accessibility, Automation, Screen Recording, and the operating system remain independent enforcement boundaries.
 
-Local resources may be injected without returning their bytes through MCP, but the destination page or application still receives them. Screenshots and page source can themselves contain secrets. In particular, raw serialized HTML may contain hidden bootstrap/session/account/authentication values that are not visible in the rendered page; `browser_get_source` therefore should be used only when raw markup is required, with semantic inspection preferred for routine browser work.
+Local resources may be injected without placing their bytes in the mutating MCP arguments or echoing them in that mutation result, but the destination page or application still receives them. Once delivered, the destination can copy, render, or transmit the value; a later explicit value inspection, screenshot, page source read, or other observation may therefore expose content the destination now holds. In particular, raw serialized HTML may contain hidden bootstrap/session/account/authentication values that are not visible in the rendered page; `browser_get_source` therefore should be used only when raw markup is required, and `browser_inspect_page` should normally keep `include_values=false`.
 
 ## Network egress boundaries
 

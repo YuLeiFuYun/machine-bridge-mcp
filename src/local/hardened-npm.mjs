@@ -160,13 +160,15 @@ function verifyArtifact(bytes, artifact) {
 
 function normalizeArtifacts(value) {
   if (!Array.isArray(value) || value.length !== 3) throw new Error("hardened npm requires exactly three pinned artifacts");
-  const artifacts = value.map((item) => Object.freeze({
-    name: String(item?.name || ""),
-    version: String(item?.version || ""),
-    url: String(item?.url || ""),
-    integrity: String(item?.integrity || ""),
-    maximumBytes: Number(item?.maximumBytes),
-  }));
+  const artifacts = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)
+        || typeof item.name !== "string" || typeof item.version !== "string"
+        || typeof item.url !== "string" || typeof item.integrity !== "string"
+        || !Number.isSafeInteger(item.maximumBytes)) {
+      throw new Error("hardened npm artifact metadata must use exact string/integer types");
+    }
+    return Object.freeze({ name: item.name, version: item.version, url: item.url, integrity: item.integrity, maximumBytes: item.maximumBytes });
+  });
   if (artifacts.map((item) => item.name).join(",") !== "npm,undici,brace-expansion") {
     throw new Error("hardened npm artifact order or names are invalid");
   }

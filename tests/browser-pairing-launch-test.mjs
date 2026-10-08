@@ -52,9 +52,11 @@ class FakeServer extends EventEmitter {
 
 const token = "p".repeat(43);
 await assert.rejects(() => startBrowserPairingLaunch({ brokerPort: 80, extensionToken: token }), /broker port is invalid/);
+await assert.rejects(() => startBrowserPairingLaunch({ brokerPort: "39393", extensionToken: token }), /broker port is invalid/);
 await assert.rejects(() => startBrowserPairingLaunch({ brokerPort: 39393, extensionToken: "x" }), /credential is invalid/);
 await assert.rejects(() => startBrowserPairingLaunch({ brokerPort: 39393 }), /credential is invalid/);
 await assert.rejects(() => startBrowserPairingLaunch({ brokerPort: 39393, extensionToken: token, timeoutMs: 0 }), /launch timeout is invalid/);
+await assert.rejects(() => startBrowserPairingLaunch({ brokerPort: 39393, extensionToken: token, timeoutMs: "1000" }), /launch timeout is invalid/);
 
 const brokerPort = 39393;
 const listener = new FakeServer(49152);

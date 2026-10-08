@@ -42,13 +42,13 @@ export function orderManagedJobTerminalEviction(items, options = {}) {
     || terminalRetentionTime(a.status, a.mtime) - terminalRetentionTime(b.status, b.mtime));
 }
 
-export function stagedPlanExpired(status, fallbackMtime) {
-  const createdAt = Date.parse(String(status?.created_at || ""));
-  const baseline = Number.isFinite(createdAt) ? createdAt : fallbackMtime;
-  return Number.isFinite(baseline) && Date.now() - baseline > STAGED_PLAN_RETENTION_MS;
+export function stagedPlanExpired(status, _fallbackMtime) {
+  if (typeof status?.created_at !== "string") return false;
+  const createdAt = Date.parse(status.created_at);
+  return Number.isFinite(createdAt) && Date.now() - createdAt > STAGED_PLAN_RETENTION_MS;
 }
 
 export function terminalRetentionTime(status, fallbackMtime) {
-  const finishedAt = Date.parse(String(status?.finished_at || ""));
+  const finishedAt = typeof status?.finished_at === "string" ? Date.parse(status.finished_at) : NaN;
   return Number.isFinite(finishedAt) ? finishedAt : fallbackMtime;
 }

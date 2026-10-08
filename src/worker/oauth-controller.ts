@@ -1,5 +1,5 @@
 import { WorkerToolError } from "./errors.ts";
-import { DEFAULT_ACCOUNT_ROLE, normalizeAccountRole, type AuthorizedToken } from "./access.ts";
+import type { AuthorizedToken } from "./access.ts";
 import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOperation } from "./account-admin.ts";
 import { currentOAuthTokenAuthority, exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
 import {
@@ -59,18 +59,8 @@ export class OAuthController {
       throw new HttpError(503, "oauth_state_schema_mismatch", "OAuth state does not match the current schema");
     }
     const store = isCurrentOAuthStore(raw) ? raw : emptyOAuthStore();
-    let changed = false; const revocations = [];
+    let changed = false;
     const now = Math.floor(Date.now() / 1000);
-
-    for (const account of Object.values(store.accounts)) {
-      if (normalizeAccountRole(account.role)) continue;
-      revocations.push({ accountId: account.account_id, accountVersion: account.version });
-      account.role = DEFAULT_ACCOUNT_ROLE;
-      account.active = false;
-      account.version = Number.isInteger(account.version) && account.version > 0 ? account.version + 1 : 1;
-      account.updated_at = now;
-      changed = true;
-    }
 
     for (const [code, value] of Object.entries(store.codes)) {
       const account = store.accounts[value.account_id];
@@ -97,17 +87,13 @@ export class OAuthController {
       ...Object.values(store.tokens).map((value) => value.client_id),
     ]);
     for (const [clientId, client] of Object.entries(store.clients)) {
-      if (client.registration_identity && !client.registration_identity.startsWith("hmac-sha256:")) {
-        delete client.registration_identity;
-        changed = true;
-      }
       const ttl = client.has_been_authorized === false ? OAUTH_UNUSED_CLIENT_TTL_SECONDS : OAUTH_CLIENT_IDLE_TTL_SECONDS;
       if (!activeClientIds.has(clientId) && client.last_used_at + ttl <= now) {
         delete store.clients[clientId];
         changed = true;
       }
     }
-    if (changed) await putWithAuthorityRevocations(this.ctx.storage, { oauth: store }, revocations);
+    if (changed) await putWithAuthorityRevocations(this.ctx.storage, { oauth: store }, []);
     return store;
   }
 

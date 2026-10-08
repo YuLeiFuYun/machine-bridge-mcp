@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, win32 as winPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runExecutable } from "../src/local/shell.mjs";
-import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
+import { currentProcessStartTimeMs, sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
 import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
 import { acquireRuntimeStartServiceLock, assertNoActiveJobsForUninstall, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
@@ -142,18 +142,6 @@ async function stateSelfTest() {
     if (selectedWorkspace(stateRoot) !== canonicalWorkspace) throw new Error("selected workspace was not persisted canonically");
     const state = loadState(workspace, { stateDir: stateRoot });
     if (state.schemaVersion !== 6) throw new Error("unexpected state schema version");
-    const obsoleteLeaseState = join(state.paths.profileDir, "operation-leases.json");
-    await writeFile(obsoleteLeaseState, '{"schemaVersion":2,"leases":[]}\n', { mode: 0o600 });
-    loadState(workspace, { stateDir: stateRoot });
-    await expectReject(readFile(obsoleteLeaseState), /ENOENT/);
-    if (process.platform !== "win32") {
-      const outsideObsoleteLease = join(stateRoot, "outside-operation-leases.json");
-      await writeFile(outsideObsoleteLease, '{}\n', { mode: 0o600 });
-      await symlink(outsideObsoleteLease, obsoleteLeaseState);
-      expectThrow(() => loadState(workspace, { stateDir: stateRoot }), "single-link regular file");
-      await rm(obsoleteLeaseState, { force: true });
-      await rm(outsideObsoleteLease, { force: true });
-    }
     ensureWorkerSecrets(state, { rotateSecrets: true });
     state.oversized = "x".repeat(2 * 1024 * 1024 + 1);
     expectThrow(() => saveState(state), "state JSON exceeds");
@@ -202,6 +190,10 @@ async function stateSelfTest() {
     expectThrow(() => loadState(workspace, { stateDir: stateRoot }), "workspace state recovery is required");
     const recoveryMarker = join(state.paths.profileDir, "state.json.recovery-required");
     if (!await existsForSelfTest(recoveryMarker)) throw new Error("corrupt workspace state did not create a persistent recovery marker");
+    const recoveryMarkerValue = JSON.parse(await readFile(recoveryMarker, "utf8"));
+    await writeFile(recoveryMarker, `${JSON.stringify({ ...recoveryMarkerValue, detectedAt: [recoveryMarkerValue.detectedAt] }, null, 2)}\n`, { mode: 0o600 });
+    expectThrow(() => loadState(workspace, { stateDir: stateRoot }), "state recovery marker is invalid");
+    await writeFile(recoveryMarker, `${JSON.stringify(recoveryMarkerValue, null, 2)}\n`, { mode: 0o600 });
     const backups = (await readdir(state.paths.profileDir)).filter(name => name.startsWith("state.json.corrupt-"));
     if (backups.length !== backupsBefore.length + 1) throw new Error("corrupt state recovery did not create exactly one new backup");
     const newestBackup = backups.find(name => !backupsBefore.includes(name));
@@ -236,11 +228,11 @@ async function stateSelfTest() {
       await writeFile(corruptWorkerState.paths.statePath, "not-json\n", { mode: 0o600 });
       await writeFile(join(corruptWorkerState.paths.profileDir, "daemon.lock"), `${JSON.stringify({
         pid: process.pid,
-        token: "synthetic-daemon-lock-token",
+        token: "a".repeat(32),
         purpose: "daemon",
         workspace: corruptWorkerWorkspace,
         startedAt: new Date().toISOString(),
-        processStartedAt: new Date().toISOString(),
+        processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
         entryScript: "machine-mcp",
       })}\n`, { mode: 0o600 });
       const profileStates = knownProfileStates(corruptWorkerRoot);
@@ -300,7 +292,6 @@ async function stateSelfTest() {
     await writeFile(join(stateRoot, "service-launcher.cmd"), "@echo off\r\nexit /b 0\r\n", { mode: 0o600 });
     await mkdir(join(stateRoot, "toolchains"), { recursive: true });
     await mkdir(join(stateRoot, "release-channels", "runtimes"), { recursive: true });
-    await mkdir(join(stateRoot, "release-tasks", "legacy-fixture"), { recursive: true });
     const syntheticWinRoot = "D:\\machine-bridge-state";
     const syntheticWinNativeRoot = "\\\\?\\D:\\machine-bridge-state";
     const syntheticWinNativeEntry = `${syntheticWinNativeRoot}\\release-channels\\runtimes\\v3.0.0-test\\bin\\machine-mcp.mjs`;
@@ -321,7 +312,7 @@ async function stateSelfTest() {
     const obsoleteMarkerRoot = await mkdtemp(join(tmpdir(), "mbm-obsolete-marker-"));
     try {
       await writeFile(join(obsoleteMarkerRoot, ".machine-bridge-mcp-state"), `${JSON.stringify({ app: "machine-bridge-mcp", schema: 1 })}\n`, { mode: 0o600 });
-      expectThrow(() => loadState(workspace, { stateDir: obsoleteMarkerRoot }), "schema is obsolete");
+      expectThrow(() => loadState(workspace, { stateDir: obsoleteMarkerRoot }), "schema is obsolete; preserve the state root");
     } finally {
       await rm(obsoleteMarkerRoot, { recursive: true, force: true });
     }
@@ -337,7 +328,7 @@ async function stateSelfTest() {
         policy: {},
         resources: {},
       }, null, 2)}\n`, { mode: 0o600 });
-      expectThrow(() => loadState(obsoleteProfileWorkspace, { stateDir: obsoleteProfileRoot }), "schema is obsolete");
+      expectThrow(() => loadState(obsoleteProfileWorkspace, { stateDir: obsoleteProfileRoot }), "schema is obsolete; preserve the state root");
     } finally {
       await rm(obsoleteProfileRoot, { recursive: true, force: true });
       await rm(obsoleteProfileWorkspace, { recursive: true, force: true });

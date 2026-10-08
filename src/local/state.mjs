@@ -8,6 +8,7 @@ import { preserveFileSnapshotSync } from "./file-snapshot-preservation.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { createDeviceIdentity } from "./device-identity.mjs";
 import { validateDeviceRootIdentity } from "./device-root-provider.mjs";
+import { isOAuthTokenVersion, isPreviousWorkerNames, isWorkerName } from "./worker-identity-contract.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { retryProcessLockIdentityReadSync } from "./process-lock-read-retry.mjs";
 import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
@@ -28,7 +29,6 @@ const MAX_STATE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOCK_BYTES = 64 * 1024;
 const MAX_MARKER_BYTES = 4096;
 const STARTUP_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
-const MALFORMED_LOCK_GRACE_MS = 60_000;
 const MAINTENANCE_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MACHINE_SERVICE_LOCK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
@@ -88,7 +88,7 @@ export function loadGlobalConfig(stateRoot = defaultStateRoot(), options = {}) {
   const config = readJsonObjectOrBackup(file, { allowEmptyRecovery: true });
   if (config[CORRUPT_RECOVERY]) return { schemaVersion: GLOBAL_CONFIG_SCHEMA };
   if (config.schemaVersion !== GLOBAL_CONFIG_SCHEMA) {
-    throw new Error("global configuration schema is obsolete; remove the state root and initialize the current version");
+    throw new Error("global configuration schema is obsolete; preserve the state root and use a supported upgrade or backup recovery path");
   }
   return config;
 }
@@ -214,7 +214,6 @@ export function loadState(workspace, options = {}) {
   const profileDir = profileDirForWorkspace(canonicalWorkspace, stateRoot);
   const statePath = path.join(profileDir, "state.json");
   ensureOwnerOnlyDir(profileDir);
-  removeObsoleteOperationLeaseState(profileDir);
   const recoveryPath = recoveryMarkerPath(statePath);
   const recoveryPending = Boolean(inspectPathIfPresentSync(recoveryPath, "state recovery marker"));
   const recoverySnapshot = recoveryPending ? readRecoveryMarker(recoveryPath, statePath) : null;
@@ -224,7 +223,7 @@ export function loadState(workspace, options = {}) {
     ownerOnlyFile(statePath);
     state = readJsonObjectOrBackup(statePath, { recoveryPath });
     if (state.schemaVersion !== STATE_SCHEMA_VERSION) {
-      throw new Error("workspace state schema is obsolete; remove the state root and initialize the current version");
+      throw new Error("workspace state schema is obsolete; preserve the state root and use a supported upgrade or backup recovery path");
     }
     assertWorkspaceStateEnvelope(state, { canonicalWorkspace, stateRoot, profileDir, statePath });
     if (recoverySnapshot && !unlinkRegularFileIfIdentitySync(recoveryPath, recoverySnapshot.identity, "state recovery marker")) {
@@ -245,22 +244,6 @@ export function loadState(workspace, options = {}) {
   state.policy ||= {};
   state.resources ||= {};
   return state;
-}
-
-function removeObsoleteOperationLeaseState(profileDir) {
-  const file = path.join(profileDir, "operation-leases.json");
-  const info = inspectPathIfPresentSync(file, "obsolete operation lease state", {
-    lstatSync: (target) => lstatSync(target, { bigint: true }),
-  });
-  if (!info) return false;
-  if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1n) {
-    throw new Error("obsolete operation lease state must be a single-link regular file before migration cleanup");
-  }
-  const identity = filesystemIdentity(info, "obsolete operation lease state");
-  if (!unlinkRegularFileIfIdentitySync(file, identity, "obsolete operation lease state")) {
-    throw new Error("obsolete operation lease state changed before migration cleanup");
-  }
-  return true;
 }
 
 export function saveState(state) {
@@ -401,17 +384,12 @@ function assertNoForeignMaintenance(stateRoot) {
   const snapshot = readProcessLockSnapshot(file);
   if (!snapshot) return;
   if (!snapshot.owner) {
-    const ageMs = Date.now() - snapshot.info.mtimeMs;
-    if (ageMs < MALFORMED_LOCK_GRACE_MS) throw new Error("state maintenance lock is recent but unreadable");
-    if (!removeLockSnapshot(file, snapshot)) {
-      throw new Error("state maintenance lock changed during inspection; retry after checking the owning process");
-    }
-    return;
+    throw new Error("state maintenance lock is malformed; inspect the owner-only state directory");
   }
   if (snapshot.owner.purpose !== "maintenance") throw new Error("state maintenance lock contains mismatched purpose metadata");
   const identity = inspectProcessInstance(snapshot.owner, { maxAgeMs: MAINTENANCE_LOCK_MAX_AGE_MS });
   if (identity.current) {
-    if (Number(snapshot.owner.pid) === process.pid) return;
+    if (snapshot.owner.pid === process.pid) return;
     throw new Error(`state maintenance is active in another process (pid ${snapshot.owner.pid})`);
   }
   if (!identity.reclaimable) throw new Error(`state maintenance lock cannot be verified safely (${identity.reason})`);
@@ -492,12 +470,7 @@ function acquireProcessLock(lockPath, state, purpose, details = {}, options = {}
       const snapshot = readProcessLockSnapshot(lockPath);
       if (!snapshot) continue;
       if (!snapshot.owner) {
-        const ageMs = Date.now() - snapshot.info.mtimeMs;
-        if (ageMs < MALFORMED_LOCK_GRACE_MS) {
-          return { acquired: false, path: lockPath, owner: null, reason: "recent_invalid_lock", release() {} };
-        }
-        if (!removeLockSnapshot(lockPath, snapshot)) continue;
-        continue;
+        throw new Error(`${purpose} lock is malformed; inspect the owner-only state directory`);
       }
       if (snapshot.owner.purpose !== purpose) throw new Error(`${purpose} lock contains mismatched purpose metadata`);
       if (snapshot.owner.workspace && state?.workspace?.path && !sameWorkspaceIdentity(snapshot.owner.workspace, state.workspace.path)) {
@@ -533,9 +506,20 @@ function readProcessLockSnapshot(lockPath) {
   let owner = null;
   try {
     const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) owner = parsed;
-  } catch { /* Successfully read malformed JSON remains eligible for bounded stale recovery. */ }
+    if (validProcessLockOwner(parsed)) owner = parsed;
+  } catch { /* Successfully read malformed JSON is retained as invalid ownership evidence. */ }
   return { owner, info };
+}
+
+function validProcessLockOwner(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Number.isSafeInteger(value.pid) && value.pid > 0
+    && typeof value.token === "string" && /^[a-f0-9]{32}$/.test(value.token)
+    && typeof value.purpose === "string" && /^[a-z][a-z0-9._-]{0,63}$/.test(value.purpose)
+    && typeof value.workspace === "string"
+    && typeof value.startedAt === "string" && Number.isFinite(Date.parse(value.startedAt))
+    && typeof value.processStartedAt === "string" && Number.isFinite(Date.parse(value.processStartedAt))
+    && typeof value.entryScript === "string";
 }
 
 function removeLockSnapshot(lockPath, snapshot) {
@@ -669,7 +653,7 @@ function readRecoveryMarker(markerPath, statePath) {
   } catch { throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing"); }
   if (marker?.schemaVersion !== RECOVERY_MARKER_SCHEMA || typeof marker.backup !== "string"
       || !marker.backup.startsWith(`${path.basename(statePath)}.corrupt-`) || path.basename(marker.backup) !== marker.backup
-      || !Number.isFinite(Date.parse(String(marker.detectedAt || "")))) {
+      || typeof marker.detectedAt !== "string" || !Number.isFinite(Date.parse(marker.detectedAt))) {
     throw new Error("workspace state recovery marker is invalid; inspect the profile manually before continuing");
   }
   return {
@@ -742,12 +726,12 @@ function assertValidStateMarker(marker) {
   let value;
   try { value = JSON.parse(content); } catch { throw new Error(`invalid state root marker: ${marker}`); }
   if (value?.app !== appName || value?.schema !== STATE_MARKER_SCHEMA) {
-    throw new Error("state root schema is obsolete; remove it and initialize the current version");
+    throw new Error("state root schema is obsolete; preserve the state root and use a supported upgrade or backup recovery path");
   }
 }
 
 function hasOnlyStateEntries(entries) {
-  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs", "service-environment.json", "service-launcher.cmd", "toolchains", "release-channels", "release-tasks"]);
+  const allowed = new Set([STATE_MARKER, "config.json", "browser-bridge.json", "maintenance.lock", "profiles", "logs", "service-environment.json", "service-launcher.cmd", "toolchains", "release-channels"]);
   return entries.every((entry) => allowed.has(entry) || /^config\.json\.corrupt-\d+(?:-[a-f0-9]{8})?$/.test(entry));
 }
 
@@ -857,28 +841,34 @@ function pruneBackups(filePath, keep) {
 }
 
 export function ensureWorkerSecrets(state, options = {}) {
-  state.worker ||= {};
+  if (state.worker === undefined || state.worker === null) state.worker = {};
+  if (!isPlainRecord(state.worker)) throw new Error("workspace Worker state is invalid");
   delete state.worker.accountAdminSecret;
   const enrollingDeviceIdentity = !state.worker.deviceIdentity;
   if (enrollingDeviceIdentity || (options.rotateSecrets && !options.deferDeviceRotation)) state.worker.deviceIdentity = createDeviceIdentity();
   else validateDeviceRootIdentity(state.worker.deviceIdentity);
   if (state.worker.pendingDeviceIdentity) validateDeviceRootIdentity(state.worker.pendingDeviceIdentity);
   delete state.worker.daemonSecret;
-  if (!state.worker.oauthTokenVersion || enrollingDeviceIdentity || options.rotateSecrets) {
+  if (enrollingDeviceIdentity || options.rotateSecrets) {
     state.worker.oauthTokenVersion = randomToken("token_version");
+  } else if (!isOAuthTokenVersion(state.worker.oauthTokenVersion)) {
+    throw new Error("workspace Worker OAuth token version is invalid");
   }
 
-  const requestedName = options.workerName || "";
+  const requestedName = options.workerName === undefined || options.workerName === null || options.workerName === false ? "" : options.workerName;
+  if (typeof requestedName !== "string" || (requestedName && !isWorkerName(requestedName))) throw new Error("workspace Worker name is invalid");
+  if (!isPreviousWorkerNames(state.worker.previousNames)) throw new Error("workspace previous Worker names are invalid");
   if (!state.worker.name) {
     state.worker.name = requestedName || defaultWorkerName(state.workspace.hash);
     return;
   }
+  if (!isWorkerName(state.worker.name)) throw new Error("workspace Worker name is invalid");
   if (!requestedName || requestedName === state.worker.name) return;
   if (!options.allowWorkerRename) {
     throw new Error(`this workspace already uses Worker ${state.worker.name}; changing --worker-name to ${requestedName} would create another Worker. Re-run with --force-worker only when that replacement is intentional`);
   }
 
-  const previous = String(state.worker.name);
+  const previous = state.worker.name;
   const previousNames = Array.isArray(state.worker.previousNames) ? state.worker.previousNames : [];
   state.worker.previousNames = [...new Set([...previousNames, previous])].slice(-32);
   state.worker.name = requestedName;

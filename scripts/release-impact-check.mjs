@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { compareReleaseVersions, parseReleaseVersion } from "./release-channel.mjs";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
 
 const VERSION_TAG = /^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
@@ -79,6 +80,6 @@ function escapeRegExp(value) {
 }
 
 function fail(message) {
-  process.stderr.write(`release impact check failed: ${message}\n`);
+  process.stderr.write(`release impact check failed: ${releaseDiagnostic(message, 1200)}\n`);
   process.exit(1);
 }

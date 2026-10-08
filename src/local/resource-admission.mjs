@@ -145,7 +145,7 @@ export class ResourceCoordinator {
   }
 
   async bindLease(leaseId, token, child, options = {}) {
-    if (!Number.isInteger(child?.pid) || child.pid <= 0) throw new Error("resource lease requires a spawned child pid");
+    if (!Number.isSafeInteger(child?.pid) || child.pid <= 0) throw new Error("resource lease requires a spawned child pid");
     const observedStart = await processStartTimeMsAsync(child.pid);
     return this.withLock(() => {
       const file = this.leasePath(leaseId);
@@ -282,7 +282,7 @@ export class ResourceCoordinator {
   }
 
   leasePath(id) {
-    if (!/^[a-f0-9]{32}$/.test(String(id || ""))) throw new Error("invalid resource lease id");
+    if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) throw new Error("invalid resource lease id");
     return join(this.leasesDir, `lease_${id}.json`);
   }
   readJson(file, maxBytes, label, optional = false) {
@@ -309,16 +309,23 @@ function normalizedRequest(request) {
   return Object.fromEntries(allowed.map((key) => [key, request[key] ?? null]));
 }
 function validateLease(lease) {
-  if (lease?.schema_version !== SCHEMA || !/^[a-f0-9]{32}$/.test(String(lease.lease_id || "")) || !/^[a-f0-9]{64}$/.test(String(lease.token || ""))) throw new Error("resource coordinator lease is invalid");
-  if (!Number.isFinite(Date.parse(String(lease.acquired_at || ""))) || !validOwner(lease.owner)) throw new Error("resource coordinator lease ownership is invalid");
+  if (lease?.schema_version !== SCHEMA || typeof lease.lease_id !== "string" || !/^[a-f0-9]{32}$/.test(lease.lease_id)
+      || typeof lease.token !== "string" || !/^[a-f0-9]{64}$/.test(lease.token)) throw new Error("resource coordinator lease is invalid");
+  if (typeof lease.acquired_at !== "string" || !Number.isFinite(Date.parse(lease.acquired_at))
+      || !validOwner(lease.owner)) throw new Error("resource coordinator lease ownership is invalid");
   validateResourceRequest(lease.request);
   if (lease.owner.kind === "process") {
-    if (!Number.isFinite(Date.parse(String(lease.bound_at || ""))) || typeof lease.owner.process_group_isolated !== "boolean") throw new Error("resource coordinator process lease is invalid");
+    if (typeof lease.bound_at !== "string" || !Number.isFinite(Date.parse(lease.bound_at))
+        || typeof lease.owner.process_group_isolated !== "boolean") throw new Error("resource coordinator process lease is invalid");
     if (lease.owner.process_group_isolated && lease.owner.process_group_id !== lease.owner.pid) throw new Error("resource coordinator process group is invalid");
     if (!lease.owner.process_group_isolated && lease.owner.process_group_id !== null) throw new Error("resource coordinator process group is invalid");
   } else if (lease.bound_at !== null) throw new Error("resource coordinator provisional lease is invalid");
 }
-function validOwner(owner) { return ["provisional", "process"].includes(owner?.kind) && Number.isInteger(owner?.pid) && owner.pid > 0 && Number.isFinite(Date.parse(String(owner.process_started_at || ""))); }
+function validOwner(owner) {
+  return ["provisional", "process"].includes(owner?.kind)
+    && Number.isSafeInteger(owner?.pid) && owner.pid > 0
+    && typeof owner.process_started_at === "string" && Number.isFinite(Date.parse(owner.process_started_at));
+}
 function assertLeaseToken(lease, token) { validateLease(lease); if (lease.token !== token) throw new Error("resource lease ownership changed"); }
 function publicHost(host) {
   const {

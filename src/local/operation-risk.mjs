@@ -28,6 +28,14 @@ const AUTOMATIC_TOOLS = new Set([
   "server_info", "project_overview", "list_local_applications", "browser_status", "list_roots",
   "diagnose_runtime", "list_local_resources",
 ]);
+const READ_ONLY_OPERATION_TOOLS = new Set([
+  "server_info", "project_overview", "session_bootstrap", "resolve_task_capabilities",
+  "list_local_applications", "inspect_local_application", "browser_list_tabs", "browser_get_source",
+  "browser_inspect_page", "browser_wait", "agent_context", "list_local_skills", "load_local_skill",
+  "list_local_commands", "list_roots", "list_dir", "list_files", "read_file", "view_image",
+  "search_text", "git_status", "git_diff", "git_log", "git_show", "read_process",
+  "diagnose_runtime", "list_local_resources", "list_jobs", "read_job",
+]);
 const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file", "git_commit"]);
 const FILE_READ_TOOLS = new Set([
   "session_bootstrap", "resolve_task_capabilities", "agent_context", "list_local_skills", "load_local_skill", "list_local_commands",
@@ -54,6 +62,10 @@ export function reviewedOperationToolNames() {
     "browser_upload_files",
     "apply_patch",
   ]);
+}
+
+export function operationMayHaveSideEffects(tool) {
+  return typeof tool !== "string" || !READ_ONLY_OPERATION_TOOLS.has(tool);
 }
 
 export async function classifyOperation(tool, args = {}, options = {}) {

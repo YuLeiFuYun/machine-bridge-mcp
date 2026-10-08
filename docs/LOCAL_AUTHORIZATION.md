@@ -140,7 +140,7 @@ Bearer remains available for MCP hosts that do not implement DPoP. Client trust,
 
 ## Audit and incident response
 
-The local security audit is a bounded SHA-256 hash chain. It records operation class, outcome, duration, byte counts, and pseudonymous target/principal references. Target and account/client/family identifiers are HMAC-keyed with fresh per-daemon runtime keys before persistent state applies its per-file salt; the resulting references remain useful for within-runtime correlation without making the stored public salt sufficient for offline identifier/path enumeration. They are not stable cross-restart identities. The audit does not record command text, file paths, file contents, form values, or tool output.
+The local security audit is a bounded SHA-256 hash chain. It records operation class, outcome, duration, byte counts, and pseudonymous target/principal references. Target and account/client/family identifiers are HMAC-keyed with fresh per-daemon runtime keys before persistent state applies its per-file salt; the resulting references remain useful for within-runtime correlation without making the stored public salt sufficient for offline identifier/path enumeration. Each new event also carries a random pseudonym correlation epoch shared by that daemon runtime, so an investigator can distinguish a principal/target-reference change caused by runtime-key rotation from a change observed inside one correlation window. Remote operations that the local security classifier marks as side-effecting additionally persist a `dispatch_intent` before handler entry; that intent and the later terminal event share a runtime-keyed pseudonymous operation reference instead of the raw call ID. An intent without a retained terminal event proves only that the request reached the authorized pre-dispatch boundary, not that the handler started or whether the side effect completed. The epoch is not an identity and does not make references stable across restarts. The audit does not record command text, file paths, file contents, form values, or tool output.
 
 For incident response:
 
@@ -151,4 +151,4 @@ For incident response:
 5. inspect the audit-chain health and local endpoint logs;
 6. restart and reconnect only trusted clients.
 
-Legacy capability-lease files from version 2 may still be listed, revoked, or cleared by the local CLI for migration cleanup. The version 3 runtime never consumes them and never creates pending approval IDs.
+Version 3 has no capability-lease command or runtime surface and never creates pending approval IDs. Persisted state from unsupported older schemas is preserved and rejected rather than interpreted as current authorization state.

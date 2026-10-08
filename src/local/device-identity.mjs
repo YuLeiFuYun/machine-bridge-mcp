@@ -34,8 +34,7 @@ export function createDeviceSessionIdentity(rootIdentity, workerOrigin, server, 
 
 export function createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, now = Date.now()) {
   validatePublicDeviceRoot(rootIdentity);
-  const issuedAt = Math.floor(Number(now) / 1000);
-  if (!Number.isSafeInteger(issuedAt) || issuedAt <= 0) throw new Error("device session timestamp is invalid");
+  const issuedAt = exactEpochSeconds(now, "device session timestamp");
   const expiresAt = issuedAt + DEVICE_SESSION_MAX_LIFETIME_SECONDS;
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const privateJwk = privateKey.export({ format: "jwk" });
@@ -69,7 +68,7 @@ export function createDeviceSessionDraft(rootIdentity, workerOrigin, server, ver
       privateJwk,
       publicJwk,
       keyId: deviceKeyId(publicJwk),
-      createdAt: new Date(Number(now)).toISOString(),
+      createdAt: new Date(now).toISOString(),
       expiresAt: new Date(expiresAt * 1000).toISOString(),
     },
   };
@@ -77,7 +76,7 @@ export function createDeviceSessionDraft(rootIdentity, workerOrigin, server, ver
 
 export function finalizeDeviceSessionIdentity(draft, signature, now = Date.now()) {
   if (!draft || typeof draft !== "object" || !draft.session || !draft.certificateBody) throw new Error("device session draft is invalid");
-  if (!/^[A-Za-z0-9_-]{86}$/.test(String(signature || ""))) throw new Error("device session root signature is invalid");
+  if (typeof signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(signature)) throw new Error("device session root signature is invalid");
   const identity = {
     ...draft.session,
     certificate: { ...draft.certificateBody, signature },
@@ -90,7 +89,7 @@ export function validatePublicDeviceRoot(identity) {
   if (identity.scheme !== DAEMON_AUTH_SCHEME) throw new Error("device root identity scheme is invalid");
   validatePublicDeviceJwk(identity.publicJwk);
   if (identity.keyId !== deviceKeyId(identity.publicJwk)) throw new Error("device root identity key id is invalid");
-  if (!Number.isFinite(Date.parse(String(identity.createdAt || "")))) throw new Error("device root identity creation time is invalid");
+  if (typeof identity.createdAt !== "string" || !Number.isFinite(Date.parse(identity.createdAt))) throw new Error("device root identity creation time is invalid");
   return identity;
 }
 
@@ -101,9 +100,8 @@ export function publicDeviceJwkJson(identity) {
 }
 
 export function createDaemonPreflightHeaders(identity, workerOrigin, server, version, now = Date.now()) {
+  const issuedAt = exactEpochSeconds(now, "device preflight timestamp");
   validateDeviceSessionIdentity(identity, now);
-  const issuedAt = Math.floor(Number(now) / 1000);
-  if (!Number.isSafeInteger(issuedAt) || issuedAt <= 0) throw new Error("device preflight timestamp is invalid");
   const nonce = randomBytes(24).toString("base64url");
   const transcript = daemonPreflightTranscript({ workerOrigin, server, version, nonce, issuedAt });
   const signature = signDeviceTranscript(identity, transcript);
@@ -124,7 +122,7 @@ export function encodeDeviceSessionCertificate(identity, now = Date.now()) {
 
 export function signWithDeviceSessionIdentity(identity, transcript, now = Date.now()) {
   validateDeviceSessionIdentity(identity, now);
-  const text = String(transcript || "");
+  const text = typeof transcript === "string" ? transcript : "";
   if (!text || Buffer.byteLength(text) > 64 * 1024) throw new Error("device session signing transcript is empty or too large");
   return signDeviceTranscript(identity, text);
 }
@@ -133,17 +131,21 @@ export async function createDaemonAuthentication(identity, welcome, instanceId) 
   validateDeviceSessionIdentity(identity);
   const auth = welcome?.authentication;
   if (!auth || auth.scheme !== DAEMON_AUTH_SCHEME) throw new Error("Worker did not provide a supported device challenge");
-  const challenge = String(auth.challenge || "");
-  const issuedAt = Number(auth.issued_at);
-  const expiresAt = Number(auth.expires_at);
+  if (typeof auth.challenge !== "string" || typeof auth.issued_at !== "number" || typeof auth.expires_at !== "number"
+      || typeof welcome.worker_origin !== "string" || typeof welcome.server !== "string" || typeof welcome.version !== "string") {
+    throw new Error("Worker device challenge metadata is invalid");
+  }
+  const challenge = auth.challenge;
+  const issuedAt = auth.issued_at;
+  const expiresAt = auth.expires_at;
   if (!/^daemon_challenge_[A-Za-z0-9_-]{40,96}$/.test(challenge)) throw new Error("Worker device challenge is invalid");
   if (!Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt) || expiresAt <= issuedAt) throw new Error("Worker device challenge lifetime is invalid");
   if (Math.floor(Date.now() / 1000) > expiresAt) throw new Error("Worker device challenge expired");
   const transcript = daemonAuthTranscript({
     challenge,
-    workerOrigin: String(welcome.worker_origin || ""),
-    server: String(welcome.server || ""),
-    version: String(welcome.version || ""),
+    workerOrigin: welcome.worker_origin,
+    server: welcome.server,
+    version: welcome.version,
     instanceId,
     issuedAt,
   });
@@ -164,23 +166,24 @@ export function validateDeviceIdentity(identity) {
   const expectedPublic = publicFromPrivate(identity.privateJwk);
   if (!samePublicJwk(expectedPublic, identity.publicJwk)) throw new Error("device identity public and private keys do not match");
   if (identity.keyId !== deviceKeyId(identity.publicJwk)) throw new Error("device identity key id is invalid");
-  if (!Number.isFinite(Date.parse(String(identity.createdAt || "")))) throw new Error("device identity creation time is invalid");
+  if (typeof identity.createdAt !== "string" || !Number.isFinite(Date.parse(identity.createdAt))) throw new Error("device identity creation time is invalid");
   return identity;
 }
 
 export function validateDeviceSessionIdentity(identity, now = Date.now()) {
   validateDeviceIdentity(identity);
+  const current = exactEpochSeconds(now, "device session validation timestamp");
   const certificate = identity.certificate;
   if (!certificate || typeof certificate !== "object" || Array.isArray(certificate)) throw new Error("device session certificate is missing");
   if (certificate.scheme !== DEVICE_SESSION_CERTIFICATE_SCHEME) throw new Error("device session certificate scheme is invalid");
   if (identity.keyId !== deviceKeyId(certificate.public_jwk) || !samePublicJwk(identity.publicJwk, certificate.public_jwk)) {
     throw new Error("device session certificate key mismatch");
   }
-  const expiresAt = Number(certificate.expires_at);
-  if (!Number.isSafeInteger(expiresAt) || Math.floor(Number(now) / 1000) > expiresAt) {
+  const expiresAt = certificate.expires_at;
+  if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || current > expiresAt) {
     throw Object.assign(new Error("device session certificate expired"), { code: "device_session_expired" });
   }
-  if (!/^[A-Za-z0-9_-]{86}$/.test(String(certificate.signature || ""))) throw new Error("device session certificate signature is invalid");
+  if (typeof certificate.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(certificate.signature)) throw new Error("device session certificate signature is invalid");
   return identity;
 }
 
@@ -204,14 +207,24 @@ function publicFromPrivate(privateJwk) {
 function validatePrivateDeviceJwk(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("device private key is invalid");
   if (value.kty !== DEVICE_KEY_TYPE || value.crv !== DEVICE_CURVE || typeof value.d !== "string") throw new Error("device private key is invalid");
-  validatePublicDeviceJwk(value);
+  try {
+    canonicalPublicJwk({ kty: value.kty, crv: value.crv, x: value.x, y: value.y });
+  } catch {
+    throw new Error("device private key is invalid");
+  }
 }
 
 function validatePublicDeviceJwk(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("device public key is invalid");
-  if (value.kty !== DEVICE_KEY_TYPE || value.crv !== DEVICE_CURVE || typeof value.x !== "string" || typeof value.y !== "string") throw new Error("device public key is invalid");
+  try { canonicalPublicJwk(value); } catch { throw new Error("device public key is invalid"); }
 }
 
 function samePublicJwk(left, right) {
   return left?.kty === right?.kty && left?.crv === right?.crv && left?.x === right?.x && left?.y === right?.y;
+}
+
+function exactEpochSeconds(value, label) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(label + " is invalid");
+  const seconds = Math.floor(value / 1000);
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new Error(label + " is invalid");
+  return seconds;
 }

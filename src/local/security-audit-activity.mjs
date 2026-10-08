@@ -2,12 +2,16 @@ const WINDOWS_MS = Object.freeze({ one: 60_000, five: 5 * 60_000, fifteen: 15 * 
 const PROCESS_HELPERS = new Set(["exec_command", "run_process", "run_local_command"]);
 const LARGE_RESULT_BYTES = 64 * 1024;
 
-export function securityAuditRecentActivity(state = {}) {
+export function securityAuditRecentActivity(state = {}, nowMs = Date.now()) {
   const events = Array.isArray(state?.events) ? state.events : [];
-  const endMs = Date.parse(String(events.at(-1)?.timestamp || ""));
-  if (!Number.isFinite(endMs)) return emptyActivity();
-  const recent = (windowMs) => events.filter((event) => eventAgeMs(event, endMs) <= windowMs);
+  const endMs = typeof nowMs === "number" ? nowMs : NaN;
+  if (!events.length || !Number.isFinite(endMs)) return emptyActivity();
+  const intents = events.filter((event) => event?.outcome === "dispatch_intent");
+  const terminalEvents = events.filter((event) => event?.outcome !== "dispatch_intent");
+  const recent = (windowMs) => terminalEvents.filter((event) => eventAgeMs(event, endMs) <= windowMs);
   const last15 = recent(WINDOWS_MS.fifteen);
+  const intentsLast15 = intents.filter((event) => eventAgeMs(event, endMs) <= WINDOWS_MS.fifteen);
+  const settledOperationRefs = new Set(terminalEvents.map((event) => event?.operation_ref).filter(validOperationRef));
   const toolCounts = new Map();
   const minuteCounts = new Map();
   const minuteOutputBytes = new Map();
@@ -35,6 +39,11 @@ export function securityAuditRecentActivity(state = {}) {
     calls_last_15m: last15.length,
     calls_last_60m: recent(WINDOWS_MS.sixty).length,
     failures_last_15m: last15.filter((event) => event?.outcome !== "completed").length,
+    unknown_effect_settlements_last_15m: last15.filter((event) => event?.effect_settlement === "unknown").length,
+    pending_effect_settlements_last_15m: last15.filter((event) => event?.effect_settlement === "pending").length,
+    dispatch_intents_last_15m: intentsLast15.length,
+    unsettled_dispatch_intents_last_15m: intentsLast15.filter((event) =>
+      validOperationRef(event?.operation_ref) && !settledOperationRefs.has(event.operation_ref)).length,
     process_helper_calls_last_15m: last15.filter((event) => PROCESS_HELPERS.has(String(event?.tool || ""))).length,
     read_job_calls_last_15m: last15.filter((event) => event?.tool === "read_job").length,
     start_job_calls_last_15m: last15.filter((event) => event?.tool === "start_job").length,
@@ -49,8 +58,7 @@ export function securityAuditRecentActivity(state = {}) {
 }
 
 function boundedOutputBytes(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(parsed))) : 0;
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 function boundedSum(left, right) {
@@ -58,7 +66,7 @@ function boundedSum(left, right) {
 }
 
 function eventAgeMs(event, endMs) {
-  const timestamp = Date.parse(String(event?.timestamp || ""));
+  const timestamp = typeof event?.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
   return Number.isFinite(timestamp) ? Math.max(0, endMs - timestamp) : Number.POSITIVE_INFINITY;
 }
 
@@ -66,8 +74,14 @@ function emptyActivity() {
   return {
     coverage: "daemon_reached_relay_tool_calls_only", host_side_events_observable: false,
     window_end_at: null, calls_last_1m: 0, calls_last_5m: 0, calls_last_15m: 0, calls_last_60m: 0,
-    failures_last_15m: 0, process_helper_calls_last_15m: 0, read_job_calls_last_15m: 0, start_job_calls_last_15m: 0,
+    failures_last_15m: 0, unknown_effect_settlements_last_15m: 0, pending_effect_settlements_last_15m: 0,
+    dispatch_intents_last_15m: 0, unsettled_dispatch_intents_last_15m: 0,
+    process_helper_calls_last_15m: 0, read_job_calls_last_15m: 0, start_job_calls_last_15m: 0,
     peak_calls_per_minute_last_15m: 0, output_bytes_last_15m: 0, maximum_output_bytes_last_15m: 0,
     large_result_calls_last_15m: 0, peak_output_bytes_per_minute_last_15m: 0, distinct_tools_last_15m: 0, top_tools_last_15m: [],
   };
+}
+
+function validOperationRef(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }

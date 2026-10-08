@@ -9,7 +9,7 @@ const RUNNER_CLAIM_WAIT_MS = 30_000;
 const RUNNER_CLAIM_PUBLICATION_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 
 export function publishProvisionalRunnerClaim(dir, pid, launchToken) {
-  if (!/^[a-f0-9]{32}$/.test(String(launchToken || ""))) throw new Error("runner launch token is invalid");
+  if (typeof launchToken !== "string" || !/^[a-f0-9]{32}$/.test(launchToken)) throw new Error("runner launch token is invalid");
   const file = join(dir, "runner.pid");
   const claim = { pid, startedAt: new Date().toISOString(), launchToken, committed: false };
   try {
@@ -17,7 +17,7 @@ export function publishProvisionalRunnerClaim(dir, pid, launchToken) {
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
     const existing = readManagedJobRunnerClaim(file, "managed job runner claim already exists but is unreadable");
-    if (Number(existing?.pid) !== pid || existing?.launchToken !== launchToken) {
+    if (existing.pid !== pid || existing.launchToken !== launchToken) {
       throw new Error("managed job runner claim is owned by another process or launch");
     }
     if (existing.committed === true) return;
@@ -36,7 +36,7 @@ export async function confirmRunnerClaim({
     createExclusiveFileSync(file, `${JSON.stringify(exact)}\n`, { mode: 0o600 });
     return;
   }
-  if (!/^[a-f0-9]{32}$/.test(launchToken)) throw new Error("runner launch token is invalid");
+  if (typeof launchToken !== "string" || !/^[a-f0-9]{32}$/.test(launchToken)) throw new Error("runner launch token is invalid");
   const deadline = createMonotonicDeadline(waitMs);
   while (!deadline.expired()) {
     if (!inspectPath(file, "managed job runner claim")) {
@@ -44,7 +44,7 @@ export async function confirmRunnerClaim({
       continue;
     }
     const provisional = readManagedJobRunnerClaim(file, "runner ownership claim is unreadable");
-    if (Number(provisional?.pid) !== pid || provisional?.launchToken !== launchToken) {
+    if (provisional.pid !== pid || provisional.launchToken !== launchToken) {
       throw new Error("runner ownership claim does not match the spawned process");
     }
     if (provisional.committed !== true) {
@@ -76,6 +76,15 @@ export function readManagedJobRunnerClaim(file, message = "managed job runner cl
   } catch (error) { throw new Error(message, { cause: error }); }
 }
 
+export function exactManagedJobRunnerPid(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+export function exactManagedJobRunnerTime(value) {
+  if (typeof value === "string" && value && Number.isFinite(Date.parse(value))) return value;
+  return null;
+}
+
 function readStableRunnerClaimBytes(readBytes, verifyResidue) {
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     try { return retryTransientMultipleLinksSync(readBytes, { verifyResidue }); }
@@ -89,14 +98,10 @@ function readStableRunnerClaimBytes(readBytes, verifyResidue) {
 
 function validRunnerClaim(claim) {
   if (!claim || typeof claim !== "object" || Array.isArray(claim)) return false;
-  if (!Number.isInteger(claim.pid) || claim.pid <= 0 || !validClaimTime(claim.startedAt)) return false;
-  if (claim.processStartedAt !== undefined && !validClaimTime(claim.processStartedAt)) return false;
-  if (claim.launchToken !== undefined && !/^[a-f0-9]{32}$/.test(String(claim.launchToken))) return false;
+  if (exactManagedJobRunnerPid(claim.pid) === null || exactManagedJobRunnerTime(claim.startedAt) === null) return false;
+  if (claim.processStartedAt !== undefined && exactManagedJobRunnerTime(claim.processStartedAt) === null) return false;
+  if (claim.launchToken !== undefined
+      && (typeof claim.launchToken !== "string" || !/^[a-f0-9]{32}$/.test(claim.launchToken))) return false;
   if (claim.committed !== undefined && typeof claim.committed !== "boolean") return false;
   return true;
-}
-
-function validClaimTime(value) {
-  if (typeof value === "number") return Number.isFinite(value) && value > 0;
-  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }

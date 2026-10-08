@@ -25,7 +25,7 @@ export async function exchangeRefreshToken(
   options: OAuthTokenExchangeOptions,
   dpop?: VerifiedDpopProof,
 ): Promise<Response> {
-  const refreshToken = String(body.refresh_token ?? "");
+  const refreshToken = typeof body.refresh_token === "string" ? body.refresh_token : "";
   if (!/^mcp_rt_[A-Za-z0-9_-]{43}$/.test(refreshToken)) return reject(options);
   return options.withLock(async () => {
     const now = Math.floor(Date.now() / 1000);
@@ -120,16 +120,19 @@ async function validateRefreshGrant(
     if (!allowDpopBinding) return { response: json({ error: "invalid_dpop_proof" }, 400) };
     record.dpop_jkt = dpop.jkt;
   }
-  if (String(body.client_id ?? "") !== record.client_id) {
+  if (typeof body.client_id !== "string" || body.client_id !== record.client_id) {
     return { response: json({ error: "invalid_grant", error_description: "client mismatch" }, 400) };
   }
-  if (String(body.resource ?? record.resource) !== record.resource || record.resource !== `${base}/mcp`) {
+  const resource = body.resource === undefined ? record.resource
+    : typeof body.resource === "string" ? body.resource : null;
+  if (resource !== record.resource || record.resource !== `${base}/mcp`) {
     return { response: json({ error: "invalid_target", error_description: "resource mismatch" }, 400) };
   }
   if (normalizeOAuthScope(record.scope, options.serverName) !== record.scope) {
     return { response: json({ error: "invalid_grant" }, 400) };
   }
-  const accessScope = body.scope === undefined ? record.scope : normalizeOAuthScope(body.scope, options.serverName);
+  const accessScope = body.scope === undefined ? record.scope
+    : typeof body.scope === "string" ? normalizeOAuthScope(body.scope, options.serverName) : null;
   if (!accessScope || !scopeSubset(accessScope, record.scope)) {
     return { response: json({ error: "invalid_scope" }, 400) };
   }

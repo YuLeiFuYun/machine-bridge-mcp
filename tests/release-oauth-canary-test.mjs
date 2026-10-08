@@ -223,7 +223,7 @@ function testEvidenceBinding() {
   const root = mkdtempSync(join(tmpdir(), "mbm-oauth-canary-test-"));
   try {
     mkdirSync(join(root, ".release-candidate"), { recursive: true, mode: 0o700 });
-    writeReleaseOAuthCanaryEvidence(root, {
+    const validEvidence = {
       schema_version: RELEASE_OAUTH_CANARY_SCHEMA_VERSION,
       result: "passed",
       package_name: "machine-bridge-mcp",
@@ -238,7 +238,13 @@ function testEvidenceBinding() {
       refreshed_mcp: true,
       cleanup_completed: true,
       completed_at: "2026-08-11T00:00:00.000Z",
-    });
+    };
+    writeReleaseOAuthCanaryEvidence(root, validEvidence);
+    for (const field of ["package_version", "worker_version", "shasum", "integrity", "promotion_content_sha256", "completed_at"]) {
+      assert.throws(() => writeReleaseOAuthCanaryEvidence(root, { ...validEvidence, [field]: [validEvidence[field]] }),
+        /release OAuth canary .* invalid/,
+        `release OAuth canary coerced non-string ${field}`);
+    }
     const evidence = readReleaseOAuthCanaryEvidence(root, {
       package_version: VERSION,
       shasum: "a".repeat(40),

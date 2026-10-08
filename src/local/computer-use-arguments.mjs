@@ -44,12 +44,8 @@ export function normalizeInputMode(value) {
 
 export function normalizePostScreenshotPolicy(args, surface) {
   if (!["browser", "application"].includes(surface)) return "never";
-  if (args.post_screenshot !== undefined && args.include_post_screenshot !== undefined) {
-    throw new BridgeError("invalid_request", "post_screenshot and include_post_screenshot are mutually exclusive");
-  }
-  if (args.include_post_screenshot !== undefined) {
-    if (typeof args.include_post_screenshot !== "boolean") throw new BridgeError("invalid_request", "include_post_screenshot must be boolean");
-    return args.include_post_screenshot ? "always" : "never";
+  if (Object.hasOwn(args, "include_post_screenshot")) {
+    throw new BridgeError("invalid_request", "include_post_screenshot is no longer supported; use post_screenshot");
   }
   if (args.post_screenshot === undefined) return "auto";
   if (typeof args.post_screenshot !== "string" || !["auto", "always", "never"].includes(args.post_screenshot)) {

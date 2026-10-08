@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { inspectProcessInstance, inspectProcessInstanceAsync } from "./process-identity.mjs";
-import { readManagedJobRunnerClaim } from "./managed-job-runner-claim.mjs";
+import {
+  exactManagedJobRunnerPid, exactManagedJobRunnerTime, readManagedJobRunnerClaim,
+} from "./managed-job-runner-claim.mjs";
 
 export function runnerProcessIsCurrent(status, dir, { ownerOnly = false } = {}) {
   const owner = readRunnerOwner(dir, fallbackOwner(status, ownerOnly));
@@ -15,10 +17,17 @@ export async function runnerProcessIsCurrentAsync(status, dir, { ownerOnly = fal
 }
 
 function fallbackOwner(status, ownerOnly) {
-  return ownerOnly ? status : {
-    pid: Number(status?.runner_pid) || undefined,
-    processStartedAt: status?.runner_process_started_at,
-    startedAt: status?.started_at || status?.updated_at || status?.created_at,
+  if (ownerOnly) return status;
+  if (!status || typeof status !== "object" || Array.isArray(status)) return {};
+  const pid = exactManagedJobRunnerPid(status?.runner_pid);
+  const processStartedAt = exactManagedJobRunnerTime(status?.runner_process_started_at);
+  const startedAt = status?.started_at ?? status?.updated_at ?? status?.created_at;
+  const exactStartedAt = exactManagedJobRunnerTime(startedAt);
+  if (pid === null || processStartedAt === null || exactStartedAt === null) return {};
+  return {
+    pid,
+    processStartedAt,
+    startedAt: exactStartedAt,
   };
 }
 

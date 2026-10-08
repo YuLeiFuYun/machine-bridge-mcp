@@ -69,6 +69,17 @@ try {
   assert(current.workspace_hash === "c".repeat(24)
     && current.global_package_rollback_baseline?.entry === globalPackageRollbackBaseline.entry,
   "activation record did not round-trip");
+  for (const field of ["package_name", "package_version", "source", "shasum", "integrity", "promotion_content_sha256", "activated_at", "workspace_hash"]) {
+    expectThrow(() => validatePrereleaseActivation({ ...base, [field]: [base[field]] }), field === "workspace_hash" ? "workspace hash is invalid" : `${field} must be a string`);
+  }
+  expectThrow(() => validatePrereleaseActivation({
+    ...base,
+    global_package_rollback_baseline: { ...globalPackageRollbackBaseline, version: [globalPackageRollbackBaseline.version] },
+  }), "global package rollback baseline");
+  expectThrow(() => validatePrereleaseActivation({
+    ...base,
+    source: "npm-prerelease", npm_dist_tag: "beta", published_at: ["2026-07-21T11:00:00.000Z"],
+  }), "publication timestamp is invalid");
   const runtimeBound = validatePrereleaseActivation({
     ...base,
     package_version: "3.0.0-beta.2",

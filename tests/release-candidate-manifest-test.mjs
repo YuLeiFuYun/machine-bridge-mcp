@@ -12,6 +12,9 @@ const value = {
 };
 const normalized = validateCandidateManifest(value, { packageName: value.package_name, packageVersion: value.package_version });
 assert(Object.keys(normalized).length === 9, "candidate manifest normalization retained extra data");
+for (const field of ["package_name", "package_version", "filename", "shasum", "integrity", "promotion_content_sha256", "prepared_at"]) {
+  expectThrow(() => validateCandidateManifest({ ...value, [field]: [value[field]] }), `${field} must be a string`);
+}
 expectThrow(() => validateCandidateManifest({ ...value, local_path: "/Users/example/private" }), "unsupported fields");
 expectThrow(() => validateCandidateManifest({ ...value, filename: "other.tgz" }), "filename is invalid");
 expectThrow(() => validateCandidateManifest({ ...value, package_version: "3.0.0-preview.1" }), "unsupported prerelease channel");

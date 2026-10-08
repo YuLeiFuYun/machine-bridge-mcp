@@ -7,8 +7,6 @@ const OAUTH_REFRESH_STORE_SCHEMA_VERSION = 3;
 export const OFFLINE_ACCESS_SCOPE = "offline_access";
 const PASSWORD_TOKEN_PATTERN = /^[a-z][a-z0-9_]{2,31}_[A-Za-z0-9_-]{43}$/;
 const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
-// Existing account identities remain readable across upgrades; new account creation uses ACCOUNT_NAME_PATTERN.
-const PERSISTED_ACCOUNT_NAME_PATTERN = /^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{1,62}[a-z0-9])$/;
 
 export interface AccountRecord {
   account_id: string;
@@ -29,9 +27,9 @@ export interface OAuthClient {
   redirect_uris: string[];
   created_at: number;
   last_used_at: number;
-  has_been_authorized?: boolean;
-  registration_identity?: string;
-  registration_revision?: number;
+  has_been_authorized: boolean;
+  registration_identity: string;
+  registration_revision: number;
   trusted_account_id?: string;
   trusted_account_version?: number;
   trusted_role?: AccountRole;
@@ -152,38 +150,9 @@ export function isCurrentOAuthRefreshStore(value: unknown): value is OAuthRefres
     && isRecord(store.revoked_families);
 }
 
-export function upgradeOAuthRefreshStore(value: unknown): OAuthRefreshStore | null {
-  if (isCurrentOAuthRefreshStore(value)) return value;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const previous = value as { schema_version?: unknown; tokens?: unknown; consumed?: unknown; revoked_families?: unknown };
-  if (previous.schema_version === 2 && isRecord(previous.tokens) && isRecord(previous.consumed) && isRecord(previous.revoked_families)) {
-    return {
-      schema_version: OAUTH_REFRESH_STORE_SCHEMA_VERSION,
-      tokens: previous.tokens as OAuthRefreshStore["tokens"],
-      consumed: previous.consumed as OAuthRefreshStore["consumed"],
-      revoked_families: previous.revoked_families as OAuthRefreshStore["revoked_families"],
-    };
-  }
-  if (previous.schema_version !== 1 || !isRecord(previous.tokens)) return null;
-  const upgraded = emptyOAuthRefreshStore();
-  const now = Math.floor(Date.now() / 1000);
-  for (const [key, raw] of Object.entries(previous.tokens)) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-    const token = raw as OAuthToken;
-    if (!Number.isSafeInteger(token.expires_at) || token.expires_at <= now) continue;
-    const familyId = randomToken("mcp_family");
-    upgraded.tokens[key] = {
-      ...token,
-      family_id: familyId,
-      family_expires_at: token.expires_at,
-      issued_at: now,
-    };
-  }
-  return upgraded;
-}
-
 export function normalizeOAuthScope(value: unknown, serverName: string): string | null {
-  const raw = value === undefined ? serverName : String(value).trim();
+  if (value !== undefined && typeof value !== "string") return null;
+  const raw = value === undefined ? serverName : value.trim();
   if (!raw) return null;
   const requested = raw.split(/\s+/);
   const scopes = new Set(requested);
@@ -233,15 +202,16 @@ export function validateAuthorizationRequest(
 }
 
 export function normalizeAccountName(value: unknown): string | null {
-  const name = String(value ?? "").trim().toLowerCase();
+  if (typeof value !== "string") return null;
+  const name = value.trim().toLowerCase();
   return ACCOUNT_NAME_PATTERN.test(name) ? name : null;
 }
 
 export function accountByName(store: OAuthStore, name: unknown): AccountRecord | null {
-  const candidate = String(name ?? "").trim().toLowerCase();
-  const normalized = PERSISTED_ACCOUNT_NAME_PATTERN.test(candidate) ? candidate : null;
-  if (!normalized) return null;
-  return Object.values(store.accounts).find((account) => account.name === normalized) ?? null;
+  if (typeof name !== "string") return null;
+  const candidate = name.trim().toLowerCase();
+  if (!ACCOUNT_NAME_PATTERN.test(candidate)) return null;
+  return Object.values(store.accounts).find((account) => account.name === candidate) ?? null;
 }
 
 export async function createAccount(input: { name: unknown; displayName?: unknown; role: unknown; password: unknown; now: number }): Promise<AccountRecord> {

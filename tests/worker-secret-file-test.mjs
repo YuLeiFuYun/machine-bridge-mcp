@@ -99,13 +99,25 @@ try {
 
   const legacyStale = join(profileDir, "worker-secrets-999998-1001-deadbeefcafe.json");
   await writeFile(legacyStale, "{}", { mode: 0o600 });
-  let legacyOwner;
-  cleanupStaleWorkerSecretFiles(profileDir, {
-    inspectProcess(owner) { legacyOwner = owner; return { reclaimable: true }; },
-  });
-  if (legacyOwner?.processStartedAt !== undefined || await exists(legacyStale)) {
-    throw new Error("legacy Worker-secret filename did not preserve optional process-start identity semantics");
+  let legacyOwnerInspected = false;
+  expectThrow(() => cleanupStaleWorkerSecretFiles(profileDir, {
+    inspectProcess() { legacyOwnerInspected = true; return { reclaimable: true }; },
+  }), "filename is obsolete or invalid");
+  if (legacyOwnerInspected || !await exists(legacyStale)) {
+    throw new Error("obsolete Worker-secret filename was interpreted as current ownership evidence or removed");
   }
+  await rm(legacyStale, { force: true });
+
+  const unsafeOwner = join(profileDir, `worker-secrets-${"9".repeat(32)}-1002-p500-deadbeefcafe.json`);
+  await writeFile(unsafeOwner, "{}", { mode: 0o600 });
+  let unsafeOwnerInspected = false;
+  expectThrow(() => cleanupStaleWorkerSecretFiles(profileDir, {
+    inspectProcess() { unsafeOwnerInspected = true; return { reclaimable: true }; },
+  }), "owner metadata is invalid");
+  if (unsafeOwnerInspected || !await exists(unsafeOwner)) {
+    throw new Error("unsafe Worker-secret owner identity reached liveness inspection or was removed");
+  }
+  await rm(unsafeOwner, { force: true });
 
   cleanupStaleWorkerSecretFiles(profileDir, {
     readDirectory() { return [

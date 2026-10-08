@@ -100,11 +100,11 @@ export function readOwnerStateLock(file, purpose, residueIdentity = null) {
   let parsed;
   try { parsed = JSON.parse(text); } catch { return { kind: "invalid", residueIdentity }; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid", residueIdentity };
-  if (!Number.isInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid", residueIdentity };
-  if (!/^[a-f0-9]{32}$/.test(String(parsed.token || ""))) return { kind: "invalid", residueIdentity };
+  if (!Number.isSafeInteger(parsed.pid) || parsed.pid <= 0) return { kind: "invalid", residueIdentity };
+  if (typeof parsed.token !== "string" || !/^[a-f0-9]{32}$/.test(parsed.token)) return { kind: "invalid", residueIdentity };
   if (parsed.purpose !== purpose) return { kind: "invalid", residueIdentity };
-  if (!Number.isFinite(Date.parse(String(parsed.startedAt || "")))) return { kind: "invalid", residueIdentity };
-  if (!Number.isFinite(Date.parse(String(parsed.processStartedAt || "")))) return { kind: "invalid", residueIdentity };
+  if (typeof parsed.startedAt !== "string" || !Number.isFinite(Date.parse(parsed.startedAt))) return { kind: "invalid", residueIdentity };
+  if (typeof parsed.processStartedAt !== "string" || !Number.isFinite(Date.parse(parsed.processStartedAt))) return { kind: "invalid", residueIdentity };
   return { kind: "owner", owner: parsed, residueIdentity };
 }
 

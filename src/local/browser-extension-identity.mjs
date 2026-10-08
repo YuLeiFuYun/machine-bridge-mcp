@@ -22,12 +22,14 @@ export function extensionIdFromPublicKey(value) {
 }
 
 export function normalizeExtensionId(value) {
-  const extensionId = String(value || "").trim().toLowerCase();
+  if (typeof value !== "string") return "";
+  const extensionId = value.trim().toLowerCase();
   return EXTENSION_ID_PATTERN.test(extensionId) ? extensionId : "";
 }
 
 function normalizeManifestPublicKey(value) {
-  const publicKey = String(value || "").trim();
+  if (typeof value !== "string") throw new Error("browser extension manifest public key must be a string");
+  const publicKey = value.trim();
   if (!PUBLIC_KEY_PATTERN.test(publicKey) || publicKey.length < 128 || publicKey.length > 8192) {
     throw new Error("browser extension manifest must contain a bounded base64 public key");
   }

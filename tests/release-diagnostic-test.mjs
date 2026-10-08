@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { releaseCommandFailure, releaseCommandLabel, releaseDiagnostic, releaseDiagnosticEvent } from "../scripts/release-diagnostic.mjs";
 
 const npmToken = ["npm", "_", "abcdefghijklmnopqrstuvwxyz", "1234567890"].join("");
@@ -54,4 +56,7 @@ const failure = releaseCommandFailure("/private/tooling/npm", ["publish", "--reg
 assert(failure.startsWith("npm publish failed:"), "release command failure omitted the bounded command label");
 assert(!failure.includes("--registry-auth") && !failure.includes("header.payload") && !failure.includes("synthetic-user"),
   "release command failure exposed arguments, bearer material, or a home path");
+const syntaxCheckSource = readFileSync(fileURLToPath(new URL("../scripts/syntax-check.mjs", import.meta.url)), "utf8");
+assert(syntaxCheckSource.includes("releaseDiagnostic(error?.stack || error, 2000)"),
+  "syntax-check stopped routing parser stacks through portable log redaction");
 console.log("release diagnostic redaction test ok");

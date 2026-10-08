@@ -41,7 +41,7 @@ export async function verifyDpopProof(input: {
   if (typeof payload.htm !== "string" || typeof payload.htu !== "string") return null;
   const expectedMethod = (input.expectedMethod || input.request.method).toUpperCase();
   try {
-    if (payload.htm.toUpperCase() !== expectedMethod
+    if (payload.htm !== expectedMethod
         || normalizedHtu(payload.htu) !== normalizedHtu(input.expectedUrl || input.request.url)) return null;
   } catch { return null; }
   const jkt = await jwkThumbprint(publicJwk);

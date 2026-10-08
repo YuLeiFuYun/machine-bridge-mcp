@@ -152,7 +152,7 @@ Installed-application inventory is the deliberate read-only exception: reviewer/
 
 ## Concurrency and revocation
 
-Each MCP request has its own request-ID/cancellation boundary. Native `2026-07-28` HTTP streams are request-scoped rather than session-scoped, and the bounded initialization-era compatibility path does not create an MCP session either. Pending calls are bound to the authenticated account/client/family authority that was validated for that request.
+Each MCP request has its own request-ID/cancellation boundary. Native `2026-07-28` HTTP streams are request-scoped rather than session-scoped, and removed initialization-era requests are rejected before dispatch rather than adapted into an MCP session. Pending calls are bound to the authenticated account/client/family authority that was validated for that request.
 
 A brief relay interruption preserves an ordinary call only within the same-daemon reconnect grace period. Reconciliation or expiry cancels calls without a receiver and terminates their child process trees. A replacement daemon process cannot claim a detached call.
 
@@ -162,7 +162,7 @@ Revoking an account, client, or refresh family blocks new requests immediately t
 
 Operational logs and the local security audit do not contain account passwords, tokens, command text, file content, form values, or results.
 
-Before audit events leave the daemon thread, account/client/family identifiers are HMAC-pseudonymized with a fresh per-daemon runtime key; persistent audit state then applies its existing per-file salt before storing the references. Repeated activity can therefore be correlated within one daemon runtime without storing raw identifiers or leaving a reference that can be recomputed from the public salt alone. Cross-restart principal correlation is intentionally not an audit identity guarantee. `server_info` may still return the current authenticated account ID, role, and version to that same account as part of its own authorization context.
+Before audit events leave the daemon thread, account/client/family identifiers are HMAC-pseudonymized with a fresh per-daemon runtime key; persistent audit state then applies its existing per-file salt before storing the references. Repeated activity can therefore be correlated within one daemon runtime without storing raw identifiers or leaving a reference that can be recomputed from the public salt alone. New events include a random per-runtime pseudonym correlation epoch so investigators can identify the boundary where those pseudonyms rotate without creating a stable cross-restart principal identifier. Remote non-read-only dispatch intents and their terminal events also share only a runtime-keyed pseudonymous operation reference, allowing within-runtime settlement correlation without persisting the raw relay call ID. Cross-restart principal and operation correlation remain intentionally outside the audit identity guarantee. `server_info` may still return the current authenticated account ID, role, and version to that same account as part of its own authorization context.
 
 Do not use secrets, email addresses, customer identifiers, or unnecessary personal data in account names and display names.
 

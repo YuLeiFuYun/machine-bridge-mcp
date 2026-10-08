@@ -306,12 +306,13 @@ assert(implicitAcceptance.alreadyPublished === true
   && implicitAcceptanceRuns === 3 && acceptanceSessionDisposed,
 "npm publication acceptance revalidation did not use the hardened npm session after exact dependency installation");
 
+const cleanupPrivatePath = process.env.HOME ? `${process.env.HOME}/private-cleanup-artifact` : "/Users/example/private-cleanup-artifact";
 const cleanupFailure = await publishCurrentNpmPackage(root, "prerelease", {
   ...acceptedOptions,
   capture: true,
   createSession: async () => ({
     cli: "/synthetic/hardened/npm-cli.js",
-    dispose() { throw new Error("synthetic temporary cleanup failure"); },
+    dispose() { throw new Error(`synthetic temporary cleanup failure at ${cleanupPrivatePath}`); },
   }),
   run(command, args) { return successfulStage(args); },
   readPublished: (() => {
@@ -321,6 +322,8 @@ const cleanupFailure = await publishCurrentNpmPackage(root, "prerelease", {
 });
 assert(cleanupFailure.cleanupWarning.includes("synthetic temporary cleanup failure"),
   "successful npm publication was incorrectly converted into failure by temporary cleanup");
+assert(!cleanupFailure.cleanupWarning.includes(cleanupPrivatePath) && cleanupFailure.cleanupWarning.includes("<home>"),
+  "successful npm publication cleanup warning leaked a local home path");
 await assertRejects(
   () => publishCurrentNpmPackage(root, "prerelease", {
     ...acceptedOptions,

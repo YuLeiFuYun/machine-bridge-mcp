@@ -41,10 +41,11 @@ These are lower bounds, not automatic approval. Continue the soak when use has b
 Complete implementation, tests, documentation, audit notes, and changelog. Set the prerelease version without creating a Git tag:
 
 ```sh
-npm version 3.0.0-beta.1 --no-git-tag-version
+NEXT_PRERELEASE_VERSION=3.0.0-beta.N
+npm version "$NEXT_PRERELEASE_VERSION" --no-git-tag-version
 ```
 
-The version hook synchronizes package metadata, Worker version, and browser-extension metadata.
+Replace `N` with the exact new prerelease sequence before running the command. The version hook synchronizes package metadata, Worker version, and browser-extension metadata.
 
 When MCP protocol behavior changes, an official conformance checkout may be run without adding the alpha runner to the package dependency graph:
 
@@ -235,7 +236,7 @@ From the exact accepted source checkout, run the following automatically after a
 npm run prerelease:install -- --allow-worker-deploy
 ```
 
-This command verifies that the GitHub Prerelease asset SHA-256 and npm registry tarball SHA-1/SHA-512/dist-tag all match the locally accepted candidate, resolves the owner's current global npm prefix, creates a temporary hardened npm, installs that exact published version into the same global prefix, updates the Worker and login daemon, verifies both versions, and writes an owner-only `npm-prerelease` activation record. Schema 2 may preserve recovered-activation evidence only as an allowlisted reason plus its fixed canonical detail; lower-layer exception text is neither required nor persisted by the current writer. The record names any retained fallback explicitly as `global_package_rollback_baseline`: it identifies the globally installed npm package and entrypoint available for operator-directed disaster recovery, not the service runtime that was active immediately before activation. The activation transaction captures and verifies that previous service identity separately while the handoff is in progress. The current activation reader accepts schema 2 only; older schema-1 `previous` records are historical evidence, not a supported operational input to current release commands. The formal soak clock starts from this activation record, not from a local unpublished candidate.
+This command verifies that the GitHub Prerelease asset SHA-256 and npm registry tarball SHA-1/SHA-512/dist-tag all match the locally accepted candidate, resolves the owner's current global npm prefix, creates a temporary hardened npm, installs that exact published version into the same global prefix, updates the Worker and login daemon, verifies both versions, and writes an owner-only schema-2 `npm-prerelease` activation record. Recovered-activation evidence is limited to an allowlisted reason plus its fixed canonical detail; lower-layer exception text is neither required nor persisted by the current writer. The record names any retained fallback explicitly as `global_package_rollback_baseline`: it identifies the globally installed npm package and entrypoint available for operator-directed disaster recovery, not the service runtime that was active immediately before activation. The activation transaction captures and verifies that previous service identity separately while the handoff is in progress. The formal soak clock starts from this activation record, not from a local unpublished candidate.
 
 The activation also publishes the exact packaged browser-extension files into the stable release-channel extension directory. Chromium does not hot-reload an unpacked extension merely because its source files changed, so browser soak evidence is valid only after the extension has been reloaded/re-paired as needed and `browser_status` reports the expected version/capability handshake as connected. A pending `extension_reload_required=true` is an explicit incomplete browser-test surface, not evidence that package/Worker/service activation failed.
 
@@ -257,7 +258,8 @@ Never edit or replace an already published prerelease version.
 After the minimum interval and adequate real use, the owner reports that no blocking issue remains. The coding agent records that explicit result with the exact phrase printed by the command, for example:
 
 ```sh
-npm run prerelease:soak:accept -- --confirm "I SOAK-TESTED machine-bridge-mcp 3.0.0-beta.1 FOR AT LEAST 7d WITH NO BLOCKING ISSUES"
+VERSION="$(node -p 'require("./package.json").version')"
+npm run prerelease:soak:accept -- --confirm "I SOAK-TESTED machine-bridge-mcp ${VERSION} FOR AT LEAST 7d WITH NO BLOCKING ISSUES"
 ```
 
 The command verifies:

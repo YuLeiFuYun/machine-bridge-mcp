@@ -42,8 +42,8 @@ export function listManagedJobs({ jobRoot, args, context, logger, reconcileStatu
   const visibleJobs = records.slice(0, limit).map((record) => record.job);
   const recentProcessRecovery = recentProcessRecoveryJobs(records, visibleJobs);
   const capacity = managedJobCapacitySnapshot(jobRoot);
-  const durableTerminal = records.filter((record) => record.retentionClass !== "transient_process" && isTerminalManagedJobStatus(String(record.job?.status || ""))).length;
-  const transientTerminal = records.filter((record) => record.retentionClass === "transient_process" && isTerminalManagedJobStatus(String(record.job?.status || ""))).length;
+  const durableTerminal = records.filter((record) => record.retentionClass !== "transient_process" && isTerminalManagedJobStatus(record.job?.status)).length;
+  const transientTerminal = records.filter((record) => record.retentionClass === "transient_process" && isTerminalManagedJobStatus(record.job?.status)).length;
   return {
     jobs: visibleJobs,
     recent_process_recovery: recentProcessRecovery,

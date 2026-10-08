@@ -10,8 +10,9 @@ export function assertTerminalJobEvidence(dir, status) {
     throw new BridgeError("integrity_error", "managed job terminal state does not match its directory");
   }
   if (status.result_persisted === false) {
-    if (!Number.isFinite(Date.parse(String(status.finished_at || "")))
-        || !/^[a-z0-9._-]{1,80}$/.test(String(status.terminal_record_error_class || ""))) {
+    if (typeof status.finished_at !== "string" || !Number.isFinite(Date.parse(status.finished_at))
+        || typeof status.terminal_record_error_class !== "string"
+        || !/^[a-z0-9._-]{1,80}$/.test(status.terminal_record_error_class)) {
       throw new BridgeError("integrity_error", "managed job unpersisted terminal result lacks valid failure evidence");
     }
     return;

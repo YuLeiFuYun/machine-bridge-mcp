@@ -7,14 +7,15 @@ const MAX_PACKAGE_MANIFEST_BYTES = 2 * 1024 * 1024;
 const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 export function inspectRuntimePackageIdentity(entryScript, options = {}) {
-  const expectedName = String(options.expectedName || packageName);
-  const expectedVersion = String(options.expectedVersion || packageVersion);
-  const platform = String(options.platform || process.platform);
-  const requestedEntry = String(entryScript || "");
-  if (!requestedEntry || !path.isAbsolute(requestedEntry)) {
+  const expectedName = options.expectedName ?? packageName;
+  const expectedVersion = options.expectedVersion ?? packageVersion;
+  const platform = options.platform ?? process.platform;
+  const requestedEntry = entryScript;
+  if (typeof requestedEntry !== "string" || !requestedEntry || !path.isAbsolute(requestedEntry)) {
     throw new TypeError("runtime package entry must be an absolute path");
   }
-  if (!expectedName || !expectedVersion || !PACKAGE_VERSION.test(expectedVersion)) {
+  if (typeof expectedName !== "string" || typeof expectedVersion !== "string"
+      || typeof platform !== "string" || !expectedName || !expectedVersion || !PACKAGE_VERSION.test(expectedVersion)) {
     throw new TypeError("runtime package identity requires a valid expected name and version");
   }
 
@@ -50,8 +51,8 @@ export function inspectRuntimePackageIdentity(entryScript, options = {}) {
   let manifest;
   try { manifest = JSON.parse(manifestBytes.toString("utf8")); }
   catch (error) { throw new Error("runtime package manifest is not valid JSON", { cause: error }); }
-  const version = String(manifest?.version || "");
-  if (manifest?.name !== expectedName || !PACKAGE_VERSION.test(version)) {
+  const version = manifest?.version;
+  if (manifest?.name !== expectedName || typeof version !== "string" || !PACKAGE_VERSION.test(version)) {
     throw new Error("runtime package identity is invalid");
   }
   if (version !== expectedVersion) {

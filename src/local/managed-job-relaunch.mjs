@@ -2,34 +2,35 @@ import { join } from "node:path";
 import { removePathSync } from "./atomic-fs.mjs";
 import { assertManagedJobPlanIntegrity } from "./managed-job-plan-integrity.mjs";
 import { launchRunner } from "./managed-job-runner.mjs";
+import { appendManagedJobRecovery } from "./managed-job-recovery-history.mjs";
 import { atomicWriteJson, readRequiredJson } from "./managed-job-storage.mjs";
 
 const MAX_PLAN_BYTES = 1024 * 1024;
 
 export function relaunchInterruptedManagedJob({
-  dir, statusFile, status, recoveryAttempts, recoveryToken, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
+  dir, statusFile, status, recoveryToken, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
 }) {
   const plan = readVerifiedPlan(dir, status);
   clearRunnerRuntime(dir);
+  const recoveredAt = appendManagedJobRecovery(status, "runner_interrupted");
   status.status = "interrupted";
-  status.updated_at = new Date().toISOString();
-  status.finished_at = status.updated_at;
+  status.updated_at = recoveredAt;
+  status.finished_at = recoveredAt;
   status.error_class = "runner_interrupted";
-  status.recovery_attempts = recoveryAttempts + 1;
   atomicWriteJson(statusFile, status, 256 * 1024);
   return launchRunner(dir, true, recoveryToken, runnerLaunchOptions(plan, logger, runnerEnvironmentOverrides, onRunnerExit, runnerSpawnProcess));
 }
 
 export function relaunchDependencyWaitManagedJob({
-  dir, statusFile, status, recoveryAttempts, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
+  dir, statusFile, status, logger, runnerEnvironmentOverrides, runnerSpawnProcess, onRunnerExit,
 }) {
   const plan = readVerifiedPlan(dir, status);
   clearRunnerRuntime(dir);
+  const recoveredAt = appendManagedJobRecovery(status, "dependency_wait_runner_interrupted");
   status.status = "queued";
   status.current_phase = "dependency_wait";
-  status.updated_at = new Date().toISOString();
+  status.updated_at = recoveredAt;
   status.error_class = null;
-  status.recovery_attempts = recoveryAttempts + 1;
   status.runner_pid = null;
   status.runner_process_started_at = null;
   atomicWriteJson(statusFile, status, 256 * 1024);

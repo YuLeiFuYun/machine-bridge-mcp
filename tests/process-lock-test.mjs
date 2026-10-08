@@ -194,6 +194,54 @@ function processIdentityTest() {
   });
   assert(current.current && current.reason === "current_process", "current process identity was rejected");
 
+  const stringPid = inspectProcessInstance({ ...owner, pid: String(owner.pid) }, {
+    now,
+    isAlive: () => true,
+    getProcessStartTime: () => now - 2000,
+  });
+  assert(!stringPid.current && stringPid.reason === "invalid_pid" && stringPid.reclaimable === true,
+    "persisted process ownership coerced a string PID into authority");
+
+  const arrayLockTime = inspectProcessInstance({ ...owner, startedAt: [owner.startedAt] }, {
+    now,
+    isAlive: () => true,
+    getProcessStartTime: () => now - 2000,
+  });
+  assert(!arrayLockTime.current && arrayLockTime.reason === "invalid_lock_timestamp" && arrayLockTime.reclaimable === false,
+    "persisted process ownership coerced an array lock timestamp into authority");
+
+  const arrayProcessTime = inspectProcessInstance({ ...owner, processStartedAt: [owner.processStartedAt] }, {
+    now,
+    isAlive: () => true,
+    getProcessStartTime: () => now - 2000,
+  });
+  assert(!arrayProcessTime.current && arrayProcessTime.reason === "invalid_process_timestamp" && arrayProcessTime.reclaimable === false,
+    "persisted process ownership coerced an array process timestamp into authority");
+
+  const numericLockTime = inspectProcessInstance({ ...owner, startedAt: now - 1000 }, {
+    now,
+    isAlive: () => true,
+    getProcessStartTime: () => now - 2000,
+  });
+  assert(!numericLockTime.current && numericLockTime.reason === "invalid_lock_timestamp" && numericLockTime.reclaimable === false,
+    "persisted process ownership accepted an undeclared numeric lock timestamp");
+
+  const numericProcessTime = inspectProcessInstance({ ...owner, processStartedAt: now - 2000 }, {
+    now,
+    isAlive: () => true,
+    getProcessStartTime: () => now - 2000,
+  });
+  assert(!numericProcessTime.current && numericProcessTime.reason === "invalid_process_timestamp" && numericProcessTime.reclaimable === false,
+    "persisted process ownership accepted an undeclared numeric process timestamp");
+
+  const nonCanonicalLockTime = inspectProcessInstance({ ...owner, startedAt: new Date(now - 1000).toUTCString() }, {
+    now,
+    isAlive: () => true,
+    getProcessStartTime: () => now - 2000,
+  });
+  assert(!nonCanonicalLockTime.current && nonCanonicalLockTime.reason === "invalid_lock_timestamp" && nonCanonicalLockTime.reclaimable === false,
+    "persisted process ownership accepted a non-canonical lock timestamp");
+
   const reused = inspectProcessInstance(owner, {
     now,
     isAlive: () => true,
@@ -449,13 +497,29 @@ async function malformedAndReusedPidLockTest() {
   const file = join(state.paths.profileDir, "startup.lock");
 
   await writeFile(file, "{partial", { mode: 0o600 });
-  const recent = acquireStartupLock(state);
-  assert(!recent.acquired && recent.reason === "recent_invalid_lock" && existsSync(file), "recent malformed lock was removed unsafely");
+  expectThrow(() => acquireStartupLock(state), "startup lock is malformed");
+  assert(existsSync(file), "malformed process lock was removed");
   const old = new Date(Date.now() - 120_000);
   await utimes(file, old, old);
-  const reclaimed = acquireStartupLock(state, { operation: "reclaim-malformed" });
-  assert(reclaimed.acquired, "old malformed lock was not reclaimed");
-  reclaimed.release();
+  expectThrow(() => acquireStartupLock(state, { operation: "reject-old-malformed" }), "startup lock is malformed");
+  assert(existsSync(file), "old malformed process lock was reclaimed by age alone");
+  await rm(file, { force: true });
+
+  await writeFile(file, `${JSON.stringify({
+    pid: process.pid,
+    token: ["a".repeat(32)],
+    purpose: "startup",
+    workspace: state.workspace.path,
+    startedAt: new Date().toISOString(),
+    processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
+    entryScript: "fixture",
+  })}\n`, { mode: 0o600 });
+  expectThrow(() => acquireStartupLock(state, { operation: "reject-coerced-owner" }), "startup lock is malformed");
+  assert(existsSync(file), "coercible process-lock metadata acquired ownership authority or was removed");
+  await utimes(file, old, old);
+  expectThrow(() => acquireStartupLock(state, { operation: "reject-old-coerced-owner" }), "startup lock is malformed");
+  assert(existsSync(file), "old coercible process-lock metadata was reclaimed by age alone");
+  await rm(file, { force: true });
 
   await writeFile(file, "x".repeat(64 * 1024 + 1), { mode: 0o600 });
   await utimes(file, old, old);
@@ -470,7 +534,7 @@ async function malformedAndReusedPidLockTest() {
 
   await writeFile(file, `${JSON.stringify({
     pid: process.pid,
-    token: "fixture-token",
+    token: "7".repeat(32),
     purpose: "startup",
     workspace: state.workspace.path,
     startedAt: new Date().toISOString(),

@@ -1,7 +1,7 @@
 import { json, parseRequestBody } from "./http.ts";
 import type { OAuthRefreshStore, OAuthStore } from "./oauth-state.ts";
 import { CLIENT_ID_PATTERN } from "./oauth-record-contract.ts";
-import { MAX_OAUTH_CLIENTS, OAUTH_CLIENT_REGISTRATION_REVISION } from "./oauth-client-contract.ts";
+import { MAX_OAUTH_CLIENTS } from "./oauth-client-contract.ts";
 import type { AuthorityRevocation } from "../shared/authority-revocation.mjs";
 
 const BODY_LIMIT_BYTES = 64 * 1024;
@@ -27,8 +27,6 @@ export async function handleOAuthClientAdminOperation(options: {
         trusted_account_version: client.trusted_account_version ?? null,
         trusted_role: client.trusted_role ?? null,
         trusted_at: client.trusted_at ?? null,
-        registration_revision: client.registration_revision ?? null,
-        registration_current: client.registration_revision === OAUTH_CLIENT_REGISTRATION_REVISION,
         active_access_tokens: Object.values(store.tokens).filter((token) => token.client_id === client.client_id && token.expires_at > now).length,
         active_refresh_tokens: Object.values(refreshStore.tokens).filter((token) => token.client_id === client.client_id && token.expires_at > now).length,
       }));
@@ -36,7 +34,7 @@ export async function handleOAuthClientAdminOperation(options: {
   }
   if (request.method !== "DELETE") return json({ error: "method_not_allowed" }, 405, { Allow: "GET, DELETE" });
   const body = await parseRequestBody(request, BODY_LIMIT_BYTES);
-  const clientId = String(body.client_id ?? "");
+  const clientId = typeof body.client_id === "string" ? body.client_id : "";
   if (!CLIENT_ID_PATTERN.test(clientId)) return json({ error: "invalid_client_id" }, 400);
   const client = store.clients[clientId];
   if (!client) return json({ error: "client_not_found" }, 404);

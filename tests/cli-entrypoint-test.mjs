@@ -119,6 +119,12 @@ try {
 
   const unknown = run(["not-a-command"]);
   assert(unknown.status === 2 && unknown.stderr.includes("Unknown command"), "unknown command did not return the documented usage error");
+  const privateUnknown = `ghp_${"U".repeat(36)}`;
+  const privateUnknownResult = run([`${privateUnknown}\u001b[31m${homedir()}`]);
+  assert(privateUnknownResult.status === 2 && privateUnknownResult.stderr.includes("Unknown command")
+    && !privateUnknownResult.stderr.includes(privateUnknown) && !privateUnknownResult.stderr.includes(homedir())
+    && !privateUnknownResult.stderr.includes("\u001b"),
+  "unknown CLI command reflected private or control-character input to stderr");
   for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) {
     const topLevel = run([inherited]);
     assert(topLevel.status === 2 && topLevel.stderr.includes("Unknown command"), `prototype-shaped command ${inherited} bypassed command validation`);

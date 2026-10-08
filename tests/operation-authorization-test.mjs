@@ -40,6 +40,25 @@ try {
     protectedRoots: [securityStateRoot],
     auditTargetKey: Buffer.alloc(32, 7),
   });
+  const validRelayAuthorization = {
+    account_id: accountId,
+    account_version: 1,
+    client_id: clientId,
+    family_id: `mcp_family_${"o".repeat(43)}`,
+    role: "owner",
+  };
+  for (const field of ["account_id", "account_version", "client_id", "family_id", "role"]) {
+    let denied = null;
+    try {
+      buildAuthorityContext({
+        authorization: { ...validRelayAuthorization, [field]: [validRelayAuthorization[field]] },
+        daemonPolicy: policyProfile("full"),
+        origin: "relay",
+      });
+    } catch (error) { denied = error; }
+    assert(denied?.code === "authorization_denied",
+      `relay authority coerced non-scalar ${field} into authenticated principal identity`);
+  }
 
   const ownerShell = await authorizer.authorize(operation("exec_command", { command: "printf owner" }, "owner"));
   assert(ownerShell.source === "trusted-owner", "owner operation did not remain interruption-free");

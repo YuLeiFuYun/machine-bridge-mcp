@@ -26,7 +26,11 @@ export class MacosTrustBrokerUnavailableError extends Error {
 }
 
 export function configuredMacosTrustBrokerPath(env = process.env) {
-  const value = String(env?.[BROKER_ENVIRONMENT_VARIABLE] || "").trim();
+  const configured = env?.[BROKER_ENVIRONMENT_VARIABLE];
+  if (configured !== undefined && typeof configured !== "string") {
+    throw new MacosTrustBrokerUnavailableError(BROKER_ENVIRONMENT_VARIABLE + " must be a string");
+  }
+  const value = (configured || "").trim();
   if (!value) return null;
   if (!path.isAbsolute(value)) throw new MacosTrustBrokerUnavailableError(`${BROKER_ENVIRONMENT_VARIABLE} must be an absolute path`);
   return value;
@@ -39,16 +43,16 @@ export function isMacosSecureDeviceRoot(value) {
     && !Array.isArray(value)
     && value.provider === PROVIDER
     && value.brokerProtocol === BROKER_PROTOCOL
-    && path.isAbsolute(String(value.brokerPath || ""))
-    && IDENTIFIER_PATTERN.test(String(value.brokerIdentifier || ""))
-    && TEAM_IDENTIFIER_PATTERN.test(String(value.brokerTeamIdentifier || ""))
-    && /^com\.machine-bridge-mcp\.device\.[A-Za-z0-9._-]{8,160}$/.test(String(value.keyTag || ""))
+    && typeof value.brokerPath === "string" && path.isAbsolute(value.brokerPath)
+    && typeof value.brokerIdentifier === "string" && IDENTIFIER_PATTERN.test(value.brokerIdentifier)
+    && typeof value.brokerTeamIdentifier === "string" && TEAM_IDENTIFIER_PATTERN.test(value.brokerTeamIdentifier)
+    && typeof value.keyTag === "string" && /^com\.machine-bridge-mcp\.device\.[A-Za-z0-9._-]{8,160}$/.test(value.keyTag)
     && value.publicJwk?.kty === "EC"
     && value.publicJwk?.crv === "P-256"
     && typeof value.publicJwk?.x === "string"
     && typeof value.publicJwk?.y === "string"
     && value.keyId === deviceKeyId(value.publicJwk)
-    && Number.isFinite(Date.parse(String(value.createdAt || "")))
+    && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt))
   );
 }
 
@@ -107,7 +111,7 @@ export function ensureMacosSecureDeviceRoot({ workspaceHash, existing = null, ro
 
 export function signWithMacosSecureDeviceRoot(identity, transcript, { reason = "Authorize Machine Bridge startup", options = {} } = {}) {
   if (!isMacosSecureDeviceRoot(identity)) throw new Error("Secure Enclave device root is invalid");
-  const input = Buffer.from(String(transcript), "utf8");
+  const input = Buffer.from(typeof transcript === "string" ? transcript : "", "utf8");
   if (!input.length || input.length > MAX_TRANSCRIPT_BYTES) throw new Error("device root signing transcript is empty or too large");
   const broker = inspectProvisionedMacosTrustBroker(identity.brokerPath, options);
   assertBrokerBinding(identity, broker);
@@ -125,7 +129,8 @@ export function signWithMacosSecureDeviceRoot(identity, transcript, { reason = "
 }
 
 export function inspectProvisionedMacosTrustBroker(binaryPath, options = {}) {
-  const raw = String(binaryPath || "");
+  if (typeof binaryPath !== "string") throw new MacosTrustBrokerUnavailableError("macOS trust broker path must be a string");
+  const raw = binaryPath;
   if (!path.isAbsolute(raw)) throw new MacosTrustBrokerUnavailableError("macOS trust broker path must be absolute");
   let info;
   let resolved;
@@ -287,8 +292,8 @@ function readDevelopmentBrokerMarker(marker) {
   }
   if (!value || typeof value !== "object" || Array.isArray(value)
       || value.schema !== 1
-      || !/^[0-9a-f]{64}$/.test(String(value.source_sha256 || ""))
-      || !/^[0-9a-f]{64}$/.test(String(value.binary_sha256 || ""))) return null;
+      || typeof value.source_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.source_sha256)
+      || typeof value.binary_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.binary_sha256)) return null;
   return { sourceSha256: value.source_sha256, binarySha256: value.binary_sha256 };
 }
 

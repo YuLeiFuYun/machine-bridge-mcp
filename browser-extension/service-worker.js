@@ -1,4 +1,4 @@
-importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "broker-liveness.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operations.js"); const brokerLiveness = globalThis.__machineBridgeBrokerLiveness;
+importScripts("browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "broker-liveness.js", "devtools-session.js", "devtools-input.js", "devtools-observation.js", "browser-operation-contract.js", "browser-operations.js"); const brokerLiveness = globalThis.__machineBridgeBrokerLiveness;
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
@@ -31,7 +31,8 @@ async function handleActionClick(tab) {
   if (pairingPage) {
     try {
       const material = await chrome.tabs.sendMessage(tab.id, { type: "machine_bridge_pairing_material" });
-      if (material?.grant && Number.isInteger(Number(material.port))) {
+      if (typeof material?.grant === "string" && Number.isSafeInteger(material.port)
+          && material.port >= 1024 && material.port <= 65535) {
         const paired = await pairFromBootstrap(material.port, material.grant, { replace: true });
         await setPairingPageStatus(tab.id, paired.ok === true ? "Paired. You may close this tab." : "Pairing failed.");
         return;
@@ -95,8 +96,9 @@ async function pairFromBootstrap(port, grant, { replace }) {
 }
 
 async function pairConfiguration(rawEndpoint, rawToken, { replace }) {
-  const endpoint = String(rawEndpoint || "");
-  const token = String(rawToken || "");
+  if (typeof rawEndpoint !== "string" || typeof rawToken !== "string") return { ok: false, error: "invalid_pairing_material" };
+  const endpoint = rawEndpoint;
+  const token = rawToken;
   const brokerEndpoint = browserBrokerAuth().parseBrokerEndpoint(endpoint);
   if (!brokerEndpoint || !/^[A-Za-z0-9_-]{32,100}$/.test(token)) return { ok: false, error: "invalid_pairing_material" };
   const current = await chrome.storage.local.get(["endpoint", "token"]);

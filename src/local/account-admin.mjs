@@ -22,33 +22,37 @@ export class AccountAdminClient {
   listClients() { return this.request("GET", "/admin/clients"); }
 
   removeClient({ clientId }) {
-    if (!/^mcp_client_[A-Za-z0-9_-]{43}$/.test(String(clientId || ""))) throw new BridgeError("invalid_request", "OAuth client id is invalid");
+    if (typeof clientId !== "string" || !/^mcp_client_[A-Za-z0-9_-]{43}$/.test(clientId)) throw new BridgeError("invalid_request", "OAuth client id is invalid");
     return this.request("DELETE", "/admin/clients", { client_id: clientId });
   }
 
   create({ name, role, password, displayName = "" }) {
+    if (typeof password !== "string") throw new BridgeError("invalid_request", "account password is invalid");
+    if (typeof displayName !== "string") throw new BridgeError("invalid_request", "account display name is invalid");
     return this.request("POST", "/admin/accounts", {
       name: normalizeAccountName(name),
       role: normalizeAccountRole(role),
-      password: String(password || ""),
-      ...(displayName ? { display_name: String(displayName) } : {}),
+      password,
+      ...(displayName ? { display_name: displayName } : {}),
     });
   }
 
   update({ accountId, role, active, displayName }) {
     if (active !== undefined && typeof active !== "boolean") throw new BridgeError("invalid_request", "account active flag must be a boolean");
+    if (displayName !== undefined && typeof displayName !== "string") throw new BridgeError("invalid_request", "account display name is invalid");
     return this.request("PATCH", "/admin/accounts", {
       account_id: requiredAccountId(accountId),
       ...(role === undefined ? {} : { role: normalizeAccountRole(role) }),
       ...(active === undefined ? {} : { active }),
-      ...(displayName === undefined ? {} : { display_name: String(displayName) }),
+      ...(displayName === undefined ? {} : { display_name: displayName }),
     });
   }
 
   rotatePassword({ accountId, password }) {
+    if (typeof password !== "string") throw new BridgeError("invalid_request", "account password is invalid");
     return this.request("POST", "/admin/accounts/rotate-password", {
       account_id: requiredAccountId(accountId),
-      password: String(password || ""),
+      password,
     });
   }
 
@@ -57,8 +61,9 @@ export class AccountAdminClient {
   }
 
   async find(target) {
+    if (typeof target !== "string") throw new BridgeError("invalid_request", "account target must be a string");
     const result = await this.list();
-    const value = String(target || "").trim().toLowerCase();
+    const value = target.trim().toLowerCase();
     const matches = result.accounts.filter((account) => account.account_id === target || account.name === value);
     if (matches.length !== 1) throw new BridgeError(matches.length ? "conflict" : "not_found", matches.length ? "account target is ambiguous" : "account was not found");
     return matches[0];
@@ -119,8 +124,9 @@ export function accountAdminRequestHeaders({
   nonce = randomBytes(24).toString("base64url"),
 }) {
   validateDeviceSessionIdentity(sessionIdentity, now);
-  const issuedAt = Math.floor(Number(now) / 1000);
-  const bodyHash = createHash("sha256").update(String(body)).digest("hex");
+  if (typeof method !== "string" || typeof body !== "string") throw new Error("account admin signing input is invalid");
+  const issuedAt = Math.floor(now / 1000);
+  const bodyHash = createHash("sha256").update(body).digest("hex");
   const transcript = adminAuthTranscript({
     origin,
     method: String(method).toUpperCase(),
@@ -144,7 +150,8 @@ export function accountAdminRequestHeaders({
 export function accountRoleNames() { return Object.keys(ACCOUNT_ROLES); }
 
 function normalizeWorkerUrl(value) {
-  const url = new URL(String(value || ""));
+  if (typeof value !== "string") throw new BridgeError("invalid_request", "Worker URL must be a credential-free HTTPS origin");
+  const url = new URL(value);
   if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
     throw new BridgeError("invalid_request", "Worker URL must be a credential-free HTTPS origin");
   }
@@ -152,13 +159,15 @@ function normalizeWorkerUrl(value) {
 }
 
 function normalizeAccountName(value) {
-  const name = String(value || "").trim().toLowerCase();
+  if (typeof value !== "string") throw new BridgeError("invalid_request", "account name must contain 3-64 lowercase letters, digits, dots, underscores, or hyphens");
+  const name = value.trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/.test(name)) throw new BridgeError("invalid_request", "account name must contain 3-64 lowercase letters, digits, dots, underscores, or hyphens");
   return name;
 }
 
 function requiredAccountId(value) {
-  const id = String(value || "");
+  if (typeof value !== "string") throw new BridgeError("invalid_request", "account id is invalid");
+  const id = value;
   if (!/^acct_[A-Za-z0-9_-]{20,96}$/.test(id)) throw new BridgeError("invalid_request", "account id is invalid");
   return id;
 }

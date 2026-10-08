@@ -8,6 +8,7 @@ import {
   saveState,
 } from "./state.mjs";
 import { ensureWorkerDeployment } from "./worker-deployment.mjs";
+import { isWorkerName } from "./worker-identity-contract.mjs";
 
 export async function convergeRemoteConfiguration({ args, state, ensureWorkerDeployment: ensureWorkerDeploymentImpl = ensureWorkerDeployment }) {
   const workerName = validateWorkerName(args.workerName);
@@ -40,8 +41,9 @@ export async function convergeRemoteConfiguration({ args, state, ensureWorkerDep
 
 export function validateWorkerName(value) {
   if (value === undefined || value === null || value === false) return undefined;
-  const name = String(value).trim();
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+  if (typeof value !== "string") throw new Error("--worker-name must be a string");
+  const name = value.trim();
+  if (!isWorkerName(name)) {
     throw new Error("--worker-name must be 1-63 lowercase letters, digits, or hyphens, and cannot start or end with a hyphen");
   }
   return name;

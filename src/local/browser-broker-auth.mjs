@@ -17,7 +17,7 @@ export function createBrokerAuthChallenge() {
 
 export function createBrokerInitProof(token, role, clientChallenge) {
   assertToken(token); assertRole(role);
-  if (!CHALLENGE.test(String(clientChallenge || ""))) throw new Error("browser broker authentication challenge is invalid");
+  if (typeof clientChallenge !== "string" || !CHALLENGE.test(clientChallenge)) throw new Error("browser broker authentication challenge is invalid");
   return hmac(token, `machine-bridge-browser-${role}-init-v2\0${clientChallenge}`);
 }
 
@@ -26,7 +26,7 @@ export function createBrokerServerProof(token, role, clientChallenge, serverNonc
 }
 
 export function verifyBrokerServerProof(token, role, clientChallenge, serverNonce, proof) {
-  if (!PROOF.test(String(proof || ""))) return false;
+  if (typeof proof !== "string" || !PROOF.test(proof)) return false;
   return safeEqual(createBrokerServerProof(token, role, clientChallenge, serverNonce), proof);
 }
 
@@ -43,7 +43,7 @@ export function createBrokerAuthRegistry(token, role, options = {}) {
   const pending = new Map();
   return {
     issue(clientChallenge, initProof) {
-      if (!CHALLENGE.test(String(clientChallenge || "")) || !PROOF.test(String(initProof || ""))) return null;
+      if (typeof clientChallenge !== "string" || typeof initProof !== "string" || !CHALLENGE.test(clientChallenge) || !PROOF.test(initProof)) return null;
       if (!safeEqual(createBrokerInitProof(token, role, clientChallenge), initProof)) return null;
       prunePending(pending);
       const existing = pending.get(clientChallenge);
@@ -73,7 +73,8 @@ export function parseBrokerAuthResponse(headers) {
 }
 
 function parseBrokerProtocol(value, role) {
-  const parts = String(value || "").split(".");
+  if (typeof value !== "string") return null;
+  const parts = value.split(".");
   if (parts.length !== 4 || parts[0] !== `mbm-${role}-v2`) return null;
   const [, clientChallenge, serverNonce, proof] = parts;
   if (!CHALLENGE.test(clientChallenge) || !CHALLENGE.test(serverNonce) || !PROOF.test(proof)) return null;
@@ -82,17 +83,17 @@ function parseBrokerProtocol(value, role) {
 
 function authProof(token, role, direction, clientChallenge, serverNonce) {
   assertToken(token); assertRole(role);
-  if (!CHALLENGE.test(String(clientChallenge || "")) || !CHALLENGE.test(String(serverNonce || ""))) {
+  if (typeof clientChallenge !== "string" || typeof serverNonce !== "string" || !CHALLENGE.test(clientChallenge) || !CHALLENGE.test(serverNonce)) {
     throw new Error("browser broker authentication challenge is invalid");
   }
   return hmac(token, `machine-bridge-browser-${role}-${direction}-v2\0${clientChallenge}\0${serverNonce}`);
 }
 
 function hmac(token, message) { return createHmac("sha256", token).update(message).digest("base64url"); }
-function assertToken(value) { if (!TOKEN.test(String(value || ""))) throw new Error("browser broker credential is invalid"); }
+function assertToken(value) { if (typeof value !== "string" || !TOKEN.test(value)) throw new Error("browser broker credential is invalid"); }
 function assertRole(value) { if (!ROLES.has(value)) throw new Error("browser broker authentication role is invalid"); }
-function safeEqual(left, right) {
-  const a = Buffer.from(String(left)); const b = Buffer.from(String(right));
+function safeEqual(left, right) { if (typeof left !== "string" || typeof right !== "string") return false;
+  const a = Buffer.from(left); const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
 }
 function prunePending(pending) { for (const [key, issued] of pending) if (issued.deadline.expired()) pending.delete(key); }

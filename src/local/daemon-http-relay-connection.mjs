@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { readinessMismatch } from "./relay-connection-classification.mjs";
 import { classifyOperationalError } from "./log.mjs";
-import { classifyRelayTransportError } from "./relay-connection-support.mjs";
+import { classifyRelayTransportError, normalizeWorkerUrl } from "./relay-connection-support.mjs";
 import { createDaemonHttpRelayHeaders } from "./daemon-http-relay-auth.mjs";
 import { classifyRelayTransportErrorReason } from "./relay-transport-error-state.mjs";
 import { postDaemonHttpRelay } from "./daemon-http-relay-request.mjs";
@@ -15,7 +15,7 @@ const ACTIVATION_TOKEN = /^activate_[A-Za-z0-9_-]{43}$/;
 
 export class DaemonHttpRelayConnection {
   constructor(options = {}) {
-    this.workerUrl = String(options.workerUrl || "").replace(/\/$/, "");
+    this.workerUrl = normalizeWorkerUrl(options.workerUrl);
     this.endpoint = `${this.workerUrl}/daemon/http`;
     this.deviceIdentity = options.deviceIdentity;
     this.deviceIdentityProvider = typeof options.deviceIdentityProvider === "function"

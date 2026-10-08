@@ -15,7 +15,7 @@ const JWT_VALUE = sensitiveValuePattern("jwtLikeBearerToken");
 const URL_CREDENTIALS = sensitiveValuePattern("credentialUrl", "gi");
 const NPM_CLI_AUTH_CHALLENGE = /(https?:\/\/[^\s"'<>]*\/auth\/cli\/)[^?&#\s"'<>]+/gi;
 const URL_PARAMETER = /([?&#])([^?&#=\s"'<>]+)=([^&#\s"'<>]*)/g;
-const SENSITIVE_URL_PARAMETER_NAME = /^(?:access_token|refresh_token|token|code|state|auth|authid|session|sessionid|otp|verifier|proof|credential|client_secret|api[_-]?key|private[_-]?key)$/i;
+const SENSITIVE_URL_PARAMETER_NAME = /^(?:access_token|refresh_token|token|code|state|auth|authid|session|sessionid|otp|verifier|proof|credential|grant|recovery[_-]?key|control[_-]?key|extension[_-]?token|runtime[_-]?token|client_secret|api[_-]?key|private[_-]?key)$/i;
 const API_SECRET = sensitiveValuePattern("apiSecretToken");
 const PRIVATE_KEY_HEADER = sensitiveValuePattern("privateKeyHeader");
 const PRIVATE_KEY_BLOCK = /-----BEGIN\s+((?:(?:OPENSSH|RSA|EC|DSA|ENCRYPTED)\s+)?PRIVATE\s+KEY)-----[\s\S]*?(?:-----END\s+\1-----|$)/g;

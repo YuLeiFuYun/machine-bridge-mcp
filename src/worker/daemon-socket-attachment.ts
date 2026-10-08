@@ -27,7 +27,7 @@ export interface DaemonAttachment {
 export function sanitizeDaemonAttachment(value: unknown): DaemonAttachment | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Partial<DaemonAttachment>;
-  if (!["candidate", "probing", "expired", "daemon"].includes(String(candidate.role))) return undefined;
+  if (typeof candidate.role !== "string" || !["candidate", "probing", "expired", "daemon"].includes(candidate.role)) return undefined;
   const policy = sanitizeDaemonPolicy(candidate.policy);
   return {
     role: candidate.role as DaemonRole,

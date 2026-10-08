@@ -26,6 +26,16 @@ try {
     symlinkSync(tarball, fileAlias);
     assert.throws(() => canonicalConsumerTarballPath(fileAlias), /non-symlink regular file/);
   }
+  const privateMissingPath = process.platform === "win32"
+    ? "C:\\Users\\synthetic-reviewer\\private-package\\missing.tgz"
+    : ["", "Users", "synthetic-reviewer", "private-package", "missing.tgz"].join("/");
+  assert.throws(
+    () => canonicalConsumerTarballPath(privateMissingPath),
+    (error) => /consumer tarball is unavailable/.test(error.message)
+      && !error.message.includes("synthetic-reviewer")
+      && error.message.includes("<home>"),
+    "consumer tarball filesystem diagnostics exposed a private home path",
+  );
 } finally {
   rmSync(pathRoot, { recursive: true, force: true });
 }
@@ -117,6 +127,7 @@ for (const [name, version, expected] of [
   ["miniflare", "4.20260722.1", /private control-plane package miniflare/],
   ["undici", "7.28.0", /vulnerable undici 7\.28\.0/],
   ["sharp", "0.35.2", /unsupported sharp 0\.35\.2/],
+  ["sharp", "0.35.4", /unsupported sharp 0\.35\.4/],
 ]) {
   assert.throws(() => validateConsumerTree({
     dependencies: {
@@ -135,6 +146,12 @@ for (const version of ["not-a-version", "9", "9.0", "Infinity.0.0", "09.0.0", "7
 for (const version of ["6.28.0", "7.29.0", "8.9.0", "9.0.0+fixture.1"]) {
   assert.equal(validateConsumerTree({
     dependencies: { [packageName]: { version: packageVersion, dependencies: { undici: { version } } } },
+  }, { packageName, packageVersion }).dependencies, 2);
+}
+
+for (const version of ["0.35.5", "0.36.0"]) {
+  assert.equal(validateConsumerTree({
+    dependencies: { [packageName]: { version: packageVersion, dependencies: { sharp: { version } } } },
   }, { packageName, packageVersion }).dependencies, 2);
 }
 
@@ -187,6 +204,11 @@ assert.throws(() => validateConsumerSbom({
   components: [...sbom.components, { "bom-ref": "undici@7.28.0", name: "undici", version: "7.28.0" }],
   dependencies: [...sbom.dependencies, { ref: "undici@7.28.0", dependsOn: [] }],
 }, { packageName, packageVersion }), /vulnerable undici/);
+assert.throws(() => validateConsumerSbom({
+  ...sbom,
+  components: [...sbom.components, { "bom-ref": "sharp@0.35.4", name: "sharp", version: "0.35.4" }],
+  dependencies: [...sbom.dependencies, { ref: "sharp@0.35.4", dependsOn: [] }],
+}, { packageName, packageVersion }), /unsupported sharp 0\.35\.4/);
 
 for (const version of ["invalid", "9", "7.29.0-beta.1"]) {
   const ref = "undici@" + version;
@@ -195,6 +217,14 @@ for (const version of ["invalid", "9", "7.29.0-beta.1"]) {
     components: [...sbom.components, { "bom-ref": ref, name: "undici", version }],
     dependencies: [...sbom.dependencies, { ref, dependsOn: [] }],
   }, { packageName, packageVersion }), /invalid or prerelease undici/);
+}
+for (const version of ["invalid", "0.35", "0.35.5-beta.1"]) {
+  const ref = "sharp@" + version;
+  assert.throws(() => validateConsumerSbom({
+    ...sbom,
+    components: [...sbom.components, { "bom-ref": ref, name: "sharp", version }],
+    dependencies: [...sbom.dependencies, { ref, dependsOn: [] }],
+  }, { packageName, packageVersion }), /unsupported sharp/);
 }
 
 console.log("consumer package security validation test ok");

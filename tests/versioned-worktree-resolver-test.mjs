@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseWorktrees, referenceMatches, resolveVersionedWorktree, versionMatches } from "../scripts/resolve-versioned-worktree.mjs";
 
 assert(parseWorktrees("worktree /tmp/a\nHEAD abc\nbranch refs/heads/main\n\nworktree /tmp/b\nHEAD def\nprunable stale\n").length === 2,
@@ -12,6 +13,14 @@ assert(!referenceMatches("fix/beta1820-continuity", "beta.182")
     && !referenceMatches("fix/alphabeta182-continuity", "beta.182")
     && referenceMatches("fix/rc7-beta182-continuity", "beta.182"),
   "versioned worktree matcher lost exact prerelease token boundaries");
+const privatePath = join(homedir(), "private-repo");
+const failedCli = spawnSync(process.execPath, [
+  fileURLToPath(new URL("../scripts/resolve-versioned-worktree.mjs", import.meta.url)),
+  privatePath,
+  "beta.999",
+], { encoding: "utf8" });
+assert(failedCli.status === 4 && !failedCli.stderr.includes(homedir()) && failedCli.stderr.includes("<home>"),
+  "versioned worktree CLI exposed a private home path from git diagnostics");
 
 const root = await mkdtemp(join(tmpdir(), "mbm-worktree-resolver-"));
 try {

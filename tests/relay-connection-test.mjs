@@ -10,6 +10,11 @@ import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
 delete process.env.MBM_RELAY_PROXY;
 
 const TEST_CONNECTION_ID = `connection_${"a".repeat(43)}`;
+let invalidWorkerUrlError = null;
+try { new RelayConnection({ workerUrl: ["https://relay.example.invalid"] }); }
+catch (error) { invalidWorkerUrlError = error; }
+assert(invalidWorkerUrlError instanceof Error && /invalid Worker URL/.test(invalidWorkerUrlError.message),
+  "relay connection coerced an array into an authenticated Worker origin");
 const lookupStages = [];
 observeTlsLookup((stage) => lookupStages.push(stage), Object.assign(new Error("dns unavailable"), { code: "EAI_AGAIN" }));
 assert(lookupStages.length === 0, "failed DNS lookup was mislabeled as dns_resolved");
