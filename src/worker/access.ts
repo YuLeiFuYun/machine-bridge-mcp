@@ -26,7 +26,8 @@ export const DEFAULT_ACCOUNT_ROLE = String(accessContract.defaultRole) as Accoun
 export const OWNER_ACCOUNT_ROLE = String(accessContract.ownerRole) as AccountRole;
 
 export function normalizeAccountRole(value: unknown): AccountRole | null {
-  const role = String(value ?? "").trim().toLowerCase();
+  if (typeof value !== "string") return null;
+  const role = value.trim().toLowerCase();
   return Object.hasOwn(roles, role) ? role as AccountRole : null;
 }
 

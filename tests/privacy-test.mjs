@@ -1,11 +1,19 @@
 import { spawnSync } from "node:child_process";
+import nodeAssert from "node:assert/strict";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runStateRedactionPrivacyTest } from "./state-redaction-test.mjs";
+import { requireGitVersion } from "../src/local/git-version.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+nodeAssert.deepEqual(requireGitVersion("git version 2.50.0"), { major: 2, minor: 50, patch: 0 });
+nodeAssert.deepEqual(requireGitVersion("git version 2.54.0 (Apple Git-157)"), { major: 2, minor: 54, patch: 0 });
+nodeAssert.deepEqual(requireGitVersion("git version 2.55.0.windows.5"), { major: 2, minor: 55, patch: 0 });
+nodeAssert.throws(() => requireGitVersion("git version 2.49.9"), /Git 2\.50 or later is required/);
+nodeAssert.throws(() => requireGitVersion("2.54.0"), /Git version output is invalid/);
+nodeAssert.throws(() => requireGitVersion(`git version ${"9".repeat(400)}.0.0`), /Git version output is invalid/);
 const temp = mkdtempSync(join(tmpdir(), "mbm-privacy-test-"));
 const privateName = ["private", "alias+fixture"].join(".");
 try {
@@ -19,6 +27,28 @@ try {
   git(["init", "-q"]);
   git(["config", "user.name", "Privacy Test"]);
   git(["config", "user.email", "developer@example.com"]);
+  writeFileSync(join(temp, "package.json"), `${JSON.stringify({ files: ["src/local"] }, null, 2)}\n`);
+  writeFileSync(join(temp, ".gitignore"), "*.local\n");
+
+  const ignoredPackSecret = join(temp, "src", "local", "ignored-publication-secret.local");
+  const ignoredPackToken = ["npm", "I".repeat(36)].join("_");
+  writeFileSync(ignoredPackSecret, `${ignoredPackToken}\n`);
+  const ignoredPackResult = runCheck();
+  assert(ignoredPackResult.status === 1 && ignoredPackResult.stderr.includes("npm access token"),
+    "privacy checker missed a Git-ignored file inside an explicit npm package files directory");
+  assert(!`${ignoredPackResult.stdout}${ignoredPackResult.stderr}`.includes(ignoredPackToken),
+    "privacy checker echoed a credential from a Git-ignored npm publication file");
+  rmSync(ignoredPackSecret, { force: true });
+
+  const ignoredReadme = join(temp, "README.local");
+  const ignoredReadmeToken = ["npm", "R".repeat(36)].join("_");
+  writeFileSync(ignoredReadme, `${ignoredReadmeToken}\n`);
+  const ignoredReadmeResult = runCheck();
+  assert(ignoredReadmeResult.status === 1 && ignoredReadmeResult.stderr.includes("npm access token"),
+    "privacy checker missed a Git-ignored README that npm auto-includes in the package");
+  assert(!`${ignoredReadmeResult.stdout}${ignoredReadmeResult.stderr}`.includes(ignoredReadmeToken),
+    "privacy checker echoed a credential from a Git-ignored auto-included README");
+  rmSync(ignoredReadme, { force: true });
 
   const checkerPath = join(temp, "scripts", "privacy-check.mjs");
   const checkerSource = fsRead(checkerPath);
@@ -100,7 +130,7 @@ try {
   const clean = runCheck();
   assert(clean.status === 0, `clean privacy fixture failed: ${clean.stderr}`);
 
-  git(["add", "scripts/privacy-check.mjs", "README.md"]);
+  git(["add", "scripts/privacy-check.mjs", "README.md", "package.json", ".gitignore"]);
   const publicAutomationEmail = ["support", "github.com"].join("@");
   git(["commit", "-q", "-m", "safe baseline", "-m", `Signed-off-by: dependabot[bot] <${publicAutomationEmail}>`]);
   const workingTreeDeletion = join(temp, "removed-publication-file.txt");

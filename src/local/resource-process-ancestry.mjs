@@ -14,7 +14,7 @@ export function parseResourceProcessParents(value) {
     const match = /^\s*([1-9][0-9]*)\s+([0-9]+)\s*$/.exec(line);
     if (!match) continue;
     const pid = Number(match[1]); const parent = Number(match[2]);
-    if (Number.isInteger(pid) && pid > 0 && Number.isInteger(parent) && parent >= 0) parents[String(pid)] = parent;
+    if (Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(parent) && parent >= 0) parents[String(pid)] = parent;
   }
   return Object.keys(parents).length ? parents : null;
 }

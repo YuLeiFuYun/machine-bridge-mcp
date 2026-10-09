@@ -39,6 +39,10 @@ const proxyRequestCount = () => healthRequests.filter((request) => request.hasPr
   const workerUrl = "https://worker-health.account-example.workers.dev";
   const expectedWorkerName = "worker-health";
   assert.equal(normalizeWorkerOrigin(workerUrl, expectedWorkerName), workerUrl);
+  assert.throws(() => normalizeWorkerOrigin([workerUrl], expectedWorkerName), /must be strings/,
+    "Worker health coerced an array into a deployment origin");
+  assert.throws(() => normalizeWorkerOrigin(workerUrl, [expectedWorkerName]), /must be strings/,
+    "Worker health coerced an array into a recorded Worker identity");
   assert.equal(workerHealthUrl(workerUrl, expectedWorkerName), `${workerUrl}/healthz`);
   for (const invalid of [
     "http://worker-health.account-example.workers.dev",
@@ -296,6 +300,21 @@ function verifyWorkerFingerprintPathBoundaries() {
     const state = workerState("mbm-fingerprint-boundary");
     const baseline = workerDeploymentFingerprint(state, { packageRoot: fixture });
     assert.match(baseline, /^[0-9a-f]{64}$/);
+    assert.throws(() => workerDeploymentFingerprint({
+      ...state, worker: { ...state.worker, oauthTokenVersion: [state.worker.oauthTokenVersion] },
+    }, { packageRoot: fixture }), /deployment identity is invalid/);
+    assert.throws(() => workerDeploymentFingerprint({
+      ...state, worker: { ...state.worker, name: [state.worker.name] },
+    }, { packageRoot: fixture }), /deployment identity is invalid/);
+    assert.throws(() => ensureWorkerSecrets({
+      worker: { ...state.worker, oauthTokenVersion: [state.worker.oauthTokenVersion] },
+    }), /OAuth token version is invalid/);
+    assert.throws(() => ensureWorkerSecrets({
+      worker: { ...state.worker, name: [state.worker.name] },
+    }), /Worker name is invalid/);
+    assert.throws(() => ensureWorkerSecrets({
+      worker: { ...state.worker, previousNames: [[state.worker.name]] },
+    }), /previous Worker names are invalid/);
 
     const collisionA = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-collision-a-"));
     const collisionB = mkdtempSync(join(os.tmpdir(), "mbm-worker-fingerprint-collision-b-"));
@@ -714,7 +733,7 @@ function workerState(name) {
     worker: {
       name,
       deviceIdentity: createDeviceIdentity(),
-      oauthTokenVersion: "token_version_test_secret_abcdefghijklmnopqrstuvwxyz",
+      oauthTokenVersion: `token_version_${"a".repeat(43)}`,
     },
   };
 }

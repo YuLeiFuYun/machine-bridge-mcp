@@ -2,11 +2,11 @@ import http from "node:http";
 import https from "node:https";
 import { appName } from "./package-identity.mjs";
 import { proxyAgentForHttp } from "./network-proxy.mjs";
+import { isWorkerName } from "./worker-identity-contract.mjs";
 
 const MAX_HEALTH_BODY_BYTES = 64 * 1024;
 const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
 const NON_RETRYABLE_HEALTH_ERRORS = new Set(["missing_worker_url", "invalid_worker_url", "proxy_configuration"]);
-const WORKER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const WORKERS_DEV_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.workers\.dev$/;
 
 export async function workerHealth(workerUrl, expectedVersion, options = {}) {
@@ -57,14 +57,17 @@ export async function retryWorkerHealth(workerUrl, expectedVersion, attempts, op
 }
 
 export function normalizeWorkerOrigin(workerUrl, expectedWorkerName = "") {
-  const base = new URL(String(workerUrl));
+  if (typeof workerUrl !== "string" || typeof expectedWorkerName !== "string") {
+    throw new Error("Worker URL and recorded Worker name must be strings");
+  }
+  const base = new URL(workerUrl);
   const hostname = base.hostname.toLowerCase();
-  const expectedName = String(expectedWorkerName || "").toLowerCase();
+  const expectedName = expectedWorkerName.toLowerCase();
   if (base.protocol !== "https:" || base.port || base.username || base.password || base.search || base.hash || base.pathname !== "/") {
     throw new Error("Worker URL must be an HTTPS workers.dev origin");
   }
   if (!WORKERS_DEV_HOST.test(hostname)) throw new Error("Worker URL must use a workers.dev hostname");
-  if (expectedName && (!WORKER_NAME.test(expectedName) || hostname.split(".")[0] !== expectedName)) {
+  if (expectedName && (!isWorkerName(expectedName) || hostname.split(".")[0] !== expectedName)) {
     throw new Error("Worker URL hostname does not match the recorded Worker name");
   }
   return `https://${hostname}`;

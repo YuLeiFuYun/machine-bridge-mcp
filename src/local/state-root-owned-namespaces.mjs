@@ -7,14 +7,12 @@ const TOOLCHAIN_LOCK_TEMP = /^\.wrangler-toolchain\.lock\.\d+\.[a-f0-9]{16}\.tmp
 const ACTIVATION_RECORD = /^v[0-9A-Za-z.-]+\.json$/;
 const ACTIVATION_TEMP = /^\.v[0-9A-Za-z.-]+\.json\.\d+\.[a-f0-9]{16}\.tmp$/;
 const RUNTIME_DIRECTORY = /^v[0-9A-Za-z.-]+-[0-9a-f]{12}-[0-9a-f]{12}$/;
-const LEGACY_RELEASE_TASK = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
 
 export function isCandidateRuntimeDirectoryName(name) { return RUNTIME_DIRECTORY.test(String(name || "")); }
 
 export function validateOwnedStateNamespaces(root) {
   validateToolchains(join(root, "toolchains"));
   validateReleaseChannels(join(root, "release-channels"));
-  validateLegacyReleaseTasks(join(root, "release-tasks"));
 }
 
 function validateToolchains(directory) {
@@ -54,15 +52,6 @@ function validateBrowserExtension(directory) {
     }
   };
   walk(directory);
-}
-
-function validateLegacyReleaseTasks(directory) {
-  if (!realDirectoryIfPresent(directory, "legacy release-task namespace")) return;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !LEGACY_RELEASE_TASK.test(entry.name)) {
-      throw new Error("legacy release-task namespace contains an unexpected entry; state was kept for inspection");
-    }
-  }
 }
 
 function validateNamedChildren(directory, label, patterns, kind) {

@@ -8,7 +8,7 @@ import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identit
 import { deploymentDeviceIdentity } from "./state.mjs";
 import { chmodRegularFileSync, ensureOwnerOnlyDirectorySync } from "./secure-file.mjs";
 
-const SECRET_FILE_PATTERN = /^worker-secrets-(\d+)-(\d+)(?:-p(\d+))?(?:-([a-f0-9]+))?\.json$/;
+const SECRET_FILE_PATTERN = /^worker-secrets-(\d+)-(\d+)-p(\d+)-([a-f0-9]{12})\.json$/;
 
 export async function withWorkerSecretsFile(state, callback, options = {}) {
   const dir = state.paths.profileDir;
@@ -72,7 +72,10 @@ export function cleanupStaleWorkerSecretFiles(dir, options = {}) {
   for (const entry of readDirectory(dir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const match = SECRET_FILE_PATTERN.exec(entry.name);
-    if (!match) continue;
+    if (!match) {
+      if (entry.name.startsWith("worker-secrets-") && entry.name.endsWith(".json")) throw new Error("temporary Worker secrets filename is obsolete or invalid; file was retained");
+      continue;
+    }
     const file = resolve(dir, entry.name);
     let snapshot;
     try {
@@ -83,15 +86,18 @@ export function cleanupStaleWorkerSecretFiles(dir, options = {}) {
       if (error?.code === "ENOENT") continue;
       throw new Error(`could not inspect temporary Worker secrets file: ${entry.name}`, { cause: error });
     }
-    const pid = Number(match[1]);
-    const createdAt = Number(match[2]);
-    const processStartedAt = match[3] ? Number(match[3]) : null;
+    const pid = exactFilenameInteger(match[1]);
+    const createdAt = exactFilenameInteger(match[2]);
+    const processStartedAt = exactFilenameInteger(match[3]);
+    if (!pid || !createdAt || !processStartedAt) {
+      throw new Error("temporary Worker secrets owner metadata is invalid; file was retained");
+    }
     let identity;
     try {
       identity = inspect({
         pid,
         startedAt: new Date(createdAt).toISOString(),
-        processStartedAt: processStartedAt ? new Date(processStartedAt).toISOString() : undefined,
+        processStartedAt: new Date(processStartedAt).toISOString(),
       });
     } catch (error) {
       throw new Error(`could not inspect temporary Worker secrets owner: ${entry.name}`, { cause: error });
@@ -148,4 +154,10 @@ function integerTimestamp(value) {
   const timestamp = Math.floor(Number(value));
   if (!Number.isSafeInteger(timestamp) || timestamp <= 0) throw new Error("temporary Worker secrets timestamp is invalid");
   return timestamp;
+}
+
+function exactFilenameInteger(value) {
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) return 0;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : 0;
 }

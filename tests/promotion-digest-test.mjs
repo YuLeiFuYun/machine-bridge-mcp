@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { computePromotionContentDigest } from "../scripts/promotion-digest.mjs";
@@ -31,6 +31,17 @@ try {
   write("package.json", JSON.stringify({ name: "promotion-fixture", version: "3.0.0", type: "module", files: ["src", "browser-extension", "CHANGELOG.md"] }, null, 2) + "\n");
   const executableRecord = { files: packRecord.files.map((entry) => entry.path === "src/code.mjs" ? { ...entry, mode: 0o755 } : entry) };
   assert(computePromotionContentDigest(root, { packRecord: executableRecord }) !== stable, "package file mode change did not change the promotion digest");
+  assertThrows(() => computePromotionContentDigest(root, { packRecord: { files: [{ path: ["src/code.mjs"], mode: 0o644 }] } }),
+    "non-string package path", "promotion digest accepted a coercible package path");
+  assertThrows(() => computePromotionContentDigest(root, { packRecord: { files: [{ path: "src/code.mjs", mode: String(0o644) }] } }),
+    "invalid file mode", "promotion digest accepted a coercible package mode");
+  if (process.platform !== "win32") {
+    const alias = join(root, "src", "code-alias.mjs");
+    linkSync(join(root, "src", "code.mjs"), alias);
+    assertThrows(() => computePromotionContentDigest(root, { packRecord }), "multiple hard links",
+      "promotion digest accepted a package file with an alternate hard-link mutation path");
+    unlinkSync(alias);
+  }
 
   console.log("stable promotion content digest test ok");
 } finally {
@@ -45,3 +56,7 @@ function write(path, content) { mkdirSync(dirname(join(root, path)), { recursive
 function read(path) { return requireRead(join(root, path)); }
 function requireRead(path) { return globalThis.process.getBuiltinModule("node:fs").readFileSync(path, "utf8"); }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+function assertThrows(callback, expected, message) {
+  try { callback(); } catch (error) { if (String(error?.message || error).includes(expected)) return; throw error; }
+  throw new Error(message);
+}

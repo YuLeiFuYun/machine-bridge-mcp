@@ -3,7 +3,7 @@ export async function statefulRateLimitKey(request: Request): Promise<string> {
   const route = statefulRouteClass(url.pathname);
   const authorization = request.headers.get("authorization")?.trim() ?? "";
   const credential = authorization.match(/^[A-Za-z][A-Za-z0-9_-]*\s+(.+)$/)?.[1]?.trim() ?? "";
-  if (credential) return `stateful:${route}:auth:${await opaqueDigest(credential)}`;
+  if (route === "mcp" && credential) return `stateful:${route}:auth:${await opaqueDigest(credential)}`;
 
   const clientAddress = request.headers.get("cf-connecting-ip")?.trim() ?? "";
   if (clientAddress) return `stateful:${route}:network:${await opaqueDigest(clientAddress)}`;

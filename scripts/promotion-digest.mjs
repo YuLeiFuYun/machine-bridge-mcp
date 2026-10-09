@@ -17,10 +17,12 @@ export function computePromotionContentDigest(root, options = {}) {
   const version = parseReleaseVersion(pkg.version).raw;
   const record = options.packRecord || packageDryRun(root, pkg.name, options.npmCli);
   if (!Array.isArray(record.files) || record.files.length < 1) throw new Error("npm pack dry-run omitted the package file inventory");
-  const entries = record.files.map((item) => ({
-    path: String(item?.path || ""),
-    mode: normalizePackMode(item?.mode),
-  })).sort((left, right) => left.path.localeCompare(right.path));
+  const entries = record.files.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.path !== "string") {
+      throw new Error("npm pack dry-run returned a non-string package path");
+    }
+    return { path: item.path, mode: normalizePackMode(item.mode) };
+  }).sort((left, right) => left.path.localeCompare(right.path));
   if (!entries.length || entries.some((entry) => entry.path.startsWith("/") || entry.path.includes("\\") || entry.path.split("/").includes(".."))) {
     throw new Error("npm pack dry-run returned an invalid package path");
   }
@@ -31,7 +33,10 @@ export function computePromotionContentDigest(root, options = {}) {
   let total = 0;
   for (const entry of entries) {
     const relative = entry.path;
-    const bytes = readBoundedRegularFileSync(join(root, relative), MAX_FILE_BYTES, `promotion package file ${relative}`, { verifyPathIdentity: true });
+    const bytes = readBoundedRegularFileSync(join(root, relative), MAX_FILE_BYTES, `promotion package file ${relative}`, {
+      verifyPathIdentity: true,
+      rejectMultipleLinks: true,
+    });
     total += bytes.length;
     if (total > MAX_TOTAL_BYTES) throw new Error(`promotion package content exceeds ${MAX_TOTAL_BYTES} bytes`);
     const normalized = normalizeReleaseMetadata(relative, bytes, version);
@@ -44,8 +49,7 @@ export function computePromotionContentDigest(root, options = {}) {
 
 
 function normalizePackMode(value) {
-  const numeric = Number(value);
-  const mode = Number.isSafeInteger(numeric) ? numeric & 0o777 : NaN;
+  const mode = Number.isSafeInteger(value) ? value & 0o777 : NaN;
   if (![0o644, 0o755].includes(mode)) throw new Error(`npm pack dry-run returned an invalid file mode: ${String(value)}`);
   return mode.toString(8).padStart(4, "0");
 }

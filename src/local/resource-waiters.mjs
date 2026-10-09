@@ -9,7 +9,6 @@ const WAITER_FILE = /^wait_[a-f0-9]{32}\.json$/;
 const MAX_WAITER_BYTES = 16 * 1024;
 const WAITER_GRACE_MS = 5_000;
 const AGING_MS = 120_000;
-const PROTECTION_FLOOR_MS = AGING_MS;
 const LEASE_DRAIN_REASONS = new Set(["project_resource_busy", "cpu_reservation", "io_reservation", "memory_reservation", "disk_reserve_floor"]);
 export function createResourceWaiter(waitersDir, request, waitMs, now = Date.now()) {
   const waiterId = randomBytes(16).toString("hex");
@@ -33,7 +32,6 @@ export function removeResourceWaiter(waitersDir, waiter) {
     waiter_id: waiter.waiter_id, token: waiter.token,
   }, { maxBytes: MAX_WAITER_BYTES });
 }
-
 export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now(), processStarts = null) {
   const waiters = [];
   for (const entry of entries) {
@@ -74,7 +72,7 @@ export function resourceWaiterRank(waiter, now = Date.now()) {
 export function resourceWaiterProtected(waiter, now = Date.now()) {
   const enqueued = Date.parse(String(waiter?.enqueued_at || ""));
   if (!Number.isFinite(enqueued) || resourceWaiterRank(waiter, now) !== 0) return false;
-  const protectionAge = Math.max(PROTECTION_FLOOR_MS, waiterBaseRank(waiter) * AGING_MS);
+  const protectionAge = Math.max(AGING_MS, waiterBaseRank(waiter) * AGING_MS);
   return Math.max(0, now - enqueued) >= protectionAge;
 }
 
@@ -114,11 +112,12 @@ function waiterIsStale(waiter, now, processStarts) {
 }
 
 function validateWaiter(waiter) {
-  if (waiter?.schema_version !== SCHEMA || !/^[a-f0-9]{32}$/.test(String(waiter.waiter_id || ""))
-      || !/^[a-f0-9]{64}$/.test(String(waiter.token || ""))) throw new Error("resource coordinator waiter is invalid");
-  if (!Number.isFinite(Date.parse(String(waiter.enqueued_at || ""))) || !Number.isFinite(Date.parse(String(waiter.expires_at || "")))
-      || !Number.isInteger(waiter.owner?.pid) || waiter.owner.pid <= 0
-      || !Number.isFinite(Date.parse(String(waiter.owner?.process_started_at || "")))) throw new Error("resource coordinator waiter ownership is invalid");
+  if (waiter?.schema_version !== SCHEMA || typeof waiter.waiter_id !== "string" || !/^[a-f0-9]{32}$/.test(waiter.waiter_id)
+      || typeof waiter.token !== "string" || !/^[a-f0-9]{64}$/.test(waiter.token)) throw new Error("resource coordinator waiter is invalid");
+  if (typeof waiter.enqueued_at !== "string" || !Number.isFinite(Date.parse(waiter.enqueued_at))
+      || typeof waiter.expires_at !== "string" || !Number.isFinite(Date.parse(waiter.expires_at))
+      || !Number.isSafeInteger(waiter.owner?.pid) || waiter.owner.pid <= 0 || typeof waiter.owner?.process_started_at !== "string"
+      || !Number.isFinite(Date.parse(waiter.owner.process_started_at))) throw new Error("resource coordinator waiter ownership is invalid");
   validateResourceRequest(waiter.request);
 }
 function readWaiter(file) {
@@ -130,7 +129,7 @@ function readWaiter(file) {
   return value;
 }
 function waiterPath(waitersDir, id) {
-  if (!/^[a-f0-9]{32}$/.test(String(id || ""))) throw new Error("invalid resource waiter id");
+  if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) throw new Error("invalid resource waiter id");
   return join(waitersDir, `wait_${id}.json`);
 }
 function normalizeWaiterRequest(request = {}) {

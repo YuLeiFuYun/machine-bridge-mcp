@@ -26,7 +26,7 @@ export function normalizeDaemonHttpExchange(value: unknown): DaemonHttpExchange 
   const instanceId = sanitizeDaemonInstanceId(body.instance_id) ?? "";
   const activationToken = body.activation_token === undefined ? ""
     : typeof body.activation_token === "string" && ACTIVATION_TOKEN.test(body.activation_token) ? body.activation_token : "invalid";
-  const ackWorkerSeq = Number(body.ack_worker_seq);
+  const ackWorkerSeq = typeof body.ack_worker_seq === "number" ? body.ack_worker_seq : Number.NaN;
   const takeoverWebSocket = body.takeover_websocket === undefined ? false : body.takeover_websocket;
   const takeoverWebSocketConnectionId = body.takeover_websocket_connection_id === undefined ? ""
     : sanitizeConnectionId(body.takeover_websocket_connection_id) ?? "invalid";

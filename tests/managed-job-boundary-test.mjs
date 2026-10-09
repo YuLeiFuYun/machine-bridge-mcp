@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { managedJobCancellationRequested, writeManagedJobCancellation } from "../src/local/managed-job-cancellation.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/managed-job-directory.mjs";
 import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories, removeManagedJobDirectoryIfCurrent, retiredManagedJobDirectories } from "../src/local/managed-job-directory-generation.mjs";
@@ -147,9 +149,38 @@ try {
 
   const storageError = Object.assign(new Error("synthetic storage failure"), { code: "EIO" });
   assert.throws(() => managedJobCancellationRequested(marker, { inspectPath: () => { throw storageError; } }), error => error === storageError);
+  const privateStartupRoot = join(root, "private-runner-startup-path");
+  const missingStatusDir = join(privateStartupRoot, `job_${"P".repeat(24)}`);
+  mkdirSync(privateStartupRoot);
+  mkdirSync(missingStatusDir);
+  const startupFailure = spawnSync(process.execPath, [
+    fileURLToPath(new URL("../src/local/job-runner.mjs", import.meta.url)), "--job-dir", missingStatusDir,
+  ], { encoding: "utf8", windowsHide: true });
+  assert.equal(startupFailure.status, 1, "managed-job startup failure did not exit nonzero");
+  assert.equal(startupFailure.stdout, "", "managed-job startup failure wrote to the protocol output stream");
+  assert.equal(startupFailure.stderr, [
+    "managed job runner fatal: error_class=not_found",
+    "managed job fatal terminal record skipped: reason=runner_claim_unconfirmed",
+    "",
+  ].join("\n"), "managed-job startup failure exposed an unbounded exception instead of fixed diagnostics");
+  assert(!startupFailure.stderr.includes(privateStartupRoot) && !startupFailure.stderr.includes("ENOENT"),
+    "managed-job startup failure exposed a private path or raw filesystem exception");
   const runnerSource = readFileSync(new URL("../src/local/job-runner.mjs", import.meta.url), "utf8");
   assert(/if \(cancellationAware && isCancellationRequested\(\)\) throw new JobCancelledError\(\);\s*child = spawn\(/.test(runnerSource),
     "managed-job launch lost its final synchronous cancellation check immediately before spawn");
+  const fatalStart = runnerSource.indexOf("function recordFatalRunnerError(error) {");
+  const fatalEnd = runnerSource.indexOf("function fatalRunnerStatusIsCurrent(", fatalStart);
+  assert(fatalStart >= 0 && fatalEnd > fatalStart, "managed-job fatal diagnostic contract is missing");
+  const fatalSource = runnerSource.slice(fatalStart, fatalEnd);
+  assert(fatalSource.includes("managed job runner fatal: error_class=${classifyError(error)}"),
+    "managed-job fatal diagnostics no longer contain a bounded error class");
+  const fatalGuardEnd = runnerSource.indexOf("function reportFatalRecordSkipped(", fatalEnd);
+  const fatalGuardSource = runnerSource.slice(fatalEnd, fatalGuardEnd);
+  assert(fatalGuardEnd > fatalEnd && fatalGuardSource.includes("exactManagedJobRunnerPid")
+    && fatalGuardSource.includes("exactManagedJobRunnerTime"),
+    "managed-job fatal ownership guard stopped rejecting type-coerced PID or timestamp fields");
+  assert(!/process\.stderr\.write\([^\n]*(?:\.message|sanitizeLogText|JSON\.stringify\(error)/.test(fatalSource),
+    "managed-job fatal diagnostics may print an arbitrary private exception message");
   await assert.rejects(
     confirmRunnerClaim({
       file: join(dir, "runner.pid"), pid: process.pid, processStartedAt: "1", launchToken: "a".repeat(32),

@@ -49,7 +49,7 @@ function sameProcessIdentity(/** @type {ProcessOwnershipMember} */ left, /** @ty
     && left.startedAt === right.startedAt;
 }
 /** @param {unknown} value */
-function positivePid(value) { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : 0; }
+function positivePid(value) { return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0; }
 /** @param {ChildProcessIdentity} child */
 function childHasExited(child) {
   return child?.exitCode !== null && child?.exitCode !== undefined

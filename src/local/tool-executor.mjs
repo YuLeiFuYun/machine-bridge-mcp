@@ -7,6 +7,7 @@ import { resourceAdmissionLogFields } from "./resource-admission-diagnostics.mjs
 import { normalizeToolResult } from "./tool-result-boundary.mjs";
 import { createSecurityAuditFailureReporter } from "./security-audit-warning.mjs";
 import { enqueueSecurityAudit } from "./security-audit-dispatch.mjs";
+import { securityAuditPreDispatchMiddleware } from "./security-audit-gate.mjs";
 import { shortCallId } from "./short-identifiers.mjs";
 
 const TOOL_ARGUMENTS = compileToolArgumentValidators(catalog);
@@ -32,8 +33,10 @@ export class ToolExecutor {
     this.pipeline = composeMiddleware([
       lifecycleMiddleware(this.callRegistry),
       observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
-      authorizeMiddleware(this.policyGate, this.accountAccessGate, this.operationAuthorizer, this.callRegistry),
+      authorityMiddleware(this.policyGate, this.accountAccessGate, this.callRegistry),
       validateArgumentsMiddleware(),
+      operationAuthorizationMiddleware(this.operationAuthorizer),
+      securityAuditPreDispatchMiddleware(this.securityAudit),
     ], invokeHandler(this.handlers, this.onAuthorizedRelayActivityStart, this.onAuthorizedRelayActivityEnd));
   }
 
@@ -46,7 +49,7 @@ export function composeMiddleware(middleware, terminal) {
   return middleware.reduceRight((next, current) => (operation) => current(operation, next), terminal);
 }
 
-function authorizeMiddleware(policyGate, accountAccessGate, operationAuthorizer, callRegistry) {
+function authorityMiddleware(policyGate, accountAccessGate, callRegistry) {
   return async (operation, next) => {
     policyGate.assert(operation.tool);
     if (operation.context.origin === "relay") {
@@ -56,8 +59,6 @@ function authorizeMiddleware(policyGate, accountAccessGate, operationAuthorizer,
       accountAccessGate.assert(role, operation.tool);
       operation.context.authority = accountAccessGate.authority(authorization, policyGate.policy, "relay");
       callRegistry.bindPrincipal(operation.context.callId, operation.context.authority.principal);
-      const decision = await operationAuthorizer?.authorize(operation);
-      if (decision) operation.context.operationAuthorization = decision;
     } else {
       operation.context.authority = accountAccessGate.authority({}, policyGate.policy, "local");
       callRegistry.bindPrincipal(operation.context.callId, operation.context.authority.principal);
@@ -74,6 +75,16 @@ function validateArgumentsMiddleware() {
       throw new BridgeError("invalid_request", `tool arguments do not match the input schema: ${operation.tool}`, {
         details: { tool: operation.tool, validation_issues: result.issues },
       });
+    }
+    return next(operation);
+  };
+}
+
+function operationAuthorizationMiddleware(operationAuthorizer) {
+  return async (operation, next) => {
+    if (operation.context.origin === "relay") {
+      const decision = await operationAuthorizer?.authorize(operation);
+      if (decision) operation.context.operationAuthorization = decision;
     }
     return next(operation);
   };
@@ -129,7 +140,13 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const code = errorCode(normalized);
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });
-      enqueueSecurityAudit(securityAudit, operation, { outcome: status, durationMs, errorCode: code }, auditFailureReporter);
+      enqueueSecurityAudit(securityAudit, operation, {
+        outcome: status, durationMs, errorCode: code,
+        requestDelivery: normalized.details?.request_delivery,
+        sideEffectsStarted: normalized.details?.side_effects_started,
+        effectSettlement: normalized.details?.effect_settlement,
+        terminationRequested: normalized.details?.termination_requested,
+      }, auditFailureReporter);
       const resourceAdmission = resourceAdmissionLogFields(normalized);
       logger.event?.("debug", "tool.call.failed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin,
@@ -145,7 +162,7 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
 
 function invokeHandler(handlers, onAuthorizedRelayActivityStart, onAuthorizedRelayActivityEnd) {
   return async (operation) => {
-    const handler = handlers[operation.tool];
+    const handler = Object.hasOwn(handlers, operation.tool) ? handlers[operation.tool] : undefined;
     if (typeof handler !== "function") throw new Error(`runtime handler is missing for tool: ${operation.tool}`);
     const relayActivity = operation.context.origin === "relay";
     if (relayActivity) bestEffortActivityHook(onAuthorizedRelayActivityStart);

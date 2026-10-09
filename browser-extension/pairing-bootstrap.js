@@ -5,18 +5,17 @@
   async function bootstrapPairing(port, grant, now = Date.now()) {
     const auth = globalThis.__machineBridgeBrokerAuth?.internal;
     if (!auth) throw new Error("browser broker authentication module is unavailable");
-    const normalizedPort = Number(port);
-    const match = GRANT.exec(String(grant || ""));
-    const current = Number(now);
-    if (!Number.isInteger(normalizedPort) || normalizedPort < 1024 || normalizedPort > 65535 || !match || !Number.isFinite(current)) {
+    const match = typeof grant === "string" ? GRANT.exec(grant) : null;
+    if (!Number.isSafeInteger(port) || port < 1024 || port > 65535 || !match
+        || typeof now !== "number" || !Number.isFinite(now)) {
       throw new Error("browser pairing bootstrap is invalid");
     }
     const expiresAt = Number(match[1]);
-    if (expiresAt < current || expiresAt - current > PAIRING_GRANT_TTL_MS) throw new Error("browser pairing bootstrap expired");
+    if (expiresAt < now || expiresAt - now > PAIRING_GRANT_TTL_MS) throw new Error("browser pairing bootstrap expired");
     const grantId = `${match[1]}.${match[2]}`;
     const secret = match[3];
     const clientChallenge = auth.randomBase64Url(24);
-    const authUrl = new URL(`http://127.0.0.1:${normalizedPort}/pair-auth`);
+    const authUrl = new URL(`http://127.0.0.1:${port}/pair-auth`);
     authUrl.searchParams.set("grant", grantId);
     authUrl.searchParams.set("challenge", clientChallenge);
     const initProof = await auth.hmac(secret, `machine-bridge-browser-pair-init-v2\0${grantId}\0${clientChallenge}`);
@@ -35,7 +34,7 @@
     if (second.status !== 204) throw new Error("browser pairing broker authentication failed");
     const token = String(second.headers.get("x-machine-bridge-extension-token") || "");
     if (!auth.tokenPattern.test(token)) throw new Error("browser pairing broker returned an invalid extension credential");
-    return { endpoint: `ws://127.0.0.1:${normalizedPort}/extension`, token };
+    return { endpoint: `ws://127.0.0.1:${port}/extension`, token };
   }
 
   globalThis.__machineBridgePairingBootstrap = Object.freeze({ bootstrapPairing });

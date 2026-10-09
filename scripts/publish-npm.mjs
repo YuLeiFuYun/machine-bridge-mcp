@@ -11,7 +11,7 @@ import { normalizePackRecord, verifyCurrentReleaseAcceptance } from "./release-a
 import { stageAcceptedCandidateTarball } from "./accepted-candidate-tarball.mjs";
 import { readPublishedNpmPrereleaseIfPresent } from "./published-release.mjs";
 import { isTransientNetworkFailure } from "./network-retry.mjs";
-import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
+import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { runExecutable } from "../src/local/shell.mjs";
 import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "./source-dependency-tree.mjs";
 
@@ -322,9 +322,7 @@ function defaultPublicationWait(attempt) {
 }
 
 function boundedCleanupWarning(error) {
-  return String(error?.message || error || "temporary cleanup failed")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 600);
+  return releaseDiagnostic(error?.message || error || "temporary cleanup failed", 600);
 }
 
 async function main() {

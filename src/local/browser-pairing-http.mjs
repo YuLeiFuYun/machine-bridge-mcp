@@ -7,9 +7,9 @@ export function pairingHtml(port) {
 
 export function isAllowedExtensionOrigin(origin, expectedExtensionId = EXPECTED_EXTENSION_ID) {
   const expected = normalizeExtensionId(expectedExtensionId);
-  if (!expected) return false;
+  if (!expected || typeof origin !== "string") return false;
   let parsed;
-  try { parsed = new URL(String(origin || "")); } catch { return false; }
+  try { parsed = new URL(origin); } catch { return false; }
   return parsed.protocol === "chrome-extension:" && parsed.hostname === expected
     && !parsed.username && !parsed.password && !parsed.port
     && (parsed.pathname === "" || parsed.pathname === "/") && !parsed.search && !parsed.hash;

@@ -4,6 +4,8 @@
 
 The supported runtime is the pinned Node.js 26 and npm 12 baseline on current GitHub-hosted Linux, macOS, and Windows environments. Older Node/npm releases and obsolete MCP protocol versions are not compatibility targets.
 
+Source-release privacy tooling requires Git 2.50 or later. The reachable-history scanner intentionally relies on the machine-parsable NUL-delimited `git rev-list` object format introduced in Git 2.50 and does not carry an older-output compatibility parser.
+
 The project supports the current package version and a direct upgrade from the immediately preceding published version when both use the current local state and policy schemas. See [Upgrading](docs/UPGRADING.md).
 
 ## Where to ask

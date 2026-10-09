@@ -42,7 +42,7 @@ function selectPolicyBase(args, stored, hasStored) {
   }
   if (!hasStored) return policyProfile(DEFAULT_POLICY_PROFILE, "default");
   if (stored.revision !== DEFAULT_POLICY_REVISION || !POLICY_ORIGINS.has(stored.origin)) {
-    throw new Error("stored policy schema is obsolete; remove the state root and initialize the current version");
+    throw new Error("stored policy schema is obsolete; preserve the state root and use a supported upgrade or backup recovery path");
   }
   return normalizePolicy(stored);
 }

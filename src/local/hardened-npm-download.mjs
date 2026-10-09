@@ -78,7 +78,7 @@ function normalizeProxyEnvironment(source) {
   const normalized = {};
   for (const key of PROXY_URL_KEYS) {
     if (source[key] === undefined || source[key] === null) continue;
-    const value = String(source[key]).trim();
+    if (typeof source[key] !== "string") throw proxyConfigurationError("HTTP proxy configuration must be a string"); const value = source[key].trim();
     if (!value) { normalized[key] = ""; continue; }
     if (CONTROL_CHARACTERS.test(value)) throw proxyConfigurationError("HTTP proxy configuration contains a prohibited control character");
     let proxyUrl; try { proxyUrl = new URL(value); } catch { throw proxyConfigurationError("HTTP proxy configuration is not a valid URL"); }
@@ -87,7 +87,7 @@ function normalizeProxyEnvironment(source) {
   }
   for (const key of NO_PROXY_KEYS) {
     if (source[key] === undefined || source[key] === null) continue;
-    const value = String(source[key]);
+    if (typeof source[key] !== "string") throw proxyConfigurationError("NO_PROXY configuration must be a string"); const value = source[key];
     if (CONTROL_CHARACTERS.test(value)) throw proxyConfigurationError("NO_PROXY configuration contains a prohibited control character");
     normalized[key] = value;
   }

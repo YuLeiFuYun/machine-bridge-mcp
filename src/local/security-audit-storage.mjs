@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, openSync } from "node:fs";
 import path from "node:path";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
 import { withOwnerStateLock } from "./owner-state-lock.mjs";
@@ -13,7 +13,7 @@ import {
 } from "./security-audit-state.mjs";
 import { securityAuditRecentActivity } from "./security-audit-activity.mjs";
 
-export const SECURITY_AUDIT_SCHEMA_VERSION = 1;
+export const SECURITY_AUDIT_SCHEMA_VERSION = 3;
 export const SECURITY_AUDIT_MAX_EVENTS = 4096;
 export const SECURITY_AUDIT_MAX_BYTES = 4 * 1024 * 1024;
 
@@ -25,9 +25,11 @@ export function readVerifiedAuditState(root) {
   return readVerifiedAuditStateWithIdentity(root).state;
 }
 
-export function createAuditStorageSession(root) {
+export function createAuditStorageSession(root, options = {}) {
   const directory = path.resolve(root);
   const file = auditFilePath(directory);
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const syncDirectory = typeof options.syncDirectory === "function" ? options.syncDirectory : syncAuditParentDirectory;
   let cachedState = null;
   let cachedIdentity;
 
@@ -41,16 +43,16 @@ export function createAuditStorageSession(root) {
   };
 
   return Object.freeze({
-    snapshot: () => auditSnapshotFromState(loadVerifiedState()),
+    snapshot: () => auditSnapshotFromState(loadVerifiedState(), now()),
     async recordBatch(records) {
-      if (!Array.isArray(records) || records.length === 0) return auditSnapshotFromState(loadVerifiedState());
+      if (!Array.isArray(records) || records.length === 0) return auditSnapshotFromState(loadVerifiedState(), now());
       return withOwnerStateLock(directory, async () => {
         const state = copyAuditState(loadVerifiedState());
         appendAuditRecords(state, records);
         const content = boundedAuditStateContent(state, SECURITY_AUDIT_MAX_EVENTS, SECURITY_AUDIT_MAX_BYTES);
-        cachedIdentity = writeState(file, content);
+        cachedIdentity = writeState(file, content, syncDirectory);
         cachedState = state;
-        return auditSnapshotFromState(state);
+        return auditSnapshotFromState(state, now());
       }, {
         purpose: "security-audit", fileName: "security-audit.lock", label: "security audit",
       });
@@ -58,17 +60,17 @@ export function createAuditStorageSession(root) {
   });
 }
 
-export async function recordAuditBatch(root, records) {
-  return createAuditStorageSession(root).recordBatch(records);
+export async function recordAuditBatch(root, records, options = {}) {
+  return createAuditStorageSession(root, options).recordBatch(records);
 }
 
-export function auditSnapshotFromState(state) {
+export function auditSnapshotFromState(state, nowMs = Date.now()) {
   return {
     enabled: true, healthy: true, retained: state.events.length,
     maximum: SECURITY_AUDIT_MAX_EVENTS, maximum_bytes: SECURITY_AUDIT_MAX_BYTES,
     last_event_at: state.events.at(-1)?.timestamp || null,
     last_error_class: null, content_logged: false, chain_verified: true,
-    recent_activity: securityAuditRecentActivity(state),
+    recent_activity: securityAuditRecentActivity(state, nowMs),
   };
 }
 
@@ -103,10 +105,17 @@ function readVerifiedAuditStateWithIdentity(root) {
   };
 }
 
-function writeState(file, content) {
+function writeState(file, content, syncDirectory) {
   ensureOwnerOnlyDirectorySync(path.dirname(file));
   replaceFileAtomicallySync(file, content, { mode: 0o600 });
+  syncDirectory(path.dirname(file));
   return inspectAuditFile(file);
+}
+
+function syncAuditParentDirectory(directory) {
+  if (process.platform === "win32") return;
+  const fd = openSync(directory, "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
 function inspectAuditFile(file) {

@@ -58,10 +58,10 @@ async function testAuditDispatchBoundaries() {
   enqueueSecurityAudit({
     record() { throw Object.assign(new Error("enqueue failed"), { code: "bad code/value" }); },
   }, enqueueFailure, { outcome: "failed" }, reporter);
-  assert(enqueueFailure.context.auditWarning === "security_audit_unavailable"
+  assert(!Object.hasOwn(enqueueFailure.context, "auditWarning")
     && reports[0].event === "security.audit.enqueue.failed"
     && reports[0].fields.error_class === "bad_code_value",
-  "synchronous audit enqueue failure was not sanitized and reported");
+  "synchronous audit enqueue failure was not sanitized/reported or resurrected dead request-context state");
 
   const falsePersistence = operation();
   enqueueSecurityAudit({ record() { return false; } }, falsePersistence, { outcome: "completed" }, reporter);
@@ -76,9 +76,9 @@ async function testAuditDispatchBoundaries() {
 
   await Promise.resolve();
   await Promise.resolve();
-  assert(falsePersistence.context.auditWarning === "security_audit_unavailable"
-    && rejectedPersistence.context.auditWarning === "security_audit_unavailable",
-  "asynchronous audit persistence failure was not projected to operation state");
+  assert(!Object.hasOwn(falsePersistence.context, "auditWarning")
+    && !Object.hasOwn(rejectedPersistence.context, "auditWarning"),
+  "asynchronous audit persistence failure resurrected dead request-context state");
   assert(reports.some((entry) => entry.event === "security.audit.persist.failed"
       && entry.fields.error_class === "disk_error"),
   "rejected audit persistence did not emit a sanitized coarse error");
@@ -87,6 +87,7 @@ async function testAuditDispatchBoundaries() {
 }
 
 async function testAuditStorageBoundaries() {
+  const pseudonymEpoch = "e".repeat(64);
   const root = mkdtempSync(path.join(tmpdir(), "mbm-audit-storage-boundaries-"));
   try {
     const empty = readVerifiedAuditState(root);
@@ -99,6 +100,7 @@ async function testAuditStorageBoundaries() {
     await recordAuditBatch(root, [{
       nowMs: Date.UTC(2026, 6, 31, 8, 0, 0),
       input: {
+        pseudonymEpoch,
         outcome: "completed with spaces",
         tool: "read file/unsafe",
         riskCategory: "line\nbreak\tcategory",
@@ -122,12 +124,13 @@ async function testAuditStorageBoundaries() {
       && event.input_bytes === 0 && event.output_bytes === Number.MAX_SAFE_INTEGER,
     "audit event private reference or numeric projection is invalid");
 
+    const activityNow = Date.UTC(2026, 6, 31, 8, 0, 40);
     const activitySnapshot = await recordAuditBatch(root, [
-      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 10), input: { outcome: "completed", tool: "exec_command" } },
-      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 20), input: { outcome: "completed", tool: "read_job" } },
-      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 30), input: { outcome: "failed", tool: "start_job", errorCode: "synthetic" } },
-      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 40), input: { outcome: "completed", tool: "run_process" } },
-    ]);
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 10), input: { pseudonymEpoch, outcome: "completed", tool: "exec_command" } },
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 20), input: { pseudonymEpoch, outcome: "completed", tool: "read_job" } },
+      { nowMs: Date.UTC(2026, 6, 31, 8, 0, 30), input: { pseudonymEpoch, outcome: "failed", tool: "start_job", errorCode: "synthetic" } },
+      { nowMs: activityNow, input: { pseudonymEpoch, outcome: "completed", tool: "run_process" } },
+    ], { now: () => activityNow });
     const activity = activitySnapshot.recent_activity;
     assert(activity.coverage === "daemon_reached_relay_tool_calls_only"
       && activity.host_side_events_observable === false
@@ -158,7 +161,15 @@ async function testAuditStorageBoundaries() {
     assertInvalidState(root, baseline, (state) => { state.events[0].hash = "0".repeat(64); }, "hash chain verification failed");
 
     writeFileSync(file, `${JSON.stringify(baseline)}\n`, { mode: 0o600 });
-    await expectReject(() => recordAuditBatch(root, [{ input: { tool: "bad-time" }, nowMs: Number.NaN }]), "Invalid time value");
+    await expectReject(() => recordAuditBatch(root, [{
+      input: { pseudonymEpoch, tool: "bad-time" }, nowMs: Number.NaN,
+    }]), "security audit timestamp is invalid");
+    const beforeInvalidEpoch = readFileSync(file, "utf8");
+    await expectReject(() => recordAuditBatch(root, [{
+      input: { pseudonymEpoch: ["e".repeat(64)], tool: "bad-epoch" }, nowMs: activityNow + 1,
+    }]), "security audit pseudonym epoch is invalid");
+    assert(readFileSync(file, "utf8") === beforeInvalidEpoch,
+      "invalid pseudonym epoch partially rewrote the verified security-audit state");
     assert(auditErrorClass({ code: "bad/error class" }) === "bad_error_class"
       && auditErrorClass(null) === "audit_error"
       && unhealthyAuditSnapshot({ name: "SyntheticFailure" }).last_error_class === "SyntheticFailure",
@@ -171,7 +182,7 @@ async function testAuditStorageBoundaries() {
   try {
     const records = Array.from({ length: SECURITY_AUDIT_MAX_EVENTS + 1 }, (_, index) => ({
       nowMs: Date.UTC(2026, 6, 31, 9, 0, 0) + index,
-      input: { outcome: "completed", tool: "trim", durationMs: index },
+      input: { pseudonymEpoch, outcome: "completed", tool: "trim", durationMs: index },
     }));
     const snapshot = await recordAuditBatch(trimRoot, records);
     const state = readVerifiedAuditState(trimRoot);
@@ -187,14 +198,14 @@ async function testAuditStorageBoundaries() {
   try {
     const session = createAuditStorageSession(cacheRoot);
     await session.recordBatch([{
-      nowMs: Date.UTC(2026, 6, 31, 10, 0, 0), input: { outcome: "completed", tool: "cached" },
+      nowMs: Date.UTC(2026, 6, 31, 10, 0, 0), input: { pseudonymEpoch, outcome: "completed", tool: "cached" },
     }]);
     const file = path.join(cacheRoot, "security-audit.json");
     const tampered = JSON.parse(readFileSync(file, "utf8"));
     tampered.events[0].tool = "altered";
     writeFileSync(file, `${JSON.stringify(tampered)}\n`, { mode: 0o600 });
     await expectReject(() => session.recordBatch([{
-      nowMs: Date.UTC(2026, 6, 31, 10, 0, 1), input: { outcome: "completed", tool: "must-not-overwrite" },
+      nowMs: Date.UTC(2026, 6, 31, 10, 0, 1), input: { pseudonymEpoch, outcome: "completed", tool: "must-not-overwrite" },
     }]), "hash chain verification failed");
     assert(JSON.parse(readFileSync(file, "utf8")).events.length === 1,
       "cached audit session overwrote externally altered state");
@@ -208,7 +219,7 @@ async function testAuditStorageBoundaries() {
     const records = Array.from({ length: SECURITY_AUDIT_MAX_EVENTS }, (_, index) => ({
       nowMs: Date.UTC(2026, 6, 31, 11, 0, 0) + index,
       input: {
-        outcome: token, tool: token, riskCategory: "r".repeat(160), targetHash: "a".repeat(64),
+        pseudonymEpoch, outcome: token, tool: token, riskCategory: "r".repeat(160), targetHash: "a".repeat(64),
         principal: {
           kind: "account", accountId: token, clientId: token, familyId: token,
           accountVersion: Number.MAX_SAFE_INTEGER, role: token,

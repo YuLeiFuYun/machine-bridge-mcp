@@ -18,12 +18,16 @@ export function buildAuthorityContext({ authorization = {}, daemonPolicy, origin
     });
   }
 
-  const accountId = String(authorization.account_id || "");
-  const clientId = String(authorization.client_id || "");
-  const familyId = String(authorization.family_id || "");
-  const role = String(authorization.role || "").trim().toLowerCase();
-  const accountVersion = Number(authorization.account_version);
-  if (!ACCOUNT_ID.test(accountId) || !CLIENT_ID.test(clientId) || !FAMILY_ID.test(familyId) || !Number.isSafeInteger(accountVersion) || accountVersion <= 0) {
+  const accountId = authorization.account_id;
+  const clientId = authorization.client_id;
+  const familyId = authorization.family_id;
+  const role = authorization.role;
+  const accountVersion = authorization.account_version;
+  if (typeof accountId !== "string" || !ACCOUNT_ID.test(accountId)
+      || typeof clientId !== "string" || !CLIENT_ID.test(clientId)
+      || typeof familyId !== "string" || !FAMILY_ID.test(familyId)
+      || typeof role !== "string"
+      || !Number.isSafeInteger(accountVersion) || accountVersion <= 0) {
     throw new BridgeError("authorization_denied", "relay operation is missing authenticated principal identity");
   }
   const accountPolicy = policyProfile(roleProfile(role), "explicit");

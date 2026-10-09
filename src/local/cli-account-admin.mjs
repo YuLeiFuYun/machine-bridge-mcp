@@ -89,8 +89,7 @@ function printAccountResult(action, result) {
       return;
     }
     for (const client of result.clients) {
-      const registration = client.registration_current === true ? "current" : "stale";
-      console.log(`${client.client_name}\t${client.trusted_role || "untrusted"}\t${client.client_id}\taccess=${client.active_access_tokens} refresh=${client.active_refresh_tokens} registration=${registration}`);
+      console.log(`${client.client_name}\t${client.trusted_role || "untrusted"}\t${client.client_id}\taccess=${client.active_access_tokens} refresh=${client.active_refresh_tokens}`);
     }
     return;
   }

@@ -19,6 +19,7 @@ type ConsumedShard = {
 export interface LoadedConsumedRefreshShards {
   consumed: Record<string, ConsumedOAuthRefreshToken>;
   present: boolean;
+  complete: boolean;
   valid: boolean;
 }
 
@@ -29,25 +30,25 @@ export async function loadConsumedRefreshShards(
   const raw = await storage.get<unknown>(keys);
   if (!(raw instanceof Map)) throw new Error("OAuth refresh shard multi-read returned an invalid result");
   const consumed: Record<string, ConsumedOAuthRefreshToken> = {};
-  let present = false;
+  let presentCount = 0;
   for (let index = 0; index < keys.length; index += 1) {
     const key = keys[index];
     const value = raw.get(key);
     if (value === undefined) continue;
-    present = true;
+    presentCount += 1;
     if (!validShardEnvelope(value) || Object.keys(value.records).length > MAX_CONSUMED_PER_SHARD) {
-      return { consumed: {}, present, valid: false };
+      return { consumed: {}, present: presentCount > 0, complete: false, valid: false };
     }
     for (const [tokenHash, marker] of Object.entries(value.records)) {
       if (!TOKEN_HASH_PATTERN.test(tokenHash) || consumedShardIndex(tokenHash) !== index || Object.hasOwn(consumed, tokenHash)
           || !marker || typeof marker !== "object" || Array.isArray(marker)
           || !hasOnlyRecordFields(marker, OAUTH_CONSUMED_REFRESH_FIELDS)) {
-        return { consumed: {}, present, valid: false };
+        return { consumed: {}, present: presentCount > 0, complete: false, valid: false };
       }
       consumed[tokenHash] = marker;
     }
   }
-  return { consumed, present, valid: true };
+  return { consumed, present: presentCount > 0, complete: presentCount === keys.length, valid: true };
 }
 
 export function oauthRefreshPersistenceEntries(
@@ -85,18 +86,6 @@ export async function writeOAuthRefreshPersistenceEntries(
   store: OAuthRefreshStore,
 ): Promise<void> {
   for (const [key, value] of Object.entries(oauthRefreshPersistenceEntries(store))) await storage.put(key, value);
-}
-
-export function mergeLegacyAndShardedConsumed(
-  legacy: Readonly<Record<string, ConsumedOAuthRefreshToken>>,
-  sharded: Readonly<Record<string, ConsumedOAuthRefreshToken>>,
-): Record<string, ConsumedOAuthRefreshToken> | null {
-  const merged: Record<string, ConsumedOAuthRefreshToken> = { ...legacy };
-  for (const [tokenHash, marker] of Object.entries(sharded)) {
-    if (Object.hasOwn(merged, tokenHash)) return null;
-    merged[tokenHash] = marker;
-  }
-  return merged;
 }
 
 function consumedShardIndex(tokenHash: string): number {

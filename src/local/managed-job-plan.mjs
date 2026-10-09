@@ -14,13 +14,15 @@ const MAX_TEMPORARY_FILE_BYTES = 512 * 1024;
 export const MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 60 * 60;
 
 export function validateResourceName(value) {
-  const name = String(value || "").trim();
+  if (typeof value !== "string") throw new Error("resource name must be a string");
+  const name = value.trim();
   if (!RESOURCE_NAME.test(name)) throw new Error("resource name must match [a-z][a-z0-9._-]{0,63}");
   return name;
 }
 
 export function inspectResourceFile(inputPath, { allowInsecurePermissions = false, includeHash = false, includeContent = false } = {}) {
-  const path = resolve(String(inputPath || ""));
+  if (typeof inputPath !== "string") throw new Error("resource path must be a string");
+  const path = resolve(inputPath);
   const canonical = realpathFile(path);
   const { buffer: content, info } = readBoundedRegularFileWithInfoSync(canonical, MAX_RESOURCE_BYTES, "resource file", { verifyPathIdentity: true });
   if (process.platform !== "win32" && !allowInsecurePermissions && (info.mode & 0o077) !== 0) {

@@ -50,10 +50,10 @@ export function sanitizeDaemonChallengeAttachment(value: Record<string, unknown>
     ? value.authSessionKeyId
     : undefined;
   let workerOrigin: string | undefined;
-  try { workerOrigin = normalizeWorkerOrigin(String(value.workerOrigin || "")); }
+  try { if (typeof value.workerOrigin === "string") workerOrigin = normalizeWorkerOrigin(value.workerOrigin); }
   catch { /* Invalid optional persisted auth metadata remains undefined and fails the caller's completeness checks. */ }
   let authSessionPublicKeyJson: string | undefined;
-  try { authSessionPublicKeyJson = JSON.stringify(parsePublicJwk(String(value.authSessionPublicKeyJson || ""))); }
+  try { if (typeof value.authSessionPublicKeyJson === "string") authSessionPublicKeyJson = JSON.stringify(parsePublicJwk(value.authSessionPublicKeyJson)); }
   catch { /* Invalid optional persisted auth metadata remains undefined and fails the caller's completeness checks. */ }
   return { authChallenge, authIssuedAt, authExpiresAt, workerOrigin, authSessionPublicKeyJson, authSessionKeyId, authCertificateExpiresAt };
 }
@@ -142,13 +142,14 @@ export async function verifyDaemonAuthentication(input: {
   if (!input.authentication || typeof input.authentication !== "object" || Array.isArray(input.authentication)) return false;
   const auth = input.authentication as Record<string, unknown>;
   if (auth.scheme !== DAEMON_AUTH_SCHEME) return false;
-  if (!(await safeEqual(String(auth.challenge || ""), input.challenge.challenge))) return false;
-  if (Number(auth.issued_at) !== input.challenge.issuedAt) return false;
-  const signature = decodeBase64Url(String(auth.signature || ""), 64);
+  if (typeof auth.challenge !== "string" || !(await safeEqual(auth.challenge, input.challenge.challenge))) return false;
+  if (typeof auth.issued_at !== "number" || auth.issued_at !== input.challenge.issuedAt) return false;
+  if (typeof auth.signature !== "string") return false;
+  const signature = decodeBase64Url(auth.signature, 64);
   if (!signature) return false;
   let publicJwk: JsonWebKey;
   try { publicJwk = parsePublicJwk(input.publicKeyJson); } catch { return false; }
-  if (!(await safeEqual(String(auth.key_id || ""), await publicKeyId(publicJwk)))) return false;
+  if (typeof auth.key_id !== "string" || !(await safeEqual(auth.key_id, await publicKeyId(publicJwk)))) return false;
   let transcript: string;
   try {
     transcript = daemonAuthTranscript({
@@ -172,8 +173,7 @@ function base64Url(bytes: Uint8Array): string {
 }
 
 function positiveSafeInteger(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function normalizeWorkerOrigin(value: string): string {

@@ -127,6 +127,12 @@ async function serviceRestartabilityPreflightTest() {
 
     assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: "3.0.0-beta.170" }), /does not match expected version/,
       "runtime package identity accepted a mismatched expected version");
+    assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: [version] }), /requires a valid expected name and version/,
+      "runtime package identity coerced a non-string expected version");
+    writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({ name: "machine-bridge-mcp", version: [version] })}\n`, { mode: 0o600 });
+    assert.throws(() => inspectRuntimePackageIdentity(entryScript, { expectedVersion: version }), /identity is invalid/,
+      "runtime package identity coerced a non-string manifest version");
+    writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({ name: "machine-bridge-mcp", version })}\n`, { mode: 0o600 });
 
     const environmentFile = path.join(stateRoot, "service-environment.json");
     const unsupportedEnvironment = `${JSON.stringify({

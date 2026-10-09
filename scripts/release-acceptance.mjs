@@ -57,12 +57,15 @@ export function packProject(root, destination, options = {}) {
   const pkg = readPackage(root);
   const record = normalizePackRecord(value, pkg.name);
   if (!record) throw new Error("npm pack did not return package metadata");
+  if (typeof record.filename !== "string" || typeof record.shasum !== "string" || typeof record.integrity !== "string") {
+    throw new Error("npm pack returned package metadata with invalid field types");
+  }
   const metadata = {
     package_name: pkg.name,
     package_version: pkg.version,
-    filename: String(record.filename || ""),
-    shasum: String(record.shasum || ""),
-    integrity: String(record.integrity || ""),
+    filename: record.filename,
+    shasum: record.shasum,
+    integrity: record.integrity,
   };
   validatePackMetadata(metadata);
   verifyTarball(join(destination, metadata.filename), metadata);
@@ -109,12 +112,13 @@ export function verifyAcceptanceRecord(record, metadata) {
   if (record.confirmation !== ACCEPTANCE_CONFIRMATION) {
     throw new Error("local release acceptance confirmation is missing or does not match the active verification workflow");
   }
-  const acceptedAt = Date.parse(String(record.accepted_at || ""));
+  if (typeof record.accepted_at !== "string") throw new Error("local release acceptance timestamp is invalid");
+  const acceptedAt = Date.parse(record.accepted_at);
   if (!Number.isFinite(acceptedAt)) throw new Error("local release acceptance timestamp is invalid");
-  if (!/^[0-9a-f]{64}$/.test(String(record.package_content_sha256 || ""))) {
+  if (typeof record.package_content_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.package_content_sha256)) {
     throw new Error("local release acceptance portable package-content digest is missing or invalid");
   }
-  if (!/^[0-9a-f]{64}$/.test(String(record.promotion_content_sha256 || ""))) {
+  if (typeof record.promotion_content_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.promotion_content_sha256)) {
     throw new Error("local release acceptance promotion-content digest is missing or invalid");
   }
   for (const key of ["package_name", "package_version", "filename", "shasum", "integrity"]) {
@@ -132,8 +136,8 @@ export function verifyAcceptanceRecord(record, metadata) {
     shasum: metadata.shasum,
     integrity: metadata.integrity,
     accepted_at: new Date(acceptedAt).toISOString(),
-    package_content_sha256: String(record.package_content_sha256),
-    ...(record.promotion_content_sha256 ? { promotion_content_sha256: String(record.promotion_content_sha256) } : {}),
+    package_content_sha256: record.package_content_sha256,
+    promotion_content_sha256: record.promotion_content_sha256,
   });
 }
 

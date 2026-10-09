@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalAdminCommands } from "../src/local/cli-local-admin.mjs";
-import { loadOrCreatePairing, savePairing } from "../src/local/browser-pairing-store.mjs";
+import { loadOrCreatePairing, readBrowserPairing, savePairing } from "../src/local/browser-pairing-store.mjs";
 import { loadState } from "../src/local/state.mjs";
 
 const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-cli-state-"));
@@ -85,6 +85,34 @@ try {
     /browser pairing state changed/, "pairing must reject state changed during health lookup");
   assert.equal(changedStateLaunchCalls, 0, "changed pairing state created a grant for the wrong broker");
   assert.equal(changedStateOpenCalls, 0, "changed pairing state opened the browser");
+
+  await savePairing(state.paths.stateRoot, { ...initialPairing, port: brokerPort });
+  const beforeReset = readBrowserPairing(state.paths.stateRoot);
+  await assert.rejects(
+    () => commands.browserCommand({ _: ["reset"], stateDir: stateRoot, json: true }),
+    /requires Machine Bridge runtimes to be stopped/,
+    "browser reset rotated credentials while the broker was still reported running",
+  );
+  assert.deepEqual(readBrowserPairing(state.paths.stateRoot), beforeReset,
+    "rejected online browser reset changed persisted credentials");
+
+  const offlineCommands = createLocalAdminCommands({
+    chooseWorkspace: async () => workspace,
+    confirm: async () => true,
+    readBrowserHealth: async () => ({ ok: false }),
+  });
+  const resetOutput = await captureConsole(() => offlineCommands.browserCommand({ _: ["reset"], stateDir: stateRoot, json: true }));
+  const resetResult = JSON.parse(resetOutput);
+  const afterReset = readBrowserPairing(state.paths.stateRoot);
+  assert.equal(resetResult.reset, true);
+  assert.equal(resetResult.port, brokerPort);
+  assert.equal(resetResult.repair_required, true);
+  assert.equal(afterReset.port, beforeReset.port, "browser reset changed the broker port");
+  assert.notEqual(afterReset.extensionToken, beforeReset.extensionToken, "browser reset did not revoke the extension credential");
+  assert.notEqual(afterReset.runtimeToken, beforeReset.runtimeToken, "browser reset did not revoke the runtime credential");
+  assert(!resetOutput.includes(beforeReset.extensionToken) && !resetOutput.includes(beforeReset.runtimeToken)
+    && !resetOutput.includes(afterReset.extensionToken) && !resetOutput.includes(afterReset.runtimeToken),
+  "browser reset output disclosed old or replacement broker credentials");
 
 } finally {
   await rm(stateRoot, { recursive: true, force: true });

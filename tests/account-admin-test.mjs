@@ -3,11 +3,13 @@ import { accountRoleToolNames as workerAccountRoleToolNames } from "../src/worke
 import { validateToolArguments } from "../src/local/tool-executor.mjs";
 import { AccountAdminClient, accountAdminRequestHeaders, accountRoleNames, generateAccountPassword } from "../src/local/account-admin.mjs";
 import { createDeviceIdentity, createDeviceSessionIdentity } from "../src/local/device-identity.mjs";
+import { adminAuthTranscript } from "../src/shared/admin-auth.mjs";
 
 const roles = accountRoleNames();
 assert(JSON.stringify(roles) === JSON.stringify(["reviewer", "editor", "operator", "owner"]), "account roles differ from the shared contract");
 assert(normalizeAccountRole(" OWNER ") === "owner", "account role normalization failed");
 expectThrow(() => normalizeAccountRole("administrator"), "unknown account role");
+expectThrow(() => normalizeAccountRole(["owner"]), "unknown account role");
 for (const inherited of ["constructor", "__proto__", "hasOwnProperty", "toString", "valueOf"]) expectThrow(() => normalizeAccountRole(inherited), "unknown account role");
 
 const gate = new AccountAccessGate();
@@ -87,6 +89,14 @@ assertThrows(() => accountAdminRequestHeaders({
   pathname: "/admin/accounts",
   now,
 }), "non-origin account admin target was accepted");
+for (const input of [
+  { origin: [origin], method: "GET", pathname: "/admin/accounts", bodyHash: "a".repeat(64), keyId: sessionIdentity.keyId, issuedAt: 1_800_000_000, nonce: "n".repeat(32) },
+  { origin, method: ["GET"], pathname: "/admin/accounts", bodyHash: "a".repeat(64), keyId: sessionIdentity.keyId, issuedAt: 1_800_000_000, nonce: "n".repeat(32) },
+  { origin, method: "GET", pathname: "/admin/accounts", bodyHash: "a".repeat(64), keyId: sessionIdentity.keyId, issuedAt: "1800000000", nonce: "n".repeat(32) },
+]) assertThrows(() => adminAuthTranscript(input), "coercible account admin transcript input was accepted");
+assertThrows(() => accountAdminRequestHeaders({
+  sessionIdentity, origin, method: "POST", pathname: "/admin/accounts", body: ["{}"], now,
+}), "coercible account admin body was accepted");
 const deterministicHeaders = accountAdminRequestHeaders({
   sessionIdentity,
   origin,
@@ -118,12 +128,21 @@ const client = new AccountAdminClient({ workerUrl: origin, sessionIdentity, fetc
 assert((await client.list()).accounts.length === 2, "account list response was not returned");
 assert((await client.find("reviewer")).account_id === accounts[1].account_id, "account lookup by name failed");
 assert((await client.find(accounts[0].account_id)).name === "owner", "account lookup by id failed");
+await expectReject(() => client.find(["reviewer"]), "account target must be a string");
+assertThrows(() => client.create({ name: "new-user", role: "reviewer", password: generateAccountPassword(), displayName: ["name"] }),
+  "coercible account create display name was accepted");
+assertThrows(() => client.update({ accountId: accounts[0].account_id, displayName: ["name"] }),
+  "coercible account update display name was accepted");
 const listedClients = await client.listClients();
 assert(listedClients.clients.length === 1, "OAuth client list response was not returned");
 assert((await client.removeClient({ clientId: listedClients.clients[0].client_id })).removed === true,
   "OAuth client removal response was not normalized");
 expectThrow(() => client.removeClient({ clientId: "invalid" }), "client id is invalid");
+expectThrow(() => client.removeClient({ clientId: [listedClients.clients[0].client_id] }), "client id is invalid");
 await client.create({ name: "build-bot", role: "operator", password: generated });
+expectThrow(() => client.create({ name: ["array-name"], role: "reviewer", password: generated }), "account name");
+expectThrow(() => client.create({ name: "array-role", role: ["owner"], password: generated }), "unknown account role");
+expectThrow(() => client.create({ name: "array-password", role: "reviewer", password: [generated] }), "password is invalid");
 await client.update({ accountId: accounts[1].account_id, role: "editor", active: false });
 assert(JSON.parse(requests.at(-1).options.body).active === false, "account disabling changed its boolean intent");
 await client.update({ accountId: accounts[1].account_id, active: true });
@@ -134,6 +153,7 @@ for (const active of ["false", "true", 0, 1, null, [], {}, new Boolean(false)]) 
 }
 assert(requests.length === requestsBeforeInvalidActive, "invalid account state reached the mutation request boundary");
 await client.rotatePassword({ accountId: accounts[1].account_id, password: generated });
+expectThrow(() => client.rotatePassword({ accountId: [accounts[1].account_id], password: generated }), "account id is invalid");
 assert((await client.remove({ accountId: accounts[1].account_id })).removed === true, "account removal response was not normalized");
 assert(requests.some((request) => request.url.endsWith("/admin/accounts/rotate-password")), "password rotation used the wrong endpoint");
 expectThrow(() => new AccountAdminClient({ workerUrl: "http://bridge.example.test", sessionIdentity }), "HTTPS origin");

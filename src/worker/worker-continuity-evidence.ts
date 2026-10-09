@@ -96,22 +96,21 @@ async function update(
 function normalize(value: unknown): WorkerContinuityEvidence {
   const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const current = record.schema_version === SCHEMA_VERSION ? record : {};
-  const compatible = record.schema_version === SCHEMA_VERSION || record.schema_version === 1 ? record : {};
   const last = normalizeWorkerSocketDisconnectEvidence(current.last_socket_disconnect);
   const lastReady = normalizeWorkerSocketDisconnectEvidence(current.last_ready_socket_disconnect);
   return {
     schema_version: SCHEMA_VERSION,
-    planned_drains: count(compatible.planned_drains),
-    planned_drain_calls: count(compatible.planned_drain_calls),
-    last_planned_drain_at: optionalTimestamp(compatible.last_planned_drain_at),
+    planned_drains: count(current.planned_drains),
+    planned_drain_calls: count(current.planned_drain_calls),
+    last_planned_drain_at: optionalTimestamp(current.last_planned_drain_at),
     socket_disconnects: count(current.socket_disconnects),
     unplanned_socket_disconnects: count(current.unplanned_socket_disconnects),
     ready_socket_disconnects: count(current.ready_socket_disconnects),
     unplanned_ready_socket_disconnects: count(current.unplanned_ready_socket_disconnects),
     last_socket_disconnect: last,
     last_ready_socket_disconnect: lastReady?.was_ready === true ? lastReady : null,
-    last_request_abort_at: optionalTimestamp(compatible.last_request_abort_at),
-    last_stream_cancel_control_at: optionalTimestamp(compatible.last_stream_cancel_control_at),
+    last_request_abort_at: optionalTimestamp(current.last_request_abort_at),
+    last_stream_cancel_control_at: optionalTimestamp(current.last_stream_cancel_control_at),
   };
 }
 

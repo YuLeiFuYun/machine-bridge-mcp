@@ -10,14 +10,8 @@ import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFiles
 export function acquireRecoveryLock(dir) {
   return acquirePidLock(join(dir, "recovery.lock"), { allowHandoff: true });
 }
-
-export function acquireJobCapacityLock(jobRoot) {
-  return acquirePidLock(join(jobRoot, "capacity.lock"));
-}
-
-export function acquireJobTransitionLock(dir) {
-  return acquirePidLock(join(dir, "transition.lock"));
-}
+export function acquireJobCapacityLock(jobRoot) { return acquirePidLock(join(jobRoot, "capacity.lock")); }
+export function acquireJobTransitionLock(dir) { return acquirePidLock(join(dir, "transition.lock")); }
 
 export function activeManagedJobLock(file) {
   let snapshot;
@@ -25,10 +19,8 @@ export function activeManagedJobLock(file) {
     return { active: true, pid: null, reason: "invalid_or_unreadable_lock" };
   }
   if (!snapshot) return null;
-  const age = Date.now() - snapshot.info.mtimeMs;
-  if (!snapshot.owner || !Number.isInteger(snapshot.owner.pid) || snapshot.owner.pid <= 0
-      || !Number.isFinite(Date.parse(String(snapshot.owner.startedAt || "")))) {
-    return age < 60_000 ? { active: true, pid: null, reason: "recent_malformed_lock" } : null;
+  if (!validPidLockOwner(snapshot.owner)) {
+    return { active: true, pid: null, reason: "invalid_or_unreadable_lock" };
   }
   const identity = inspectProcessInstance(snapshot.owner, { maxAgeMs: 5 * 60_000 });
   if (identity.current || (identity.alive && !identity.reclaimable)) {
@@ -57,10 +49,10 @@ function acquirePidLock(file, { allowHandoff = false } = {}) {
       if (error?.code !== "EEXIST") throw error;
       const snapshot = readPidLockSnapshot(file);
       if (!snapshot) continue;
-      const age = Date.now() - snapshot.info.mtimeMs;
-      const identity = snapshot.owner ? inspectProcessInstance(snapshot.owner, { maxAgeMs: 5 * 60_000 }) : null;
-      const definitelyStale = !snapshot.owner ? age >= 60_000 : identity.reclaimable === true;
-      if (!definitelyStale) return null;
+      const validOwner = validPidLockOwner(snapshot.owner);
+      if (!validOwner) throw new Error("managed-job lock is malformed; inspect the owner-only state directory");
+      const identity = inspectProcessInstance(snapshot.owner, { maxAgeMs: 5 * 60_000 });
+      if (identity.reclaimable !== true) return null;
       removePidLockSnapshot(file, snapshot);
     }
   }
@@ -107,12 +99,23 @@ function removePidLockSnapshot(file, snapshot) {
   try { current = lstatSync(file, { bigint: true }); } catch (error) { return error?.code === "ENOENT"; }
   if (current.isSymbolicLink() || !current.isFile()) return false;
   if (!samePidLockIdentity(snapshot.info, pidLockIdentity(current))) return false;
-  if (snapshot.owner?.token) {
+  if (validPidLockToken(snapshot.owner?.token)) {
     const currentOwner = readPidLockSnapshot(file)?.owner;
     if (currentOwner?.token !== snapshot.owner.token) return false;
   }
   try { rmSync(file); return true; } catch (error) { return error?.code === "ENOENT"; }
 }
+
+function validPidLockOwner(owner) {
+  return owner && typeof owner === "object" && !Array.isArray(owner)
+    && Number.isSafeInteger(owner.pid) && owner.pid > 0
+    && validPidLockToken(owner.token)
+    && validPidLockTime(owner.startedAt)
+    && (owner.processStartedAt === null || validPidLockTime(owner.processStartedAt));
+}
+
+function validPidLockToken(value) { return typeof value === "string" && /^[a-f0-9]{32}$/.test(value); }
+function validPidLockTime(value) { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
 
 function pidLockIdentity(info, identity = filesystemIdentity(info, "managed-job lock")) {
   return {

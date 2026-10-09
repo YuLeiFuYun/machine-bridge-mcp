@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { allToolNames, MCP_INSTRUCTIONS, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
 import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
+import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
@@ -32,6 +33,13 @@ assert(names.length === unique.size, "tool catalog contains duplicate names");
 assert(names[0] === "server_info", "server_info must remain the first catalog tool");
 assert(JSON.stringify(names) === JSON.stringify(allToolNames()), "runtime tool inventory differs from catalog");
 assert(JSON.stringify([...runtimeToolHandlerNames()].sort()) === JSON.stringify([...names].sort()), "local runtime handler inventory differs from catalog");
+assert(operationMayHaveSideEffects("__future_unreviewed_tool") === true,
+  "unknown future tools must fail closed as side-effecting at the audit boundary");
+const computerActionSchema = catalog.find((tool) => tool.name === "computer_act")?.inputSchema;
+assert(computerActionSchema?.properties?.post_screenshot?.default === "auto"
+  && !Object.hasOwn(computerActionSchema.properties, "include_post_screenshot")
+  && metadata.toolSchemaGeneration === 28,
+"computer_act exposes retired screenshot compatibility or an outdated schema generation");
 
 for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);
@@ -46,6 +54,8 @@ for (const tool of catalog) {
   for (const field of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]) {
     assert(typeof tool.annotations?.[field] === "boolean", `${tool.name} annotation ${field} is missing`);
   }
+  assert(tool.annotations.readOnlyHint === !operationMayHaveSideEffects(tool.name),
+    `${tool.name} read-only annotation drifted from the local side-effect security classification`);
 }
 
 const review = new Set(toolsForPolicy({ profile: "review", allowWrite: false, execMode: "off" }).map((tool) => tool.name));

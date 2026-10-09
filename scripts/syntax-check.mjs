@@ -5,6 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as vm from "node:vm";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const roots = ["bin", "src/local", "src/shared", "scripts", "tests", "browser-extension", ".github/scripts"];
@@ -21,7 +22,7 @@ if (parserMode) {
       if (source.startsWith("#!")) source = source.replace(/^#![^\n]*(?:\n|$)/, "\n");
       new vm.SourceTextModule(source, { identifier: relative(root, file) });
     } catch (error) {
-      process.stderr.write(`syntax check failed: ${relative(root, file)}\n${String(error?.stack || error)}\n`);
+      process.stderr.write(`syntax check failed: ${relative(root, file)}\n${releaseDiagnostic(error?.stack || error, 2000)}\n`);
       process.exit(1);
     }
   }
@@ -42,7 +43,7 @@ const parser = spawnSync(process.execPath, [
 });
 if (parser.error) throw parser.error;
 if (parser.status !== 0) {
-  process.stderr.write(parser.stderr || parser.stdout || "syntax parser failed without output\n");
+  process.stderr.write(`${releaseDiagnostic(parser.stderr || parser.stdout || "syntax parser failed without output", 4000)}\n`);
   process.exit(parser.status ?? 1);
 }
 
@@ -56,7 +57,7 @@ if (process.platform !== "win32") {
   });
   if (shell.error) throw shell.error;
   if (shell.status !== 0) {
-    process.stderr.write(`shell syntax check failed: mbm\n${shell.stderr || shell.stdout}`);
+    process.stderr.write(`shell syntax check failed: mbm\n${releaseDiagnostic(shell.stderr || shell.stdout, 4000)}\n`);
     process.exit(1);
   }
 }

@@ -26,7 +26,9 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { ACTIVE_JOB_STATES, isTerminalManagedJobStatus, managedJobFinalStatus, persistManagedJobTerminal } from "./managed-job-terminal.mjs";
 import { sanitizeLogText } from "./log.mjs";
-import { confirmRunnerClaim } from "./managed-job-runner-claim.mjs";
+import {
+  confirmRunnerClaim, exactManagedJobRunnerPid, exactManagedJobRunnerTime,
+} from "./managed-job-runner-claim.mjs";
 import { ResourceCoordinator } from "./resource-admission.mjs";
 import { acquireProcessResources, bindProcessResources, releaseProcessResources, releaseProcessResourcesQuietly } from "./resource-process-admission.mjs";
 import { delegatedProcessCommand } from "./delegated-process-sandbox.mjs";
@@ -45,28 +47,6 @@ const FATAL_IDENTITY_FIELDS = [
   "owner_account_version", "owner_client_id", "owner_family_id",
 ];
 
-const options = parseArgs(process.argv.slice(2));
-const jobDirInput = typeof options.jobDir === "string" ? options.jobDir.trim() : "";
-if (!jobDirInput) throw new Error("--job-dir is required");
-const jobDir = resolve(jobDirInput);
-if (!MANAGED_JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
-const recover = options.recover === true;
-const recoveryLockToken = typeof process.env.MBM_RECOVERY_LOCK_TOKEN === "string" ? process.env.MBM_RECOVERY_LOCK_TOKEN : "";
-const launchToken = typeof process.env.MBM_RUNNER_LAUNCH_TOKEN === "string" ? process.env.MBM_RUNNER_LAUNCH_TOKEN : "";
-delete process.env.MBM_RECOVERY_LOCK_TOKEN;
-delete process.env.MBM_RUNNER_LAUNCH_TOKEN;
-const planFile = join(jobDir, "plan.json");
-const statusFile = join(jobDir, "status.json");
-const resultFile = join(jobDir, "result.json");
-const cancelFile = join(jobDir, "cancel");
-const runtimeDir = join(jobDir, "runtime");
-const resourcesDir = join(runtimeDir, "resources");
-const temporaryFilesDir = join(runtimeDir, "files");
-const runnerPidFile = join(jobDir, "runner.pid");
-const activeChildFile = managedJobActiveChildFile(jobDir);
-const RUNNER_PROCESS_STARTED_AT = new Date(currentProcessStartTimeMs()).toISOString();
-const resourceCoordinator = new ResourceCoordinator();
-
 class JobCancelledError extends Error {
   constructor() {
     super("job cancellation requested");
@@ -74,20 +54,44 @@ class JobCancelledError extends Error {
   }
 }
 
-
+let jobDir = "", recover = false, recoveryLockToken = "", launchToken = "";
+let planFile = "", statusFile = "", resultFile = "", cancelFile = "";
+let runtimeDir = "", resourcesDir = "", temporaryFilesDir = "";
+let runnerPidFile = "", activeChildFile = "", RUNNER_PROCESS_STARTED_AT = "";
+let initial = null;
 let activeChild = null;
 let activeChildCancellationAware = false;
 let activeChildTermination = null;
 let cancelRequested = false;
 let runnerClaimConfirmed = false;
 let jobIdleSleepAssertion = null;
-for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.on(signal, () => requestCancellation());
-}
-
-const initial = readJson(statusFile, MAX_STATUS_BYTES);
-assertLaunchState(initial);
 try {
+  const options = parseArgs(process.argv.slice(2));
+  const jobDirInput = typeof options.jobDir === "string" ? options.jobDir.trim() : "";
+  if (!jobDirInput) throw new Error("--job-dir is required");
+  jobDir = resolve(jobDirInput);
+  if (!MANAGED_JOB_ID.test(basename(jobDir))) throw new Error("--job-dir must name a managed job directory");
+  recover = options.recover === true;
+  recoveryLockToken = typeof process.env.MBM_RECOVERY_LOCK_TOKEN === "string" ? process.env.MBM_RECOVERY_LOCK_TOKEN : "";
+  launchToken = typeof process.env.MBM_RUNNER_LAUNCH_TOKEN === "string" ? process.env.MBM_RUNNER_LAUNCH_TOKEN : "";
+  delete process.env.MBM_RECOVERY_LOCK_TOKEN;
+  delete process.env.MBM_RUNNER_LAUNCH_TOKEN;
+  planFile = join(jobDir, "plan.json");
+  statusFile = join(jobDir, "status.json");
+  resultFile = join(jobDir, "result.json");
+  cancelFile = join(jobDir, "cancel");
+  runtimeDir = join(jobDir, "runtime");
+  resourcesDir = join(runtimeDir, "resources");
+  temporaryFilesDir = join(runtimeDir, "files");
+  runnerPidFile = join(jobDir, "runner.pid");
+  activeChildFile = managedJobActiveChildFile(jobDir);
+  RUNNER_PROCESS_STARTED_AT = new Date(currentProcessStartTimeMs()).toISOString();
+  const resourceCoordinator = new ResourceCoordinator();
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.on(signal, () => requestCancellation());
+  }
+  initial = readJson(statusFile, MAX_STATUS_BYTES);
+  assertLaunchState(initial);
   await confirmRunnerClaim({
     file: runnerPidFile, pid: process.pid, processStartedAt: RUNNER_PROCESS_STARTED_AT, launchToken,
   });
@@ -104,7 +108,7 @@ try {
   runnerClaimConfirmed = true;
   const plan = readJson(planFile, 1024 * 1024);
   assertManagedJobPlanIntegrity(plan, initial);
-  await main(plan, initial);
+  await main(plan, initial, resourceCoordinator);
 } catch (error) {
   recordFatalRunnerError(error);
   process.exitCode = 1;
@@ -124,7 +128,7 @@ async function releaseRecoveryClaim() {
   throw new Error("recovery runner could not verify ownership of the recovery lock");
 }
 
-async function main(plan, initial) {
+async function main(plan, initial, resourceCoordinator) {
   const dependency = managedJobRunnerDependencyState(plan, initial, recover);
   const status = {
     ...initial,
@@ -169,7 +173,7 @@ async function main(plan, initial) {
       for (let index = 0; index < plan.steps.length; index += 1) {
         if (isCancellationRequested()) throw new JobCancelledError();
         updateStatus(status, { status: "running", current_phase: "steps", current_step: index });
-        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext.value, true, captureBudget, status);
+        const result = await runStep(plan.steps[index], index, "steps", plan, resourceContext.value, true, captureBudget, status, resourceCoordinator);
         mainResults.push(result);
         if (result.timed_out && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} timed out`);
         if (result.code !== 0 && !plan.steps[index].allow_failure) throw new Error(`step ${index + 1} exited ${result.code}`);
@@ -183,7 +187,7 @@ async function main(plan, initial) {
       if (plan.finally_steps.length > 0 && !resourceContext.attempted) resourceContext.ensure();
       for (let index = 0; index < plan.finally_steps.length; index += 1) {
         updateStatus(status, { status: "cleaning", current_phase: recover ? "recovery-cleanup" : "finally_steps", current_step: index });
-        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext.value, false, captureBudget, status);
+        const result = await runStep(plan.finally_steps[index], index, "finally_steps", plan, resourceContext.value, false, captureBudget, status, resourceCoordinator);
         cleanupResults.push(result);
         if (result.timed_out && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} timed out`);
         if (result.code !== 0 && !plan.finally_steps[index].allow_failure && !cleanupError) cleanupError = new Error(`cleanup step ${index + 1} exited ${result.code}`);
@@ -213,7 +217,6 @@ async function main(plan, initial) {
     job_id: status.job_id,
     name: plan.name,
     status: finalStatus,
-    recovered: recover,
     steps: mainResults,
     finally_steps: cleanupResults,
     error_class: classifyError(mainError),
@@ -251,7 +254,7 @@ function assertLaunchState(status) {
 function recordFatalRunnerError(error) {
   const now = new Date().toISOString();
   try {
-    process.stderr.write(`managed job runner fatal: error_class=${classifyError(error)} message=${sanitizeLogText(error?.message || error, 512)}\n`);
+    process.stderr.write(`managed job runner fatal: error_class=${classifyError(error)}\n`);
   } catch { /* Last-resort diagnostics must not prevent terminal-state recovery. */ }
   if (!runnerClaimConfirmed) {
     reportFatalRecordSkipped("runner_claim_unconfirmed");
@@ -272,7 +275,6 @@ function recordFatalRunnerError(error) {
     job_id: status.job_id ?? null,
     name: status.name ?? "managed job",
     status: finalStatus,
-    recovered: recover,
     steps: [],
     finally_steps: [],
     error_class: classifyError(error),
@@ -300,12 +302,17 @@ function fatalRunnerStatusIsCurrent(status, accepted) {
       || !accepted || typeof accepted !== "object" || Array.isArray(accepted)) return false;
   if (isTerminalManagedJobStatus(status.status) || !ACTIVE_JOB_STATES.has(status.status)) return false;
   if (status.job_id !== basename(jobDir) || FATAL_IDENTITY_FIELDS.some((field) => status[field] !== accepted[field])) return false;
-  const runnerPid = Number(status.runner_pid || 0);
-  const acceptedPid = Number(accepted.runner_pid || 0);
-  if (runnerPid && runnerPid !== process.pid && runnerPid !== acceptedPid) return false;
-  const runnerStartedAt = String(status.runner_process_started_at || "");
-  const acceptedStartedAt = String(accepted.runner_process_started_at || "");
-  return !runnerStartedAt || runnerStartedAt === RUNNER_PROCESS_STARTED_AT || runnerStartedAt === acceptedStartedAt;
+  const runnerPid = status.runner_pid == null ? null : exactManagedJobRunnerPid(status.runner_pid);
+  const acceptedPid = accepted.runner_pid == null ? null : exactManagedJobRunnerPid(accepted.runner_pid);
+  if ((status.runner_pid != null && runnerPid === null) || (accepted.runner_pid != null && acceptedPid === null)) return false;
+  if (runnerPid !== null && runnerPid !== process.pid && runnerPid !== acceptedPid) return false;
+  const runnerStartedAt = status.runner_process_started_at == null
+    ? null : exactManagedJobRunnerTime(status.runner_process_started_at);
+  const acceptedStartedAt = accepted.runner_process_started_at == null
+    ? null : exactManagedJobRunnerTime(accepted.runner_process_started_at);
+  if ((status.runner_process_started_at != null && runnerStartedAt === null)
+      || (accepted.runner_process_started_at != null && acceptedStartedAt === null)) return false;
+  return runnerStartedAt === null || runnerStartedAt === RUNNER_PROCESS_STARTED_AT || runnerStartedAt === acceptedStartedAt;
 }
 
 function reportFatalRecordSkipped(reason) {
@@ -334,7 +341,7 @@ function managedJobIdleSleepLogger() {
   } };
 }
 
-async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget, status) {
+async function runStep(step, index, phase, plan, resourceContext, cancellationAware, captureBudget, status, resourceCoordinator) {
   const argv = step.argv.map((value) => substitute(value, plan, resourceContext));
   const envOverrides = Object.fromEntries(Object.entries(step.env || {}).map(([key, value]) => [key, substitute(value, plan, resourceContext)]));
   const envResourceValues = Object.fromEntries(Object.entries(step.env_resources || {}).map(([key, name]) => [key, resourceEnvValue(name, resourceContext.bytes)]));
@@ -357,6 +364,7 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
     cancellationAware,
     captureOutput: step.capture_output !== "discard",
     captureBudget,
+    resourceCoordinator,
     resourcePriority: plan?.execution_priority === "interactive" ? "interactive" : "background",
     delegatedProcess: plan?.delegated_process === true,
     workspace: plan.workspace,
@@ -393,6 +401,7 @@ async function runStep(step, index, phase, plan, resourceContext, cancellationAw
 
 async function spawnStep(argv, {
   cwd, env, input, timeoutMs, cancellationAware, captureOutput, captureBudget,
+  resourceCoordinator,
   resourcePriority = "background", delegatedProcess = false, workspace = "",
   onAdmissionStart = null, onAdmissionComplete = null,
 }) {
@@ -570,7 +579,7 @@ function materializeResources(resources) {
       if (trimmed.length > 0 && trimmed !== text) patterns.push(trimmed);
     } catch { /* Binary resources still use byte-level base64/hex redaction below. */ }
     if (data.length > 0 && data.length <= 64 * 1024) {
-      patterns.push(data.toString("base64"), data.toString("hex"));
+      patterns.push(data.toString("base64"), data.toString("base64url"), data.toString("hex"));
     }
     redactions[name] = [...new Set(patterns.filter((value) => value.length > 0))].sort((a, b) => b.length - a.length);
   }

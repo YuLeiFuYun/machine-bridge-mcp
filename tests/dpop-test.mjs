@@ -72,6 +72,11 @@ assert(await verifyDpopProof({
   request: new Request(endpoint, { method: "POST", headers: { DPoP: wrongMethodProof } }),
   accessToken: token, expectedJkt: jkt, now,
 }) === null, "DPoP proof was reusable under another HTTP method");
+const wrongMethodCaseProof = await createProof({ privateJwk, publicJwk, htm: "post", htu: endpoint, iat: now, jti: "proof-method-case-123456", accessToken: token });
+assert(await verifyDpopProof({
+  request: new Request(endpoint, { method: "POST", headers: { DPoP: wrongMethodCaseProof } }),
+  accessToken: token, expectedJkt: jkt, now,
+}) === null, "DPoP proof accepted a case-normalized htm claim instead of the exact HTTP method");
 
 const wrongTokenProof = await createProof({ privateJwk, publicJwk, htm: "POST", htu: endpoint, iat: now, jti: "proof-token-1234567890", accessToken: "different-token" });
 assert(await verifyDpopProof({

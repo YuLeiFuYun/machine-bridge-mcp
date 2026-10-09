@@ -9,10 +9,15 @@ const temp = mkdtempSync(join(tmpdir(), "mbm-release-impact-test-"));
 try {
   mkdirSync(join(temp, "scripts"), { recursive: true });
   mkdirSync(join(temp, "src", "local"), { recursive: true });
+  mkdirSync(join(temp, "src", "shared"), { recursive: true });
   cpSync(join(root, "scripts", "release-impact-check.mjs"), join(temp, "scripts", "release-impact-check.mjs"));
   cpSync(join(root, "scripts", "release-channel.mjs"), join(temp, "scripts", "release-channel.mjs"));
+  cpSync(join(root, "scripts", "release-diagnostic.mjs"), join(temp, "scripts", "release-diagnostic.mjs"));
   for (const name of ["trusted-git-executable.mjs", "trusted-executable.mjs", "errors.mjs"]) {
     cpSync(join(root, "src", "local", name), join(temp, "src", "local", name));
+  }
+  for (const name of ["log-redaction.mjs", "sensitive-value-patterns.mjs"]) {
+    cpSync(join(root, "src", "shared", name), join(temp, "src", "shared", name));
   }
   writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.0", files: ["README.md", "scripts"] });
   writeFileSync(join(temp, "CHANGELOG.md"), "# Changelog\n\n## 1.0.0 - 2026-01-01\n\n- Initial.\n");
@@ -48,17 +53,21 @@ try {
   writeFileSync(join(temp, "CHANGELOG.md"), "# Changelog\n\n## 1.0.1 - 2026-01-02\n\n- Changed.\n\n## 1.0.0 - 2026-01-01\n\n- Initial.\n");
   expectStatus(0, "version bump with changelog should pass");
 
+  const privateGitDir = process.platform === "win32"
+    ? "C:\\Users\\release-private\\repo.git"
+    : ["", "Users", "release-private", "repo.git"].join("/");
+  const privateFailure = runCheck({ GIT_DIR: privateGitDir });
+  assert(privateFailure.status === 1, "invalid private Git directory unexpectedly passed release impact checking");
+  assert(!String(privateFailure.stderr).includes("release-private") && String(privateFailure.stderr).includes("<home>"),
+    "release impact Git failure exposed a private home path");
+
   console.log("release impact gate test ok");
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
 
 function expectStatus(expected, message) {
-  const result = spawnSync(process.execPath, [join(temp, "scripts", "release-impact-check.mjs")], {
-    cwd: temp,
-    encoding: "utf8",
-    windowsHide: true,
-  });
+  const result = runCheck();
   if (result.error) throw result.error;
   if (`${result.stdout}${result.stderr}`.includes("ERR_MODULE_NOT_FOUND")) {
     throw new Error(`${message}; release-impact fixture failed before the gate ran: ${result.stderr || result.stdout}`);
@@ -66,6 +75,15 @@ function expectStatus(expected, message) {
   if (result.status !== expected) {
     throw new Error(`${message}; expected ${expected}, got ${result.status}: ${result.stderr || result.stdout}`);
   }
+}
+
+function runCheck(envOverrides = {}) {
+  return spawnSync(process.execPath, [join(temp, "scripts", "release-impact-check.mjs")], {
+    cwd: temp,
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, ...envOverrides },
+  });
 }
 
 function git(args) {
@@ -77,4 +95,8 @@ function git(args) {
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
 }

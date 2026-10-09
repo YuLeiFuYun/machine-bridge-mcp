@@ -47,16 +47,16 @@ export function daemonHttpRelayTranscript(input = {}) {
 }
 
 function requiredText(value, label, minimum, maximum) {
-  const text = String(value || "");
-  if (text.length < minimum || text.length > maximum || /[\0\r\n]/.test(text)) {
+  if (typeof value !== "string" || value.length < minimum || value.length > maximum || /[\0\r\n]/.test(value)) {
     throw new Error(`daemon authentication ${label} is invalid`);
   }
-  return text;
+  return value;
 }
 
 function requiredOrigin(value) {
+  if (typeof value !== "string") throw new Error("daemon authentication Worker origin is invalid");
   let url;
-  try { url = new URL(String(value || "")); } catch { throw new Error("daemon authentication Worker origin is invalid"); }
+  try { url = new URL(value); } catch { throw new Error("daemon authentication Worker origin is invalid"); }
   const secure = url.protocol === "https:";
   const loopback = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
   if ((!secure && !loopback) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
@@ -66,7 +66,6 @@ function requiredOrigin(value) {
 }
 
 function requiredInteger(value, label) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`daemon authentication ${label} is invalid`);
-  return String(number);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`daemon authentication ${label} is invalid`);
+  return String(value);
 }

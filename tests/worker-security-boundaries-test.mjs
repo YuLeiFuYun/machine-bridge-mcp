@@ -124,6 +124,17 @@ async function testAccountOperations() {
   });
   assert(ownerResponse.status === 201, "owner account creation failed");
   const owner = (await ownerResponse.json()).account;
+  for (const body of [
+    { name: ["array.name"], role: "reviewer", password: generateAccountPassword() },
+    { name: "array.role", role: ["reviewer"], password: generateAccountPassword() },
+  ]) {
+    const coercedAccount = await handleAccountAdminOperation({
+      request: request("POST", "/admin/accounts", body),
+      operation: "accounts", store, save, now: NOW,
+    });
+    assert(coercedAccount.status === 400,
+      "account administration coerced a non-string name or role into a valid account identity");
+  }
   const duplicate = await handleAccountAdminOperation({
     request: request("POST", "/admin/accounts", { name: "owner.one", role: "owner", password: generateAccountPassword() }),
     operation: "accounts", store, save, now: NOW,
@@ -146,6 +157,27 @@ async function testAccountOperations() {
     operation: "accounts", store, save, now: NOW + 2,
   });
   assert(update.status === 200 && (await update.json()).account.role === "operator", "account role update failed");
+  const coercedUpdate = await handleAccountAdminOperation({
+    request: request("PATCH", "/admin/accounts", { account_id: [editor.account_id], role: "reviewer" }),
+    operation: "accounts", store, save, now: NOW + 2,
+  });
+  assert(coercedUpdate.status === 404 && store.accounts[editor.account_id].role === "operator",
+    "array account id was coerced into account-administration authority");
+  for (const inherited of ["constructor", "__proto__", "toString", "valueOf"]) {
+    for (const [method, path, body] of [
+      ["PATCH", "/admin/accounts", { account_id: inherited, role: "owner" }],
+      ["DELETE", "/admin/accounts", { account_id: inherited }],
+      ["POST", "/admin/accounts/rotate-password", { account_id: inherited, password: generateAccountPassword() }],
+    ]) {
+      const inheritedAccount = await handleAccountAdminOperation({
+        request: request(method, path, body),
+        operation: path.endsWith("rotate-password") ? "rotate-password" : "accounts",
+        store, save, now: NOW + 2,
+      });
+      assert(inheritedAccount.status === 404,
+        `prototype-shaped account id ${inherited} reached account administration through ${method}`);
+    }
+  }
 
   const badRotation = await handleAccountAdminOperation({
     request: request("POST", "/admin/accounts/rotate-password", { account_id: editor.account_id, password: "human-password" }),
@@ -183,7 +215,9 @@ async function testClientOperations() {
   store.accounts[account.account_id] = account;
   store.clients[CLIENT_ID] = {
     client_id: CLIENT_ID, client_name: "Trusted Client", redirect_uris: [REDIRECT], created_at: NOW, last_used_at: NOW,
-    has_been_authorized: true, trusted_account_id: account.account_id, trusted_account_version: account.version, trusted_role: account.role, trusted_at: NOW,
+    has_been_authorized: true, registration_identity: `hmac-sha256:${"c".repeat(64)}`,
+    registration_revision: OAUTH_CLIENT_REGISTRATION_REVISION,
+    trusted_account_id: account.account_id, trusted_account_version: account.version, trusted_role: account.role, trusted_at: NOW,
   };
   store.tokens[`sha256:${"a".repeat(64)}`] = tokenRecord(account, NOW + 300);
   refreshStore.tokens[`sha256:${"b".repeat(64)}`] = { ...tokenRecord(account, NOW + 600), issued_at: NOW, family_expires_at: NOW + 1200 };
@@ -194,16 +228,13 @@ async function testClientOperations() {
   const listedBody = await listed.json();
   const clients = listedBody.clients;
   assert(clients.length === 1 && clients[0].active_access_tokens === 1 && clients[0].active_refresh_tokens === 1, "trusted client inventory lost token counts");
-  assert(clients[0].registration_revision === null && clients[0].registration_current === false,
-    "legacy client inventory did not surface its stale registration contract");
-  store.clients[CLIENT_ID].registration_revision = OAUTH_CLIENT_REGISTRATION_REVISION;
-  const relisted = await handleOAuthClientAdminOperation({ request: request("GET", "/admin/clients"), store, refreshStore, save, now: NOW });
-  const currentClient = (await relisted.json()).clients[0];
-  assert(currentClient.registration_revision === OAUTH_CLIENT_REGISTRATION_REVISION && currentClient.registration_current === true,
-    "current client inventory did not surface its registration contract revision");
+  assert(!Object.hasOwn(clients[0], "registration_revision") && !Object.hasOwn(clients[0], "registration_current"),
+    "client inventory retained obsolete registration-compatibility status");
   assert(listedBody.maximum === 50, "client admin reported a capacity different from the DCR registration ceiling");
   const invalid = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: "invalid" }), store, refreshStore, save, now: NOW });
   assert(invalid.status === 400, "invalid OAuth client id was accepted for revocation");
+  const coerced = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: [CLIENT_ID] }), store, refreshStore, save, now: NOW });
+  assert(coerced.status === 400 && store.clients[CLIENT_ID], "array OAuth client id was coerced into revocation authority");
   const method = await handleOAuthClientAdminOperation({ request: request("POST", "/admin/clients", {}), store, refreshStore, save, now: NOW });
   assert(method.status === 405 && method.headers.get("allow") === "GET, DELETE", "client admin accepted an unsupported method");
   const unknown = await handleOAuthClientAdminOperation({ request: request("DELETE", "/admin/clients", { client_id: `mcp_client_${"z".repeat(43)}` }), store, refreshStore, save, now: NOW });
@@ -254,6 +285,22 @@ async function testTokenRotationAndReplay() {
       await putWithAuthorityRevocation(storage, { oauth: oauthStore, ...oauthRefreshPersistenceEntries(refreshStore) }, revocation);
     },
   };
+  for (const [field, value, expectedError] of [
+    ["grant_type", ["authorization_code"], "unsupported_grant_type"],
+    ["code", [code], "invalid_grant"],
+    ["client_id", [CLIENT_ID], "invalid_grant"],
+    ["redirect_uri", [REDIRECT], "invalid_grant"],
+    ["code_verifier", [verifier], "invalid_grant"],
+    ["resource", [`${BASE}/mcp`], "invalid_target"],
+  ]) {
+    const response = await exchangeOAuthToken(jsonTokenRequest({
+      grant_type: "authorization_code", code, client_id: CLIENT_ID, redirect_uri: REDIRECT,
+      code_verifier: verifier, resource: `${BASE}/mcp`, [field]: value,
+    }), BASE, options);
+    assert(response.status === 400 && (await response.json()).error === expectedError,
+      `OAuth authorization-code exchange coerced non-string ${field}`);
+    assert(store.codes[code], `invalid ${field} consumed the authorization code`);
+  }
   for (const [override, expectedName] of [
     [{ loadOAuthStore: async () => { throw new Error("simulated load failure"); } }, "oauth_token_stage_load_oauth"],
     [{ withLock: async () => { throw new Error("simulated lock failure"); } }, "oauth_token_stage_lock"],
@@ -316,6 +363,21 @@ async function testTokenRotationAndReplay() {
   const first = await exchange.json();
   assert(first.expires_in === 900 && first.token_type === "Bearer" && first.refresh_token, "token pair response is incomplete");
   assert(!store.codes[code], "authorization code remained reusable");
+
+  for (const [field, value, expectedError] of [
+    ["grant_type", ["refresh_token"], "unsupported_grant_type"],
+    ["refresh_token", [first.refresh_token], "invalid_grant"],
+    ["client_id", [CLIENT_ID], "invalid_grant"],
+    ["resource", [`${BASE}/mcp`], "invalid_target"],
+    ["scope", [`${SERVER} offline_access`], "invalid_scope"],
+  ]) {
+    const response = await exchangeOAuthToken(jsonTokenRequest({
+      grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID,
+      resource: `${BASE}/mcp`, scope: `${SERVER} offline_access`, [field]: value,
+    }), BASE, options);
+    assert(response.status === 400 && (await response.json()).error === expectedError,
+      `OAuth refresh exchange coerced non-string ${field}`);
+  }
 
   const refresh = await exchangeOAuthToken(formTokenRequest({
     grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`, scope: `${SERVER} offline_access`,
@@ -463,7 +525,7 @@ async function testRefreshStateLifecycle() {
   refreshStore.tokens[activeHash] = { ...tokenRecord(account, NOW + 600), family_id: family, issued_at: NOW, family_expires_at: NOW + 1200 };
   const expiredHash = `sha256:${"e".repeat(64)}`;
   refreshStore.tokens[expiredHash] = { ...tokenRecord(account, 2), family_id: `mcp_family_${"g".repeat(43)}`, issued_at: 1, family_expires_at: 3 };
-  const storage = new MemoryStorage({ "oauth-refresh": refreshStore });
+  const storage = new MemoryStorage(oauthRefreshPersistenceEntries(refreshStore));
   const loaded = await loadOAuthRefreshStore(oauthStore, storage);
   assert(loaded.tokens[activeHash] && !loaded.tokens[expiredHash], "refresh-state load did not prune expired records");
 
@@ -568,6 +630,14 @@ function formTokenRequest(body, headers = {}) {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
     body: new URLSearchParams(body),
+  });
+}
+
+function jsonTokenRequest(body, headers = {}) {
+  return new Request(`${BASE}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
   });
 }
 
@@ -712,7 +782,7 @@ async function test_async_signature_failure_escapes() {
 await test_async_signature_failure_escapes();
 
 async function test_https_revocation_backlog_prevents_ready() {
- const server="machine-bridge-mcp",version="3.0.0-beta.198",origin="https://relay.example.invalid";
+ const server="machine-bridge-mcp",version="3.0.0-test",origin="https://relay.example.invalid";
  const root=createDeviceIdentity(),identity=createDeviceSessionIdentity(root,origin,server,version);
  const records=Array.from({length:1024},(_,i)=>({id:"revoke_"+"r".repeat(37)+String(i).padStart(6,"0"),account_id:"acct_"+"a".repeat(37)+String(i).padStart(6,"0"),account_version:1,queued_at:Math.floor(Date.now()/1000)}));
  const storage=new MemoryStorage({"authority-revocations":{schema_version:1,records}});

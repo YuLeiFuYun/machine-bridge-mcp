@@ -13,8 +13,9 @@ export function adminAuthTranscript(input = {}) {
 }
 
 function requiredOrigin(value) {
+  if (typeof value !== "string") throw new Error("admin authentication origin is invalid");
   let url;
-  try { url = new URL(String(value || "")); } catch { throw new Error("admin authentication origin is invalid"); }
+  try { url = new URL(value); } catch { throw new Error("admin authentication origin is invalid"); }
   const secure = url.protocol === "https:";
   const loopback = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
   if ((!secure && !loopback) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
@@ -24,13 +25,11 @@ function requiredOrigin(value) {
 }
 
 function requiredToken(value, label, pattern) {
-  const text = String(value || "");
-  if (!pattern.test(text)) throw new Error(`admin authentication ${label} is invalid`);
-  return text;
+  if (typeof value !== "string" || !pattern.test(value)) throw new Error(`admin authentication ${label} is invalid`);
+  return value;
 }
 
 function requiredInteger(value, label) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`admin authentication ${label} is invalid`);
-  return String(number);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`admin authentication ${label} is invalid`);
+  return String(value);
 }

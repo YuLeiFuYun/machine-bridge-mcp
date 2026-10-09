@@ -65,7 +65,7 @@ export function assertTransientProcessRecoveryAccountCapacity({
       if (status.owner_role === "owner") continue;
       if (status.owner_account_id !== principal.accountId || status.owner_account_version !== principal.accountVersion) continue;
       if (isTerminalManagedJobStatus(status.status)) {
-        const finishedAt = Date.parse(String(status.finished_at || ""));
+        const finishedAt = Date.parse(status.finished_at);
         if (!Number.isFinite(finishedAt) || finishedAt > now) throw classificationIntegrityError();
         if (!transientProcessUndeliveredRecoveryProtected(status, 0, now)) continue;
       }
@@ -96,19 +96,19 @@ function matchesExactPrincipal(status, principal) {
 
 function validPrincipal(principal) {
   return principal?.kind === "account"
-    && ACCOUNT_ID.test(String(principal.accountId || ""))
+    && typeof principal.accountId === "string" && ACCOUNT_ID.test(principal.accountId)
     && Number.isSafeInteger(principal.accountVersion) && principal.accountVersion > 0
-    && CLIENT_ID.test(String(principal.clientId || ""))
-    && FAMILY_ID.test(String(principal.familyId || ""))
+    && typeof principal.clientId === "string" && CLIENT_ID.test(principal.clientId)
+    && typeof principal.familyId === "string" && FAMILY_ID.test(principal.familyId)
     && ACCOUNT_ROLES.has(principal.role);
 }
 
 function validAccountBinding(status) {
   return status?.owner_kind === "account"
-    && ACCOUNT_ID.test(String(status.owner_account_id || ""))
+    && typeof status.owner_account_id === "string" && ACCOUNT_ID.test(status.owner_account_id)
     && Number.isSafeInteger(status.owner_account_version) && status.owner_account_version > 0
-    && CLIENT_ID.test(String(status.owner_client_id || ""))
-    && FAMILY_ID.test(String(status.owner_family_id || ""))
+    && typeof status.owner_client_id === "string" && CLIENT_ID.test(status.owner_client_id)
+    && typeof status.owner_family_id === "string" && FAMILY_ID.test(status.owner_family_id)
     && ACCOUNT_ROLES.has(status.owner_role);
 }
 

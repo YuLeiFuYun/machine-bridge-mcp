@@ -27,10 +27,10 @@ let cancelledRequestId = "";
 await testBrowserRequestSettlementEvidence();
 await testStopDuringStart();
 await testStartFailureCleanup();
+await testRetiredPairingStateFailsClosed();
 if (realBrowserTransportObservable) {
   await testAuthenticatedProxyHandshakeFailure();
   await testRuntimeProxyRejectsForgedServerProof();
-  await testPreviousPairingMigrationRefusesSecondOwner();
 }
 
 browserIntegration: {
@@ -77,7 +77,7 @@ try {
   assert(initial.pairing_url.endsWith("/pair") && !initial.pairing_url.includes("#"), "pairing token leaked through the URL fragment");
 
   const pairing = JSON.parse(await readFile(join(root, "browser-bridge.json"), "utf8"));
-  assert(pairing.schemaVersion === 2 && pairing.pairingAuthVersion === 2 && pairing.extensionToken !== pairing.runtimeToken, "browser pairing state did not separate extension and runtime credentials");
+  assert(pairing.schemaVersion === 3 && pairing.pairingAuthVersion === 2 && pairing.extensionToken !== pairing.runtimeToken, "browser pairing state did not separate extension and runtime credentials");
   assert(!JSON.stringify(initial).includes(pairing.extensionToken) && !JSON.stringify(initial).includes(pairing.runtimeToken), "browser status exposed a pairing credential");
   const response = await fetch(initial.pairing_url, { signal: AbortSignal.timeout(BROWSER_FIXTURE_WAIT_MS) });
   const html = await response.text();
@@ -899,18 +899,17 @@ async function testAuthenticatedProxyHandshakeFailure() {
 }
 
 
-async function testPreviousPairingMigrationRefusesSecondOwner() {
-  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-previous-owner-"));
+async function testRetiredPairingStateFailsClosed() {
+  const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-retired-pairing-"));
   if (process.platform !== "win32") await chmod(stateRoot, 0o700);
-  const blocker = createServer((_request, response) => response.writeHead(404).end());
-  await new Promise((resolvePromise, rejectPromise) => {
-    blocker.once("error", rejectPromise);
-    blocker.listen(0, "127.0.0.1", resolvePromise);
-  });
-  const port = blocker.address().port;
-  const oldExtensionToken = "e".repeat(43);
-  const oldRuntimeToken = "r".repeat(43);
-  await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({ schemaVersion: 2, extensionToken: oldExtensionToken, runtimeToken: oldRuntimeToken, port })}\n`, { mode: 0o600 });
+  await writeFile(join(stateRoot, "browser-bridge.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    pairingAuthVersion: 2,
+    extensionToken: "e".repeat(43),
+    runtimeToken: "r".repeat(43),
+    port: 39393,
+    migrationPending: true,
+  })}\n`, { mode: 0o600 });
   const manager = new BrowserBridgeManager({
     policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
     stateRoot,
@@ -919,26 +918,11 @@ async function testPreviousPairingMigrationRefusesSecondOwner() {
     readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
   });
   try {
-    await expectReject(manager.ensureStarted(), "previous browser broker occupies the migrated pairing port");
-    assert(manager.server === null && manager.upstream === null, "previous-owner pairing migration created or retained a second broker transport");
-    const persisted = JSON.parse(await readFile(join(stateRoot, "browser-bridge.json"), "utf8"));
-    assert(persisted.schemaVersion === 2 && persisted.pairingAuthVersion === 2 && persisted.migrationPending === true, "failed mixed-version migration forgot its pending safety state");
-    assert(persisted.runtimeToken === oldRuntimeToken, "mixed-version migration changed the runtime HMAC key before the old owner stopped");
-    assert(persisted.extensionToken !== oldExtensionToken, "previous-state migration retained the extension token exposed by the prior pairing page");
-    const second = new BrowserBridgeManager({
-      policy: { profile: "full", execMode: "shell", unrestrictedPaths: true },
-      stateRoot,
-      runProcess: async () => ({ code: 0, stdout: "", stderr: "" }),
-      readResourceText: async () => "",
-      readResourceBinary: () => ({ buffer: Buffer.alloc(0), path: "", size: 0 }),
-    });
-    try {
-      await expectReject(second.ensureStarted(), "previous browser broker occupies the migrated pairing port");
-      assert(second.server === null && second.upstream === null, "persisted pending migration allowed a later process to create a second broker owner");
-    } finally { second.stop(); }
+    await expectReject(manager.ensureStarted(), "complete beta.198 browser pairing migration before upgrading");
+    assert(manager.server === null && manager.upstream === null,
+      "retired pending pairing state created a browser broker transport");
   } finally {
     manager.stop();
-    await new Promise((resolvePromise) => { blocker.close(resolvePromise); });
     await rm(stateRoot, { recursive: true, force: true });
   }
 }

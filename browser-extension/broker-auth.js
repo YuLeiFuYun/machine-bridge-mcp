@@ -6,7 +6,7 @@
   const BROKER_AUTH_REQUEST_VALUE = "machine-bridge-browser-v2";
 
   async function extensionProtocol(endpoint, token) {
-    if (!TOKEN.test(String(token || ""))) throw new Error("browser pairing token is invalid");
+    if (typeof token !== "string" || !TOKEN.test(token)) throw new Error("browser pairing token is invalid");
     const parsed = parseEndpoint(endpoint);
     if (!parsed) throw new Error("browser broker endpoint is invalid");
     const clientChallenge = randomBase64Url(24);
@@ -27,8 +27,9 @@
   }
 
   function parseEndpoint(value) {
+    if (typeof value !== "string") return null;
     let parsed;
-    try { parsed = new URL(String(value || "")); } catch { return null; }
+    try { parsed = new URL(value); } catch { return null; }
     const port = Number(parsed.port);
     if (parsed.protocol !== "ws:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/extension"
         || parsed.username || parsed.password || parsed.search || parsed.hash
@@ -40,8 +41,9 @@
     return parsed ? `http://127.0.0.1:${parsed.port}/pair` : "";
   }
   function parsePairingPage(value) {
+    if (typeof value !== "string") return null;
     let parsed;
-    try { parsed = new URL(String(value || "")); } catch { return null; }
+    try { parsed = new URL(value); } catch { return null; }
     const port = Number(parsed.port);
     if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/pair"
         || parsed.username || parsed.password || parsed.search || parsed.hash

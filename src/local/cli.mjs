@@ -99,7 +99,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   validateLoggingOptions(args);
   const handler = COMMAND_HANDLERS.get(command);
   if (handler) return handler(args, dependencies);
-  console.error(`Unknown command: ${command}`);
+  console.error("Unknown command");
   usage();
   process.exitCode = 2;
 }
@@ -817,6 +817,7 @@ Commands:
                     Generate/reuse an Ed25519 key locally and register its private file by alias
   browser status    Show browser-extension bridge and connection status
   browser setup     Print the extension path and open the local pairing page
+  browser reset     Offline-revoke browser pairing credentials; re-pair after restart
   browser path      Print the packaged unpacked-extension directory
   uninstall         Delete known Worker(s), remove autostart and local state
 

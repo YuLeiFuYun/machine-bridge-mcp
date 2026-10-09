@@ -90,11 +90,11 @@ function fileOwner(now) {
 }
 
 function validFileOwner(owner) {
-  return Number.isInteger(owner?.pid) && owner.pid > 0
+  return Number.isSafeInteger(owner?.pid) && owner.pid > 0
     && owner.purpose === LOCK_PURPOSE
-    && Number.isFinite(Date.parse(String(owner.startedAt || "")))
-    && Number.isFinite(Date.parse(String(owner.processStartedAt || "")))
-    && /^[a-f0-9]{32}$/.test(String(owner.token || ""));
+    && typeof owner.startedAt === "string" && Number.isFinite(Date.parse(owner.startedAt))
+    && typeof owner.processStartedAt === "string" && Number.isFinite(Date.parse(owner.processStartedAt))
+    && typeof owner.token === "string" && /^[a-f0-9]{32}$/.test(owner.token);
 }
 
 function readJson(file, maxBytes, label) {

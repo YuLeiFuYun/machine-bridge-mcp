@@ -2,7 +2,7 @@ import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./proc
 import { BridgeError } from "./errors.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 
-const DEFAULT_DRAIN_WAIT_MS = 5_000;
+const DEFAULT_DRAIN_WAIT_MS = 6_000;
 
 export class ProcessTracker {
   constructor(options = {}) {
@@ -99,17 +99,17 @@ export class ProcessTracker {
     const boundedWaitMs = Number.isFinite(Number(waitMs)) ? Math.max(1, Math.min(30_000, Math.floor(Number(waitMs)))) : DEFAULT_DRAIN_WAIT_MS;
     this.drainSignal = signal;
     const deadline = createMonotonicDeadline(boundedWaitMs);
-    while (this.active.size) {
+    while (this.active.size || this.terminationTimers.size) {
       for (const child of [...this.active]) this.requestDrainTermination(child);
-      if (!this.active.size) break;
+      if (!this.active.size && !this.terminationTimers.size) break;
       if (deadline.expired()) break;
       await this.waitForChange(Math.max(1, deadline.remainingMs()));
     }
-    if (this.active.size) {
+    if (this.active.size || this.terminationTimers.size) {
       for (const child of this.active) this.drainRequested.delete(child);
       throw new BridgeError("unavailable", "process shutdown did not settle before the runtime teardown deadline", {
         retryable: true,
-        details: { active_processes: this.active.size },
+        details: { active_processes: this.active.size, termination_escalations_pending: this.terminationTimers.size },
       });
     }
   }
@@ -134,17 +134,25 @@ export class ProcessTracker {
     };
   }
 
-  requestTermination(child, force) {
+  requestTermination(child, force, { graceMs = undefined } = {}) {
     if (force) {
       this.clearTermination(child);
       this.terminate(child, "SIGKILL");
       return;
     }
     if (this.terminationTimers.has(child)) return;
+    let settled = false;
     const timer = this.terminateWithEscalation(child, {
-      onTerminationSettled: () => { this.terminationTimers.delete(child); },
+      terminate: this.terminate,
+      ...(graceMs === undefined ? {} : { graceMs }),
+      onTerminationSettled: () => {
+        settled = true;
+        this.terminationTimers.delete(child);
+        if (this.drainSignal && this.active.has(child)) this.drainRequested.delete(child);
+        this.notifyChange();
+      },
     });
-    if (timer) this.terminationTimers.set(child, timer);
+    if (timer && !settled) this.terminationTimers.set(child, timer);
   }
 
   clearTermination(child) {
@@ -158,6 +166,10 @@ export class ProcessTracker {
     if (!child || this.drainRequested.has(child)) return;
     this.drainRequested.add(child);
     this.terminating.add(child);
+    if (this.drainSignal === "SIGKILL") {
+      this.requestTermination(child, false, { graceMs: 0 });
+      return;
+    }
     this.clearTermination(child);
     try { this.terminate(child, this.drainSignal || "SIGKILL"); }
     catch { /* Drain completion is proven by close/untrack, never by the kill request alone. */ }

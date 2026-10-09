@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { AppAutomationManager } from "../src/local/app-automation.mjs";
 import { ComputerUseManager } from "../src/local/computer-use.mjs";
 import { MacosBackgroundInputService } from "../src/local/macos-background-input.mjs";
@@ -411,9 +412,9 @@ async function readActivationCount(file) {
 }
 
 async function waitForJson(file, timeoutMs, predicate = () => true) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let lastError = null;
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     try {
       const handle = await open(file, "r");
       try {
@@ -434,8 +435,8 @@ async function waitForJson(file, timeoutMs, predicate = () => true) {
 async function terminatePid(pid) {
   try { process.kill(pid, "SIGTERM"); }
   catch (error) { if (error?.code === "ESRCH") return; else throw error; }
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline) {
+  const deadline = performance.now() + 1_000;
+  while (performance.now() < deadline) {
     await delay(50);
     try { process.kill(pid, 0); }
     catch (error) { if (error?.code === "ESRCH") return; else throw error; }

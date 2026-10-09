@@ -13,7 +13,8 @@ export const DEFAULT_ACCOUNT_ROLE = String(accessContract.defaultRole);
 export const OWNER_ACCOUNT_ROLE = String(accessContract.ownerRole);
 
 export function normalizeAccountRole(value) {
-  const role = String(value || "").trim().toLowerCase();
+  if (typeof value !== "string") throw new BridgeError("invalid_request", "unknown account role");
+  const role = value.trim().toLowerCase();
   if (!ACCOUNT_ROLE_BY_NAME.has(role)) throw new BridgeError("invalid_request", `unknown account role: ${role}`);
   return role;
 }

@@ -39,7 +39,6 @@ const SERVICE_OWNER_TRANSACTION = /^[A-Za-z0-9_-]{20,128}$/;
 const KNOWN_PROFILE_LOCKS = Object.freeze([
   ["daemon.lock", Number.POSITIVE_INFINITY],
   ["startup.lock", 2 * 60 * 60 * 1000],
-  ["operation-authorization.lock", Number.POSITIVE_INFINITY],
   ["security-audit.lock", Number.POSITIVE_INFINITY],
 ]);
 
@@ -69,8 +68,8 @@ export function retireMatchingServiceOwner(spec = {}, options = {}) {
       || typeof record.version !== "string" || !SERVICE_OWNER_VERSION.test(record.version)) {
     throw new Error("workspace migration machine service owner metadata is invalid");
   }
-  if (!Number.isFinite(Date.parse(String(record.createdAt || "")))
-      || !Number.isFinite(Date.parse(String(record.committedAt || "")))) {
+  if (typeof record.createdAt !== "string" || !Number.isFinite(Date.parse(record.createdAt))
+      || typeof record.committedAt !== "string" || !Number.isFinite(Date.parse(record.committedAt))) {
     throw new Error("workspace migration machine service owner timestamps are invalid");
   }
   const expectedWorkspace = normalizeHistoricalWorkspace(spec.sourceWorkspace);
@@ -446,7 +445,7 @@ function assertMarker(value, expected) {
       || value.destinationHash !== expected.destinationHash
       || !samePath(value.stateRoot, expected.stateRoot)
       || typeof value.stateSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.stateSha256)
-      || !Number.isFinite(Date.parse(String(value.createdAt || "")))) {
+      || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))) {
     throw new Error("workspace migration marker does not match the requested migration");
   }
 }

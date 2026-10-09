@@ -8,6 +8,7 @@ import { createHardenedNpmLauncher } from "../src/local/hardened-npm-launcher.mj
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { validateNpmAudit } from "../src/local/npm-audit-report.mjs";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -116,7 +117,7 @@ export function canonicalConsumerTarballPath(value) {
   const candidate = resolve(String(value || ""));
   let info;
   try { info = lstatSync(candidate); }
-  catch (error) { throw new Error(`consumer tarball is unavailable: ${error.message}`); }
+  catch (error) { throw new Error(`consumer tarball is unavailable: ${releaseDiagnostic(error?.message || error, 600)}`); }
   if (info.isSymbolicLink() || !info.isFile()) {
     throw new Error("consumer tarball must be a non-symlink regular file");
   }
@@ -148,7 +149,7 @@ export function validateConsumerTree(tree, options = {}) {
     if (item.name === "undici" && vulnerableUndici(item.version)) {
       throw new Error(`consumer dependency tree contains vulnerable undici ${item.version}`);
     }
-    if (item.name === "sharp" && compareNumericVersion(item.version, "0.35.4") < 0) {
+    if (item.name === "sharp" && compareNumericVersion(item.version, "0.35.5") < 0) {
       throw new Error(`consumer dependency tree contains unsupported sharp ${item.version}`);
     }
   }
@@ -198,6 +199,9 @@ export function validateConsumerSbom(document, options = {}) {
     const { name, version } = component;
     if (FORBIDDEN_CONTROL_PACKAGES.has(name)) throw new Error(`consumer SBOM contains private control-plane package ${name}`);
     if (name === "undici" && vulnerableUndici(version)) throw new Error(`consumer SBOM contains vulnerable undici ${version}`);
+    if (name === "sharp" && compareNumericVersion(version, "0.35.5") < 0) {
+      throw new Error(`consumer SBOM contains unsupported sharp ${version}`);
+    }
   }
   return Object.freeze({ components: document.components.length });
 }
@@ -292,7 +296,7 @@ function normalizePackRecord(value) {
 }
 
 function bounded(value) {
-  return String(value || "").replace(/[\r\n]+/g, " ").slice(0, 1200);
+  return releaseDiagnostic(value, 1200);
 }
 
 function removeTemporaryTree(directory) {

@@ -50,19 +50,36 @@ const grantNow = 1_786_185_600_000;
 const grant = createBrowserPairingGrant(token, 39393, grantNow);
 const parsed = parseBrowserPairingGrant(grant, grantNow + 1);
 assert(parsed?.id && parsed?.secret && parsed.expiresAt === grantNow + 30_000, "pairing grant did not parse into an id/secret boundary");
+assert.equal(parseBrowserPairingGrant([grant], grantNow + 1), null, "array pairing grant crossed the authentication boundary");
+assert.equal(parseBrowserPairingGrant(grant, String(grantNow + 1)), null, "numeric-string pairing clock crossed the authentication boundary");
+assert.equal(parseBrowserPairingGrant(grant, [grantNow + 1]), null, "array pairing clock crossed the authentication boundary");
 assert.equal(parseBrowserPairingGrant(grant, grantNow + 30_001), null);
 assert.equal(parseBrowserPairingGrant(grant, -1), null);
 assert.throws(() => createBrowserPairingGrant(token, 80, grantNow), /port is invalid/);
+assert.throws(() => createBrowserPairingGrant([token], 39393, grantNow), /credential is invalid/);
+assert.throws(() => createBrowserPairingGrant(token, "39393", grantNow), /port is invalid/);
+assert.throws(() => createBrowserPairingGrant(token, 39393, String(grantNow)), /time is invalid/);
+assert.throws(() => createBrowserPairingGrant(token, 39393, 1), /time is invalid/);
+assert.throws(() => createPairingBootstrapInitProof([parsed.secret], parsed.id, challenge), /input is invalid/);
+assert.throws(() => createPairingBootstrapProof(parsed.secret, "server", [parsed.id], challenge, challenge), /input is invalid/);
 
 let pairMono = 3000;
 const pairing = createPairingBootstrapRegistry(token, 39393, { wallNow: () => grantNow + 1, monotonicNow: () => pairMono });
+const invalidClockPairing = createPairingBootstrapRegistry(token, 39393, { wallNow: () => String(grantNow + 1), monotonicNow: () => pairMono });
 const pairChallenge = createBrokerAuthChallenge();
+const pairInitProof = createPairingBootstrapInitProof(parsed.secret, parsed.id, pairChallenge);
+assert.equal(invalidClockPairing.issue(parsed.id, pairChallenge, pairInitProof), null,
+  "numeric-string pairing registry clock crossed the authentication boundary");
+assert.equal(pairing.issue([parsed.id], pairChallenge, pairInitProof), null, "array pairing grant id was accepted");
+assert.equal(pairing.issue(parsed.id, [pairChallenge], pairInitProof), null, "array pairing challenge was accepted");
+assert.equal(pairing.issue(parsed.id, pairChallenge, [pairInitProof]), null, "array pairing init proof was accepted");
 const pairIssued = issuePair(pairing, parsed, pairChallenge);
 assert(pairIssued, "pairing bootstrap registry did not accept a valid grant id");
 assert.equal(pairIssued.serverProof, createPairingBootstrapProof(parsed.secret, "server", parsed.id, pairChallenge, pairIssued.serverNonce));
 assert.deepEqual(issuePair(pairing, parsed, pairChallenge), pairIssued, "replayed pairing init proof allocated a second server nonce for the same client challenge");
 assert.equal(issuePair(pairing, parsed, createBrokerAuthChallenge()), null, "a second pairing challenge replaced an in-flight bootstrap exchange");
 const pairClientProof = createPairingBootstrapProof(parsed.secret, "client", parsed.id, pairChallenge, pairIssued.serverNonce);
+assert.equal(pairing.consume(parsed.id, pairChallenge, pairIssued.serverNonce, [pairClientProof]), false, "array pairing client proof was accepted");
 assert.equal(pairing.consume(parsed.id, pairChallenge, pairIssued.serverNonce, pairClientProof), true);
 assert.equal(pairing.consume(parsed.id, pairChallenge, pairIssued.serverNonce, pairClientProof), false, "pairing bootstrap grant replayed successfully");
 assert.equal(issuePair(pairing, parsed, createBrokerAuthChallenge()), null, "used pairing grant was issued again");
@@ -132,6 +149,15 @@ assert(issueBroker(genericAntiChurn, token, "runtime", createBrokerAuthChallenge
 assert.throws(() => createBrokerInitProof("short", "runtime", challenge), /credential is invalid/);
 assert.throws(() => createBrokerInitProof(token, "other", challenge), /role is invalid/);
 assert.throws(() => createBrokerInitProof(token, "runtime", "bad"), /challenge is invalid/);
+assert.throws(() => createBrokerInitProof([token], "runtime", challenge), /credential is invalid/,
+  "array broker credential was coerced into a valid token");
+assert.throws(() => createBrokerInitProof(token, "runtime", [challenge]), /challenge is invalid/,
+  "array broker challenge was coerced into a valid challenge");
+assert.equal(registry.issue([challenge], createBrokerInitProof(token, "runtime", challenge)), null,
+  "array broker challenge acquired a pending authentication slot");
+assert.equal(verifyBrokerServerProof(token, "runtime", challenge, issued.serverNonce, [issued.serverProof]), false,
+  "array broker proof was coerced into a valid proof");
+assert.equal(registry.consume([protocol]), false, "array broker protocol was coerced into an authenticated protocol");
 
 // Pairing grant parse/validation and exchange mismatch paths.
 assert.equal(parseBrowserPairingGrant("invalid", grantNow), null);
@@ -156,23 +182,43 @@ const mismatchIssued = issuePair(mismatchRegistry, mismatchGrant, pairChallenge)
 assert(mismatchIssued);
 assert.equal(issuePair(mismatchRegistry, mismatchGrant, createBrokerAuthChallenge()), null, "same grant received two live bootstrap exchanges");
 assert.equal(mismatchRegistry.consume(mismatchGrant.id, pairChallenge, mismatchIssued.serverNonce, "bad"), false);
+assert.equal(mismatchRegistry.consume(
+  mismatchGrant.id,
+  pairChallenge,
+  mismatchIssued.serverNonce,
+  createPairingBootstrapProof(mismatchGrant.secret, "client", mismatchGrant.id, pairChallenge, mismatchIssued.serverNonce),
+), true, "invalid final proof consumed the legitimate in-flight pairing exchange");
 const mismatchGrant2 = parseBrowserPairingGrant(createBrowserPairingGrant(token, 39393, grantNow), grantNow + 1);
 const mismatchRegistry2 = createPairingBootstrapRegistry(token, 39393, { wallNow: () => grantNow + 1, monotonicNow: () => mismatchMono });
 const mismatchChallenge2 = createBrokerAuthChallenge();
 const mismatchIssued2 = issuePair(mismatchRegistry2, mismatchGrant2, mismatchChallenge2);
 const mismatchProof2 = createPairingBootstrapProof(mismatchGrant2.secret, "client", mismatchGrant2.id, mismatchChallenge2, mismatchIssued2.serverNonce);
 assert.equal(mismatchRegistry2.consume(mismatchGrant2.id, createBrokerAuthChallenge(), mismatchIssued2.serverNonce, mismatchProof2), false);
+assert.equal(mismatchRegistry2.consume(mismatchGrant2.id, mismatchChallenge2, mismatchIssued2.serverNonce, mismatchProof2), true,
+  "mismatched pairing challenge consumed the legitimate in-flight exchange");
 const mismatchGrant3 = parseBrowserPairingGrant(createBrowserPairingGrant(token, 39393, grantNow), grantNow + 1);
 const mismatchRegistry3 = createPairingBootstrapRegistry(token, 39393, { wallNow: () => grantNow + 1, monotonicNow: () => mismatchMono });
 const mismatchChallenge3 = createBrokerAuthChallenge();
 const mismatchIssued3 = issuePair(mismatchRegistry3, mismatchGrant3, mismatchChallenge3);
 assert.equal(mismatchRegistry3.consume(mismatchGrant3.id, mismatchChallenge3, createBrokerAuthChallenge(), createPairingBootstrapProof(mismatchGrant3.secret, "client", mismatchGrant3.id, mismatchChallenge3, mismatchIssued3.serverNonce)), false);
+assert.equal(mismatchRegistry3.consume(
+  mismatchGrant3.id,
+  mismatchChallenge3,
+  mismatchIssued3.serverNonce,
+  createPairingBootstrapProof(mismatchGrant3.secret, "client", mismatchGrant3.id, mismatchChallenge3, mismatchIssued3.serverNonce),
+), true, "mismatched pairing server nonce consumed the legitimate in-flight exchange");
 const wrongProofGrant = parseBrowserPairingGrant(createBrowserPairingGrant(token, 39393, grantNow), grantNow + 1);
 const wrongProofRegistry = createPairingBootstrapRegistry(token, 39393, { wallNow: () => grantNow + 1, monotonicNow: () => mismatchMono });
 const wrongProofChallenge = createBrokerAuthChallenge();
 const wrongProofIssued = issuePair(wrongProofRegistry, wrongProofGrant, wrongProofChallenge);
 const wrongProof = createPairingBootstrapProof("z".repeat(43), "client", wrongProofGrant.id, wrongProofChallenge, wrongProofIssued.serverNonce);
 assert.equal(wrongProofRegistry.consume(wrongProofGrant.id, wrongProofChallenge, wrongProofIssued.serverNonce, wrongProof), false);
+assert.equal(wrongProofRegistry.consume(
+  wrongProofGrant.id,
+  wrongProofChallenge,
+  wrongProofIssued.serverNonce,
+  createPairingBootstrapProof(wrongProofGrant.secret, "client", wrongProofGrant.id, wrongProofChallenge, wrongProofIssued.serverNonce),
+), true, "wrong pairing proof consumed the legitimate in-flight exchange");
 assert.equal(wrongProofRegistry.consume("bad", wrongProofChallenge, wrongProofIssued.serverNonce, wrongProof), false);
 
 // HTTP auth router rejects wrong host/marker/method and covers all status branches.

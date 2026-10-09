@@ -387,6 +387,7 @@ await recoveredSubscription.body.cancel("test complete");
 for (const held of heldSubscriptions.slice(1)) await held.body.cancel("test complete");
 
 const capacity = new McpSubscriptionCapacity();
+assert.equal(capacity.reserve(["account-a"]), null, "non-string subscription account identity crossed the capacity boundary");
 const capacityReleases = [];
 for (const accountId of ["account-a", "account-b", "account-c", "account-d"]) {
   for (let index = 0; index < MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT; index += 1) {

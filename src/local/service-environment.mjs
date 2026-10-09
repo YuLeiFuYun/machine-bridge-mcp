@@ -121,14 +121,14 @@ function parseServiceEnvironment(file) {
 }
 
 function validateEnvironmentValue(key, value) {
-  const text = String(value);
-  if (text.includes("\0") || /[\r\n]/.test(text)) {
+  if (typeof value !== "string") throw new Error(`service environment value ${key} must be a string`);
+  if (value.includes("\0") || /[\r\n]/.test(value)) {
     throw new Error(`service environment value ${key} contains a prohibited control character`);
   }
-  if (Buffer.byteLength(text) > MAX_ENVIRONMENT_VALUE_BYTES) {
+  if (Buffer.byteLength(value) > MAX_ENVIRONMENT_VALUE_BYTES) {
     throw new Error(`service environment value ${key} exceeds the size limit`);
   }
-  return text;
+  return value;
 }
 
 function hasEnvironmentKey(environment, key, platform) {

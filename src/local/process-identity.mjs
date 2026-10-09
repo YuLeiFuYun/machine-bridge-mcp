@@ -54,8 +54,10 @@ export async function sampleProcessStartTimesAsync(options = {}) {
 
 export function processStartTimeFromSnapshot(snapshot, pid) {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
-  const key = String(pid);
-  return Object.hasOwn(snapshot, key) ? Number(snapshot[key]) : null;
+  const parsed = normalizePid(pid);
+  if (!parsed) return null;
+  const value = snapshot[String(parsed)];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export function processState(pid) {
@@ -118,18 +120,21 @@ export function splitProcessCommandLine(value) {
 }
 
 export function inspectProcessInstance(owner, options = {}) {
-  const pid = normalizePid(owner?.pid);
+  const pid = exactOwnerPid(owner?.pid);
   if (!pid) return { current: false, alive: false, reclaimable: true, reason: "invalid_pid", pid: null };
   const alive = (options.isAlive || isPidAlive)(pid);
   if (!alive) return { current: false, alive: false, reclaimable: true, reason: "not_running", pid };
 
   const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
-  const lockStartedAt = parseTime(owner?.startedAt);
+  const lockStartedAt = exactOwnerTime(owner?.startedAt);
   if (!lockStartedAt) return { current: false, alive: true, reclaimable: false, reason: "invalid_lock_timestamp", pid };
   if (lockStartedAt > now + START_TIME_TOLERANCE_MS) return { current: false, alive: true, reclaimable: false, reason: "future_lock_timestamp", pid };
 
   const observedStart = (options.getProcessStartTime || processStartTimeMs)(pid);
-  const recordedStart = parseTime(owner?.processStartedAt);
+  const recordedStart = owner?.processStartedAt === undefined ? null : exactOwnerTime(owner.processStartedAt);
+  if (owner?.processStartedAt !== undefined && !recordedStart) {
+    return { current: false, alive: true, reclaimable: false, reason: "invalid_process_timestamp", pid };
+  }
   if (Number.isFinite(observedStart) && observedStart > 0) {
     if (recordedStart && Math.abs(observedStart - recordedStart) > START_TIME_TOLERANCE_MS) {
       return { current: false, alive: true, reclaimable: true, reason: "pid_reused", pid, process_started_at: observedStart };
@@ -154,7 +159,7 @@ export function inspectProcessInstance(owner, options = {}) {
 }
 
 export async function inspectProcessInstanceAsync(owner, options = {}) {
-  const pid = normalizePid(owner?.pid);
+  const pid = exactOwnerPid(owner?.pid);
   if (!pid) return { current: false, alive: false, reclaimable: true, reason: "invalid_pid", pid: null };
   const alive = (options.isAlive || isPidAlive)(pid);
   if (!alive) return { current: false, alive: false, reclaimable: true, reason: "not_running", pid };
@@ -189,8 +194,10 @@ function parseProcessStartSnapshotLine(value) {
   const spaced = /^([1-9][0-9]*)\s+(.+)$/.exec(line);
   const match = pipe || spaced;
   if (!match) return null;
+  const pid = Number(match[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   const startedAt = parseTime(match[2]);
-  return startedAt ? { pid: Number(match[1]), startedAt } : null;
+  return startedAt ? { pid, startedAt } : null;
 }
 
 function runBounded(command, args) {
@@ -223,7 +230,17 @@ function runBoundedAsync(command, args, options = {}) {
 
 function normalizePid(value) {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function exactOwnerPid(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function exactOwnerTime(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > 0 && new Date(parsed).toISOString() === value ? parsed : null;
 }
 
 function parseTime(value) {

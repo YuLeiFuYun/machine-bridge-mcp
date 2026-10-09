@@ -27,6 +27,10 @@ const record = {
   known_blocking_issues: 0,
 };
 validateSoakRecord(record, { stableVersion: "3.0.0", promotionDigest: "b".repeat(64) });
+for (const field of ["prerelease_shasum", "prerelease_integrity", "promotion_content_sha256", "activated_at", "published_at", "accepted_at"]) {
+  expectThrow(() => validateSoakRecord({ ...record, [field]: [record[field]] }),
+    field.endsWith("_at") ? "timestamps are invalid" : field === "prerelease_shasum" ? "SHA-1 is invalid" : field === "prerelease_integrity" ? "integrity is invalid" : "promotion digest is invalid");
+}
 expectThrow(() => validateSoakRecord({ ...record, observed_soak_seconds: record.minimum_soak_seconds - 1 }), "insufficient");
 expectThrow(() => validateSoakRecord({ ...record, known_blocking_issues: 1 }), "known prerelease issues");
 expectThrow(() => validateSoakRecord({ ...record, promotion_content_sha256: "c".repeat(64) }, { promotionDigest: "b".repeat(64) }), "differs from the accepted prerelease");

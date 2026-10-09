@@ -135,6 +135,9 @@ export function wranglerToolchainDescriptor(options = {}) {
       cf: String(manifest.dependencies.cf),
       wrangler: String(manifest.dependencies.wrangler),
       undici: String(manifest.overrides.undici),
+      sharp: String(manifest.overrides.sharp),
+      esbuild: String(lock.packages?.["node_modules/esbuild"]?.version || ""),
+      workerd: String(lock.packages?.["node_modules/workerd"]?.version || ""),
     }),
   });
 }
@@ -173,10 +176,11 @@ function validateTemplate(manifest, lock) {
     throw new Error("Cloudflare toolchain manifest lost its exact private dependencies");
   }
   if (manifest.overrides?.undici !== CF_NETWORK_COMPATIBILITY.undici
-      || Object.keys(manifest.overrides).length !== 1) {
+      || manifest.overrides?.sharp !== "0.35.5"
+      || Object.keys(manifest.overrides).length !== 2) {
     throw new Error("Cloudflare toolchain manifest lost its security override");
   }
-  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "workerd@1.20260926.1": true };
+  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20260926.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
     throw new Error("Cloudflare toolchain manifest lost its exact install-script policy");
   }
@@ -185,6 +189,13 @@ function validateTemplate(manifest, lock) {
     if (lock.packages?.[`node_modules/${name}`]?.version !== version) {
       throw new Error("Cloudflare toolchain lockfile does not match the exact security contract");
     }
+  }
+  if (lock.packages?.["node_modules/sharp"]?.version !== manifest.overrides.sharp) {
+    throw new Error("Cloudflare toolchain lockfile does not resolve the patched Sharp version");
+  }
+  if (lock.packages?.["node_modules/esbuild"]?.version !== "0.28.1"
+      || lock.packages?.["node_modules/workerd"]?.version !== "1.20260926.1") {
+    throw new Error("Cloudflare toolchain lockfile lost an executable install dependency pin");
   }
 }
 function parseJsonObject(bytes, label) {

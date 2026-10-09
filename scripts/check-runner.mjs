@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 import { verificationChildEnvironment } from "./verification-environment.mjs";
 
 const FAILURE_OUTPUT_BYTES_PER_STREAM = 64 * 1024;
@@ -295,11 +296,15 @@ export function directNodeInvocation(task, packageScripts) {
 }
 
 function emitFailureDiagnostics(result, output) {
-  const stdoutText = result.stdout?.text?.() || "";
-  const stderrText = result.stderr?.text?.() || "";
+  const stdoutText = verificationDiagnostic(result.stdout?.text?.() || "");
+  const stderrText = verificationDiagnostic(result.stderr?.text?.() || "");
   if (stdoutText) output.write(`\n--- task stdout ---\n${ensureNewline(stdoutText)}`);
   if (stderrText) output.write(`\n--- task stderr ---\n${ensureNewline(stderrText)}`);
   if (!stdoutText && !stderrText) output.write("task produced no captured output\n");
+}
+
+function verificationDiagnostic(value) {
+  return value ? releaseDiagnostic(value, FAILURE_OUTPUT_BYTES_PER_STREAM + 2048) : "";
 }
 
 function normalizeConcurrency(value) {

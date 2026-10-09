@@ -13,6 +13,7 @@ import {
   validateDeviceSessionIdentity,
 } from "../src/local/device-identity.mjs";
 import { canonicalPublicJwk, deviceSessionCertificateTranscript } from "../src/shared/device-session-auth.mjs";
+import { daemonAuthTranscript, daemonHttpRelayTranscript, daemonPreflightTranscript } from "../src/shared/daemon-auth.mjs";
 import { consumeDaemonPreflightNonce, createDaemonChallenge, sanitizeDaemonChallengeAttachment, verifyDaemonAuthentication, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
 import { consumeBoundedNonce } from "../src/worker/nonce-store.ts";
 
@@ -70,8 +71,10 @@ for (const [value, fragment] of [
   [{ ...rootIdentity, scheme: "wrong" }, "scheme is invalid"],
   [{ ...rootIdentity, keyId: "device_wrong" }, "key id is invalid"],
   [{ ...rootIdentity, createdAt: "invalid" }, "creation time is invalid"],
+  [{ ...rootIdentity, publicJwk: { ...rootIdentity.publicJwk, x: "bad" } }, "public key is invalid"],
 ]) expectThrow(() => validatePublicDeviceRoot(value), fragment);
 expectThrow(() => createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, 0), "timestamp is invalid");
+expectThrow(() => createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, String(issuedAt * 1000)), "timestamp is invalid");
 expectThrow(() => finalizeDeviceSessionIdentity(null, "A".repeat(86), issuedAt * 1000), "draft is invalid");
 expectThrow(() => finalizeDeviceSessionIdentity(createDeviceSessionDraft(rootIdentity, workerOrigin, server, version, issuedAt * 1000), "bad", issuedAt * 1000), "signature is invalid");
 for (const [value, fragment] of [
@@ -81,7 +84,10 @@ for (const [value, fragment] of [
   [{ ...sessionIdentity, certificate: { ...sessionIdentity.certificate, expires_at: Number.NaN } }, "certificate expired"],
   [{ ...sessionIdentity, certificate: { ...sessionIdentity.certificate, signature: "bad" } }, "certificate signature is invalid"],
 ]) expectThrow(() => validateDeviceSessionIdentity(value, issuedAt * 1000), fragment);
+expectThrow(() => validateDeviceSessionIdentity(sessionIdentity, [issuedAt * 1000]), "validation timestamp is invalid");
+expectThrow(() => createDaemonPreflightHeaders(sessionIdentity, workerOrigin, server, version, String(issuedAt * 1000)), "preflight timestamp is invalid");
 expectThrow(() => signWithDeviceSessionIdentity(sessionIdentity, "", issuedAt * 1000), "transcript is empty or too large");
+expectThrow(() => signWithDeviceSessionIdentity(sessionIdentity, ["x"], issuedAt * 1000), "transcript is empty or too large");
 expectThrow(() => signWithDeviceSessionIdentity(sessionIdentity, "x".repeat(64 * 1024 + 1), issuedAt * 1000), "transcript is empty or too large");
 
 for (const [value, fragment] of [
@@ -99,20 +105,32 @@ const transcriptBase = {
 };
 for (const [override, fragment] of [
   [{ workerOrigin: "not a url" }, "Worker origin is invalid"],
+  [{ workerOrigin: [workerOrigin] }, "Worker origin is invalid"],
   [{ workerOrigin: "http://remote.example.com" }, "Worker origin is invalid"],
   [{ workerOrigin: "https://user@example.com" }, "Worker origin is invalid"],
   [{ workerOrigin: "https://bridge.example.com/path" }, "Worker origin is invalid"],
   [{ workerOrigin: "https://bridge.example.com/?query=1" }, "Worker origin is invalid"],
   [{ server: "" }, "server is invalid"],
+  [{ server: [server] }, "server is invalid"],
   [{ server: "x".repeat(129) }, "server is invalid"],
   [{ version: "line\nbreak" }, "version is invalid"],
   [{ rootKeyId: "short" }, "root key id is invalid"],
   [{ issuedAt: 0 }, "issued at is invalid"],
+  [{ issuedAt: String(issuedAt) }, "issued at is invalid"],
   [{ expiresAt: Number.NaN }, "expires at is invalid"],
   [{ nonce: "short" }, "nonce is invalid"],
 ]) expectThrow(() => deviceSessionCertificateTranscript({ ...transcriptBase, ...override }), fragment);
 assert(deviceSessionCertificateTranscript({ ...transcriptBase, workerOrigin: "http://127.0.0.1" }).includes("http://127.0.0.1"),
   "loopback HTTP device-session origin was rejected");
+expectThrow(() => daemonPreflightTranscript({
+  workerOrigin, server: [server], version, nonce: "a".repeat(24), issuedAt,
+}), "server is invalid");
+expectThrow(() => daemonAuthTranscript({
+  challenge: "a".repeat(16), workerOrigin, server, version, instanceId, issuedAt: String(issuedAt),
+}), "issued at is invalid");
+expectThrow(() => daemonHttpRelayTranscript({
+  workerOrigin: [workerOrigin], server, version, nonce: "a".repeat(24), issuedAt, bodySha256: "a".repeat(43),
+}), "Worker origin is invalid");
 
 const preflightHeaders = new Headers(createDaemonPreflightHeaders(sessionIdentity, workerOrigin, server, version, issuedAt * 1000));
 const preflight = await verifyDaemonPreflight({
@@ -126,6 +144,17 @@ const preflight = await verifyDaemonPreflight({
 assert(preflight, "valid session-certificate preflight was rejected");
 assert(preflight.sessionKeyId === sessionIdentity.keyId, "preflight lost the ephemeral session key identity");
 assert(!preflight.sessionPublicKeyJson.includes('"d"'), "preflight returned session private-key material");
+
+const typedCertificateHeader = preflightHeaders.get("X-Bridge-Device-Certificate");
+const typedCertificate = JSON.parse(Buffer.from(typedCertificateHeader, "base64url").toString("utf8"));
+for (const field of ["issued_at", "expires_at", "nonce", "root_key_id", "signature"]) {
+  const malformed = { ...typedCertificate, [field]: [typedCertificate[field]] };
+  const headers = new Headers(preflightHeaders);
+  headers.set("X-Bridge-Device-Certificate", Buffer.from(JSON.stringify(malformed)).toString("base64url"));
+  assert(!await verifyDaemonPreflight({
+    publicKeyJson: rootPublicJson, headers, workerOrigin, server, version, now: issuedAt,
+  }), `device session certificate coerced non-scalar ${field} through signature verification`);
+}
 
 const preflightStorage = new MemoryStorage();
 assert(await consumeDaemonPreflightNonce(preflightStorage, preflight, issuedAt), "fresh daemon preflight nonce was rejected");
@@ -216,11 +245,35 @@ const rejectedAttachment = sanitizeDaemonChallengeAttachment({
   authCertificateExpiresAt: Number.NaN,
 });
 assert(Object.values(rejectedAttachment).every((value) => value === undefined), "invalid daemon challenge attachment was not rejected field-by-field");
+const coercedAttachment = sanitizeDaemonChallengeAttachment({
+  authChallenge: challenge.challenge,
+  authIssuedAt: String(challenge.issuedAt),
+  authExpiresAt: String(challenge.expiresAt),
+  workerOrigin: [workerOrigin],
+  authSessionPublicKeyJson: [preflight.sessionPublicKeyJson],
+  authSessionKeyId: preflight.sessionKeyId,
+  authCertificateExpiresAt: String(preflight.certificateExpiresAt),
+});
+assert(coercedAttachment.authChallenge === challenge.challenge && coercedAttachment.authSessionKeyId === preflight.sessionKeyId
+  && coercedAttachment.authIssuedAt === undefined && coercedAttachment.authExpiresAt === undefined
+  && coercedAttachment.workerOrigin === undefined && coercedAttachment.authSessionPublicKeyJson === undefined
+  && coercedAttachment.authCertificateExpiresAt === undefined,
+"daemon challenge attachment coerced non-declared persisted field types into authentication evidence");
 const welcome = {
   type: "welcome", server, version, worker_origin: workerOrigin,
   authentication: { scheme: challenge.scheme, challenge: challenge.challenge, issued_at: challenge.issuedAt, expires_at: challenge.expiresAt },
 };
 const authentication = await createDaemonAuthentication(sessionIdentity, welcome, instanceId);
+for (const malformedWelcome of [
+  { ...welcome, authentication: { ...welcome.authentication, challenge: [welcome.authentication.challenge] } },
+  { ...welcome, authentication: { ...welcome.authentication, issued_at: String(welcome.authentication.issued_at) } },
+  { ...welcome, authentication: { ...welcome.authentication, expires_at: String(welcome.authentication.expires_at) } },
+  { ...welcome, worker_origin: [welcome.worker_origin] },
+  { ...welcome, server: [welcome.server] },
+  { ...welcome, version: [welcome.version] },
+]) {
+  await expectReject(() => createDaemonAuthentication(sessionIdentity, malformedWelcome, instanceId), "metadata is invalid");
+}
 await expectReject(() => createDaemonAuthentication(sessionIdentity, { ...welcome, authentication: null }, instanceId), "supported device challenge");
 await expectReject(() => createDaemonAuthentication(sessionIdentity, {
   ...welcome, authentication: { ...welcome.authentication, challenge: "bad" },
@@ -241,6 +294,23 @@ assert(await verifyDaemonAuthentication({
   certificateExpiresAt: preflight.certificateExpiresAt,
   now: issuedAt + 1,
 }), "valid ephemeral session challenge signature was rejected");
+for (const authenticationOverride of [
+  { challenge: [authentication.challenge] },
+  { issued_at: String(authentication.issued_at) },
+  { signature: [authentication.signature] },
+  { key_id: [authentication.key_id] },
+]) {
+  assert(!await verifyDaemonAuthentication({
+    publicKeyJson: preflight.sessionPublicKeyJson,
+    authentication: { ...authentication, ...authenticationOverride },
+    challenge,
+    server,
+    version,
+    instanceId,
+    certificateExpiresAt: preflight.certificateExpiresAt,
+    now: issuedAt + 1,
+  }), "daemon authentication coerced a non-declared JSON field type into valid authority");
+}
 assert(!await verifyDaemonAuthentication({
   publicKeyJson: rootPublicJson,
   authentication,

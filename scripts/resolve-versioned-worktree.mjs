@@ -4,6 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 export function parseWorktrees(text) {
   const records = [];
@@ -164,7 +165,7 @@ async function main() {
     else console.log(JSON.stringify(result, null, 2));
     return result.status === "resolved" ? 0 : result.status === "ambiguous" ? 3 : 2;
   } catch (error) {
-    console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`error: ${releaseDiagnostic(error instanceof Error ? error.message : error, 1000)}`);
     return 4;
   }
 }

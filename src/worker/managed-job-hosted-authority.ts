@@ -5,10 +5,8 @@ import { issueManagedJobCapability, verifyManagedJobCapability } from "./managed
 import { projectManagedJobMonitorHandoff, supportsManagedJobMonitor } from "./mcp-job-monitor-ui.ts";
 import { JOB_MONITOR_RENDER_TOOL } from "./mcp-job-monitor-tools.ts";
 import { issueManagedJobMonitorIfAvailable, type ManagedJobMonitorClaimStore, type ManagedJobMonitorCoordinationFailureObserver } from "./mcp-job-monitor-claims.ts";
-
 const JOB_ID = /^job_[A-Za-z0-9_-]{24,}$/;
 const ISSUANCE_TOOLS = new Set(["stage_job", "start_job"]);
-
 export async function hostedManagedJobDaemonArguments(
   name: string,
   args: Record<string, unknown>,
@@ -93,7 +91,9 @@ async function verifyDependencies(
   authorized: AuthorizedToken,
   keyMaterial: string,
 ): Promise<void> {
-  const dependencies = Array.isArray(args.depends_on) ? args.depends_on.map(String) : [];
+  const dependencies = args.depends_on === undefined ? [] : Array.isArray(args.depends_on) ? args.depends_on : null;
+  if (!dependencies || dependencies.some((jobId) => typeof jobId !== "string" || !JOB_ID.test(jobId)))
+    throw new WorkerToolError("invalid_request", "depends_on must contain valid managed job ids", false, { side_effects_started: false });
   if (!dependencies.length) return;
   const recovery = args.dependency_recovery;
   if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {

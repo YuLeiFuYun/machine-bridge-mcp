@@ -1,7 +1,6 @@
 import {
   emptyOAuthRefreshStore,
   isCurrentOAuthRefreshStore,
-  upgradeOAuthRefreshStore,
   type ConsumedOAuthRefreshToken,
   type OAuthRefreshStore,
   type OAuthRefreshToken,
@@ -13,7 +12,6 @@ import {
 } from "./oauth-field-contract.ts";
 import {
   loadConsumedRefreshShards,
-  mergeLegacyAndShardedConsumed,
   OAUTH_REFRESH_STORE_KEY,
   oauthRefreshPersistenceEntries,
   saveOAuthRefreshStore,
@@ -36,17 +34,17 @@ export async function loadOAuthRefreshStore(
 ): Promise<OAuthRefreshStore> {
   const raw = await storage.get<unknown>(OAUTH_REFRESH_STORE_KEY);
   const shards = await loadConsumedRefreshShards(storage);
-  const store = raw === undefined ? emptyOAuthRefreshStore() : upgradeOAuthRefreshStore(raw);
-  if (!store || !shards.valid || (raw === undefined && shards.present)) {
+  if (raw === undefined) {
+    if (shards.present) {
+      throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
+    }
+    return emptyOAuthRefreshStore();
+  }
+  if (!isCurrentOAuthRefreshStore(raw) || !shards.valid || !shards.complete || Object.keys(raw.consumed).length > 0) {
     throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
   }
-  const migrated = raw !== undefined && !isCurrentOAuthRefreshStore(raw);
-  const legacyConsumedPresent = Object.keys(store.consumed).length > 0;
-  const mergedConsumed = mergeLegacyAndShardedConsumed(store.consumed, shards.consumed);
-  if (!mergedConsumed) {
-    throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
-  }
-  store.consumed = mergedConsumed;
+  const store = raw;
+  store.consumed = shards.consumed;
   if (!validRefreshStoreRecords(store)) {
     throw new HttpError(503, "oauth_refresh_state_schema_mismatch", "OAuth refresh-token state requires operator repair");
   }
@@ -93,7 +91,7 @@ export async function loadOAuthRefreshStore(
   if (pruneOAuthRefreshReplayState(store, oauthStore, revocations)) changed = true;
   if (revocations.length > 0) {
     await putWithAuthorityRevocations(storage, { oauth: oauthStore, ...oauthRefreshPersistenceEntries(store) }, revocations);
-  } else if (changed || migrated || legacyConsumedPresent) await saveOAuthRefreshStore(storage, store);
+  } else if (changed) await saveOAuthRefreshStore(storage, store);
   return store;
 }
 

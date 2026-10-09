@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { requireGitVersion } from "../src/local/git-version.mjs";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
 import { sensitiveValuePattern } from "../src/shared/sensitive-value-patterns.mjs";
@@ -67,9 +68,10 @@ if (findings.length) {
 }
 
 const historySummary = scanHistory ? `; ${historySummaryCounts.blobs} reachable history blobs; ${historySummaryCounts.commits} commit messages` : "";
-process.stderr.write(`privacy check ok (${candidates.length} tracked/unignored files; ${denylist.length} local denylist entries${historySummary})\n`);
+process.stderr.write(`privacy check ok (${candidates.length} publication candidate files; ${denylist.length} local denylist entries${historySummary})\n`);
 
 function collectCandidateFiles(directory) {
+  let files;
   try {
     const listed = execFileSync(gitExecutable(), ["-C", directory, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
       encoding: "buffer",
@@ -81,10 +83,10 @@ function collectCandidateFiles(directory) {
       maxBuffer: 32 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
     }).toString("utf8").split("\0").filter(Boolean));
-    return listed.filter((relativePath) => !deleted.has(relativePath)).sort();
+    files = listed.filter((relativePath) => !deleted.has(relativePath));
   } catch {
     const excluded = new Set([".git", ".wrangler", "node_modules"]);
-    const files = [];
+    files = [];
     const stack = [""];
     while (stack.length) {
       const relative = stack.pop();
@@ -100,14 +102,103 @@ function collectCandidateFiles(directory) {
         else if (entry.isFile() || entry.isSymbolicLink()) files.push(child.split(path.sep).join("/"));
       }
     }
-    return files.sort();
+  }
+  return [...new Set([...files, ...collectExplicitPackageFiles(directory)])].sort();
+}
+
+function collectExplicitPackageFiles(directory) {
+  const manifestPath = path.join(directory, "package.json");
+  if (!existsSync(manifestPath)) return [];
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(manifestPath, "utf8")); }
+  catch { throw new Error("privacy scanner could not parse package.json"); }
+  const declared = manifest.files === undefined ? [] : manifest.files;
+  if (!Array.isArray(declared) || !declared.every((entry) => typeof entry === "string" && entry.length > 0)) {
+    throw new Error("privacy scanner requires package.json files to be a string array");
+  }
+  const out = [];
+  for (const entry of [...declared, ...automaticPackagePaths(directory, manifest)]) {
+    if (/[*?\[\]{}!]/.test(entry)) throw new Error(`privacy scanner does not support package files glob: ${entry}`);
+    const normalized = entry.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    if (!normalized || path.isAbsolute(normalized) || normalized === ".." || normalized.startsWith("../")) {
+      throw new Error(`privacy scanner package path is invalid: ${entry}`);
+    }
+    const absolute = path.resolve(directory, normalized);
+    const relative = path.relative(directory, absolute).split(path.sep).join("/");
+    if (!relative || relative === ".." || relative.startsWith("../")) {
+      throw new Error(`privacy scanner package path escapes repository: ${entry}`);
+    }
+    collectPackagePath(absolute, relative, out);
+  }
+  return out;
+}
+
+function automaticPackagePaths(directory, manifest) {
+  const entries = new Set(["package.json", "npm-shrinkwrap.json"]);
+  if (manifest.main !== undefined) {
+    if (typeof manifest.main !== "string" || !manifest.main) throw new Error("privacy scanner requires package.json main to be a string");
+    entries.add(manifest.main);
+  }
+  if (manifest.bin !== undefined) {
+    if (typeof manifest.bin === "string" && manifest.bin) entries.add(manifest.bin);
+    else if (manifest.bin && typeof manifest.bin === "object" && !Array.isArray(manifest.bin)
+      && Object.values(manifest.bin).every((value) => typeof value === "string" && value.length > 0)) {
+      for (const value of Object.values(manifest.bin)) entries.add(value);
+    } else throw new Error("privacy scanner requires package.json bin entries to be strings");
+  }
+  const man = manifest.man === undefined ? [] : Array.isArray(manifest.man) ? manifest.man : [manifest.man];
+  if (!man.every((value) => typeof value === "string" && value.length > 0)) {
+    throw new Error("privacy scanner requires package.json man entries to be strings");
+  }
+  for (const value of man) entries.add(value);
+  let rootEntries;
+  try { rootEntries = readdirSync(directory, { withFileTypes: true }); }
+  catch { throw new Error("privacy scanner could not inspect package root"); }
+  for (const entry of rootEntries) {
+    if (!entry.isDirectory() && /^(?:readme|licen[cs]e|notice)(?:\.|$)/i.test(entry.name)) entries.add(entry.name);
+  }
+  return [...entries];
+}
+
+function collectPackagePath(absolute, relative, out) {
+  let metadata;
+  try { metadata = lstatSync(absolute); }
+  catch (error) {
+    if (String(error?.code || "") === "ENOENT") return;
+    throw new Error(`privacy scanner could not inspect package path: ${relative}`);
+  }
+  if (!metadata.isDirectory()) {
+    out.push(relative);
+    return;
+  }
+  let entries;
+  try { entries = readdirSync(absolute, { withFileTypes: true }); }
+  catch { throw new Error(`privacy scanner could not traverse package path: ${relative}`); }
+  for (const entry of entries) {
+    if (entry.name === ".git" || entry.name === "node_modules") continue;
+    const childRelative = `${relative}/${entry.name}`;
+    const childAbsolute = path.join(absolute, entry.name);
+    if (entry.isDirectory()) collectPackagePath(childAbsolute, childRelative, out);
+    else out.push(childRelative);
   }
 }
 
 function scanReachableHistory(directory, entries, out) {
+  const git = gitExecutable();
+  let versionOutput;
+  try {
+    versionOutput = execFileSync(git, ["--version"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    throw new Error("privacy history scan could not determine the Git version");
+  }
+  requireGitVersion(versionOutput);
   let listing;
   try {
-    listing = execFileSync(gitExecutable(), ["-C", directory, "rev-list", "--objects", "--all", "-z"], {
+    listing = execFileSync(git, ["-C", directory, "rev-list", "--objects", "--all", "-z"], {
       encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
@@ -139,7 +230,7 @@ function scanReachableHistory(directory, entries, out) {
   const hashes = [...objectPaths.keys()];
   let metadata;
   try {
-    metadata = execFileSync(gitExecutable(), ["-C", directory, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
+    metadata = execFileSync(git, ["-C", directory, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], {
       input: `${hashes.join("\n")}\n`,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -171,7 +262,7 @@ function scanReachableHistory(directory, entries, out) {
     }
     let buffer;
     try {
-      buffer = execFileSync(gitExecutable(), ["-C", directory, "cat-file", "blob", hash], {
+      buffer = execFileSync(git, ["-C", directory, "cat-file", "blob", hash], {
         encoding: "buffer",
         maxBuffer: 6 * 1024 * 1024,
         stdio: ["ignore", "pipe", "pipe"],

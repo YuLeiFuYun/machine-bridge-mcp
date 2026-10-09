@@ -5,9 +5,10 @@ import { createLogger } from "./log.mjs";
 import { inspectResourceFile, loadManagedJobPlan, ManagedJobManager, publicResourceRegistry, validateResourceName } from "./managed-jobs.mjs";
 import { generateRegisteredSshKey } from "./resource-operations.mjs";
 import {
-  acquireStartupLockWithWait, defaultStateRoot, expandHome, loadState, saveState,
+  acquireMaintenanceLock, acquireStartupLockWithWait, defaultStateRoot, expandHome, loadState, saveState,
 } from "./state.mjs";
-import { readBrowserPairing, readBrowserPairingPort } from "./browser-pairing-store.mjs";
+import { readBrowserPairing, readBrowserPairingPort, rotateBrowserPairing } from "./browser-pairing-store.mjs";
+import { activeStateLocks } from "./state-inventory.mjs";
 import { startBrowserPairingLaunch } from "./browser-pairing-launch.mjs";
 import { browserPairingLaunchCommand } from "./browser-command.mjs";
 import { browserExtensionPathForRuntime } from "./browser-extension-path.mjs";
@@ -195,6 +196,7 @@ const BROWSER_ACTION_HANDLERS = new Map([
   ["status", browserStatusAction],
   ["setup", browserPairAction],
   ["pair", browserPairAction],
+  ["reset", browserResetAction],
 ]);
 
 async function browserCommand(args, dependencies) {
@@ -231,8 +233,37 @@ async function browserPairAction(args, {
   }
   console.log(`Extension path: ${context.extensionPath}`);
   console.log("Load this directory in the Chromium profile you use every day; Machine Bridge does not install it into Playwright or a separate automation profile.");
-  console.log("Enable Developer mode, choose Load unpacked once, and reload the same path after each Machine Bridge upgrade. Older local-candidate installs may need one Load unpacked migration to this stable path.");
+  console.log("Enable Developer mode, choose Load unpacked once, and reload the same path after each Machine Bridge upgrade.");
   console.log(`Pairing page opened: ${context.pairingUrl}`);
+}
+
+async function browserResetAction(args, { chooseWorkspace, readBrowserHealth: readHealth }) {
+  const context = await browserCommandContext(args, chooseWorkspace, readHealth);
+  if (context.result.running) throw new Error("browser reset requires Machine Bridge runtimes to be stopped");
+  const maintenance = acquireMaintenanceLock(context.stateRoot, { operation: "browser-reset" });
+  if (!maintenance.acquired) {
+    const pid = maintenance.owner?.pid ? `pid ${maintenance.owner.pid}` : "another process";
+    throw new Error(`another state maintenance operation is active (${pid})`);
+  }
+  try {
+    const locks = activeStateLocks(context.stateRoot);
+    if (locks.length) {
+      const detail = locks.slice(0, 5).map((item) => `${item.kind}:${item.pid || "unknown"}`).join(", ");
+      throw new Error(`browser reset requires all Machine Bridge runtimes to be stopped (${detail})`);
+    }
+    const health = await readHealth(`http://127.0.0.1:${context.port}/healthz`);
+    if (health?.ok === true && health?.broker === "machine-bridge-browser") {
+      throw new Error("browser reset requires Machine Bridge runtimes to be stopped");
+    }
+    const rotated = rotateBrowserPairing(context.stateRoot);
+    if (args.json) {
+      console.log(JSON.stringify({ reset: true, port: rotated.port, repair_required: true }, null, 2));
+      return;
+    }
+    console.log("Browser pairing credentials rotated. Start Machine Bridge, then run `machine-mcp browser setup` to pair the extension again.");
+  } finally {
+    maintenance.release();
+  }
 }
 
 async function browserCommandContext(args, chooseWorkspace, readHealth) {

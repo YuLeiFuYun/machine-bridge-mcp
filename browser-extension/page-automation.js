@@ -1,5 +1,5 @@
 (() => {
-  const PAGE_AUTOMATION_VERSION = 5;
+  const PAGE_AUTOMATION_VERSION = 6;
   if (globalThis.__machineBridgePageAutomation?.version === PAGE_AUTOMATION_VERSION) return;
 
   const INTERACTIVE_SELECTOR = "a,button,input,select,textarea,[role],[contenteditable]:not([contenteditable='false']),summary";
@@ -19,7 +19,7 @@
   const SNAPSHOT_IDENTITY_FIELDS = new Set([
     "tag", "type", "role", "name", "id", "field_name", "label", "placeholder", "href", "sensitive", "in_shadow_dom",
   ]);
-  const DOCUMENT_EPOCH = `doc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+  const DOCUMENT_EPOCH = `doc_${Date.now().toString(36)}_${crypto.randomUUID()}`;
   const elementRefs = new WeakMap();
   const refElements = new Map();
   let nextRef = 1;

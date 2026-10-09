@@ -8,6 +8,7 @@ const brokerAuthSource = await readFile(new URL("../browser-extension/broker-aut
 const pairingBootstrapSource = await readFile(new URL("../browser-extension/pairing-bootstrap.js", import.meta.url), "utf8");
 const brokerLivenessSource = await readFile(new URL("../browser-extension/broker-liveness.js", import.meta.url), "utf8");
 const browserErrorBoundarySource = await readFile(new URL("../browser-extension/browser-error-boundary.js", import.meta.url), "utf8");
+const browserOperationContractSource = await readFile(new URL("../browser-extension/browser-operation-contract.js", import.meta.url), "utf8");
 const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const browserOperationsSource = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");
 const browserOperationHelpers = loadBrowserOperations(createContext({ chrome: baseChrome() }));
@@ -52,6 +53,10 @@ async function testPairingGrantBoundary() {
   const bootstrap = context.__machineBridgePairingBootstrap;
   await expectReject(() => bootstrap.bootstrapPairing(39393, "invalid"), "bootstrap is invalid");
   const grant = pairingGrant(39393, token);
+  await expectReject(() => bootstrap.bootstrapPairing("39393", grant), "bootstrap is invalid");
+  await expectReject(() => bootstrap.bootstrapPairing(39393, [grant]), "bootstrap is invalid");
+  await expectReject(() => bootstrap.bootstrapPairing(39393, grant, String(Date.now())), "bootstrap is invalid");
+  await expectReject(() => context.__machineBridgeServiceWorkerTest.pairFromBootstrap("39393", grant, { replace: false }), "bootstrap is invalid");
   const tampered = `${grant.slice(0, -1)}x`;
   await expectReject(() => bootstrap.bootstrapPairing(39393, tampered), "broker authentication failed");
   const candidate = await bootstrap.bootstrapPairing(39393, grant);
@@ -187,6 +192,10 @@ async function testHandshakeReadiness() {
   assert(mismatched.ok === false && mismatched.requires_manual_repair === true, "a different authenticated broker candidate bypassed explicit repair confirmation");
   const decorated = await api.pairConfiguration("ws://127.0.0.1:39393/extension?unexpected=1", "z".repeat(32), { replace: false });
   assert(decorated.ok === false && decorated.error === "invalid_pairing_material", "pairing accepted a decorated broker endpoint");
+  const coercedEndpoint = await api.pairConfiguration(["ws://127.0.0.1:39393/extension"], "z".repeat(32), { replace: false });
+  assert(coercedEndpoint.ok === false && coercedEndpoint.error === "invalid_pairing_material", "pairing coerced an array endpoint into connection authority");
+  const coercedToken = await api.pairConfiguration("ws://127.0.0.1:39393/extension", ["z".repeat(32)], { replace: false });
+  assert(coercedToken.ok === false && coercedToken.error === "invalid_pairing_material", "pairing coerced an array token into authentication authority");
 }
 
 async function testBrokerPongWatchdog() {
@@ -1923,6 +1932,7 @@ function loadServiceWorker(context, names) {
 }
 
 function loadBrowserOperations(context) {
+  vm.runInContext(browserOperationContractSource, context, { filename: "browser-operation-contract.js" });
   vm.runInContext(browserOperationsSource, context, { filename: "browser-operations.js" });
   return context.__machineBridgeBrowserOperations;
 }

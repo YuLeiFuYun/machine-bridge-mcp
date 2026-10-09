@@ -14,6 +14,7 @@ const localAutomationFiles = [
   join(root, "browser-extension", "broker-auth.js"),
   join(root, "browser-extension", "pairing-bootstrap.js"),
   join(root, "browser-extension", "browser-error-boundary.js"),
+  join(root, "browser-extension", "browser-operation-contract.js"),
   join(root, "browser-extension", "browser-operations.js"),
   join(root, "browser-extension", "devtools-session.js"),
   join(root, "browser-extension", "devtools-input.js"),
@@ -33,6 +34,9 @@ const brokerServerSource = readFileSync(join(root, "src", "local", "browser-brok
 if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms") || !extensionManifest.permissions?.includes("debugger")) {
   throw new Error("packaged browser extension is missing required Manifest V3 capabilities");
 }
+if (extensionManifest.permissions?.includes("tabs")) {
+  throw new Error("browser extension regained the redundant tabs metadata permission; <all_urls> already grants metadata access for scriptable pages");
+}
 const pairingContent = extensionManifest.content_scripts?.find((entry) => entry.js?.includes("pairing.js"));
 if (pairingContent?.run_at !== "document_start") throw new Error("browser pairing content script must run at document_start before page scripts");
 if (!extensionManifest.host_permissions?.includes("<all_urls>")) {
@@ -50,6 +54,7 @@ if (!brokerServerSource.includes("isAllowedExtensionOrigin(origin, EXPECTED_EXTE
 const serviceWorkerSource = readFileSync(join(root, "browser-extension", "service-worker.js"), "utf8");
 const pairingContentSource = readFileSync(join(root, "browser-extension", "pairing.js"), "utf8");
 const browserErrorBoundarySource = readFileSync(join(root, "browser-extension", "browser-error-boundary.js"), "utf8");
+const browserOperationContractSource = readFileSync(join(root, "browser-extension", "browser-operation-contract.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
 const localToolResultBoundarySource = readFileSync(join(root, "src", "local", "tool-result-boundary.mjs"), "utf8");
@@ -149,7 +154,7 @@ if (!appAutomationJxaSource.includes("item.role === 'AXSecureTextField'") || !ap
 }
 const fixedWorkerModules = [
   "browser-error-boundary.js", "broker-auth.js", "pairing-bootstrap.js", "devtools-session.js",
-  "devtools-input.js", "devtools-observation.js", "browser-operations.js",
+  "devtools-input.js", "devtools-observation.js", "browser-operation-contract.js", "browser-operations.js",
 ];
 const importScriptsCall = serviceWorkerSource.match(/importScripts\(([^;]+)\);/)?.[0] || "";
 if (!fixedWorkerModules.every((name) => importScriptsCall.includes(`"${name}"`))
@@ -171,7 +176,8 @@ if (!localToolResultBoundarySource.includes("MAX_TOOL_RESULT_BYTES = 7 * 1024 * 
     || !serviceWorkerSource.includes("MAX_RESULT_BYTES = 7 * 1024 * 1024")) {
   throw new Error("local and browser-extension tool-result byte ceilings drifted apart");
 }
-if (!browserOperationsSource.includes("browser mutation may have completed; the action outcome is unknown because its result could not be delivered")
+if (!browserOperationContractSource.includes("browser mutation may have completed; the action outcome is unknown because its result could not be delivered")
+    || !browserOperationsSource.includes("__machineBridgeBrowserOperationContract")
     || !browserRequestSettlementSource.includes('message.startsWith("browser mutation may have completed;")')) {
   throw new Error("browser mutation result-undeliverable settlement drifted across extension and broker layers");
 }

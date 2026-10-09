@@ -1,5 +1,4 @@
 export const OAUTH_CLIENT_REGISTRATION_REVISION = 2;
-// Persisted clients without a revision predate the refresh-capable DCR contract and remain readable, but must be recreated before a new authorization.
 export const MAX_OAUTH_CLIENTS = 50;
 export const MAX_OAUTH_CLIENTS_PER_IDENTITY = 5;
 export const OAUTH_UNUSED_CLIENT_TTL_SECONDS = 60 * 60;
@@ -10,9 +9,9 @@ interface RegistrationClient {
   client_name: string;
   redirect_uris: string[];
   created_at: number;
-  has_been_authorized?: boolean;
-  registration_identity?: string;
-  registration_revision?: number;
+  has_been_authorized: boolean;
+  registration_identity: string;
+  registration_revision: number;
 }
 
 export function reusablePendingOAuthClient(

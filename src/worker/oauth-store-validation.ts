@@ -8,9 +8,9 @@ import {
   hasOnlyRecordFields, OAUTH_ACCOUNT_FIELDS, OAUTH_CLIENT_FIELDS, OAUTH_CODE_FIELDS,
   OAUTH_FAILURE_FIELDS, OAUTH_STORE_FIELDS, OAUTH_TOKEN_FIELDS,
 } from "./oauth-field-contract.ts";
+import { OAUTH_CLIENT_REGISTRATION_REVISION } from "./oauth-client-contract.ts";
 
-// Store validation preserves already-issued account identities; creation applies the stricter current rule.
-const PERSISTED_ACCOUNT_NAME_PATTERN = /^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{1,62}[a-z0-9])$/;
+const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
 const BOUNDED_SECRET_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
 
 export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
@@ -27,9 +27,9 @@ export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
 function validAccount(value: unknown, key: string): value is AccountRecord {
   if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_ACCOUNT_FIELDS)) return false;
   return value.account_id === key
-    && PERSISTED_ACCOUNT_NAME_PATTERN.test(stringValue(value.name))
+    && ACCOUNT_NAME_PATTERN.test(stringValue(value.name))
     && boundedString(value.display_name, 128)
-    && boundedString(value.role, 64)
+    && currentAccountRole(value.role)
     && typeof value.active === "boolean"
     && positiveInteger(value.version)
     && BOUNDED_SECRET_PATTERN.test(stringValue(value.password_salt))
@@ -46,15 +46,15 @@ function validClient(value: unknown, key: string): value is OAuthClient {
       || !value.redirect_uris.every((uri) => validRedirectUri(uri))
       || !positiveInteger(value.created_at) || !positiveInteger(value.last_used_at)
       || Number(value.last_used_at) < Number(value.created_at)
-      || (value.has_been_authorized !== undefined && typeof value.has_been_authorized !== "boolean")
-      || (value.registration_identity !== undefined && !AUTHORIZATION_IDENTITY_PATTERN.test(stringValue(value.registration_identity)))
-      || (value.registration_revision !== undefined && !positiveInteger(value.registration_revision))) return false;
+      || typeof value.has_been_authorized !== "boolean"
+      || !AUTHORIZATION_IDENTITY_PATTERN.test(stringValue(value.registration_identity))
+      || value.registration_revision !== OAUTH_CLIENT_REGISTRATION_REVISION) return false;
   const trusted = [value.trusted_account_id, value.trusted_account_version, value.trusted_role];
   if (trusted.every((item) => item === undefined)) return value.trusted_at === undefined;
   return trusted.every((item) => item !== undefined)
     && ACCOUNT_ID_PATTERN.test(stringValue(value.trusted_account_id))
     && positiveInteger(value.trusted_account_version)
-    && normalizeAccountRole(value.trusted_role) !== null
+    && currentAccountRole(value.trusted_role)
     && (value.trusted_at === undefined || positiveInteger(value.trusted_at));
 }
 
@@ -63,7 +63,7 @@ function validCode(value: unknown): value is OAuthCode {
   return CLIENT_ID_PATTERN.test(stringValue(value.client_id))
     && ACCOUNT_ID_PATTERN.test(stringValue(value.account_id))
     && positiveInteger(value.account_version)
-    && boundedString(value.role, 64)
+    && currentAccountRole(value.role)
     && validRedirectUri(value.redirect_uri)
     && /^[A-Za-z0-9_-]{43}$/.test(stringValue(value.code_challenge))
     && boundedString(value.scope, 256)
@@ -76,7 +76,7 @@ function validToken(value: unknown): value is OAuthToken {
   return CLIENT_ID_PATTERN.test(stringValue(value.client_id))
     && ACCOUNT_ID_PATTERN.test(stringValue(value.account_id))
     && positiveInteger(value.account_version)
-    && boundedString(value.role, 64)
+    && currentAccountRole(value.role)
     && boundedString(value.scope, 256)
     && validResource(value.resource)
     && boundedString(value.version, 256)
@@ -124,6 +124,10 @@ function plainRecord(value: unknown): value is Record<string, unknown> {
 
 function boundedString(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
+function currentAccountRole(value: unknown): boolean {
+  return typeof value === "string" && normalizeAccountRole(value) === value;
 }
 
 function stringValue(value: unknown): string { return typeof value === "string" ? value : ""; }

@@ -164,8 +164,8 @@ export class BrowserBridgeManager {
         try {
           await this.listen(port);
           this.assertStartCurrent(generation);
-          if (this.stateRoot && (port !== pairing.port || pairing.migrationPending)) {
-            await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, pairingAuthVersion: pairing.pairingAuthVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port, migrationPending: false });
+          if (this.stateRoot && port !== pairing.port) {
+            await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, pairingAuthVersion: pairing.pairingAuthVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port });
             this.assertStartCurrent(generation);
           }
           return;
@@ -176,18 +176,11 @@ export class BrowserBridgeManager {
           if (proxy.connected) {
             this.assertStartCurrent(generation);
             this.port = port;
-            if (this.stateRoot && pairing.migrationPending) {
-              await savePairing(this.stateRoot, { schemaVersion: pairing.schemaVersion, pairingAuthVersion: pairing.pairingAuthVersion, extensionToken: this.extensionToken, runtimeToken: this.runtimeToken, port, migrationPending: false });
-              this.assertStartCurrent(generation);
-            }
             return;
           }
           this.assertStartCurrent(generation);
           if (proxy.authenticated) {
             throw new Error("browser broker accepted runtime authentication but did not complete its handshake; refusing a second broker owner");
-          }
-          if (pairing.migrationPending && offset === 0) {
-            throw new Error("previous browser broker occupies the migrated pairing port; restart the prior Machine Bridge runtime before browser broker migration can complete");
           }
           if (offset === MAX_PORT_ATTEMPTS - 1) throw error;
         }

@@ -25,7 +25,7 @@ Support boundaries are defined in [SUPPORT.md](SUPPORT.md). Contribution, conduc
 - bounded file, patch, Git, process, diagnostic, application, browser, and managed-job tools;
 - account roles whose authority is intersected with the connected daemon policy;
 - root-certified ephemeral daemon sessions, trusted OAuth client binding, refresh-family ownership, and non-escalatable account roles;
-- structured, privacy-conscious lifecycle events, a worker-thread-isolated tamper-evident audit chain, and stable error codes;
+- structured, privacy-conscious lifecycle events, a worker-thread-isolated self-verifying audit hash chain with documented same-user rewrite limits, and stable error codes;
 - control-plane resilience through end-to-end reserved diagnostic capacity, event-loop-aware relay liveness, and explicit draining-process accounting;
 - fail-closed state, lock, release, package, and supply-chain checks.
 
@@ -221,7 +221,7 @@ On macOS, authorized remote activity uses a bounded idle-sleep assertion so ordi
 
 When `run_process` or `exec_command` returns a child exit code and bounded stdout/stderr, the local process did run. For nested tools such as `ssh`, a remote forced-command usage message or command allowlist is therefore evidence from the target-side authorization layer, not evidence that Machine Bridge blocked process execution. Diagnose and change the narrowest failing layer instead of widening the `full` profile, which already removes Machine Bridge's own shell and path restrictions.
 
-Credentials and files can be registered by alias without returning their contents through MCP:
+Credentials and files can be registered by alias so the injection operation does not place their contents in MCP arguments or echo them in its result:
 
 ```sh
 machine-mcp resource add maintenance-key ~/.ssh/example_maintenance_ed25519
@@ -230,6 +230,7 @@ machine-mcp job submit plan.json
 ```
 
 See [docs/MANAGED_JOBS.md](docs/MANAGED_JOBS.md) for integrity checks, recovery, redaction, cleanup, and residual risks.
+For browser or application injection, the destination receives the content by design and can copy, render, or transmit it; later observations of that destination can therefore expose content it now holds.
 
 ## Operations
 
@@ -243,7 +244,7 @@ machine-mcp workspace show|set|reset
 machine-mcp idle-sleep show|set MODE
 machine-mcp service status|install|start|stop|uninstall
 machine-mcp account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove
-machine-mcp browser status|setup|pair|path
+machine-mcp browser status|setup|pair|reset|path
 machine-mcp resource add|list|check|remove
 machine-mcp job submit|inspect|list|read|cancel
 machine-mcp rotate-secrets

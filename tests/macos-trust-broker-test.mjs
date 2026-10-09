@@ -6,8 +6,10 @@ import path from "node:path";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import {
   buildDevelopmentTrustBrokerBinary,
+  configuredMacosTrustBrokerPath,
   ensureMacosSecureDeviceRoot,
   inspectProvisionedMacosTrustBroker,
+  isMacosSecureDeviceRoot,
   probeProvisionedMacosTrustBroker,
   signWithMacosSecureDeviceRoot,
 } from "../src/local/macos-trust-broker.mjs";
@@ -15,6 +17,8 @@ import {
 const root = mkdtempSync(path.join(tmpdir(), "mbm-trust-broker-"));
 const nativeLstatSync = fs.lstatSync;
 try {
+  expectThrow(() => configuredMacosTrustBrokerPath({ MBM_MACOS_TRUST_BROKER: ["/tmp/broker"] }), "must be a string");
+  expectThrow(() => inspectProvisionedMacosTrustBroker(["/tmp/broker"]), "path must be a string");
   const binary = process.platform === "darwin"
     ? buildDevelopmentTrustBrokerBinary(root)
     : path.join(root, "synthetic-broker");
@@ -168,6 +172,11 @@ try {
   assert(identity.brokerPath === canonicalBinary, "Secure Enclave root did not bind the canonical broker path");
   assert(identity.brokerIdentifier === broker.identifier && identity.brokerTeamIdentifier === broker.teamIdentifier, "Secure Enclave root did not bind the broker signing identity");
   assert(!identity.privateJwk, "Secure Enclave root exposed private JWK material");
+  assert(isMacosSecureDeviceRoot(identity), "valid Secure Enclave root was not recognized");
+  for (const field of ["brokerPath", "brokerIdentifier", "brokerTeamIdentifier", "keyTag", "createdAt"]) {
+    assert(!isMacosSecureDeviceRoot({ ...identity, [field]: [identity[field]] }),
+      `Secure Enclave root coerced non-string ${field} into trusted persisted identity`);
+  }
 
   const incompleteCleanupSpawn = (command, args, processOptions) => {
     assert(processOptions?.killSignal === "SIGKILL",
@@ -286,6 +295,8 @@ try {
 
   const signed = signWithMacosSecureDeviceRoot(identity, "device-session-transcript", { options });
   assert(signed === "A".repeat(86), "provisioned broker signature was not returned");
+  expectThrow(() => signWithMacosSecureDeviceRoot(identity, ["device-session-transcript"], { options }),
+    "signing transcript is empty or too large");
 
   const timedOutSpawn = (command, args, processOptions) => {
     assert(processOptions?.killSignal === "SIGKILL",

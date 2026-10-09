@@ -59,11 +59,11 @@ export function validateReleaseOAuthCanaryEvidence(value) {
   const packageVersion = boundedString(value.package_version, 128, "package version");
   const workerVersion = boundedString(value.worker_version, 128, "Worker version");
   if (workerVersion !== packageVersion) throw new Error("release OAuth canary Worker version does not match the package");
-  if (!/^[0-9a-f]{40}$/.test(String(value.shasum || ""))) throw new Error("release OAuth canary SHA-1 is invalid");
-  if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(value.integrity || ""))) {
+  if (typeof value.shasum !== "string" || !/^[0-9a-f]{40}$/.test(value.shasum)) throw new Error("release OAuth canary SHA-1 is invalid");
+  if (typeof value.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(value.integrity)) {
     throw new Error("release OAuth canary integrity is invalid");
   }
-  if (!/^[0-9a-f]{64}$/.test(String(value.promotion_content_sha256 || ""))) {
+  if (typeof value.promotion_content_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.promotion_content_sha256)) {
     throw new Error("release OAuth canary promotion digest is invalid");
   }
   for (const field of [
@@ -71,16 +71,17 @@ export function validateReleaseOAuthCanaryEvidence(value) {
   ]) {
     if (value[field] !== true) throw new Error(`release OAuth canary required check did not pass: ${field}`);
   }
-  const completedAt = Date.parse(String(value.completed_at || ""));
+  if (typeof value.completed_at !== "string") throw new Error("release OAuth canary completion timestamp is invalid");
+  const completedAt = Date.parse(value.completed_at);
   if (!Number.isFinite(completedAt)) throw new Error("release OAuth canary completion timestamp is invalid");
   return Object.freeze({
     schema_version: RELEASE_OAUTH_CANARY_SCHEMA_VERSION,
     result: "passed",
     package_name: value.package_name,
     package_version: packageVersion,
-    shasum: String(value.shasum),
-    integrity: String(value.integrity),
-    promotion_content_sha256: String(value.promotion_content_sha256),
+    shasum: value.shasum,
+    integrity: value.integrity,
+    promotion_content_sha256: value.promotion_content_sha256,
     worker_version: workerVersion,
     authorization_code_exchange: true,
     authenticated_mcp: true,
@@ -92,7 +93,8 @@ export function validateReleaseOAuthCanaryEvidence(value) {
 }
 
 function boundedString(value, maximum, label) {
-  const text = String(value || "");
+  if (typeof value !== "string") throw new Error(`release OAuth canary ${label} is invalid`);
+  const text = value;
   if (!text || text.length > maximum || /[\r\n\t\u0000-\u001f\u007f]/.test(text)) {
     throw new Error(`release OAuth canary ${label} is invalid`);
   }

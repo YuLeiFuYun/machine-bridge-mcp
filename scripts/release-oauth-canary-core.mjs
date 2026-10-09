@@ -41,8 +41,10 @@ export async function runReleaseOAuthCanaryFlow({
     const created = await canaryAdmin("temporary account creation", () => admin.create({
       name: accountName, displayName: CANARY_ACCOUNT_DISPLAY_NAME, role: "reviewer", password,
     }));
-    accountId = String(created?.account?.account_id || "");
-    if (!/^acct_[A-Za-z0-9_-]{20,96}$/.test(accountId)) throw new Error("release OAuth canary account creation returned an invalid account identity");
+    if (typeof created?.account?.account_id !== "string" || !/^acct_[A-Za-z0-9_-]{20,96}$/.test(created.account.account_id)) {
+      throw new Error("release OAuth canary account creation returned an invalid account identity");
+    }
+    accountId = created.account.account_id;
 
     const registration = await fetchBoundedJson(fetchImpl, "dynamic registration", `${origin}/oauth/register`, {
       method: "POST",
@@ -55,8 +57,10 @@ export async function runReleaseOAuthCanaryFlow({
         token_endpoint_auth_method: "none",
       }),
     }, SMALL_JSON_LIMIT, 201);
-    clientId = String(registration.client_id || "");
-    if (!/^mcp_client_[A-Za-z0-9_-]{43}$/.test(clientId)) throw new Error("release OAuth canary registration returned an invalid client identity");
+    if (typeof registration.client_id !== "string" || !/^mcp_client_[A-Za-z0-9_-]{43}$/.test(registration.client_id)) {
+      throw new Error("release OAuth canary registration returned an invalid client identity");
+    }
+    clientId = registration.client_id;
 
     const authorizeResponse = await fetchBounded(fetchImpl, "authorization", `${origin}/oauth/authorize`, {
       method: "POST",
@@ -102,7 +106,7 @@ export async function runReleaseOAuthCanaryFlow({
     if (token.token_type !== "Bearer" || token.scope !== scope) throw new Error("release OAuth canary token response changed the expected public-client contract");
 
     const firstInfo = await callServerInfo(fetchImpl, origin, accessToken, 1);
-    workerVersion = String(firstInfo?.version || "");
+    workerVersion = typeof firstInfo?.version === "string" ? firstInfo.version : "";
     if (workerVersion !== version) throw new Error("release OAuth canary authenticated MCP reached the wrong Worker version");
 
     const refreshed = await fetchBoundedJson(fetchImpl, "refresh-token exchange", `${origin}/oauth/token`, {
@@ -122,7 +126,7 @@ export async function runReleaseOAuthCanaryFlow({
       throw new Error("release OAuth canary refresh did not rotate both credentials");
     }
     const refreshedInfo = await callServerInfo(fetchImpl, origin, refreshedAccess, 2);
-    if (String(refreshedInfo?.version || "") !== version) {
+    if (typeof refreshedInfo?.version !== "string" || refreshedInfo.version !== version) {
       throw new Error("release OAuth canary refreshed credential reached the wrong Worker version");
     }
   } catch (error) {
@@ -305,19 +309,22 @@ async function readBoundedText(response, maximumBytes, label) {
 }
 
 function requiredToken(value, label) {
-  const token = String(value || "");
+  if (typeof value !== "string") throw new Error(`release OAuth canary ${label} token was invalid`);
+  const token = value;
   if (!/^mcp_(?:at|rt)_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error(`release OAuth canary ${label} token was invalid`);
   return token;
 }
 
 function requiredPackageName(value) {
-  const name = String(value || "");
+  if (typeof value !== "string") throw new Error("release OAuth canary package name is invalid");
+  const name = value;
   if (name !== "machine-bridge-mcp") throw new Error("release OAuth canary package name is invalid");
   return name;
 }
 
 function requiredPackageVersion(value) {
-  const version = String(value || "");
+  if (typeof value !== "string") throw new Error("release OAuth canary package version is invalid");
+  const version = value;
   if (!version || version.length > 128 || /[\r\n\t\u0000-\u001f\u007f]/.test(version)) {
     throw new Error("release OAuth canary package version is invalid");
   }

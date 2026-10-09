@@ -120,7 +120,6 @@ const boundaryModules = new Set([
   "cli-local-admin.mjs",
   "capability-ranking.mjs",
   "execution-routing.mjs",
-  "resource-legacy-staging-recovery.mjs",
   "resource-staging-recovery.mjs",
   "resource-wait.mjs",
   "managed-job-plan.mjs",
@@ -220,7 +219,6 @@ const lineLimits = Object.freeze({
   "src/local/runtime-info-projection.mjs": 70,
   "src/local/runtime-resource-service.mjs": 100,
   "src/local/resource-operations.mjs": 110,
-  "src/local/resource-legacy-staging-recovery.mjs": 90,
   "src/local/resource-staging-recovery.mjs": 100,
   "src/local/resource-wait.mjs": 50,
   "src/local/secure-file.mjs": 180,
@@ -366,8 +364,10 @@ const lineLimits = Object.freeze({
   "src/local/macos-idle-sleep-assertion.mjs": 80,
   "src/local/remote-activity-idle-sleep-guard.mjs": 80,
   "src/local/security-audit-log.mjs": 220,
+  "src/local/security-audit-gate.mjs": 40,
   "src/local/security-audit-storage.mjs": 230,
   "src/local/security-audit-state.mjs": 180,
+  "src/local/security-audit-beta198-migration.mjs": 55,
   "src/local/security-audit-worker.mjs": 110,
   "src/local/security-audit-dispatch.mjs": 60,
   "src/local/security-audit-warning.mjs": 60,
@@ -392,6 +392,8 @@ const lineLimits = Object.freeze({
   "src/local/job-runner.mjs": 710,
   "src/local/managed-job-idempotency.mjs": 50,
   "src/local/managed-job-state-validation.mjs": 40,
+  "src/local/managed-job-recovery-history.mjs": 60,
+  "src/local/worker-identity-contract.mjs": 20,
   "src/local/managed-job-lock.mjs": 140,
   "src/local/managed-job-capacity.mjs": 50,
   "src/local/managed-job-retention.mjs": 130,
@@ -532,7 +534,8 @@ const lineLimits = Object.freeze({
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
   "src/worker/websocket-protocol.ts": 60,
-  "browser-extension/browser-operations.js": 1900,
+  "browser-extension/browser-operation-contract.js": 110,
+  "browser-extension/browser-operations.js": 1810,
   "browser-extension/page-automation.js": 1200,
   "browser-extension/devtools-input.js": 330,
   "browser-extension/devtools-observation.js": 440,
@@ -635,11 +638,7 @@ const resourceStagingRecoverySource = readFileSync(join(localRoot, "resource-sta
 for (const required of ["STAGING", "recoverResourceDirectoryStaging", "stagingPublisherMayBeCurrent", "processStartTimeFromSnapshot"]) {
   if (!resourceStagingRecoverySource.includes(required)) throw new Error(`resource lease/waiter staging recovery regressed: ${required}`);
 }
-const resourceLegacyStagingRecoverySource = readFileSync(join(localRoot, "resource-legacy-staging-recovery.mjs"), "utf8");
-for (const required of ["LEGACY_WORKFLOW_BUNDLE_LEASE_STAGING", "recoverLegacyWorkflowBundleLeaseStaging", "readBoundedRegularFileSync", "owner?.kind !== \"provisional\""]) {
-  if (!resourceLegacyStagingRecoverySource.includes(required)) throw new Error(`legacy Workflow Bundle staging recovery regressed: ${required}`);
-}
-for (const forbidden of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrentAsync", "inspectProcessInstanceAsync", "owner-publication state"]) {
+for (const forbidden of ["OWNER_STAGING", "recoverResourceTransactionOwnerStaging", "stagingPublisherMayBeCurrentAsync", "inspectProcessInstanceAsync", "owner-publication state", "recoverLegacyWorkflowBundleLeaseStaging", "LEGACY_WORKFLOW_BUNDLE_LEASE_STAGING"]) {
   if (resourceStagingRecoverySource.includes(forbidden)) throw new Error(`resource staging recovery retained expired transaction-owner compatibility: ${forbidden}`);
 }
 const resourceWaitSource = readFileSync(join(localRoot, "resource-wait.mjs"), "utf8");
@@ -1096,8 +1095,8 @@ const portExhaustionAt = browserBridgeSource.indexOf("if (offset === MAX_PORT_AT
 if (authenticatedPeerAt < 0 || portExhaustionAt < 0 || authenticatedPeerAt > portExhaustionAt) {
   throw new Error("browser broker can skip past an authenticated-but-unready peer and create a second owner");
 }
-for (const required of ["pairing.migrationPending && offset === 0", "previous browser broker occupies the migrated pairing port", "migrationPending: false"]) {
-  if (!browserBridgeSource.includes(required)) throw new Error(`browser pairing migration lost fail-closed owner handoff: ${required}`);
+for (const removed of ["pairing.migrationPending", "previous browser broker occupies the migrated pairing port"]) {
+  if (browserBridgeSource.includes(removed)) throw new Error(`retired browser pairing migration surface returned: ${removed}`);
 }
 const browserBrokerAuthSource = readFileSync(join(localRoot, "browser-broker-auth.mjs"), "utf8");
 for (const required of ["createMonotonicDeadline", "createBrokerInitProof", "machine-bridge-browser-${role}-init-v2", "pending.delete(key)", "machine-bridge-browser-${role}-${direction}-v2", "BROKER_AUTH_REQUEST_HEADER"]) {
@@ -1126,6 +1125,11 @@ const initProofIndex = browserPairingGrantSource.indexOf("bootstrapInitProof(gra
 const pairingPendingIndex = browserPairingGrantSource.indexOf("pending.set(grant.id");
 if (initProofIndex < 0 || pairingPendingIndex < 0 || initProofIndex > pairingPendingIndex) {
   throw new Error("browser pairing bootstrap allocates pending state before proving fragment-secret possession");
+}
+const finalProofIndex = browserPairingGrantSource.indexOf('safeEqual(expected, clientProof)');
+const pairingConsumeIndex = browserPairingGrantSource.indexOf("pending.delete(grant.id)");
+if (finalProofIndex < 0 || pairingConsumeIndex < 0 || finalProofIndex > pairingConsumeIndex) {
+  throw new Error("browser pairing bootstrap consumes pending state before validating the final client proof");
 }
 const browserBrokerAuthHttpSource = readFileSync(join(localRoot, "browser-broker-auth-http.mjs"), "utf8");
 for (const required of ["createPairingBootstrapRegistry", "x-machine-bridge-extension-token", "hasAuthMarker(request)", 'auth.issue(url.searchParams.get("challenge"), url.searchParams.get("init"))', "pairingAuth.consume("]) {
@@ -1294,7 +1298,7 @@ for (const required of ["async applyAuthorityRevocation", "try { calls =", "sess
   if (!authorityRevocationBoundary.includes(required)) throw new Error(`authority revocation lost all-category fail-closed application: ${required}`);
 }
 const processTrackerBoundary = readFileSync(join(localRoot, "process-tracker.mjs"), "utf8");
-for (const required of ["async drain(", "this.drainSignal = signal", "if (this.drainSignal) this.requestDrainTermination(child)", "process shutdown did not settle before the runtime teardown deadline"]) {
+for (const required of ["async drain(", "this.drainSignal = signal", "this.active.size || this.terminationTimers.size", 'this.drainSignal === "SIGKILL"', "graceMs: 0", "if (this.drainSignal) this.requestDrainTermination(child)", "process shutdown did not settle before the runtime teardown deadline"]) {
   if (!processTrackerBoundary.includes(required)) throw new Error(`process tracker lost runtime drain ownership semantics: ${required}`);
 }
 const toolExecutorBoundary = readFileSync(join(localRoot, "tool-executor.mjs"), "utf8");
@@ -1399,7 +1403,7 @@ for (const required of ["createMonotonicDeadline", "inspectProcessInstance", "re
 for (const [name, markers] of [
   ["state.mjs", ["retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(lockPath", "allowedMultipleLinkIdentity: residueIdentity"]],
   ["managed-job-lock.mjs", ["retryTransientMultipleLinksSync((residueIdentity) => readBoundedRegularFileWithInfoSync(file", "allowedMultipleLinkIdentity: residueIdentity"]],
-  ["browser-pairing-store.mjs", ["readPublishedPairing", "readExclusivePublicationFileSync", "ownerPrivate: true"]],
+  ["browser-pairing-store.mjs", ["readExclusivePublicationFileSync", "ownerPrivate: true"]],
   ["managed-job-runner-claim.mjs", ["verifyPathIdentity: true", "rejectMultipleLinks: true", "retryTransientMultipleLinksSync"]],
 ]) {
   const source = readFileSync(join(localRoot, name), "utf8");

@@ -245,6 +245,8 @@ try {
   );
   for (const proxyEnv of [
     "not-an-object",
+    { HTTPS_PROXY: ["https://proxy.example.invalid"] },
+    { NO_PROXY: ["example.invalid"] },
     { HTTPS_PROXY: "bad proxy" },
     { HTTPS_PROXY: "ftp://proxy.example.invalid" },
     { HTTPS_PROXY: "https://proxy.example.invalid/\nheader" },
@@ -279,6 +281,18 @@ try {
   const deceptiveOrigin = artifacts.map((item) => ({ ...item }));
   deceptiveOrigin[0].url = deceptiveOrigin[0].url.replace("registry.npmjs.org/", "registry.npmjs.org.evil/");
   assert.throws(() => hardenedNpmIdentity(deceptiveOrigin), /artifact metadata is invalid/);
+  for (const [field, value] of [
+    ["name", ["npm"]],
+    ["version", ["12.0.2"]],
+    ["url", [artifacts[0].url]],
+    ["integrity", [artifacts[0].integrity]],
+    ["maximumBytes", String(artifacts[0].maximumBytes)],
+  ]) {
+    const malformed = artifacts.map((item) => ({ ...item }));
+    malformed[0][field] = value;
+    assert.throws(() => hardenedNpmIdentity(malformed), /exact string\/integer types/,
+      `hardened npm accepted coercible artifact ${field}`);
+  }
 
   const identity = hardenedNpmIdentity(artifacts);
   const fixtureNpm = artifacts.find((artifact) => artifact.name === "npm");

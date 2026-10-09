@@ -157,6 +157,8 @@ The gate deliberately reports each module rather than one aggregate percentage. 
 
 ## Additional release checks
 
+`npm run privacy:history` requires Git 2.50 or later because its reachable-object enumeration uses the NUL-delimited machine format added to `git rev-list` in that release. Older Git versions fail before history scanning; they are not parsed through a compatibility branch.
+
 ```sh
 npm run privacy:history
 npm run worker:dry-run
@@ -184,8 +186,8 @@ The repository-level `.gitattributes` forces executable workflow `.yml` and `.ya
 - Every bounded resource needs an over-limit test.
 - Every multi-stage mutation needs a no-partial-commit test.
 - Every remote call correlation or readiness change needs daemon replacement, incumbent-preservation, timeout, malformed-result, and cancellation coverage.
-- Every durable workflow needs disconnect, cancellation, cleanup-failure, dead-runner, and plan-scrubbing coverage.
-- Secret-bearing resource tests must assert absence of raw, path, base64, and hex forms from MCP-visible results.
+- Every durable workflow needs disconnect, cancellation, cleanup-failure, dead-runner, recovery-attribution, and plan-scrubbing coverage.
+- Secret-bearing resource tests must assert absence of raw, path, Base64, Base64URL, and hexadecimal forms from MCP-visible results.
 - Logs and public metadata should be tested for absence of sensitive fields, arguments, outputs, and routine success noise—not only presence of expected fields.
 - Cross-platform tests must avoid shell syntax, URL-path conversion, and executable-shim assumptions specific to one operating system. A fixture that injects a logical platform such as `darwin` or `win32` must not silently treat the physical CI host's UID, file-mode, executable-bit, signal-delivery, path, or service-manager semantics as evidence for that injected platform; inject the required host capability explicitly or gate only the assertion that the physical host cannot prove.
 - Release-evidence privacy tests must inject private-looking but publication-safe paths/URLs/text and assert absence from every recovered-success projection and persisted record. Do not commit a real credential pattern merely to test redaction.
@@ -229,7 +231,7 @@ Every candidate closeout requires fresh fast and full plans after the final pack
 
 ### Browser pairing and bootstrap security regressions
 
-The browser suite covers the final bootstrap and already-paired authentication contracts end to end: process-owned ephemeral pairing listener, fragment stripping before extension messaging, init-HMAC-before-pending-allocation, server proof before WebSocket upgrade, one-time proof consumption, replay idempotence, current schema-2 persisted-state validation, and fail-closed previous-owner pairing migration. `browser-broker-auth:test`, `browser-pairing-content:test`, `browser-pairing-launch:test`, `browser-cli-pairing:test`, `browser-service-worker:test`, `browser-identity:test`, and `browser-bridge:test` are all in the fast plan. The CLI pairing regression specifically requires `browser setup` to open the same ephemeral fragment bootstrap used by the MCP pair action while keeping its printed `pairing_url` sanitized, and requires opener failure to close the listener.
+The browser suite covers the final bootstrap and already-paired authentication contracts end to end: process-owned ephemeral pairing listener, fragment stripping before extension messaging, init-HMAC-before-pending-allocation, server proof before WebSocket upgrade, one-time proof consumption, replay idempotence, exact current schema-2/auth-2 persisted-state validation, and fail-closed rejection of retired or incomplete pairing migration state. `browser-broker-auth:test`, `browser-pairing-content:test`, `browser-pairing-launch:test`, `browser-cli-pairing:test`, `browser-service-worker:test`, `browser-identity:test`, and `browser-bridge:test` are all in the fast plan. The CLI pairing regression specifically requires `browser setup` to open the same ephemeral fragment bootstrap used by the MCP pair action while keeping its printed `pairing_url` sanitized, and requires opener failure to close the listener.
 
 Browser page-action timing also has an explicit background-throttling regression. The page-automation fixture disables renderer `setTimeout` while exposing the packaged extension timing-message shape, then requires a geometry-checked DOM click to settle without dropping deterministic scroll/stable-box/pointer-hit validation. `browser-service-worker:test` pins the other half of that boundary: only the current extension sender may request an internal delay, and the request must be an exact integer from 1 through 250 ms. This prevents hidden/background renderer timer throttling from turning an otherwise completed action into a broker timeout without weakening the conservative mutation-settlement rules.
 

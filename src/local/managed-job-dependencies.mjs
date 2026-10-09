@@ -50,8 +50,8 @@ export async function waitForManagedJobDependencies({
   if (!dependencyIds.length) return { total: 0, pending: 0, completed: 0 };
   const witnessById = new Map();
   for (const witness of witnesses) {
-    const jobId = String(witness?.job_id || "");
-    if (!jobId || witnessById.has(jobId)) {
+    const jobId = witness?.job_id;
+    if (typeof jobId !== "string" || !jobId || witnessById.has(jobId)) {
       throw new ManagedJobDependencyError("dependency_state_invalid", "managed job dependency witness set is invalid");
     }
     witnessById.set(jobId, witness);
@@ -96,7 +96,7 @@ export async function waitForManagedJobDependencies({
           dependency_error_class: status.error_class == null ? null : managedJobDependencyLabel(status.error_class),
         });
       }
-      if (status?.status === "staged" || !ACTIVE_JOB_STATES.has(String(status?.status || ""))) {
+      if (status?.status === "staged" || !ACTIVE_JOB_STATES.has(status?.status)) {
         throw new ManagedJobDependencyError("dependency_state_invalid", "managed job dependency entered a non-executable state", {
           dependency_job_id: jobId,
           dependency_status: status?.status == null ? null : managedJobDependencyLabel(status.status),
@@ -172,7 +172,7 @@ function assertDependencyWitness(status, witness, jobId) {
 }
 
 export function managedJobDependencySucceeded(status) {
-  return String(status?.status || "") === "succeeded" && status?.result_persisted !== false;
+  return status?.status === "succeeded" && status?.result_persisted !== false;
 }
 
 function defaultSleep(ms) {

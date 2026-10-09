@@ -184,12 +184,15 @@ export function validateSoakRecord(value, options = {}) {
   if (value.prerelease_channel !== prerelease.channel) throw new Error("release soak prerelease channel is inconsistent");
   if (value.npm_dist_tag !== prerelease.npmTag) throw new Error("release soak npm dist-tag is inconsistent");
   if (value.github_prerelease_tag !== `v${prerelease.raw}`) throw new Error("release soak GitHub prerelease tag is inconsistent");
-  if (!/^[0-9a-f]{40}$/.test(String(value.prerelease_shasum || ""))) throw new Error("release soak prerelease SHA-1 is invalid");
-  if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(value.prerelease_integrity || ""))) throw new Error("release soak prerelease integrity is invalid");
-  if (!/^[0-9a-f]{64}$/.test(String(value.promotion_content_sha256 || ""))) throw new Error("release soak promotion digest is invalid");
-  const activatedAt = Date.parse(String(value.activated_at || ""));
-  const publishedAt = Date.parse(String(value.published_at || ""));
-  const acceptedAt = Date.parse(String(value.accepted_at || ""));
+  if (typeof value.prerelease_shasum !== "string" || !/^[0-9a-f]{40}$/.test(value.prerelease_shasum)) throw new Error("release soak prerelease SHA-1 is invalid");
+  if (typeof value.prerelease_integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(value.prerelease_integrity)) throw new Error("release soak prerelease integrity is invalid");
+  if (typeof value.promotion_content_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.promotion_content_sha256)) throw new Error("release soak promotion digest is invalid");
+  if (![value.activated_at, value.published_at, value.accepted_at].every((field) => typeof field === "string")) {
+    throw new Error("release soak timestamps are invalid");
+  }
+  const activatedAt = Date.parse(value.activated_at);
+  const publishedAt = Date.parse(value.published_at);
+  const acceptedAt = Date.parse(value.accepted_at);
   if (![activatedAt, publishedAt, acceptedAt].every(Number.isFinite)) throw new Error("release soak timestamps are invalid");
   if (publishedAt > activatedAt + 5 * 60 * 1000 || activatedAt > acceptedAt) throw new Error("release soak timestamp ordering is invalid");
   if (!Number.isSafeInteger(value.minimum_soak_seconds) || value.minimum_soak_seconds < 60) throw new Error("release soak minimum duration is invalid");
@@ -213,14 +216,14 @@ export function validateSoakRecord(value, options = {}) {
     stable_version: stable.raw,
     prerelease_version: prerelease.raw,
     prerelease_channel: prerelease.channel,
-    prerelease_shasum: String(value.prerelease_shasum),
-    prerelease_integrity: String(value.prerelease_integrity),
-    promotion_content_sha256: String(value.promotion_content_sha256),
+    prerelease_shasum: value.prerelease_shasum,
+    prerelease_integrity: value.prerelease_integrity,
+    promotion_content_sha256: value.promotion_content_sha256,
     activated_at: new Date(activatedAt).toISOString(),
     published_at: new Date(publishedAt).toISOString(),
     accepted_at: new Date(acceptedAt).toISOString(),
-    minimum_soak_seconds: Number(value.minimum_soak_seconds),
-    observed_soak_seconds: Number(value.observed_soak_seconds),
+    minimum_soak_seconds: value.minimum_soak_seconds,
+    observed_soak_seconds: value.observed_soak_seconds,
     npm_dist_tag: prerelease.npmTag,
     github_prerelease_tag: `v${prerelease.raw}`,
     previous_stable_version: previous.raw,

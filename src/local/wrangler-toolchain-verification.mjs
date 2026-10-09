@@ -1,6 +1,7 @@
 import { lstatSync } from "node:fs";
 import path from "node:path";
 import { replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { validateInstalledWranglerToolchainTree } from "./wrangler-toolchain-installed-tree.mjs";
 import {
   isPrivateToolchainIntegrityError,
   privateToolchainIntegrityError,
@@ -8,10 +9,9 @@ import {
 } from "./private-toolchain-integrity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "./secure-file.mjs";
 
-const TOOLCHAIN_SCHEMA_VERSION = 2;
+const TOOLCHAIN_SCHEMA_VERSION = 4;
 const TOOLCHAIN_MARKER = ".machine-bridge-mcp-toolchain.json";
 const MAX_TEMPLATE_BYTES = 2 * 1024 * 1024;
-const MAX_TREE_NODES = 20_000;
 
 export async function verifyWranglerToolchain(descriptor, execute, required = false) {
   try {
@@ -25,9 +25,14 @@ export async function verifyWranglerToolchain(descriptor, execute, required = fa
     requireExactFile(path.join(descriptor.root, "package.json"), descriptor.packageBytes, "Wrangler toolchain package manifest");
     requireExactFile(path.join(descriptor.root, "package-lock.json"), descriptor.lockBytes, "Wrangler toolchain lockfile");
     const versionResult = await execute(["--version"]);
-    if (Number(String(versionResult.stdout).trim().split(".")[0]) < 12) throw new Error("Wrangler toolchain requires npm 12 or newer");
+    const npmVersion = String(versionResult.stdout || "").trim();
+    if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(npmVersion)
+        || npmVersion.split(".").some((part) => !Number.isSafeInteger(Number(part)))
+        || Number(npmVersion.split(".")[0]) < 12) {
+      throw new Error("Wrangler toolchain requires a valid npm 12 or newer version");
+    }
     const treeResult = await execute(
-      ["ls", "cf", "wrangler", "undici", "--workspaces=false", "--all", "--json"],
+      ["ls", "cf", "wrangler", "undici", "sharp", "esbuild", "workerd", "--workspaces=false", "--all", "--json"],
       true,
     );
     if (treeResult.code === 124) {
@@ -38,9 +43,9 @@ export async function verifyWranglerToolchain(descriptor, execute, required = fa
     let tree;
     try { tree = JSON.parse(treeResult.stdout); }
     catch {
-      throw new Error(`Wrangler toolchain npm ls failed (${treeResult.code}): ${String(treeResult.stderr || "invalid JSON").slice(0, 600)}`);
+      throw new Error("Wrangler toolchain npm ls returned invalid JSON; inspect the private install separately");
     }
-    validateInstalledTree(tree, descriptor.versions);
+    validateInstalledWranglerToolchainTree(tree, descriptor.versions);
     if (treeResult.code !== 0) throw new Error(`Wrangler toolchain npm ls exited ${treeResult.code} without dependency problems`);
     return true;
   } catch (error) {
@@ -71,7 +76,11 @@ export function wranglerToolchainMarkerMatches(marker, descriptor) {
     && marker.cf === descriptor.versions.cf
     && marker.wrangler === descriptor.versions.wrangler
     && marker.undici === descriptor.versions.undici
-    && Number.isFinite(Date.parse(String(marker.audited_at || "")));
+    && marker.sharp === descriptor.versions.sharp
+    && marker.esbuild === descriptor.versions.esbuild
+    && marker.workerd === descriptor.versions.workerd
+    && typeof marker.audited_at === "string"
+    && Number.isFinite(Date.parse(marker.audited_at));
 }
 
 export function writeWranglerToolchainMarker(descriptor, nowMs) {
@@ -83,34 +92,11 @@ export function writeWranglerToolchainMarker(descriptor, nowMs) {
     cf: descriptor.versions.cf,
     wrangler: descriptor.versions.wrangler,
     undici: descriptor.versions.undici,
+    sharp: descriptor.versions.sharp,
+    esbuild: descriptor.versions.esbuild,
+    workerd: descriptor.versions.workerd,
     audited_at: auditedAt,
   }, null, 2)}\n`, { mode: 0o600 });
-}
-
-function validateInstalledTree(tree, versions) {
-  if (!tree || typeof tree !== "object" || Array.isArray(tree)) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree is invalid");
-  if (Array.isArray(tree.problems) && tree.problems.length) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree contains invalid edges");
-  const found = new Map([["cf", []], ["wrangler", []], ["undici", []]]);
-  const counter = { value: 0 };
-  visitDependencyTree(tree.dependencies, found, counter, 0);
-  for (const [name, expected] of Object.entries(versions)) {
-    const actual = found.get(name) || [];
-    if (!actual.length || actual.some((version) => version !== expected)) {
-      throw privateToolchainIntegrityError(`Wrangler toolchain ${name} versions ${actual.join(",") || "missing"} do not match ${expected}`);
-    }
-  }
-}
-
-function visitDependencyTree(dependencies, found, counter, depth) {
-  if (!dependencies || typeof dependencies !== "object" || Array.isArray(dependencies)) return;
-  if (depth > 64) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree exceeds the depth limit");
-  for (const [name, value] of Object.entries(dependencies)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    counter.value += 1;
-    if (counter.value > MAX_TREE_NODES) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree exceeds the node limit");
-    if (found.has(name)) found.get(name).push(String(value.version || ""));
-    visitDependencyTree(value.dependencies, found, counter, depth + 1);
-  }
 }
 
 function requireExactFile(file, expected, label) {

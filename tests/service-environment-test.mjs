@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -74,6 +74,15 @@ try {
 
   assert.throws(() => captureServiceEnvironment({ HTTP_PROXY: "bad\nvalue" }), /prohibited control character/);
   assert.throws(() => captureServiceEnvironment({ HTTP_PROXY: "x".repeat(20 * 1024) }), /size limit/);
+  assert.throws(() => captureServiceEnvironment({ HTTP_PROXY: ["http://proxy.example.invalid"] }), /must be a string/,
+    "service environment captured a coercible non-string proxy value");
+  writeFileSync(written.path, `${JSON.stringify({
+    schemaVersion: 1,
+    environment: { HTTP_PROXY: ["http://proxy.example.invalid"] },
+    updatedAt: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  assert.throws(() => loadServiceEnvironment(root, {}), /must be a string/,
+    "service environment loaded a coercible non-string persisted proxy value");
   console.log("service environment persistence test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });

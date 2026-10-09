@@ -17,7 +17,7 @@ import {
 import {
   rpcError, rpcResult, textToolResult, type JsonRpcRequest,
 } from "./mcp-jsonrpc.ts";
-import { staleSchemaCompatibilityResult } from "./mcp-stale-schema-compat.ts";
+import { staleSchemaGuidanceResult } from "./mcp-stale-schema-guidance.ts";
 import { dispatchManagedJobMonitorResource, managedJobMonitorClientCapabilities } from "./mcp-job-monitor-ui.ts";
 type McpConfig = Readonly<{
   capabilities: Record<string, unknown>;
@@ -187,8 +187,8 @@ export class McpController {
   ): Promise<McpDispatchResult> {
     const inspected = inspectWorkerToolCall(request.params, this.config.tools(authorized));
     if (!inspected.ok) {
-      const compatibility = staleSchemaCompatibilityResult(request, inspected.issues, this.config.serverInfo);
-      if (compatibility) return { status: 200, message: compatibility };
+      const guidance = staleSchemaGuidanceResult(request, inspected.issues, this.config.serverInfo);
+      if (guidance) return { status: 200, message: guidance };
       const message = inspected.reason === "missing_name" ? "tools/call requires a tool name"
         : inspected.reason === "unknown_tool" ? "Unknown tool"
           : "Tool arguments do not match the input schema";

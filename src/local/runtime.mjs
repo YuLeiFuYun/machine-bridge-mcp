@@ -61,7 +61,8 @@ export function runtimeToolHandlerNames() {
 
 export class LocalRuntime {
   constructor({ workerUrl = "", deviceIdentity = null, renewDeviceSession = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null, idleSleepMode = "activity" }) {
-    const remoteWorkerUrl = workerUrl ? String(workerUrl) : "";
+    if (typeof workerUrl !== "string") throw new TypeError("runtime Worker URL must be a string");
+    const remoteWorkerUrl = workerUrl;
     this.workspaceInput = resolve(workspace || process.cwd());
     this.workspace = realpathSync.native ? realpathSync.native(this.workspaceInput) : realpathSync(this.workspaceInput);
     this.workspaceCanonicalPromise = null;
@@ -186,8 +187,7 @@ export class LocalRuntime {
       authorizeTool: (tool) => this.policyGate.assert(tool),
     });
     const runProcess = (cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options) => this.runProcess(cmd, argv, timeoutMs, allowFailure, maxOutputBytes, context, cwd, stdin, options);
-    const readResourceText = (name) => this.runtimeResourceService.readText(name);
-    const readResourceBinary = (name) => this.runtimeResourceService.readBinary(name);
+    const readResourceText = (name) => this.runtimeResourceService.readText(name), readResourceBinary = (name) => this.runtimeResourceService.readBinary(name);
     this.appAutomationManager = createRuntimeAppAutomationManager(this, applicationAutomation, runProcess, readResourceText);
     this.securityAudit = new SecurityAuditLog({ root: securityStateRoot });
     this.operationAuthorizer = new OperationAuthorizer({
