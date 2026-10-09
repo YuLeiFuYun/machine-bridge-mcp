@@ -26,8 +26,8 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const packageScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts || {};
 const serialFastTasks = new Set(SERIAL_FAST_CHECK_TASKS);
 const parallelFastTasks = new Set(FAST_CHECK_TASKS.filter((task) => !serialFastTasks.has(task)));
-let tasks = [];
-let coverageTaskNames = new Set();
+let tasks;
+let coverageTaskNames;
 let fullCoverage = null;
 try {
   tasks = checkTasks(mode);

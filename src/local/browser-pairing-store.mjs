@@ -24,19 +24,16 @@ export async function loadOrCreatePairing(stateRoot, options = {}) {
     assertStateMaintenanceAvailable(stateRoot); return current.current ? current.value : migratePreviousPairing(file);
   }
   assertStateMaintenanceAvailable(stateRoot);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const value = newPairing(DEFAULT_BROWSER_PORT);
-    try {
-      createExclusiveFileSync(file, pairingJson(value), { mode: 0o600 });
-      ownerOnlyFile(file);
-      return value;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const current = readPairingForUpgrade(file);
-      assertStateMaintenanceAvailable(stateRoot); return current.current ? current.value : migratePreviousPairing(file);
-    }
+  const value = newPairing(DEFAULT_BROWSER_PORT);
+  try {
+    createExclusiveFileSync(file, pairingJson(value), { mode: 0o600 });
+    ownerOnlyFile(file);
+    return value;
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const current = readPairingForUpgrade(file);
+    assertStateMaintenanceAvailable(stateRoot); return current.current ? current.value : migratePreviousPairing(file);
   }
-  throw new Error("browser pairing state could not be created");
 }
 
 export async function savePairing(stateRoot, value) {

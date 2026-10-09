@@ -490,60 +490,71 @@ async function machineServiceLockTest() {
 }
 
 async function malformedAndReusedPidLockTest() {
-  const workspace = join(temp, "stale-workspace");
-  const stateRoot = join(temp, "stale-state");
-  await mkdir(workspace, { recursive: true });
-  const state = loadState(workspace, { stateDir: stateRoot });
-  const file = join(state.paths.profileDir, "startup.lock");
-
-  await writeFile(file, "{partial", { mode: 0o600 });
-  expectThrow(() => acquireStartupLock(state), "startup lock is malformed");
-  assert(existsSync(file), "malformed process lock was removed");
   const old = new Date(Date.now() - 120_000);
-  await utimes(file, old, old);
-  expectThrow(() => acquireStartupLock(state, { operation: "reject-old-malformed" }), "startup lock is malformed");
-  assert(existsSync(file), "old malformed process lock was reclaimed by age alone");
-  await rm(file, { force: true });
 
-  await writeFile(file, `${JSON.stringify({
+  const malformed = await startupLockFixture("malformed");
+  await writeFile(malformed.file, "{partial", { mode: 0o600 });
+  expectThrow(() => acquireStartupLock(malformed.state), "startup lock is malformed");
+  assert(await readFile(malformed.file, "utf8") === "{partial", "malformed process lock was removed");
+  await utimes(malformed.file, old, old);
+  expectThrow(() => acquireStartupLock(malformed.state, { operation: "reject-old-malformed" }), "startup lock is malformed");
+  assert(await readFile(malformed.file, "utf8") === "{partial", "old malformed process lock was reclaimed by age alone");
+
+  const coerced = await startupLockFixture("coerced-owner");
+  const coercedContent = `${JSON.stringify({
     pid: process.pid,
     token: ["a".repeat(32)],
     purpose: "startup",
-    workspace: state.workspace.path,
+    workspace: coerced.state.workspace.path,
     startedAt: new Date().toISOString(),
     processStartedAt: new Date(currentProcessStartTimeMs()).toISOString(),
     entryScript: "fixture",
-  })}\n`, { mode: 0o600 });
-  expectThrow(() => acquireStartupLock(state, { operation: "reject-coerced-owner" }), "startup lock is malformed");
-  assert(existsSync(file), "coercible process-lock metadata acquired ownership authority or was removed");
-  await utimes(file, old, old);
-  expectThrow(() => acquireStartupLock(state, { operation: "reject-old-coerced-owner" }), "startup lock is malformed");
-  assert(existsSync(file), "old coercible process-lock metadata was reclaimed by age alone");
-  await rm(file, { force: true });
+  })}\n`;
+  await writeFile(coerced.file, coercedContent, { mode: 0o600 });
+  expectThrow(() => acquireStartupLock(coerced.state, { operation: "reject-coerced-owner" }), "startup lock is malformed");
+  assert(await readFile(coerced.file, "utf8") === coercedContent,
+    "coercible process-lock metadata acquired ownership authority or was removed");
+  await utimes(coerced.file, old, old);
+  expectThrow(() => acquireStartupLock(coerced.state, { operation: "reject-old-coerced-owner" }), "startup lock is malformed");
+  assert(await readFile(coerced.file, "utf8") === coercedContent,
+    "old coercible process-lock metadata was reclaimed by age alone");
 
-  await writeFile(file, "x".repeat(64 * 1024 + 1), { mode: 0o600 });
-  await utimes(file, old, old);
+  const oversized = await startupLockFixture("oversized");
+  const oversizedContent = "x".repeat(64 * 1024 + 1);
+  await writeFile(oversized.file, oversizedContent, { mode: 0o600 });
+  await utimes(oversized.file, old, old);
   let oversizedFailure = null;
-  try { acquireStartupLock(state, { operation: "must-not-reclaim-oversized" }); } catch (error) { oversizedFailure = error; }
-  assert(String(oversizedFailure?.message || "").includes("file exceeds 65536 bytes") && existsSync(file),
+  try { acquireStartupLock(oversized.state, { operation: "must-not-reclaim-oversized" }); } catch (error) { oversizedFailure = error; }
+  assert(String(oversizedFailure?.message || "").includes("file exceeds 65536 bytes")
+    && await readFile(oversized.file, "utf8") === oversizedContent,
     "oversized process lock was treated as reclaimable malformed JSON instead of a read failure");
   let ownerReadFailure = null;
-  try { readDaemonLockOwner(file); } catch (error) { ownerReadFailure = error; }
-  assert(String(ownerReadFailure?.message || "").includes("file exceeds 65536 bytes") && existsSync(file),
+  try { readDaemonLockOwner(oversized.file); } catch (error) { ownerReadFailure = error; }
+  assert(String(ownerReadFailure?.message || "").includes("file exceeds 65536 bytes")
+    && await readFile(oversized.file, "utf8") === oversizedContent,
     "daemon lock owner reader converted an oversized/unreliable lock into null owner metadata");
 
-  await writeFile(file, `${JSON.stringify({
+  const reusedFixture = await startupLockFixture("reused-pid");
+  await writeFile(reusedFixture.file, `${JSON.stringify({
     pid: process.pid,
     token: "7".repeat(32),
     purpose: "startup",
-    workspace: state.workspace.path,
+    workspace: reusedFixture.state.workspace.path,
     startedAt: new Date().toISOString(),
     processStartedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
     entryScript: "fixture",
   })}\n`, { mode: 0o600 });
-  const reused = acquireStartupLock(state, { operation: "reclaim-reused-pid" });
+  const reused = acquireStartupLock(reusedFixture.state, { operation: "reclaim-reused-pid" });
   assert(reused.acquired, "PID-reused lock was not reclaimed");
   reused.release();
+}
+
+async function startupLockFixture(name) {
+  const workspace = join(temp, `stale-${name}-workspace`);
+  const stateRoot = join(temp, `stale-${name}-state`);
+  await mkdir(workspace, { recursive: true });
+  const state = loadState(workspace, { stateDir: stateRoot });
+  return { state, file: join(state.paths.profileDir, "startup.lock") };
 }
 
 async function symbolicLinkLockTest() {

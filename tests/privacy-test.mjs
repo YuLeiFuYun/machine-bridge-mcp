@@ -10,6 +10,7 @@ import { requireGitVersion } from "../src/local/git-version.mjs";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 nodeAssert.deepEqual(requireGitVersion("git version 2.50.0"), { major: 2, minor: 50, patch: 0 });
 nodeAssert.deepEqual(requireGitVersion("git version 2.54.0 (Apple Git-157)"), { major: 2, minor: 54, patch: 0 });
+nodeAssert.deepEqual(requireGitVersion("git version 2.55.0.windows.5"), { major: 2, minor: 55, patch: 0 });
 nodeAssert.throws(() => requireGitVersion("git version 2.49.9"), /Git 2\.50 or later is required/);
 nodeAssert.throws(() => requireGitVersion("2.54.0"), /Git version output is invalid/);
 nodeAssert.throws(() => requireGitVersion(`git version ${"9".repeat(400)}.0.0`), /Git version output is invalid/);
