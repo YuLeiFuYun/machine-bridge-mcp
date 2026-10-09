@@ -5,7 +5,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { applyCfNetworkCompatibility, CF_NETWORK_COMPATIBILITY } from "./cf-network-compatibility.mjs";
+import { verifyCfNetworkArtifact, CF_NETWORK_ARTIFACT } from "./cf-network-integrity.mjs";
 import { ensureHardenedNpm } from "./hardened-npm.mjs";
 import { withOwnerStateLock } from "./owner-state-lock.mjs";
 import { nestedNpmEnvironment } from "./npm-environment.mjs";
@@ -69,11 +69,13 @@ export async function ensureWranglerToolchain(options = {}) {
             "--audit=false",
           ], descriptor.root, runCommand, npmOptions, INSTALL_TIMEOUT_MS);
           await verifyWranglerToolchain(descriptor, (args, allowFailure = false) => runNpm(npmCli, args, descriptor.root, runCommand, npmOptions, AUDIT_TIMEOUT_MS, allowFailure), true);
+          verifyCfNetworkArtifact(descriptor.root);
           await auditToolchain(descriptor, npmCli, runCommand, npmOptions);
           writeWranglerToolchainMarker(descriptor, now());
           return descriptor.root;
         }
 
+        verifyCfNetworkArtifact(descriptor.root);
         const checkedAt = now();
         const auditAgeMs = checkedAt - Date.parse(String(marker?.audited_at || ""));
         if (!wranglerToolchainMarkerMatches(marker, descriptor) || auditAgeMs < -MAX_CLOCK_SKEW_MS || auditAgeMs >= auditMaxAgeMs) {
@@ -93,18 +95,7 @@ export async function ensureWranglerToolchain(options = {}) {
     timeoutMs: options.operationLockTimeoutMs,
   });
 }
-export async function ensureCloudflareToolchain(options = {}) {
-  const root = await ensureWranglerToolchain(options);
-  const descriptor = wranglerToolchainDescriptor(options);
-  return withToolchainOperationLock(descriptor.stateRoot, () => withOwnerStateLock(
-    path.dirname(root),
-    async () => { applyCfNetworkCompatibility(root); return root; },
-    {
-      purpose: "wrangler-toolchain", fileName: TOOLCHAIN_LOCK, label: "Cloudflare toolchain",
-      timeoutMs: options.lockTimeoutMs,
-    },
-  ), { controlRoot: options.controlRoot, timeoutMs: options.operationLockTimeoutMs });
-}
+export { ensureWranglerToolchain as ensureCloudflareToolchain };
 
 export function wranglerToolchainDescriptor(options = {}) {
   const packageRoot = path.resolve(String(options.packageRoot || defaultPackageRoot));
@@ -121,7 +112,7 @@ export function wranglerToolchainDescriptor(options = {}) {
   const manifest = parseJsonObject(packageBytes, "Wrangler toolchain package manifest");
   const lock = parseJsonObject(lockBytes, "Wrangler toolchain lockfile");
   validateTemplate(manifest, lock);
-  const digest = createHash("sha256").update(packageBytes).update("\0").update(lockBytes).update("\0").update(CF_NETWORK_COMPATIBILITY.patchedSha256).digest("hex");
+  const digest = createHash("sha256").update(packageBytes).update("\0").update(lockBytes).update("\0").update(CF_NETWORK_ARTIFACT.sha256).digest("hex");
   const root = path.join(stateRoot, TOOLCHAIN_DIRECTORY, `wrangler-${manifest.dependencies.wrangler}-${digest.slice(0, 16)}`);
   return Object.freeze({
     packageRoot,
@@ -134,7 +125,7 @@ export function wranglerToolchainDescriptor(options = {}) {
     versions: Object.freeze({
       cf: String(manifest.dependencies.cf),
       wrangler: String(manifest.dependencies.wrangler),
-      undici: String(manifest.overrides.undici),
+      undici: String(lock.packages?.["node_modules/undici"]?.version || ""),
       sharp: String(manifest.overrides.sharp),
       esbuild: String(lock.packages?.["node_modules/esbuild"]?.version || ""),
       workerd: String(lock.packages?.["node_modules/workerd"]?.version || ""),
@@ -170,17 +161,18 @@ async function runNpm(npmCli, args, cwd, runCommand, options, timeoutMs, allowFa
 }
 
 function validateTemplate(manifest, lock) {
-  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.144.0"
-      || manifest.dependencies?.cf !== CF_NETWORK_COMPATIBILITY.version
-      || manifest.dependencies?.undici !== CF_NETWORK_COMPATIBILITY.undici) {
+  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.149.0"
+      || manifest.dependencies?.cf !== CF_NETWORK_ARTIFACT.version
+      || Object.keys(manifest.dependencies).length !== 2) {
     throw new Error("Cloudflare toolchain manifest lost its exact private dependencies");
   }
-  if (manifest.overrides?.undici !== CF_NETWORK_COMPATIBILITY.undici
-      || manifest.overrides?.sharp !== "0.35.5"
-      || Object.keys(manifest.overrides).length !== 2) {
-    throw new Error("Cloudflare toolchain manifest lost its security override");
+  if (manifest.overrides?.sharp !== "0.35.5"
+      || manifest.overrides?.miniflare !== "5.20261006.1-alpha"
+      || manifest.overrides?.ws !== "8.22.0"
+      || Object.keys(manifest.overrides).length !== 3) {
+    throw new Error("Cloudflare toolchain manifest lost its security and deduplication overrides");
   }
-  const expectedScripts = { "esbuild@0.28.1": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20260926.1": true };
+  const expectedScripts = { "esbuild@0.28.2": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20261006.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
     throw new Error("Cloudflare toolchain manifest lost its exact install-script policy");
   }
@@ -190,12 +182,15 @@ function validateTemplate(manifest, lock) {
       throw new Error("Cloudflare toolchain lockfile does not match the exact security contract");
     }
   }
-  if (lock.packages?.["node_modules/sharp"]?.version !== manifest.overrides.sharp) {
-    throw new Error("Cloudflare toolchain lockfile does not resolve the patched Sharp version");
+  for (const [name, version] of Object.entries(manifest.overrides)) {
+    if (lock.packages?.[`node_modules/${name}`]?.version !== version) {
+      throw new Error("Cloudflare toolchain lockfile lost a security or deduplication override");
+    }
   }
-  if (lock.packages?.["node_modules/esbuild"]?.version !== "0.28.1"
-      || lock.packages?.["node_modules/workerd"]?.version !== "1.20260926.1") {
-    throw new Error("Cloudflare toolchain lockfile lost an executable install dependency pin");
+  if (lock.packages?.["node_modules/undici"]?.version !== "7.29.1"
+      || lock.packages?.["node_modules/esbuild"]?.version !== "0.28.2"
+      || lock.packages?.["node_modules/workerd"]?.version !== "1.20261006.1") {
+    throw new Error("Cloudflare toolchain lockfile lost an installed dependency pin");
   }
 }
 function parseJsonObject(bytes, label) {

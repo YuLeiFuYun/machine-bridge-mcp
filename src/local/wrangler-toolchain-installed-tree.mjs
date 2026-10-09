@@ -9,34 +9,35 @@ export function validateInstalledWranglerToolchainTree(tree, versions) {
   if (tree.problems !== undefined && (!Array.isArray(tree.problems) || tree.problems.length)) {
     throw privateToolchainIntegrityError("Wrangler toolchain dependency tree contains invalid edges");
   }
-  const found = new Map([["cf", []], ["wrangler", []], ["undici", []], ["sharp", []], ["esbuild", []], ["workerd", []]]);
-  visitDependencyTree(tree.dependencies, found, { value: 0 }, 0);
-  for (const [name, expected] of Object.entries(versions)) {
-    const actual = found.get(name) || [];
-    if (!actual.length || actual.some((version) => version !== expected)) {
-      throw privateToolchainIntegrityError(`Wrangler toolchain ${name} versions ${actual.join(",") || "missing"} do not match ${expected}`);
-    }
+  const found = new Set();
+  visitDependencyTree(tree.dependencies, versions, found, { value: 0 }, 0);
+  for (const name of Object.keys(versions)) {
+    if (!found.has(name)) throw privateToolchainIntegrityError(`Wrangler toolchain ${name} dependency is missing`);
   }
 }
 
-function visitDependencyTree(dependencies, found, counter, depth) {
+function visitDependencyTree(dependencies, versions, found, counter, depth) {
   if (dependencies === undefined) return;
   if (!dependencies || typeof dependencies !== "object" || Array.isArray(dependencies)) {
     throw privateToolchainIntegrityError("Wrangler toolchain dependency tree contains an invalid dependency map");
   }
   if (depth > 64) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree exceeds the depth limit");
-  for (const [name, value] of Object.entries(dependencies)) {
+  for (const name in dependencies) {
+    if (!Object.hasOwn(dependencies, name)) continue;
+    if (++counter.value > MAX_TREE_NODES) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree exceeds the node limit");
+    const value = dependencies[name];
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw privateToolchainIntegrityError("Wrangler toolchain dependency tree contains an invalid dependency node");
     }
-    counter.value += 1;
-    if (counter.value > MAX_TREE_NODES) throw privateToolchainIntegrityError("Wrangler toolchain dependency tree exceeds the node limit");
-    if (found.has(name)) {
+    if (Object.hasOwn(versions, name)) {
       if (typeof value.version !== "string") {
         throw privateToolchainIntegrityError(`Wrangler toolchain ${name} version must be a string`);
       }
-      found.get(name).push(value.version);
+      if (value.version !== versions[name]) {
+        throw privateToolchainIntegrityError(`Wrangler toolchain ${name} version does not match the pinned version`);
+      }
+      found.add(name);
     }
-    visitDependencyTree(value.dependencies, found, counter, depth + 1);
+    visitDependencyTree(value.dependencies, versions, found, counter, depth + 1);
   }
 }

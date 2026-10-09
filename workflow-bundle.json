@@ -2,6 +2,96 @@
   "schema_version": "1.0.0",
   "lifecycle": [
     {
+      "id": "project-native:npm:cf-network:test",
+      "phase": "verify",
+      "source": "package.json#scripts.cf-network:test",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "project_native",
+      "independence": "same_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:npm:cf-network:test",
+        "argv": [
+          "npm",
+          "run",
+          "cf-network:test"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 300,
+        "env": {},
+        "sandbox": "required"
+      }
+    },
+    {
+      "id": "project-native:npm:wrangler-toolchain:test",
+      "phase": "verify",
+      "source": "package.json#scripts.wrangler-toolchain:test",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "project_native",
+      "independence": "same_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:npm:wrangler-toolchain:test",
+        "argv": [
+          "npm",
+          "run",
+          "wrangler-toolchain:test"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 300,
+        "env": {},
+        "sandbox": "required"
+      }
+    },
+    {
+      "id": "project-native:node:cf-project",
+      "phase": "verify",
+      "source": "tests/cf-project-test.mjs",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "project_native",
+      "independence": "same_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:node:cf-project",
+        "argv": [
+          "node",
+          "tests/cf-project-test.mjs"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 300,
+        "env": {},
+        "sandbox": "required"
+      }
+    },
+    {
+      "id": "project-native:node:source-module-graph",
+      "phase": "verify",
+      "source": "tests/architecture/source-module-graph.mjs",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "project_native",
+      "independence": "same_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:node:source-module-graph",
+        "argv": [
+          "node",
+          "tests/architecture/source-module-graph.mjs"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 300,
+        "env": {},
+        "sandbox": "required"
+      }
+    },
+    {
       "id": "project-native:npm:check:fast",
       "phase": "verify",
       "source": "package.json#scripts.check:fast",
@@ -21,7 +111,7 @@
         "cwd": ".",
         "timeout_seconds": 600,
         "env": {},
-        "sandbox": "required"
+        "sandbox": "disabled"
       }
     },
     {
@@ -44,7 +134,7 @@
         "cwd": ".",
         "timeout_seconds": 1800,
         "env": {},
-        "sandbox": "required"
+        "sandbox": "disabled"
       }
     }
   ]

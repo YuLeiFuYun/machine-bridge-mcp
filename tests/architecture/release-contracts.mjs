@@ -125,10 +125,30 @@ if (!trackedRepositoryFiles.has("workflow-bundle.json")) {
 const lifecycleById = new Map(
   (workflowBundleLifecycle.lifecycle || []).map((stage) => [String(stage.id), stage]),
 );
-for (const id of ["project-native:npm:check:fast", "project-native:npm:check:full"]) {
+const offlineVerificationStages = [
+  ["project-native:npm:cf-network:test", ["npm", "run", "cf-network:test"], "package.json#scripts.cf-network:test"],
+  ["project-native:npm:wrangler-toolchain:test", ["npm", "run", "wrangler-toolchain:test"], "package.json#scripts.wrangler-toolchain:test"],
+  ["project-native:node:cf-project", ["node", "tests/cf-project-test.mjs"], "tests/cf-project-test.mjs"],
+  ["project-native:node:source-module-graph", ["node", "tests/architecture/source-module-graph.mjs"], "tests/architecture/source-module-graph.mjs"],
+];
+for (const [id, argv, source] of offlineVerificationStages) {
   const stage = lifecycleById.get(id);
-  if (!stage || stage.command?.sandbox !== "required" || !(stage.required_for || []).includes("local_ready")) {
-    throw new Error(`${id} must remain a tracked local_ready gate with required Seatbelt containment`);
+  if (!stage || stage.command?.sandbox !== "required" || stage.command.cwd !== "."
+    || JSON.stringify(stage.command.argv) !== JSON.stringify(argv)
+    || stage.source !== source || !(stage.required_for || []).includes("local_ready")) {
+    throw new Error(`${id} must retain its exact offline local_ready gate with Seatbelt containment`);
+  }
+}
+for (const name of ["check:fast", "check:full"]) {
+  const id = `project-native:npm:${name}`;
+  const stage = lifecycleById.get(id);
+  if (!stage || stage.command?.sandbox !== "disabled" || stage.command.cwd !== "."
+    || JSON.stringify(stage.command.argv) !== JSON.stringify(["npm", "run", name])
+    || stage.source !== `package.json#scripts.${name}`
+    || !(stage.required_for || []).includes("local_ready")
+    || stage.minimum_provenance !== "controller_observed"
+    || stage.independence !== (name === "check:full" ? "independent_process" : "same_process")) {
+    throw new Error(`${id} must retain the complete native local_ready gate and its process provenance`);
   }
 }
 const agentManifestPath = ".machine-bridge/agent.json";
@@ -185,7 +205,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.144.0") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.149.0") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -194,22 +214,24 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.144.0"
-    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.5"
-    || toolchainManifest.dependencies?.undici !== "7.29.1"
-    || toolchainManifest.overrides?.undici !== "7.29.1"
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.149.0"
+    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.13"
+    || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
+    || Object.hasOwn(packageJson.devDependencies || {}, "undici")
+    || toolchainManifest.overrides?.miniflare !== "5.20261006.1-alpha"
+    || toolchainManifest.overrides?.ws !== "8.22.0"
     || toolchainManifest.overrides?.sharp !== "0.35.5"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.144.0"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.149.0"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
-    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.5"
+    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.13"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.5"
     || toolchainManifest.allowScripts?.["sharp@0.35.5"] !== true) {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.5"
+if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.13"
     || Object.hasOwn(packageJson.scripts || {}, "postinstall")
     || !FAST_CHECK_TASKS.includes("cf-network:test")) {
-  throw new Error("cf isolation or its verified network compatibility gate drifted");
+  throw new Error("cf isolation or its upstream network integrity gate drifted");
 }
 const patchedSharpVersion = "0.35.5";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
@@ -1326,7 +1348,7 @@ if (consumerSecuritySource.includes('"--omit=optional"')) throw new Error("consu
 const toolchainSource = readFileSync(join(root, "src", "local", "wrangler-toolchain.mjs"), "utf8");
 const toolchainVerificationSource = readFileSync(join(root, "src", "local", "wrangler-toolchain-verification.mjs"), "utf8");
 const toolchainInstalledTreeSource = readFileSync(join(root, "src", "local", "wrangler-toolchain-installed-tree.mjs"), "utf8");
-for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "CF_NETWORK_COMPATIBILITY", "applyCfNetworkCompatibility"]) {
+for (const required of ["withOwnerStateLock", "npm", "ci", "audit", "signatures", "--dry-run=false", "--workspaces=false", "CF_NETWORK_ARTIFACT", "verifyCfNetworkArtifact"]) {
   if (!toolchainSource.includes(required)) throw new Error(`private Wrangler toolchain lost required boundary: ${required}`);
 }
 for (const required of ["TOOLCHAIN_MARKER", "validateInstalledWranglerToolchainTree", "throwOperationalOrIntegrity", "privateToolchainIntegrityError"]) {
@@ -1862,7 +1884,7 @@ const processTreeSupervisorSource = readFileSync(join(root, "src", "local", "pro
 for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "processSnapshotTimeoutMs", "processTreeOwnershipStillCurrent"]) {
   if (!processTreeSupervisorSource.includes(required)) throw new Error(`process-tree supervisor lost bounded ownership escalation: ${required}`);
 }
-if (packageJson.devDependencies?.["fast-check"] !== "4.10.0" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
+if (packageJson.devDependencies?.["fast-check"] !== "4.10.2" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
 if (!githubReleaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./release-ci.mjs";')

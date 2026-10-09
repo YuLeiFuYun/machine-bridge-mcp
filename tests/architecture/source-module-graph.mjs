@@ -49,7 +49,7 @@ export function moduleSpecifiers(text, file = "module.ts") {
     if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(node.type)) {
       source = node.source;
     } else if (node.type === "TSImportType") {
-      source = node.argument;
+      source = node.source;
     } else if (node.type === "TSImportEqualsDeclaration" && node.moduleReference.type === "TSExternalModuleReference") {
       source = node.moduleReference.expression;
     }

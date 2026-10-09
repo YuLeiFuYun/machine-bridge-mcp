@@ -9,9 +9,10 @@ const RECEIPT_MAX_BYTES = 16 * 1024;
 export const FULL_VERIFICATION_RECEIPT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 const VERIFICATION_RUN_GENERATION_OPTIONS = {
-  roots: ["src", "scripts", "tests", "browser-extension", ".github", "docs", "bin", "native", "release-acceptance", ".release-candidate"],
+  roots: ["src", "scripts", "tests", "browser-extension", ".github", "docs", "bin", "native", "toolchain", "release-acceptance", ".release-candidate"],
   files: [
     "package.json", "package-lock.json", "tsconfig.json", "tsconfig.local.json", "wrangler.jsonc", "eslint.config.mjs",
+    "cloudflare.config.ts", "wrangler.config.ts", "workflow-bundle.json", ".machine-bridge/agent.json",
     ".npmrc", ".node-version", ".nvmrc", ".gitattributes", ".gitignore", ".privacy-denylist", ".privacy-denylist.example",
     "mbm", "mbm.cmd", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE",
     "CODE_OF_CONDUCT.md", "GOVERNANCE.md", "SUPPORT.md", "AGENTS.md",

@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   assertFreshFullVerificationReceipt,
   captureVerificationRunGeneration,
@@ -24,6 +24,31 @@ try {
   await writeFile(join(root, ".release-candidate", "manifest.json"), "generated candidate state\n", "utf8");
   assert(captureVerifiedSourceGeneration(root) === sourceGeneration, "generated candidate state incorrectly changed verified-source identity");
   assert(captureVerificationRunGeneration(root) !== runGeneration, "verification run generation stopped detecting concurrent candidate-state changes");
+
+  for (const input of [
+    "cloudflare.config.ts", "wrangler.config.ts", "workflow-bundle.json",
+    ".machine-bridge/agent.json", "toolchain/worker-runtime-types-seed.b64", "SUPPORT.md",
+  ]) {
+    const file = join(root, input);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, "initial verification input\n", { mode: 0o600 });
+    const inputGeneration = captureVerifiedSourceGeneration(root);
+    const inputRunGeneration = captureVerificationRunGeneration(root);
+    writeFullVerificationReceipt(root, inputGeneration, { now });
+    assertFreshFullVerificationReceipt(root, { now });
+    await writeFile(file, "changed verification input\n");
+    assert(captureVerificationRunGeneration(root) !== inputRunGeneration,
+      `verification run did not detect a concurrent change to ${input}`);
+    expectThrow(() => assertFreshFullVerificationReceipt(root, { now }), "current source");
+    await writeFile(file, "initial verification input\n");
+    assertFreshFullVerificationReceipt(root, { now });
+    if (process.platform !== "win32") {
+      await chmod(file, 0o400);
+      expectThrow(() => assertFreshFullVerificationReceipt(root, { now }), "current source");
+      await chmod(file, 0o600);
+      assertFreshFullVerificationReceipt(root, { now });
+    }
+  }
 
   expectThrow(() => writeFullVerificationReceipt(root, "invalid", { now }), "generation", "TypeError");
   expectThrow(() => writeFullVerificationReceipt(root, generation, { now: Number.NaN }), "timestamp", "TypeError");

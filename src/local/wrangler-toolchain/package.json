@@ -8,18 +8,18 @@
     "npm": ">=12.0.0"
   },
   "dependencies": {
-    "cf": "1.0.0-beta.5",
-    "undici": "7.29.1",
-    "wrangler": "4.144.0"
+    "cf": "1.0.0-beta.13",
+    "wrangler": "4.149.0"
   },
   "overrides": {
-    "undici": "7.29.1",
-    "sharp": "0.35.5"
+    "sharp": "0.35.5",
+    "miniflare": "5.20261006.1-alpha",
+    "ws": "8.22.0"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true,
+    "esbuild@0.28.2": true,
     "fsevents": false,
     "sharp@0.35.5": true,
-    "workerd@1.20260926.1": true
+    "workerd@1.20261006.1": true
   }
 }

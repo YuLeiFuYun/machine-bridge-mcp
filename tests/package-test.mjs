@@ -59,7 +59,7 @@ try {
     "src/local/wrangler-toolchain/package-lock.json",
     "src/local/cf-authentication.mjs",
     "src/local/cf-project.mjs",
-    "src/local/cf-network-compatibility.mjs",
+    "src/local/cf-network-integrity.mjs",
     "cloudflare.config.ts",
     "wrangler.config.ts",
     "scripts/accepted-candidate-tarball.mjs",
@@ -76,12 +76,15 @@ try {
   for (const tool of ["cf", "wrangler", "undici", "miniflare", "workerd"]) {
     if (Object.hasOwn(packageJson.dependencies || {}, tool)) throw new Error(`Consumer dependencies must exclude the private deployment tool ${tool}`);
   }
-  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.5", wrangler: "4.144.0", undici: "7.29.1" })) {
+  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.13", wrangler: "4.149.0" })) {
     if (packageJson.devDependencies?.[tool] !== version || privateManifest.dependencies?.[tool] !== version
         || privateLock.packages?.[""]?.dependencies?.[tool] !== version
         || privateLock.packages?.[`node_modules/${tool}`]?.version !== version) {
       throw new Error(`The packaged private ${tool} toolchain must retain its exact source development and lockfile pin`);
     }
+  }
+  if (Object.hasOwn(privateManifest.dependencies, "undici") || privateLock.packages["node_modules/undici"].version !== "7.29.1") {
+    throw new Error("The private toolchain must verify transitive Undici without a redundant direct dependency");
   }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [

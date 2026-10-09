@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { CF_NETWORK_COMPATIBILITY } from "../src/local/cf-network-compatibility.mjs";
+import { CF_NETWORK_ARTIFACT } from "../src/local/cf-network-integrity.mjs";
 import { stopFixtureChild, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 import {
@@ -86,19 +86,35 @@ try {
   assert.throws(() => validateInstalledWranglerToolchainTree({
     problems: [],
     dependencies: {
-      cf: { version: "1.0.0-beta.5" },
-      wrangler: { version: "4.144.0", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
+      cf: { version: "1.0.0-beta.13" },
+      wrangler: { version: "4.149.0", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
       undici: { version: "7.29.1" },
       sharp: { version: "0.35.5" },
-      esbuild: { version: "0.28.1" },
-      workerd: { version: "1.20260926.1" },
+      esbuild: { version: "0.28.2" },
+      workerd: { version: "1.20261006.1" },
     },
   }, {
-    cf: "1.0.0-beta.5", wrangler: "4.144.0", undici: "7.29.1", sharp: "0.35.5",
-    esbuild: "0.28.1", workerd: "1.20260926.1",
+    cf: "1.0.0-beta.13", wrangler: "4.149.0", undici: "7.29.1", sharp: "0.35.5",
+    esbuild: "0.28.2", workerd: "1.20261006.1",
   }),
   /invalid dependency node/,
   "malformed nested dependency node hid an unverified dependency subtree behind a patched Sharp sibling");
+
+  const broadDependencies = Object.fromEntries(Object.entries(firstDescriptor.versions).map(([name, version]) => [name, { version }]));
+  for (let index = Object.keys(broadDependencies).length; index < 20_000; index += 1) broadDependencies["fixture-" + index] = {};
+  assert.doesNotThrow(() => validateInstalledWranglerToolchainTree({ dependencies: broadDependencies }, firstDescriptor.versions));
+  let overflowReads = 0;
+  Object.defineProperty(broadDependencies, "overflow", {
+    enumerable: true, get() { overflowReads += 1; throw new Error("Unbounded dependency access"); },
+  });
+  assert.throws(() => validateInstalledWranglerToolchainTree({ dependencies: broadDependencies }, firstDescriptor.versions),
+    /node limit/, "dependency traversal materialized an over-budget node");
+  assert.equal(overflowReads, 0, "dependency traversal read an over-budget node before admission");
+  const privateVersion = "SYNTHETIC_PRIVATE_VERSION_SENTINEL";
+  assert.throws(() => validateInstalledWranglerToolchainTree({
+    dependencies: { undici: { version: privateVersion } },
+  }, firstDescriptor.versions), error => /pinned version/.test(error.message) && !error.message.includes(privateVersion),
+  "unverified npm dependency text leaked through an integrity error");
 
   const callsBeforeMaintenance = fake.total();
   await withForeignMaintenanceLock(stateRoot, async () => {
@@ -167,7 +183,7 @@ try {
       runCommand: vulnerable.run,
       now: () => nowMs,
     }),
-    /undici versions 7\.28\.0 do not match 7\.29\.1/,
+    /undici version does not match the pinned version/,
   );
 
   const vulnerableSharp = createFakeNpmRunner({ sharp: "0.35.4" });
@@ -180,7 +196,7 @@ try {
       runCommand: vulnerableSharp.run,
       now: () => nowMs,
     }),
-    /sharp versions 0\.35\.4 do not match 0\.35\.5/,
+    /sharp version does not match the pinned version/,
     "vulnerable Sharp installation passed the private toolchain integrity check",
   );
 
@@ -194,7 +210,7 @@ try {
       runCommand: wrongWorkerd.run,
       now: () => nowMs,
     }),
-    /workerd versions 1\.20260925\.1 do not match 1\.20260926\.1/,
+    /workerd version does not match the pinned version/,
     "unexpected Workerd installation passed the private toolchain integrity check",
   );
 
@@ -279,9 +295,9 @@ try {
   assert.equal(cfFirst, cfSecond);
   assert.equal(cfFake.count("ci"), 1, "concurrent cf initialization installed more than once");
   assert.equal(cfFake.count("signatures"), 1, "cf execution was permitted before signature verification");
-  const cfBundle = join(cfFirst, "node_modules", "cf", CF_NETWORK_COMPATIBILITY.bundle);
+  const cfBundle = join(cfFirst, "node_modules", "cf", CF_NETWORK_ARTIFACT.bundle);
   writeFileSync(cfBundle, "tampered cf bundle");
-  await assert.rejects(ensureCloudflareToolchain(cfOptions), /pinned upstream or patched artifact/);
+  await assert.rejects(ensureCloudflareToolchain(cfOptions), /pinned upstream artifact/);
   assert.equal(cfFake.count("ci"), 1, "unknown cf bytes triggered destructive reconstruction");
   console.log("Cloudflare private toolchain lifecycle and tamper test ok");
 } finally {
@@ -315,12 +331,12 @@ function createFakeNpmRunner(options = {}) {
   const calls = [];
   const launcherBins = new Set();
   const versions = {
-    cf: options.cf || "1.0.0-beta.5",
-    wrangler: options.wrangler || "4.144.0",
+    cf: options.cf || "1.0.0-beta.13",
+    wrangler: options.wrangler || "4.149.0",
     undici: options.undici || "7.29.1",
     sharp: options.sharp || "0.35.5",
-    esbuild: options.esbuild || "0.28.1",
-    workerd: options.workerd || "1.20260926.1",
+    esbuild: options.esbuild || "0.28.2",
+    workerd: options.workerd || "1.20261006.1",
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
@@ -347,9 +363,9 @@ function createFakeNpmRunner(options = {}) {
           writeFileSync(join(directory, "package.json"), `${JSON.stringify({ name, version })}\n`);
           if (name === "cf") {
             const upstreamRoot = dirname(createRequire(import.meta.url).resolve("cf/package.json"));
-            const bundle = join(directory, CF_NETWORK_COMPATIBILITY.bundle);
+            const bundle = join(directory, CF_NETWORK_ARTIFACT.bundle);
             mkdirSync(dirname(bundle), { recursive: true });
-            writeFileSync(bundle, readFileSync(join(upstreamRoot, CF_NETWORK_COMPATIBILITY.bundle)), { mode: 0o600 });
+            writeFileSync(bundle, readFileSync(join(upstreamRoot, CF_NETWORK_ARTIFACT.bundle)), { mode: 0o600 });
           }
         }
         return result(0, "installed\n");
@@ -367,7 +383,7 @@ function createFakeNpmRunner(options = {}) {
               version: versions.wrangler,
               dependencies: {
                 miniflare: {
-                  version: "4.20260722.1",
+                  version: "5.20261006.1-alpha",
                   dependencies: {
                     undici: { version: versions.undici },
                     sharp: { version: versions.sharp },
