@@ -281,7 +281,7 @@
     "globals": "17.11.0",
     "typescript": "7.0.2",
     "undici": "7.29.1",
-    "wrangler": "4.144.0"
+    "wrangler": "4.147.0"
   },
   "keywords": [
     "mcp",
