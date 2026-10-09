@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import { cfAuthenticationResult, cfDeploymentAccount, ensureCfAuthenticated } from "../src/local/cf-authentication.mjs";
 import { validateCfBuildOutput, withCfProject } from "../src/local/cf-project.mjs";
@@ -56,7 +57,7 @@ try {
   const toolchain = join(root, "toolchain");
   const source = join(root, "source");
   mkdirSync(join(toolchain, "node_modules"), { recursive: true });
-  writeFileSync(join(toolchain, "package.json"), JSON.stringify({ dependencies: { wrangler: "4.144.0" } }));
+  writeFileSync(join(toolchain, "package.json"), JSON.stringify({ dependencies: { wrangler: "4.149.0" } }));
   for (const file of ["src/worker/index.ts", "src/shared/value.ts", "wrangler.jsonc", "cloudflare.config.ts",
     "wrangler.config.ts", "tsconfig.json", "src/local/wrangler-toolchain/package.json",
     "src/local/wrangler-toolchain/package-lock.json"]) {
@@ -74,7 +75,7 @@ try {
     assert.equal(readFileSync(join(project.cwd, "src/worker/index.ts"), "utf8"), "snapshot bytes\n");
     assert.equal(existsSync(join(project.cwd, ".env")), false);
     assert.deepEqual(JSON.parse(readFileSync(join(project.cwd, "package.json"), "utf8")).devDependencies,
-      { wrangler: "4.144.0" }, "private project did not declare its audited build provider");
+      { wrangler: "4.149.0" }, "private project did not declare its audited build provider");
     assert.equal(project.env.MBM_WORKER_NAME, "mbm-cf-test");
     assert.equal(project.env.CLOUDFLARE_ACCOUNT_ID, "1".repeat(32));
     assert.equal(validateCfBuildOutput(project.cwd, "mbm-cf-test").name, "mbm-cf-test");
@@ -87,11 +88,89 @@ try {
     config => { config.env.BRIDGE.worker = "other-worker"; },
     config => { config.env.STATEFUL_RATE_LIMITER.namespace = "other-namespace"; },
     config => { config.unsafe.metadata.keep_bindings = []; },
+    config => { config.env.BRIDGE.type = "text"; },
+    config => { config.env.STATEFUL_RATE_LIMITER.type = "text"; },
+    config => { config.env.STATEFUL_RATE_LIMITER.simple.limit = 12000; },
+    config => { config.env.STATEFUL_GLOBAL_RATE_LIMITER.simple.period = "60"; },
   ]) {
     let callbackCalled = false;
     await assert.rejects(withCfProject(snapshot, "mbm-cf-test", async () => { callbackCalled = true; },
       projectOptions(toolchain, mutation)), /deployment contract/);
     assert.equal(callbackCalled, false, "invalid artifact reached secret/deployment callback");
+  }
+  let invalidNameInitializations = 0;
+  for (const invalid of [["mbm-cf-test"], { name: "mbm-cf-test" }, 123, null, undefined]) {
+    await assert.rejects(withCfProject(snapshot, invalid, async () => {}, {
+      ensureToolchain: async () => { invalidNameInitializations += 1; return toolchain; },
+    }), /Invalid Worker deployment name/);
+  }
+  assert.equal(invalidNameInitializations, 0, "invalid Worker identity initialized the deployment toolchain");
+
+  await assert.rejects(withCfProject(snapshot, "mbm-cf-test", async () => {}, projectOptions(toolchain, config => {
+    config.manifest.modules = { "index.js": { type: "esm" }, "../worker.config.json": { type: "esm" } };
+  })), /escapes its bundle/);
+  await withCfProject(snapshot, "mbm-cf-test", async () => {}, {
+    ...projectOptions(toolchain),
+    runCf: async (_args, project) => {
+      writeBuild(project.cwd, config => {
+        for (let index = 0; index < 255; index += 1) config.manifest.modules["module-" + index + ".js"] = { type: "esm" };
+      });
+      const bundle = join(project.cwd, ".cloudflare/output/v0/workers/default/bundle");
+      for (let index = 0; index < 255; index += 1) writeFileSync(join(bundle, "module-" + index + ".js"), "");
+    },
+  });
+  await assert.rejects(withCfProject(snapshot, "mbm-cf-test", async () => {}, projectOptions(toolchain, config => {
+    for (let index = 0; index < 256; index += 1) config.manifest.modules["module-" + index + ".js"] = { type: "esm" };
+  })), /module limit/, "over-budget manifest read nonexistent files before bounding its module count");
+
+  await withCfProject(snapshot, "mbm-cf-test", async project => {
+    assert.equal(validateCfBuildOutput(project.cwd, "mbm-cf-test").name, "mbm-cf-test");
+    const output = join(project.cwd, ".cloudflare/output/v0/workers/default");
+    const configPath = join(output, "worker.config.json");
+    const config = JSON.parse(readFileSync(configPath));
+    config.manifest.modules["overflow.js"] = { type: "esm" };
+    writeFileSync(configPath, JSON.stringify(config));
+    writeFileSync(join(output, "bundle/overflow.js"), "x");
+    assert.throws(() => validateCfBuildOutput(project.cwd, "mbm-cf-test"), /exceeds 0 bytes|byte limit/);
+  }, {
+    ...projectOptions(toolchain),
+    runCf: async (_args, project) => {
+      writeBuild(project.cwd, config => { config.manifest.modules["second.js"] = { type: "esm" }; });
+      const bundle = join(project.cwd, ".cloudflare/output/v0/workers/default/bundle");
+      fs.truncateSync(join(bundle, "index.js"), 16 * 1024 * 1024);
+      writeFileSync(join(bundle, "second.js"), "");
+      fs.truncateSync(join(bundle, "second.js"), 16 * 1024 * 1024);
+    },
+  });
+
+  const originalRemove = fs.rmSync;
+  for (const failureAt of ["build", "callback", "success"]) {
+    const primary = new Error("Synthetic primary failure");
+    const cleanup = new Error("Synthetic cleanup failure");
+    let blockedProject;
+    fs.rmSync = (target, ...args) => {
+      if (target === blockedProject) throw cleanup;
+      return originalRemove(target, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(withCfProject(snapshot, "mbm-cf-test", async () => {
+        if (failureAt === "callback") throw primary;
+      }, {
+        ...projectOptions(toolchain),
+        runCf: async (_args, project) => {
+          blockedProject = project.cwd;
+          writeBuild(project.cwd);
+          if (failureAt === "build") throw primary;
+        },
+      }), error => failureAt === "success" ? error === cleanup
+        : error instanceof AggregateError && error.errors[0] === primary && error.errors[1] === cleanup,
+      "private cleanup erased the primary failure or hid incomplete cleanup");
+    } finally {
+      fs.rmSync = originalRemove;
+      syncBuiltinESMExports();
+      if (blockedProject) rmSync(blockedProject, { recursive: true, force: true });
+    }
   }
   let failedProject;
   await assert.rejects(withCfProject(snapshot, "mbm-cf-test", async () => { throw new Error("unexpected callback"); }, {
@@ -158,8 +237,9 @@ function writeBuild(directory, mutation = () => {}) {
   mkdirSync(join(output, "bundle"), { recursive: true });
   const config = {
     name: "mbm-cf-test", exports: { BridgeRoom: { type: "durable-object", storage: "sqlite" } },
-    env: { BRIDGE: { worker: "mbm-cf-test", exportName: "BridgeRoom" },
-      STATEFUL_GLOBAL_RATE_LIMITER: { namespace: "4301702" }, STATEFUL_RATE_LIMITER: { namespace: "4301701" } },
+    env: { BRIDGE: { type: "durable-object", worker: "mbm-cf-test", exportName: "BridgeRoom" },
+      STATEFUL_GLOBAL_RATE_LIMITER: { type: "rate-limit", namespace: "4301702", simple: { limit: 1200, period: 60 } },
+      STATEFUL_RATE_LIMITER: { type: "rate-limit", namespace: "4301701", simple: { limit: 120, period: 60 } } },
     unsafe: { metadata: { keep_bindings: ["plain_text", "json", "secret_text", "secret_key"] } },
     manifest: { type: "complete", mainModule: "index.js", modules: { "index.js": { type: "esm" } } },
   };
