@@ -8,7 +8,7 @@
     "npm": ">=12.0.0"
   },
   "dependencies": {
-    "cf": "1.0.0-beta.13",
+    "cf": "1.0.0-beta.14",
     "wrangler": "4.149.0"
   },
   "overrides": {
