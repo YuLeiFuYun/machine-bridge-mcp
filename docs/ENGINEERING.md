@@ -258,9 +258,3 @@ The private toolchain verifies the unchanged cf upstream bundle using `cf-networ
 `cf-network:test` proves connector and TLS-verifier preservation in the pinned upstream network factory without requests. `tests/cf-project-test.mjs` proves exact Worker identity and rate-limit bindings, bundle-contained module paths, the 256-module/32 MiB aggregate/16 MiB individual ceilings, and primary-plus-cleanup failure preservation. The private dependency traversal checks its node budget before reading a node and never reflects unverified version text in integrity errors.
 
 Dependency proposals for root and private manifests must be reconciled into one reviewed package candidate: synchronize exact pins, locks, native script approvals, runtime type seed, version anchors and changelog, then complete the existing verification and live-acceptance sequence. Grouping updates does not waive those gates.
-
-### Verification authority without duplicate execution
-
-The workflow controller infers the JavaScript unit/full commands from package.json. workflow-bundle.json retains the four additional offline native boundary stages; it must not redeclare check:fast/check:full under second native IDs. The prior configuration ran the 135-task full suite twice against the same source. The canonical scripts, independent-process full verification, receipt binding and six-hour registered managed-job carrier remain unchanged. Architecture checks reject duplicate umbrella declarations and preserve the offline stages and carrier budget.
-
-Use a clean Git worktree for final workflow discovery. Ignored local helper trees may contain other-language scripts that the external controller treats as project source; they must not enroll nonexistent test suites in this JavaScript project. Preserve existing helper trees and their evidence.
