@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -69,31 +69,26 @@ try {
   const observed = await observeFactory();
   assert.equal(observed.connectorPreserved, true);
   assert.equal(observed.tlsVerifierPreserved, true);
-  assert.equal(observed.publicFactoryMatches, true);
   assert.equal(observed.requests, 0, "construction initiated a network request");
   console.log("cf upstream network behavior, read-only integrity, and tamper checks ok");
 } finally { rmSync(root, { recursive: true, force: true }); }
 
 async function observeFactory() {
-  const observer = path.join(cfRoot, "dist", "mbm-cf-offline-" + randomUUID() + ".mjs");
-  writeFileSync(observer, original.toString("utf8") + "\nexport { K_ as mbmObservedFactory };\n", { flag: "wx", mode: 0o600 });
+  // Exercise the exported factory in the hash-pinned upstream bundle without rewriting its bundled module.
+  const observed = await import(pathToFileURL(path.join(cfRoot, contract.bundle)).href);
+  const library = observed.V();
+  let requests = 0, captured;
+  const connect = () => { requests += 1; throw new Error("Offline construction initiated a connection"); };
+  const checkServerIdentity = () => new Error("Offline TLS sentinel");
+  const pool = new library.BalancedPool("https://example.invalid", {
+    connect, tls: { checkServerIdentity },
+    factory(origin, options) { captured = options; return new library.Pool(origin, options); },
+  });
   try {
-    const observed = await import(pathToFileURL(observer).href);
-    const library = observed.mbmObservedFactory();
-    let requests = 0, captured;
-    const connect = () => { requests += 1; throw new Error("Offline construction initiated a connection"); };
-    const checkServerIdentity = () => new Error("Offline TLS sentinel");
-    const pool = new library.BalancedPool("https://example.invalid", {
-      connect, tls: { checkServerIdentity },
-      factory(origin, options) { captured = options; return new library.Pool(origin, options); },
-    });
-    try {
-      return {
-        connectorPreserved: captured.connect === connect,
-        tlsVerifierPreserved: captured.tls?.checkServerIdentity === checkServerIdentity,
-        publicFactoryMatches: observed.B() === library,
-        requests,
-      };
-    } finally { await pool.close(); }
-  } finally { rmSync(observer, { force: true }); }
+    return {
+      connectorPreserved: captured.connect === connect,
+      tlsVerifierPreserved: captured.tls?.checkServerIdentity === checkServerIdentity,
+      requests,
+    };
+  } finally { await pool.close(); }
 }

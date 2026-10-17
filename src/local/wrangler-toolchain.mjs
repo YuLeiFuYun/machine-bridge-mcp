@@ -161,18 +161,18 @@ async function runNpm(npmCli, args, cwd, runCommand, options, timeoutMs, allowFa
 }
 
 function validateTemplate(manifest, lock) {
-  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.149.0"
+  if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.151.1"
       || manifest.dependencies?.cf !== CF_NETWORK_ARTIFACT.version
       || Object.keys(manifest.dependencies).length !== 2) {
     throw new Error("Cloudflare toolchain manifest lost its exact private dependencies");
   }
   if (manifest.overrides?.sharp !== "0.35.5"
-      || manifest.overrides?.miniflare !== "5.20261006.1-alpha"
+      || manifest.overrides?.miniflare !== "5.20261012.1-beta"
       || manifest.overrides?.ws !== "8.22.0"
       || Object.keys(manifest.overrides).length !== 3) {
     throw new Error("Cloudflare toolchain manifest lost its security and deduplication overrides");
   }
-  const expectedScripts = { "esbuild@0.28.2": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20261006.1": true };
+  const expectedScripts = { "esbuild@0.28.2": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20261012.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
     throw new Error("Cloudflare toolchain manifest lost its exact install-script policy");
   }
@@ -189,7 +189,7 @@ function validateTemplate(manifest, lock) {
   }
   if (lock.packages?.["node_modules/undici"]?.version !== "7.29.1"
       || lock.packages?.["node_modules/esbuild"]?.version !== "0.28.2"
-      || lock.packages?.["node_modules/workerd"]?.version !== "1.20261006.1") {
+      || lock.packages?.["node_modules/workerd"]?.version !== "1.20261012.1") {
     throw new Error("Cloudflare toolchain lockfile lost an installed dependency pin");
   }
 }

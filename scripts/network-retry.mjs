@@ -35,6 +35,8 @@ export function networkCommandArgs(command, args) {
 }
 
 export function isTransientNetworkFailure(result) {
+  // Output is application data after successful settlement, never a reason to replay it.
+  if (result?.status === 0 && !result.error && !result.signal) return false;
   if (result?.error) {
     const code = String(result.error.code || "");
     if (["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH", "ECONNREFUSED"].includes(code)) return true;

@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.200",
+  "version": "3.0.0-beta.201",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -265,7 +265,8 @@
     "browser-cli-pairing:test": "node tests/browser-cli-pairing-test.mjs",
     "resource-admission:test": "node tests/resource-admission-test.mjs",
     "resource-build-root:test": "node tests/resource-build-root-test.mjs",
-    "cf-network:test": "node tests/cf-network-integrity-test.mjs"
+    "cf-network:test": "node tests/cf-network-integrity-test.mjs",
+    "output-buffer:test": "node tests/output-buffer-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
@@ -274,13 +275,13 @@
   },
   "devDependencies": {
     "@babel/parser": "8.0.7",
-    "@types/node": "26.6.4",
-    "cf": "1.0.0-beta.13",
-    "eslint": "10.12.0",
+    "@types/node": "26.6.5",
+    "cf": "1.0.0-beta.18",
+    "eslint": "10.13.0",
     "fast-check": "4.10.2",
     "globals": "17.13.0",
     "typescript": "7.0.2",
-    "wrangler": "4.149.0"
+    "wrangler": "4.151.1"
   },
   "keywords": [
     "mcp",
@@ -312,7 +313,7 @@
     "esbuild@0.28.2": true,
     "fsevents": false,
     "sharp@0.35.5": true,
-    "workerd@1.20261006.1": true
+    "workerd@1.20261012.1": true
   },
   "packageManager": "npm@12.0.2",
   "devEngines": {
@@ -330,7 +331,7 @@
   "overrides": {
     "sharp": "0.35.5",
     "brace-expansion": "5.0.12",
-    "miniflare": "5.20261006.1-alpha",
+    "miniflare": "5.20261012.1-beta",
     "ws": "$ws"
   }
 }

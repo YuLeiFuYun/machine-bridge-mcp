@@ -81,7 +81,7 @@ withFixture((fixture) => {
 });
 
 withFixture((fixture) => {
-  replace(fixture, "ci.yml", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/checkout@v7");
+  replaceAction(fixture, "ci.yml", "actions/checkout", "actions/checkout@v7");
   expectFailure(fixture, "dynamic, malformed, or unpinned action reference");
 });
 
@@ -116,12 +116,12 @@ withFixture((fixture) => {
 });
 
 withFixture((fixture) => {
-  replace(fixture, "workflow-policy.yml", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020", "example/unreviewed-action@820762786026740c76f36085b0efc47a31fe5020");
+  replaceAction(fixture, "workflow-policy.yml", "actions/setup-node", "example/unreviewed-action@" + "a".repeat(40));
   expectFailure(fixture, "uses unreviewed action example/unreviewed-action");
 });
 
 withFixture((fixture) => {
-  replace(fixture, "workflow-policy.yml", "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020", "${{ matrix.action }}");
+  replaceAction(fixture, "workflow-policy.yml", "actions/setup-node", "${{ matrix.action }}");
   expectFailure(fixture, "dynamic, malformed, or unpinned action reference");
 });
 
@@ -289,6 +289,13 @@ function replace(fixture, name, before, after) {
   const source = readFileSync(path, "utf8");
   assert(source.includes(before), `fixture mutation anchor missing in ${name}: ${before}`);
   writeFileSync(path, source.replace(before, after));
+}
+
+function replaceAction(fixture, name, action, replacement) {
+  const source = readFileSync(workflowPath(fixture, name), "utf8");
+  const reference = source.match(new RegExp(escapeRegex(action) + "@[0-9a-f]{40}\\b"));
+  assert(reference, "fixture is missing the pinned action " + action);
+  replace(fixture, name, reference[0], replacement);
 }
 
 function expectFailure(fixture, expected) {

@@ -5,10 +5,10 @@ import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { privateToolchainIntegrityError, throwOperationalOrIntegrity } from "./private-toolchain-integrity.mjs";
 
 export const CF_NETWORK_ARTIFACT = Object.freeze({
-  version: "1.0.0-beta.13",
+  version: "1.0.0-beta.18",
   bundledUndici: "7.30.0",
-  bundle: "dist/dist-BHEmAAHr.mjs",
-  sha256: "44d51802036f7c7d936c2f467386c435e8487fd4cef61b2ace3c5ad53efbed57",
+  bundle: "dist/dist-DZRTPMMA.mjs",
+  sha256: "d77810cfe122299f2e5c22edb1e93f6f85a306b7bda0bc26aafda8c5b525f9c9",
 });
 const MAX_BUNDLE_BYTES = 2 * 1024 * 1024;
 

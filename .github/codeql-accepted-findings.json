@@ -4,20 +4,20 @@
     {
       "ruleId": "js/shell-command-injection-from-environment",
       "path": "src/local/process-execution.mjs",
-      "reason": "The authorized direct-process boundary accepts a caller-selected executable and separately validated argv, copies only four spawn options, forces shell false at the final child_process call, and has a behavior test proving shell metacharacters are not evaluated; CodeQL 2.26.0 still classifies the environment-derived executable path as a shell-command sink.",
-      "expires": "2026-10-14"
+      "reason": "Reviewed against CodeQL 2.27.2 on 2026-10-17: the policy-authorized direct-process capability deliberately accepts an executable and validated argv. spawnDirectProcess copies only fixed spawn options and enforces shell=false at child_process.spawn. Role/policy and literal-metacharacter regressions cover this boundary; this exact finding models command interpretation at a capability explicitly granted to its caller.",
+      "expires": "2027-01-15"
     },
     {
       "ruleId": "js/indirect-command-line-injection",
       "path": "src/local/process-execution.mjs",
-      "reason": "run_process is intentionally an authorized direct-exec capability: validateArgv bounds and rejects invalid argv, the final child_process call passes the executable and argv as separate values, shell is fixed false, and behavior tests prove shell metacharacters remain literal. The query models uncontrolled command interpretation, but this boundary deliberately executes the caller-authorized program without shell parsing; review again with the adjacent direct-process exception before expiry.",
-      "expires": "2026-10-14"
+      "reason": "Reviewed against CodeQL 2.27.2 on 2026-10-17: run_process is an intentionally authorized executable/argv capability, not a shell parser. validateArgv bounds its input, policyGate checks availability, and the final spawn passes executable/argv separately with shell=false. Current denial and execution regressions cover the policy and literal-argument contract; keep review scoped to this rule and file.",
+      "expires": "2027-01-15"
     },
     {
       "ruleId": "js/insufficient-password-hash",
       "path": "src/local/account-admin.mjs",
-      "reason": "Account credentials are not human passwords: generateAccountPassword creates a mandatory 256-bit random token, the Worker rejects caller-chosen formats, and each account stores only a verifier derived with an independent 128-bit salt and HMAC-SHA-256. The rule models low-entropy password guessing, which does not apply to this machine-generated credential contract; reassess or migrate to a portable slow KDF before expiry.",
-      "expires": "2026-10-21"
+      "reason": "Reviewed against CodeQL 2.27.2 on 2026-10-17: the flagged SHA-256 operation is accountAdminRequestHeaders.bodyHash, a digest of the serialized HTTP request body included in the device-signed adminAuthTranscript. It is not a stored password verifier or password KDF. The signature binds origin, method, route, body digest, timestamp and nonce; changing this digest to a password KDF would change the authentication transcript rather than harden password storage.",
+      "expires": "2027-01-15"
     }
   ]
 }

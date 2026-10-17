@@ -16,25 +16,22 @@ export class BoundedOutput {
     if (!bytes.length) return;
     this.totalBytes += bytes.length;
 
-    if (this.full) {
-      const combined = Buffer.concat([this.full, bytes]);
-      if (combined.length <= this.maximum) {
-        this.full = combined;
-        return;
-      }
-      this.full = null;
-      this.head = combined.subarray(0, this.headLimit);
-      this.tail = this.tailLimit ? combined.subarray(Math.max(this.headLimit, combined.length - this.tailLimit)) : Buffer.alloc(0);
+    if (this.full && this.full.length + bytes.length <= this.maximum) {
+      this.full = Buffer.concat([this.full, bytes]);
       return;
     }
 
-    if (this.head.length < this.headLimit) {
-      const missing = this.headLimit - this.head.length;
-      this.head = Buffer.concat([this.head, bytes.subarray(0, missing)]);
+    const previous = this.full || this.tail;
+    if (this.full) {
+      const missing = Math.max(0, this.headLimit - this.full.length);
+      this.head = Buffer.concat([this.full.subarray(0, this.headLimit), bytes.subarray(0, missing)]);
+      this.full = null;
     }
     if (this.tailLimit) {
-      const combinedTail = Buffer.concat([this.tail, bytes]);
-      this.tail = combinedTail.subarray(Math.max(0, combinedTail.length - this.tailLimit));
+      // Copy only retained bytes; subarray alone keeps the entire producer chunk alive.
+      const tail = bytes.subarray(Math.max(0, bytes.length - this.tailLimit));
+      const retained = Math.min(previous.length, this.tailLimit - tail.length);
+      this.tail = Buffer.concat([previous.subarray(previous.length - retained), tail]);
     }
   }
 

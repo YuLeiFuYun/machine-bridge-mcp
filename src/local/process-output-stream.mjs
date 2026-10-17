@@ -23,13 +23,11 @@ export class ProcessOutputStream {
     const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
     if (!input.length) return;
     this.totalBytes += input.length;
-    let combined = this.buffer.length ? Buffer.concat([this.buffer, input]) : Buffer.from(input);
-    if (combined.length > this.maximumBytes) {
-      const dropped = combined.length - this.maximumBytes;
-      combined = combined.subarray(dropped);
-      this.baseOffset += dropped;
-    }
-    this.buffer = combined;
+    // Trim before copying: a small subarray can otherwise retain a huge backing allocation.
+    const tail = input.subarray(Math.max(0, input.length - this.maximumBytes));
+    const retained = Math.min(this.buffer.length, this.maximumBytes - tail.length);
+    this.buffer = Buffer.concat([this.buffer.subarray(this.buffer.length - retained), tail]);
+    this.baseOffset = this.totalBytes - this.buffer.length;
   }
 
   /** @param {unknown} requestedOffset @param {unknown} maximumBytes */

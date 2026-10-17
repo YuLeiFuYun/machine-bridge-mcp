@@ -86,16 +86,16 @@ try {
   assert.throws(() => validateInstalledWranglerToolchainTree({
     problems: [],
     dependencies: {
-      cf: { version: "1.0.0-beta.13" },
-      wrangler: { version: "4.149.0", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
+      cf: { version: "1.0.0-beta.18" },
+      wrangler: { version: "4.151.1", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
       undici: { version: "7.29.1" },
       sharp: { version: "0.35.5" },
       esbuild: { version: "0.28.2" },
-      workerd: { version: "1.20261006.1" },
+      workerd: { version: "1.20261012.1" },
     },
   }, {
-    cf: "1.0.0-beta.13", wrangler: "4.149.0", undici: "7.29.1", sharp: "0.35.5",
-    esbuild: "0.28.2", workerd: "1.20261006.1",
+    cf: "1.0.0-beta.18", wrangler: "4.151.1", undici: "7.29.1", sharp: "0.35.5",
+    esbuild: "0.28.2", workerd: "1.20261012.1",
   }),
   /invalid dependency node/,
   "malformed nested dependency node hid an unverified dependency subtree behind a patched Sharp sibling");
@@ -331,12 +331,12 @@ function createFakeNpmRunner(options = {}) {
   const calls = [];
   const launcherBins = new Set();
   const versions = {
-    cf: options.cf || "1.0.0-beta.13",
-    wrangler: options.wrangler || "4.149.0",
+    cf: options.cf || "1.0.0-beta.18",
+    wrangler: options.wrangler || "4.151.1",
     undici: options.undici || "7.29.1",
     sharp: options.sharp || "0.35.5",
     esbuild: options.esbuild || "0.28.2",
-    workerd: options.workerd || "1.20261006.1",
+    workerd: options.workerd || "1.20261012.1",
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
@@ -383,7 +383,7 @@ function createFakeNpmRunner(options = {}) {
               version: versions.wrangler,
               dependencies: {
                 miniflare: {
-                  version: "5.20261006.1-alpha",
+                  version: "5.20261012.1-beta",
                   dependencies: {
                     undici: { version: versions.undici },
                     sharp: { version: versions.sharp },

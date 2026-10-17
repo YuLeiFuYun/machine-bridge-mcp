@@ -2,6 +2,10 @@
 
 For a compact component map, read [System overview](OVERVIEW.md). Security assumptions, attacker models, non-goals, and residual risks are defined in [Threat model](THREAT_MODEL.md).
 
+## Output-buffer allocation
+
+Process continuation and head/tail diagnostic buffers crop incoming bytes before copying. Retained views must not hold an oversized producer allocation, and later producer mutation cannot change recorded output. Output offsets and omitted-byte counts retain their existing contracts. The allocation/aliasing and randomized partition regressions are in tests/output-buffer-test.mjs; existing runtime and continuation tests cover UTF-8 and transport integration.
+
 ## Design goal
 
 The system separates three questions that are often conflated:

@@ -12,6 +12,9 @@ This review is scoped to source contracts, risk-bearing control paths, isolated 
 
 ## Current conclusions
 
+- **Output budgets include producer backing retention.** Both diagnostic and continuation buffers trim before allocating retained bytes and copy independent snapshots. Allocation/aliasing regressions and partition properties supplement the existing UTF-8 and continuation tests.
+- **Successful settlement terminates retry classification.** Application stdout/stderr cannot cause a successful release command to run again. Failures retain bounded transient classification, while npm pre-lifecycle errors remain observable.
+
 - **Authority remains an intersection, never an accumulation.** Effective MCP authority is bounded by authenticated account role, daemon capability ceiling, and tool-specific policy. Reconnects, retries, stale host schemas, browser focus changes, or recovery metadata do not expand authority.
 - **Removed protocol behavior stays removed.** Remote HTTP and stdio use the current MCP protocol only. Removed initialization, session, and replay behavior fails closed instead of silently falling back to historical compatibility.
 - **State publication is atomic, type-exact and identity-sensitive.** Security-sensitive state readers reject symlinks, unexpected hard links, malformed content, permission failures, persistent identity changes, and coercible PID/token/timestamp fields. Persisted strings, arrays, booleans or objects cannot become process, cleanup, lock, lease, waiter or termination authority through JavaScript conversion. Bounded retries are reserved for explicitly classified atomic-publication races; durable state is complete before it becomes visible.
@@ -32,6 +35,12 @@ This review is scoped to source contracts, risk-bearing control paths, isolated 
 The prior relay could poll signed HTTPS while WSS was healthy; ready HTTPS polled every second. The current design stops fallback while WSS is verified healthy, uses five-second ready-idle polling and thirty-second successful-standby retries, and retains the 750 ms minimum request-start interval for handshake/queued work. Accepted signed HTTP requests and WebSocket preflights each consume one bounded Durable Object replay-nonce write; rejected replays consume none. The request/nonce regression covers idle polling plus failed WSS reconnects, not all readiness resets or traffic. The separate idle-day regression includes nonce storage and liveness alarms; the repository testing guide records its scope.
 
 The checked-in and inspected deployed bridge use SQLite-backed Durable Objects with no Workers KV namespace binding. Repository evidence establishes Worker request and Durable Object persistence amplification, not the origin of an account-wide dashboard item labeled KV. Attribution requires provider counters by UTC day, script, namespace and deployed bindings; another workload may consume a shared allowance. Provider identifiers, account data and request contents stay outside public evidence. Local counts do not establish billing, candidate-bound deployed behavior or completed soak.
+
+## Security exception review
+
+On 2026-10-17, the retrieved Scorecard report from GitHub Actions run 38581193758 contained only CodeReviewID and CIIBestPracticesID. The expired MaintainedID and SASTID records are removed instead of extended. CodeQL 2.27.2 analysis 1944825726 still reports the three exact accepted rule/file pairs. Their current source was re-reviewed and the expiry is bounded to 2027-01-15. The insufficient-password-hash location is the signed admin request-body digest in accountAdminRequestHeaders, not a password database KDF; its prior rationale is corrected. The other two findings describe the intentional policy-authorized direct-executable boundary with shell=false. No new rule/path exception is introduced.
+
+The fast SARIF regression now loads both real checked-in exception documents against a valid completed zero-finding report. Expired metadata fails before the expensive integration suite even when a particular report has no matching finding. These decisions remain exact, time-bounded exceptions; fresh external security checks are still required for the delivered commit.
 
 ## Residual limits
 
