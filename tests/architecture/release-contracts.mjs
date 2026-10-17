@@ -1837,10 +1837,10 @@ if (codeqlActionRefs.length !== 3 || new Set(codeqlActionRefs).size !== 1) {
 }
 const scorecardAccepted = JSON.parse(readFileSync(join(root, ".github", "scorecard-accepted-findings.json"), "utf8"));
 const acceptedScorecardRules = new Set((scorecardAccepted.accepted || []).map((item) => item.ruleId));
-for (const rule of ["CodeReviewID", "MaintainedID", "CIIBestPracticesID", "SASTID"]) {
+for (const rule of ["CodeReviewID", "CIIBestPracticesID"]) {
   if (!acceptedScorecardRules.has(rule)) throw new Error(`Scorecard governance exception is missing: ${rule}`);
 }
-for (const rule of ["PinnedDependenciesID", "FuzzingID"]) {
+for (const rule of ["PinnedDependenciesID", "FuzzingID", "MaintainedID", "SASTID"]) {
   if (acceptedScorecardRules.has(rule)) throw new Error(`remediable Scorecard finding was incorrectly accepted: ${rule}`);
 }
 const codeqlAccepted = JSON.parse(readFileSync(join(root, ".github", "codeql-accepted-findings.json"), "utf8"));

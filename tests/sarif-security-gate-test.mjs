@@ -112,6 +112,15 @@ try {
       "invalid, expired, or valid leap-day exception was classified incorrectly");
   }
 
+  const cleanRepositoryScan = document("src/local/example.mjs");
+  cleanRepositoryScan.runs[0].results = [];
+  writeFileSync(sarif, JSON.stringify(cleanRepositoryScan));
+  for (const file of ["codeql-accepted-findings.json", "scorecard-accepted-findings.json"]) {
+    const checkedIn = run(sarif, join(root, ".github", file));
+    assert(checkedIn.status === 0,
+      "checked-in exception metadata is invalid or expired: " + file + "\n" + checkedIn.stderr);
+  }
+
   console.log("SARIF security gate test ok");
 } finally {
   rmSync(temp, { recursive: true, force: true });

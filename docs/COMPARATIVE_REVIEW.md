@@ -65,3 +65,7 @@ Legacy MCP initialization/session/replay markers remain bounded rejection paths,
 ## Verification boundary
 
 The causal fixtures establish the specific repaired mechanisms. Frozen local verification, current dependency/signature/SBOM evidence, exact candidate installation/activation, deployed OAuth checks, and external CI remain separate authorities under [RELEASING.md](RELEASING.md). This comparison does not claim a completed soak or independent human review.
+
+## Additional release-gate review
+
+The current provider reports were replayed through the actual SARIF gate. Two unused expired Scorecard exceptions are removed; the three exact CodeQL findings were reviewed against source and remain time-bounded, with the admin request-digest rationale corrected. A regression now validates checked-in exception expiry before integration tests. Clean-worktree discovery removes unrelated helper-language enrollment; explicit native gates are retained after direct profile inspection disproved manifest omission as a safe deduplication mechanism.

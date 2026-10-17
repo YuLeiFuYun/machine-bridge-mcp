@@ -10,6 +10,9 @@
 - Exercise the upstream cf exported network factory directly instead of injecting an internal minifier symbol into a copied module.
 - Record a revision-bound comparison of 37 related projects, adopted improvements and retained compatibility/security boundaries.
 
+- Retire expired Scorecard exceptions no longer present in the latest provider report; re-review the three exact CodeQL findings, correct the admin request-body digest rationale, and validate checked-in exception expiry in the fast suite.
+- Preserve explicit native lifecycle contracts after verifying the controller's automatic inference; use a clean worktree to keep unrelated helper languages out of project verification.
+
 ## Historical releases
 
 Historical prerelease entries remain available from Git tags and repository history. From a source checkout, inspect the changelog of a prior revision with `git show <revision>:CHANGELOG.md`. This current file intentionally describes only the active candidate and the history location.

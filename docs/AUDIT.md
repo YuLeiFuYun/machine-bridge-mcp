@@ -36,6 +36,12 @@ The prior relay could poll signed HTTPS while WSS was healthy; ready HTTPS polle
 
 The checked-in and inspected deployed bridge use SQLite-backed Durable Objects with no Workers KV namespace binding. Repository evidence establishes Worker request and Durable Object persistence amplification, not the origin of an account-wide dashboard item labeled KV. Attribution requires provider counters by UTC day, script, namespace and deployed bindings; another workload may consume a shared allowance. Provider identifiers, account data and request contents stay outside public evidence. Local counts do not establish billing, candidate-bound deployed behavior or completed soak.
 
+## Security exception review
+
+On 2026-10-17, the retrieved Scorecard report from GitHub Actions run 38581193758 contained only CodeReviewID and CIIBestPracticesID. The expired MaintainedID and SASTID records are removed instead of extended. CodeQL 2.27.2 analysis 1944825726 still reports the three exact accepted rule/file pairs. Their current source was re-reviewed and the expiry is bounded to 2027-01-15. The insufficient-password-hash location is the signed admin request-body digest in accountAdminRequestHeaders, not a password database KDF; its prior rationale is corrected. The other two findings describe the intentional policy-authorized direct-executable boundary with shell=false. No new rule/path exception is introduced.
+
+The fast SARIF regression now loads both real checked-in exception documents against a valid completed zero-finding report. Expired metadata fails before the expensive integration suite even when a particular report has no matching finding. These decisions remain exact, time-bounded exceptions; fresh external security checks are still required for the delivered commit.
+
 ## Residual limits
 
 - The default full profile is intentionally powerful. It is appropriate only where the daemon OS user is itself an acceptable trust boundary; stronger hostile-code isolation requires a separate OS account or VM/container.
