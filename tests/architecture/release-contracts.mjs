@@ -139,16 +139,11 @@ for (const [id, argv, source] of offlineVerificationStages) {
     throw new Error(`${id} must retain its exact offline local_ready gate with Seatbelt containment`);
   }
 }
-for (const name of ["check:fast", "check:full"]) {
-  const id = `project-native:npm:${name}`;
-  const stage = lifecycleById.get(id);
-  if (!stage || stage.command?.sandbox !== "disabled" || stage.command.cwd !== "."
-    || JSON.stringify(stage.command.argv) !== JSON.stringify(["npm", "run", name])
-    || stage.source !== `package.json#scripts.${name}`
-    || !(stage.required_for || []).includes("local_ready")
-    || stage.minimum_provenance !== "controller_observed"
-    || stage.independence !== (name === "check:full" ? "independent_process" : "same_process")) {
-    throw new Error(`${id} must retain the complete native local_ready gate and its process provenance`);
+for (const stage of workflowBundleLifecycle.lifecycle || []) {
+  const argv = stage.command?.argv;
+  if (Array.isArray(argv) && argv.length === 3 && argv[0] === "npm" && argv[1] === "run"
+      && ["check:fast", "check:full"].includes(argv[2])) {
+    throw new Error("umbrella verification must use the generic package-script authority without duplicate native stages");
   }
 }
 const agentManifestPath = ".machine-bridge/agent.json";
@@ -156,9 +151,12 @@ if (!trackedRepositoryFiles.has(agentManifestPath)) {
   throw new Error("repository release-carrier metadata must remain tracked");
 }
 const agentManifest = JSON.parse(readFileSync(join(root, agentManifestPath), "utf8"));
-const fullVerificationTimeoutSeconds = Number(lifecycleById.get("project-native:npm:check:full")?.command?.timeout_seconds);
-if (!Number.isSafeInteger(fullVerificationTimeoutSeconds) || fullVerificationTimeoutSeconds <= 600) {
-  throw new Error("tracked full verification lifecycle must retain a long explicit timeout budget");
+const fullVerificationCommand = agentManifest.commands?.["verification.full"];
+const fullVerificationTimeoutSeconds = Number(fullVerificationCommand?.managed_job_timeout_seconds);
+if (fullVerificationCommand?.execution_mode !== "managed_job"
+    || JSON.stringify(fullVerificationCommand.argv) !== JSON.stringify(["npm", "run", "check:full"])
+    || !Number.isSafeInteger(fullVerificationTimeoutSeconds) || fullVerificationTimeoutSeconds <= 600) {
+  throw new Error("tracked full verification carrier must retain its exact argv and long explicit timeout budget");
 }
 for (const [name, argv] of [
   ["package.prerelease-release", ["npm", "run", "prerelease:release"]],
