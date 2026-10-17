@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 import { runVerificationPlan } from "../scripts/check-runner.mjs";
 import { verificationChildEnvironment } from "../scripts/verification-environment.mjs";
 import {
@@ -51,6 +52,23 @@ try {
     "verification child environment removed the ordinary HTTPS proxy route");
   assert.equal(isolatedEnvironment.CHECK_RUNNER_PRESERVED, "yes",
     "verification child environment removed an unrelated value");
+
+  // npm --silent suppresses failures before a lifecycle script can start.
+  const malformedManifest = join(root, "package.json");
+  await writeFile(malformedManifest, "{broken", "utf8");
+  const manifestError = sink();
+  try {
+    await assert.rejects(() => runVerificationPlan({
+      mode: "npm-configuration-failure",
+      tasks: ["must-not-start"],
+      npmCli: resolveNpmCli(),
+      cwd: root,
+      stdout: sink(),
+      stderr: manifestError,
+    }), /verification task failed/);
+    assert(manifestError.value.includes("EJSONPARSE"),
+      "nested npm configuration failure lost its causal diagnostic");
+  } finally { await rm(malformedManifest); }
 
   const fakeNpm = join(root, "fake-npm.mjs");
   await writeFile(fakeNpm, `

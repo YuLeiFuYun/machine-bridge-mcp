@@ -17,6 +17,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "release-publication-guard:test",
   "release-ci:test",
   "network-retry:test",
+  "output-buffer:test",
   "release-diagnostic:test",
   "check-runner:test",
   "full-verification-receipt:test",

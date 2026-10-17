@@ -12,6 +12,9 @@ This review is scoped to source contracts, risk-bearing control paths, isolated 
 
 ## Current conclusions
 
+- **Output budgets include producer backing retention.** Both diagnostic and continuation buffers trim before allocating retained bytes and copy independent snapshots. Allocation/aliasing regressions and partition properties supplement the existing UTF-8 and continuation tests.
+- **Successful settlement terminates retry classification.** Application stdout/stderr cannot cause a successful release command to run again. Failures retain bounded transient classification, while npm pre-lifecycle errors remain observable.
+
 - **Authority remains an intersection, never an accumulation.** Effective MCP authority is bounded by authenticated account role, daemon capability ceiling, and tool-specific policy. Reconnects, retries, stale host schemas, browser focus changes, or recovery metadata do not expand authority.
 - **Removed protocol behavior stays removed.** Remote HTTP and stdio use the current MCP protocol only. Removed initialization, session, and replay behavior fails closed instead of silently falling back to historical compatibility.
 - **State publication is atomic, type-exact and identity-sensitive.** Security-sensitive state readers reject symlinks, unexpected hard links, malformed content, permission failures, persistent identity changes, and coercible PID/token/timestamp fields. Persisted strings, arrays, booleans or objects cannot become process, cleanup, lock, lease, waiter or termination authority through JavaScript conversion. Bounded retries are reserved for explicitly classified atomic-publication races; durable state is complete before it becomes visible.

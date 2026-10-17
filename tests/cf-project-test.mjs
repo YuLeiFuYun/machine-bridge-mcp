@@ -57,7 +57,7 @@ try {
   const toolchain = join(root, "toolchain");
   const source = join(root, "source");
   mkdirSync(join(toolchain, "node_modules"), { recursive: true });
-  writeFileSync(join(toolchain, "package.json"), JSON.stringify({ dependencies: { wrangler: "4.149.0" } }));
+  writeFileSync(join(toolchain, "package.json"), JSON.stringify({ dependencies: { wrangler: "4.151.1" } }));
   for (const file of ["src/worker/index.ts", "src/shared/value.ts", "wrangler.jsonc", "cloudflare.config.ts",
     "wrangler.config.ts", "tsconfig.json", "src/local/wrangler-toolchain/package.json",
     "src/local/wrangler-toolchain/package-lock.json"]) {
@@ -75,7 +75,7 @@ try {
     assert.equal(readFileSync(join(project.cwd, "src/worker/index.ts"), "utf8"), "snapshot bytes\n");
     assert.equal(existsSync(join(project.cwd, ".env")), false);
     assert.deepEqual(JSON.parse(readFileSync(join(project.cwd, "package.json"), "utf8")).devDependencies,
-      { wrangler: "4.149.0" }, "private project did not declare its audited build provider");
+      { wrangler: "4.151.1" }, "private project did not declare its audited build provider");
     assert.equal(project.env.MBM_WORKER_NAME, "mbm-cf-test");
     assert.equal(project.env.CLOUDFLARE_ACCOUNT_ID, "1".repeat(32));
     assert.equal(validateCfBuildOutput(project.cwd, "mbm-cf-test").name, "mbm-cf-test");

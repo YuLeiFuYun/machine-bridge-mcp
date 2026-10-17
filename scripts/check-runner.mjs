@@ -279,7 +279,7 @@ function taskInvocation(task, packageScripts, npmCli, cwd, env, taskEnvironments
   }
   return {
     executable: process.execPath,
-    args: [npmCli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false", "--if-present=false", "--prefix", cwd, "--silent", task],
+    args: [npmCli, "run", "--workspaces=false", "--global=false", "--ignore-scripts=false", "--if-present=false", "--prefix", cwd, task],
     env: cleanEnvironment,
     label: `npm run ${task}`,
   };

@@ -205,7 +205,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.149.0") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.151.1") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -214,21 +214,21 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.149.0"
-    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.13"
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.151.1"
+    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.18"
     || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
     || Object.hasOwn(packageJson.devDependencies || {}, "undici")
-    || toolchainManifest.overrides?.miniflare !== "5.20261006.1-alpha"
+    || toolchainManifest.overrides?.miniflare !== "5.20261012.1-beta"
     || toolchainManifest.overrides?.ws !== "8.22.0"
     || toolchainManifest.overrides?.sharp !== "0.35.5"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.149.0"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.151.1"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
-    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.13"
+    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.18"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.5"
     || toolchainManifest.allowScripts?.["sharp@0.35.5"] !== true) {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.13"
+if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.18"
     || Object.hasOwn(packageJson.scripts || {}, "postinstall")
     || !FAST_CHECK_TASKS.includes("cf-network:test")) {
   throw new Error("cf isolation or its upstream network integrity gate drifted");
@@ -1823,7 +1823,7 @@ const scorecardWorkflowSource = readFileSync(join(root, ".github", "workflows", 
 const scorecardAnalysisBlock = scorecardWorkflowSource.split(/\n  gate:\n/, 1)[0];
 if (!scorecardWorkflowSource.includes("name: Scorecard gate")
     || !scorecardWorkflowSource.includes("needs: analysis")
-    || !scorecardWorkflowSource.includes("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c")
+    || !/actions\/download-artifact@[0-9a-f]{40}\b/.test(scorecardWorkflowSource)
     || !scorecardWorkflowSource.includes("scripts/sarif-security-gate.mjs .scorecard-results/results.sarif")
     || !scorecardWorkflowSource.includes(".github/scorecard-accepted-findings.json")) {
   throw new Error("Scorecard workflow no longer separates signed analysis from the reviewed SARIF gate");

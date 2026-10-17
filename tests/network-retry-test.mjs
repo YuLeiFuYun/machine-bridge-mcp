@@ -18,6 +18,18 @@ try {
   assert(retried.status === 0 && retried.stdout === "ok" && retried.attempts === 3, "transient network command was not retried to success");
   assert(readFileSync(counter, "utf8") === "3", "transient retry count was incorrect");
 
+  for (const stream of ["stdout", "stderr"]) {
+    writeFileSync(counter, "0");
+    const successfulScript = "const fs=require('node:fs');const p=process.argv[1];"
+      + "fs.writeFileSync(p,String(Number(fs.readFileSync(p,'utf8'))+1));"
+      + "process." + stream + ".write('HTTP 503 ECONNRESET unexpected EOF is application data');";
+    const successful = runNetworkCommand(process.execPath, ["-e", successfulScript, counter], { attempts: 3, baseDelayMs: 0 });
+    assert(successful.status === 0 && successful.attempts === 1, "successful output triggered a network retry");
+    assert(readFileSync(counter, "utf8") === "1", "successful side effect executed more than once");
+  }
+  assert(!isTransientNetworkFailure({ status: 0, stdout: "HTTP 503", stderr: "ECONNRESET" }),
+    "successful command was classified from output text");
+
   writeFileSync(counter, "0");
   const permanentScript = "require('node:fs').writeFileSync(process.argv[1],'1');process.stderr.write('permission denied\\n');process.exit(1)";
   const permanent = runNetworkCommand(process.execPath, ["-e", permanentScript, counter], { attempts: 3, baseDelayMs: 1 });
