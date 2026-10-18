@@ -1,6 +1,6 @@
 import { link, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { realpath } from "node:fs/promises";
 import { WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
 
@@ -51,7 +51,7 @@ try {
   const includeIgnored = await service.searchText({ path: ".", query: "IGNORED_MATCH", max_matches: 100, include_ignored: true }, { origin: "local" });
   assert(includeIgnored.matches.length === 2, "include_ignored=true did not restore generated/dependency directory traversal");
   const globbed = await service.searchText({ path: ".", query: "synthetic-key-secret", glob: "nested/*.key" }, { origin: "local" });
-  assert(globbed.matches.length === 1 && globbed.matches[0].path === "nested/server.key",
+  assert(globbed.matches.length === 1 && globbed.matches[0].path === join("nested", "server.key"),
     "search glob did not constrain candidate paths");
   const caseSensitive = await service.searchText({ path: "context.txt", query: "targetneedle" }, { origin: "local" });
   const caseInsensitive = await service.searchText({ path: "context.txt", query: "targetneedle", case_sensitive: false, context_lines: 1 }, { origin: "local" });
@@ -72,8 +72,8 @@ try {
     "search context output exceeded its bounded serialized-result budget");
   const listedDefault = await service.listFiles(".", 1000, { origin: "local" });
   const listedAll = await service.listFiles(".", 1000, { origin: "local" }, { includeIgnored: true });
-  assert(!listedDefault.files.some((value) => value.includes("node_modules") || value.startsWith("dist/"))
-      && listedAll.files.some((value) => value.includes("node_modules/fixture/ignored.txt")),
+  assert(!listedDefault.files.some((value) => value.includes("node_modules") || value.startsWith(`dist${sep}`))
+      && listedAll.files.some((value) => value === join("node_modules", "fixture", "ignored.txt")),
     "list_files did not apply or override the default ignored-directory policy");
 
   const largePath = join(workspace, "large.txt");
