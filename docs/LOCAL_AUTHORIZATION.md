@@ -22,7 +22,7 @@ Local stdio does not use remote OAuth accounts. It runs as the local owner under
 |---|---|---|
 | `reviewer` | Read-only inspection of the selected workspace | No mutation or process execution |
 | `editor` | Workspace reads and deterministic file mutation | No process execution |
-| `operator` | Workspace-confined editing and direct process execution | No unrestricted paths, credentials, browser/desktop control, or persistent job creation |
+| `operator` | Workspace-confined editing and read-only inspection | No process execution, unrestricted paths, credentials, browser/desktop control, or persistent job creation |
 | `owner` | Complete bridge authority within the daemon policy ceiling | Generic path-based tools cannot target Machine Bridge control-plane state; owner shell remains OS-user authority |
 
 The package catalog defines the stable discovery surface. The Worker filters `tools/list` by account role without rewriting it during a brief daemon outage. The live daemon advertisement remains the execution ceiling, and the local runtime independently recomputes and validates the role and policy boundary before dispatch.
@@ -62,7 +62,7 @@ Examples:
 
 - a reviewer may inspect files inside the selected workspace;
 - an editor may update ordinary workspace files;
-- an operator may run a workspace-confined process only when the delegated process sandbox is behaviorally verified;
+- an operator may edit ordinary workspace files but cannot execute arbitrary programs remotely;
 - an owner may use shell, unrestricted paths, browser/application automation, resources, and managed jobs when enabled by the daemon policy.
 
 Risk classification still runs for every consequential request. It supplies structured audit metadata and enforces hard boundaries; it is not a mechanism for temporary privilege escalation.
@@ -91,20 +91,13 @@ Only `owner` may create persistent execution plans with `start_job` or non-execu
 
 `stage_job` does not execute and is not an approval workflow. The removed `machine-mcp job approve` path cannot turn a draft into a running job. Execution requires a trusted owner request through `start_job`, or an explicit local `job submit` operation performed by the machine operator.
 
-## Delegated process isolation
+## Remote process execution
 
-An `operator` process is not accepted merely because its current directory and environment are restricted. Machine Bridge requires a behaviorally verified OS sandbox that:
+Remote arbitrary process execution (`exec_command`, `run_process`, `start_process`, registered process commands, and process-session controls) is owner-only. The OS sandbox confines an operator's filesystem to the workspace, but the workspace may itself contain credentials; allowing arbitrary executables would let them read those files and send their contents over an allowed network connection. A working-directory restriction, minimal environment, or `shell: false` does not close that boundary.
 
-- exposes the selected workspace and an isolated runtime directory;
-- blocks the real user home and Machine Bridge state;
-- blocks Keychain and desktop automation access;
-- preserves the minimum system runtime needed by ordinary tools.
+Use the structured file and Git tools for delegated inspection and editing. If a workflow needs arbitrary execution under a non-owner identity, run it in a separate OS account, container, or VM with an independently defined credential boundary.
 
-The probe is fail-closed. The presence of a sandbox executable is not sufficient.
-
-On platforms where the negative security boundary cannot be verified, delegated process execution is unavailable. Owner execution remains governed by the selected daemon policy. For mutually untrusted workloads, use a separate OS account, container, or VM.
-
-Implementation-owned metadata probes are a separate boundary from delegated arbitrary execution. `project_overview` and the read-only Git tools use fixed argv selected by Machine Bridge, never a caller-provided executable or shell string. Those probes run with a minimal isolated environment, bounded output and deadlines, cancellation/process-tree tracking, and the request’s path-visibility rules. They do not grant `run_process`, registered-command, or shell authority to reviewer/editor accounts.
+Implementation-owned metadata probes are a separate boundary from delegated arbitrary execution. `project_overview` and the read-only Git tools use fixed argv selected by Machine Bridge, never a caller-provided executable or shell string. Those probes run with a minimal isolated environment, bounded output and deadlines, cancellation/process-tree tracking, and the request’s path-visibility rules. They do not grant `run_process`, registered-command, or shell authority to any non-owner account.
 
 ## Object ownership
 

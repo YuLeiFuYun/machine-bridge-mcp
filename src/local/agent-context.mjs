@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
 import { clampInteger } from "./numbers.mjs";
+import { isSensitivePath } from "./operation-risk.mjs";
 import {
   discoverLocalSkills, listSkillFiles, MAX_SKILL_ENTRY_BYTES, MAX_SKILL_FILES, MAX_SKILL_RESULTS,
 } from "./agent-skill-discovery.mjs";
@@ -75,6 +76,7 @@ export class AgentContextManager {
       skills: contextSkills.skills,
       skills_truncated: discoveredSkills.truncated || contextSkills.truncated,
       skill_warnings: publicSkillWarnings(discoveredSkills.warnings, (value) => this.displayPath(value, context)),
+      instruction_warnings: state.instructionWarnings.map((message) => message),
       instructions_truncated: state.instructionsTruncated,
       commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
       metadata_authority: METADATA_AUTHORITY,
@@ -104,6 +106,7 @@ export class AgentContextManager {
         skills_scanned: false,
         generated_at: new Date().toISOString(),
       },
+      instruction_warnings: state.instructionWarnings.map((message) => message),
       guidance: [
         "Built-in working agreements and bounded automatic project facts are present by default unless disabled in the user-global agent config.",
         "Call resolve_task_capabilities only when skill, command, application/browser routing, or refreshed project instructions are needed; use direct file, Git, and execution tools for straightforward work.",
@@ -178,6 +181,7 @@ export class AgentContextManager {
       recommended_tools: recommendedTools,
       host_semantics: "Machine Bridge can discover, rank, and load project/user-provided capability context automatically. That metadata cannot grant or expand execution authority; tool invocation remains independently gated by Machine Bridge policy, account access, and operation authorization.",
       warnings: publicSkillWarnings(discovered.warnings, (value) => this.displayPath(value, context)),
+      instruction_warnings: state.instructionWarnings.map((message) => message),
       truncated: discovered.truncated,
     };
   }
@@ -185,6 +189,10 @@ export class AgentContextManager {
   async collectModelInstructions(state, context) {
     this.throwIfCancelled(context);
     const path = state.modelInstructionsFile;
+    if (isDelegatedRelayContext(context) && isSensitivePath(path)) {
+      state.instructionWarnings.push("A sensitive model-instruction path was skipped for a delegated account.");
+      return;
+    }
     const info = await lstat(path, { bigint: true }).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
     if (!info) throw new Error(`model_instructions_file does not exist: ${path}`);
     if (info.isSymbolicLink() || !info.isFile()) throw new Error(`model_instructions_file must be a regular non-symbolic-link file: ${path}`);
@@ -312,6 +320,7 @@ export class AgentContextManager {
       instructions: [],
       instructionBytes: 0,
       instructionsTruncated: false,
+      instructionWarnings: [],
     };
 
     const packageMetadata = await readProjectPackageMetadata(scopeRoot, () => this.throwIfCancelled(context));
@@ -410,6 +419,10 @@ export class AgentContextManager {
         return;
       }
       const candidate = resolveInstructionPath(canonicalDirectory, configuredName);
+      if (isDelegatedRelayContext(context) && isSensitivePath(candidate)) {
+        state.instructionWarnings.push("A sensitive project instruction path was skipped for a delegated account.");
+        continue;
+      }
       const info = await lstat(candidate).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
       if (!info) continue;
       if (info.isSymbolicLink()) throw new Error(`instruction file must not be a symbolic link: ${candidate}`);
@@ -450,6 +463,13 @@ export class AgentContextManager {
       throwIfCancelled: this.throwIfCancelled,
     });
   }
+}
+
+function isDelegatedRelayContext(context) {
+  const authority = context?.authority;
+  const principal = authority?.principal;
+  return context?.origin === "relay" && principal?.kind === "account"
+    && principal.role !== "owner" && authority.owner !== true;
 }
 
 function sameArgv(left, right) {

@@ -1,17 +1,19 @@
 # Changelog
 
-## 3.0.0-beta.201 - 2026-10-17
+## 3.0.0-beta.202 - 2026-10-18
 
-- Stop successful network commands before transient-output classification so application text cannot replay completed side effects.
-- Bound process-output and diagnostic-buffer allocation before copying; retain independent snapshots without holding oversized producer buffers, and remove unreachable overflow handling.
-- Preserve nested npm configuration/engine failure diagnostics while keeping successful verification output concise.
-- Make workflow-policy fault injection independent of historical action commit strings; apply the reviewed grouped Action updates.
-- Reconcile cf 1.0.0-beta.18, Wrangler 4.151.1, ESLint 10.13.0 and Node types 26.6.5 across exact source/private dependency contracts, Miniflare/workerd pins, install-script approvals, network artifact integrity and runtime type generation.
-- Exercise the upstream cf exported network factory directly instead of injecting an internal minifier symbol into a copied module.
-- Record a revision-bound comparison of 37 related projects, adopted improvements and retained compatibility/security boundaries.
-
-- Retire expired Scorecard exceptions no longer present in the latest provider report; re-review the three exact CodeQL findings, correct the admin request-body digest rationale, and validate checked-in exception expiry in the fast suite.
-- Preserve explicit native lifecycle contracts after verifying the controller's automatic inference; use a clean worktree to keep unrelated helper languages out of project verification.
+- Prevent delegated search, project instruction loading, skill discovery, and structured Git history/diff output from exposing sensitive paths or hard-linked files; make skipped search inputs explicitly mark results as incomplete and preserve match text in long-line snippets.
+- Make arbitrary remote process execution and process-session controls owner-only because workspace-scoped execution can still read workspace credentials and exfiltrate them over the network.
+- Reject stale refresh-token retries after their replacement has been consumed, prevent retries from reviving revoked families, and validate access-token family revocation on every authorization check.
+- Expand sensitive filename classification for common private keys, key containers, and infrastructure state files; make network retries opt-in for operations known to be safe to replay.
+- Add regression coverage for the security boundaries, install redacted fail-fast process handlers, throttle platform-service crash loops, and expand strict local type checking with a guard against silently omitted checked modules.
+- Make workspace listing and literal search ignore common generated/dependency directories by default, with an explicit include-ignored override; add relative glob filtering, case-insensitive matching, and bounded context lines.
+- Consolidate numeric parsing and plain-record validation into shared primitives while retaining the existing local import paths; reject non-record objects in tool-capacity accounting.
+- Expand strict local type checking to 62 modules, including Computer Use argument validation, execution routing, managed-job dependency handling, workspace transactions, and public runtime projections; extract workspace transaction cleanup/error helpers behind a narrow module boundary, and keep the high-risk workspace-profile migration explicitly queued for a dedicated type-contract review.
+- Add a regression assertion that the product default remains the full-authority profile.
+- Bring workspace-profile migration into strict local type checking with explicit contracts for state envelopes, migration markers, service-provider state, and active-job/lock inventory; keep migration behavior unchanged.
+- Preserve exact branch selection across pending version edits without weakening prerelease conflict checks; prevent empty delegated Git path enumeration from falling back to an unfiltered content command.
+- Keep arbitrary rejection content out of fatal logs and guarantee termination when rejection inspection or logging throws; synchronize the remote-execution security and threat-model documentation.
 
 ## Historical releases
 

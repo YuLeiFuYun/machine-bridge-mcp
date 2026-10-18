@@ -22,11 +22,13 @@ export function windowsLauncherContent(spec) {
   return [
     "@echo off",
     "setlocal DisableDelayedExpansion",
+    'set "mbm_restart_delay=5"',
     ":restart",
     `${command} 1>>${stdout} 2>>${stderr}`,
     'set "mbm_exit=%ERRORLEVEL%"',
     'if "%mbm_exit%"=="0" exit /b 0',
-    '"%SystemRoot%\\System32\\timeout.exe" /t 5 /nobreak >nul 2>&1',
+    '"%SystemRoot%\\System32\\timeout.exe" /t %mbm_restart_delay% /nobreak >nul 2>&1',
+    'if %mbm_restart_delay% LSS 30 (set /a mbm_restart_delay=mbm_restart_delay*2) else set "mbm_restart_delay=60"',
     "goto restart",
     "",
   ].join("\r\n");

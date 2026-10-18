@@ -492,7 +492,7 @@ export class LocalRuntime {
 
   listDir(pathValue, context = {}) { return this.workspaceFileService.listDir(pathValue, context); }
 
-  listFiles(pathValue, maxFiles, context = {}) { return this.workspaceFileService.listFiles(pathValue, maxFiles, context); }
+  listFiles(pathValue, maxFiles, context = {}, options = {}) { return this.workspaceFileService.listFiles(pathValue, maxFiles, context, options); }
 
   readFile(args, context = {}) { return this.workspaceFileService.readFile(args, context); }
 

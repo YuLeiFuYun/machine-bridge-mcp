@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitService } from "../src/local/git-service.mjs";
+import { structuredGitDiff, structuredGitShow } from "../src/local/git-content-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-structured-git-boundary-"));
 const home = join(root, "home");
@@ -15,12 +16,18 @@ const env = {
   GIT_CONFIG_NOSYSTEM: "1",
 };
 const restrictedContext = { authority: { effectivePolicy: { unrestrictedPaths: false } } };
+const delegatedContext = {
+  origin: "relay",
+  authority: { owner: false, principal: { kind: "account", role: "reviewer" }, effectivePolicy: { unrestrictedPaths: false } },
+};
 
 try {
   await mkdir(home, { recursive: true });
   const service = gitService();
   await testGitOwnsRefGrammar(service);
   await testFileAndNonRepositoryInputs(service);
+  await testSensitiveGitContentFiltering(service);
+  await testEmptyGitEnumeration();
   await testMetadataTraversalCancellation();
   if (process.platform !== "win32") {
     await testLiteralPathspec(service);
@@ -57,6 +64,52 @@ async function testFileAndNonRepositoryInputs(service) {
   await mkdir(plain);
   const context = await service.context(plain);
   assert(context.ok === false && context.result.code === 128, "structured Git did not safely report a non-repository path");
+}
+
+async function testSensitiveGitContentFiltering(service) {
+  const repo = join(root, "sensitive-content-filter");
+  await mkdir(repo, { recursive: true });
+  initRepository(repo);
+  await writeFile(join(repo, ".env"), "API_KEY=synthetic-git-secret\n");
+  await writeFile(join(repo, "README.md"), "safe baseline\n");
+  checkedGit(["add", "."], repo);
+  checkedGit(["commit", "--quiet", "-m", "baseline"], repo);
+  const shown = await service.show({ path: repo }, delegatedContext);
+  assert(shown.code === 0 && !shown.stdout.includes("synthetic-git-secret") && shown.stdout.includes("safe baseline")
+      && shown.sensitive_files_omitted === 1,
+    "delegated git_show returned content from a sensitive file instead of omitting it");
+  await writeFile(join(repo, ".env"), "API_KEY=synthetic-git-secret-updated\n");
+  await writeFile(join(repo, "README.md"), "safe changed\n");
+  const diff = await service.diff({ path: repo }, delegatedContext);
+  assert(diff.code === 0 && !diff.stdout.includes("synthetic-git-secret") && diff.stdout.includes("safe changed")
+      && diff.sensitive_files_omitted === 1,
+    "delegated git_diff returned content from a sensitive file instead of omitting it");
+  checkedGit(["add", ".env", "README.md"], repo);
+  checkedGit(["commit", "--quiet", "-m", "update safe and sensitive files"], repo);
+  await rename(join(repo, ".env"), join(repo, "config.txt"));
+  checkedGit(["add", "-A"], repo);
+  checkedGit(["commit", "--quiet", "-m", "rename sensitive file"], repo);
+  const renamed = await service.show({ path: repo }, delegatedContext);
+  assert(renamed.code === 0 && !renamed.stdout.includes("synthetic-git-secret")
+      && renamed.sensitive_files_omitted === 2,
+    "delegated git_show exposed sensitive contents after a sensitive file was renamed to an ordinary filename");
+}
+
+async function testEmptyGitEnumeration() {
+  for (const read of [structuredGitDiff, structuredGitShow]) {
+    let calls = 0;
+    const result = await read({
+      args: {}, context: delegatedContext,
+      git: { root, target: root, gitDir: join(root, ".git"), pathspec: "" },
+      maximumBytes: 1024, displayPath: () => ".", gitExecutable: git, environment: env,
+      runInternalProcess: async () => {
+        calls += 1;
+        return { code: 0, stdout: calls === 1 ? "" : "synthetic-unfiltered-secret", stderr: "" };
+      },
+    });
+    assert(calls === 1 && result.stdout === "",
+      "empty delegated path enumeration fell back to an unfiltered content read");
+  }
 }
 
 async function testMetadataTraversalCancellation() {

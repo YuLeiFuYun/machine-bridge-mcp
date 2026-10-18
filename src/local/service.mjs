@@ -554,6 +554,7 @@ ${args.map(arg => `    <string>${escapeXml(arg)}</string>`).join("\n")}
   <dict>
     <key>SuccessfulExit</key><false/>
   </dict>
+  <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>${escapeXml(stdout)}</string>
   <key>StandardErrorPath</key><string>${escapeXml(stderr)}</string>
 </dict>
@@ -714,6 +715,8 @@ export function systemdUnit(spec) {
   return `[Unit]
 Description=Machine Bridge MCP daemon
 After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple

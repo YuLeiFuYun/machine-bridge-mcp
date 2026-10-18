@@ -1,3 +1,6 @@
+import { nonNegativeInteger, positiveInteger } from "./numbers.mjs";
+import { isPlainRecord } from "./records.mjs";
+
 export const CONTROL_PLANE_TOOL_NAMES = Object.freeze([
   "diagnose_runtime",
   "list_roots",
@@ -16,7 +19,7 @@ export function toolCallCapacityConfig(maximumValue, reservedValue, reservedTool
 
 export function toolCallCapacityUsage(snapshot, config) {
   const active = nonNegativeInteger(snapshot?.active, 0);
-  const byTool = plainRecord(snapshot?.byTool) ? snapshot.byTool : {};
+  const byTool = isPlainRecord(snapshot?.byTool) ? snapshot.byTool : {};
   let activeReserved = 0;
   for (const [tool, rawCount] of Object.entries(byTool)) {
     if (config.reservedTools.has(tool)) activeReserved += nonNegativeInteger(rawCount, 0);
@@ -42,18 +45,4 @@ export function toolCallAdmission(snapshot, config, toolName) {
     return Object.freeze({ allowed: false, reason: "ordinary_capacity", ...usage });
   }
   return Object.freeze({ allowed: true, reason: "admitted", ...usage });
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
-}
-
-function nonNegativeInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
-}
-
-function plainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

@@ -77,8 +77,9 @@ try {
   assert(editorGitMetadata.details?.reason === "account_role_sensitive_ceiling",
     "editor could write Git control-plane metadata directly");
 
-  const operatorProcess = await authorizer.authorize(operation("run_process", { argv: ["printf", "ok"] }, "operator"));
-  assert(operatorProcess.source === "role-ceiling" && operatorProcess.scopes.includes("shell"), "operator direct process was not allowed inside its role ceiling");
+  const operatorProcess = await rejected(() => authorizer.authorize(operation("run_process", { argv: ["printf", "ok"] }, "operator")));
+  assert(operatorProcess.details?.reason === "account_role_owner_only_tool_ceiling",
+    "operator direct process remained available despite workspace credentials being readable by arbitrary executables");
   const operatorPersistentOperation = operation("start_job", {
     steps: [{ argv: ["printf", "ok"] }],
   }, "operator");
@@ -110,6 +111,15 @@ try {
 
   const reviewerSensitive = await rejected(() => authorizer.authorize(operation("read_file", { path: sensitive }, "reviewer")));
   assert(reviewerSensitive.details?.reason === "account_role_path_ceiling" || reviewerSensitive.details?.reason === "account_role_sensitive_ceiling", "reviewer sensitive read was not denied");
+
+  for (const sensitiveName of ["id_ed25519", "id_rsa", "server.key", "signing.pem", "terraform.tfstate"]) {
+    writeFileSync(path.join(workspace, sensitiveName), "synthetic credential material\n", { mode: 0o600 });
+    const denied = await rejected(() => authorizer.authorize(operation("read_file", { path: sensitiveName }, "reviewer")));
+    assert(denied.details?.reason === "account_role_sensitive_ceiling",
+      `reviewer could read sensitive credential filename ${sensitiveName}`);
+    const classified = await authorizer.authorize(operation("read_file", { path: sensitiveName }, "owner"));
+    assert(classified.scopes.includes("sensitive-read"), `owner read of ${sensitiveName} was not classified as sensitive`);
+  }
 
   const ownerSensitive = await authorizer.authorize(operation("read_file", { path: sensitive }, "owner"));
   assert(ownerSensitive.scopes.includes("sensitive-read"), "owner sensitive read was not classified");

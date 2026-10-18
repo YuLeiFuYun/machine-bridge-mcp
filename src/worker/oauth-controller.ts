@@ -305,8 +305,11 @@ export class OAuthController {
 
   private async authorityForTokenKey(key: string, base?: string): Promise<AuthorizedToken | null> {
     const store = await this.oauthStore();
+    const refreshStore = await loadOAuthRefreshStore(store, this.ctx.storage);
     const hadToken = Object.hasOwn(store.tokens, key);
-    const current = await currentOAuthTokenAuthority(store, key, this.env.OAUTH_TOKEN_VERSION ?? "", this.serverName, base);
+    const current = await currentOAuthTokenAuthority(
+      store, key, this.env.OAUTH_TOKEN_VERSION ?? "", this.serverName, base, refreshStore.revoked_families,
+    );
     if (hadToken && !Object.hasOwn(store.tokens, key)) await this.ctx.storage.put("oauth", store);
     return current;
   }

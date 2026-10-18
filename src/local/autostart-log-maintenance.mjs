@@ -30,6 +30,7 @@ export function startAutostartLogMaintenance(stateRoot, options = {}) {
   return { intervalMs, maintain };
 }
 
+/** @param {unknown} value @param {number} fallback */
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;

@@ -15,7 +15,7 @@ import {
 } from "../src/local/security-audit-storage.mjs";
 import { terminateProcessTree } from "../src/local/process-tree-signal.mjs";
 import { terminateProcessTreeWithEscalation } from "../src/local/process-tree-supervisor.mjs";
-import { toolCallCapacityConfig } from "../src/shared/tool-call-capacity.mjs";
+import { toolCallCapacityConfig, toolCallCapacityUsage } from "../src/shared/tool-call-capacity.mjs";
 import {
   MAX_PENDING_CALLS,
   RESERVED_CONTROL_PENDING_CALLS,
@@ -355,6 +355,10 @@ function testWorkerCapacityBoundaries() {
   assert(snapshot.active === 3 && snapshot.active_ordinary === 2 && snapshot.active_reserved === 1
     && snapshot.detached === 1 && snapshot.oldest_ms === 40,
   "pending registry capacity snapshot is invalid");
+  assert(toolCallCapacityUsage({ active: 2, byTool: Object.assign(Object.create(null), { diagnose_runtime: 1, read_file: 1 }) }, config).activeReserved === 1,
+    "capacity accounting rejected a valid null-prototype tool-count record");
+  assert(toolCallCapacityUsage({ active: 2, byTool: new Date() }, config).activeReserved === 0,
+    "capacity accounting accepted a non-record object as tool-count state");
 
   assert(pendingCallAdmission(
     { active: 3, by_tool: { read_file: 3 } }, "diagnose_runtime", config,

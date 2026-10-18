@@ -1633,7 +1633,7 @@ async function testRelayTimeoutContract() {
       && budget.settlementTimeoutMs === expectedDefault * 1000 + relayContract.workerSettlementOverheadMs,
     `remote ${tool.name} runtime default did not preserve a distinct settlement margin`);
   }
-  assert(workerToolSchemaGeneration === 28, "hosted current tool schema generation is not 28");
+  assert(workerToolSchemaGeneration === 29, "hosted current tool schema generation is not 29");
   assert(String(serverInfoTool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)
     && workspaceTools.every((tool) => String(tool.description || "").includes(`Tool schema generation ${workerToolSchemaGeneration}.`)),
   "host-visible tool descriptions omitted the current schema generation marker");

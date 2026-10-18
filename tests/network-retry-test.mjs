@@ -14,7 +14,7 @@ try {
     "if(n<3){process.stderr.write('unexpected EOF\\n');process.exit(1)}",
     "process.stdout.write('ok')",
   ].join("");
-  const retried = runNetworkCommand(process.execPath, ["-e", transientScript, counter], { attempts: 3, baseDelayMs: 1 });
+  const retried = runNetworkCommand(process.execPath, ["-e", transientScript, counter], { attempts: 3, baseDelayMs: 1, retryMode: "safe" });
   assert(retried.status === 0 && retried.stdout === "ok" && retried.attempts === 3, "transient network command was not retried to success");
   assert(readFileSync(counter, "utf8") === "3", "transient retry count was incorrect");
 
@@ -52,6 +52,15 @@ try {
   });
   assert(timedOut.error?.code === "ETIMEDOUT" && timedOut.attempts === 1,
     "network command did not enforce its per-attempt timeout");
+
+  writeFileSync(counter, "0");
+  const mutationTimeoutScript = "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,String(Number(fs.readFileSync(p,'utf8'))+1));setTimeout(()=>{},1000)";
+  const mutationTimeout = runNetworkCommand(process.execPath, ["-e", mutationTimeoutScript, counter], {
+    attempts: 3, timeoutMs: 250, baseDelayMs: 0,
+  });
+  assert(mutationTimeout.error?.code === "ETIMEDOUT" && mutationTimeout.attempts === 1,
+    "a timed-out non-replayable command was retried without explicit safe-retry classification");
+  assert(readFileSync(counter, "utf8") === "1", "a timed-out command with a side effect ran more than once");
   console.log("network retry classification test ok");
 } finally {
   rmSync(root, { recursive: true, force: true });

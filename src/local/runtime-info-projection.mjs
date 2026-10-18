@@ -1,6 +1,7 @@
 // @ts-check
 import { compactRuntimeRelay } from "./runtime-info-relay-projection.mjs";
 
+/** @param {Record<string, unknown>} info @param {string} [detail] */
 export function projectRuntimeInfo(info, detail = "full") {
   if (detail !== "summary") return info;
   const runtime = record(info.runtime);
@@ -34,6 +35,7 @@ export function projectRuntimeInfo(info, detail = "full") {
   };
 }
 
+/** @param {unknown} value */
 function compactProcesses(value) {
   const source = record(value);
   if (source.activity_hidden_by_authority === true) return { activity_hidden_by_authority: true };
@@ -43,6 +45,7 @@ function compactProcesses(value) {
   };
 }
 
+/** @param {unknown} value */
 function compactCapacity(value) {
   const source = record(value);
   const capacity = source.capacity && typeof source.capacity === "object" && !Array.isArray(source.capacity)
@@ -60,6 +63,7 @@ function compactCapacity(value) {
   };
 }
 
+/** @param {unknown} value @returns {Record<string, unknown>} */
 function record(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {};
 }

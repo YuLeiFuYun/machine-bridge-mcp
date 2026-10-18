@@ -4,6 +4,12 @@ import resultProjection from "./result-projection.json" with { type: "json" };
 
 export const MCP_TEXT_PROJECTION_KEY = "$mcpText";
 
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function asObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return /** @type {Record<string, unknown>} */ (value);
+}
+
 /**
  * Keep MCP text content useful for human-only clients without duplicating a
  * large object that is already present in structuredContent.
@@ -55,7 +61,3 @@ function isJsonValue(value) {
 }
 
 /** @param {unknown} value */
-function asObject(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value;
-}

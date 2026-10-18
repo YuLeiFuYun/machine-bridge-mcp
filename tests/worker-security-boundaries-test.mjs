@@ -9,7 +9,7 @@ import { accountAdminAuthorized, handleAccountAdminOperation } from "../src/work
 import { discardRequestBody, readBoundedText } from "../src/worker/http.ts";
 import { handleOAuthClientAdminOperation } from "../src/worker/oauth-client-admin.ts";
 import { OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
-import { exchangeOAuthToken } from "../src/worker/oauth-tokens.ts";
+import { currentOAuthTokenAuthority, exchangeOAuthToken } from "../src/worker/oauth-tokens.ts";
 import {
   acknowledgeAuthorityRevocation, authorityRevocationWireMessage, authorityRevocations, putWithAuthorityRevocation,
 } from "../src/worker/authority-revocations.ts";
@@ -363,6 +363,46 @@ async function testTokenRotationAndReplay() {
   const first = await exchange.json();
   assert(first.expires_in === 900 && first.token_type === "Bearer" && first.refresh_token, "token pair response is incomplete");
   assert(!store.codes[code], "authorization code remained reusable");
+
+  const staleCode = `mcp_code_${"s".repeat(43)}`;
+  store.codes[staleCode] = {
+    client_id: CLIENT_ID, account_id: account.account_id, account_version: account.version, role: account.role,
+    redirect_uri: REDIRECT, code_challenge: await pkceS256(verifier), scope: `${SERVER} offline_access`, resource: `${BASE}/mcp`, expires_at: NOW + 300,
+  };
+  const staleInitial = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "authorization_code", code: staleCode, client_id: CLIENT_ID,
+    redirect_uri: REDIRECT, code_verifier: verifier, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  const staleA = await staleInitial.json();
+  assert(staleInitial.status === 200, "stale-refresh fixture authorization-code exchange failed");
+  const staleRotationOne = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: staleA.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  const staleB = await staleRotationOne.json();
+  assert(staleRotationOne.status === 200, "first stale-refresh fixture rotation failed");
+  const staleRotationTwo = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: staleB.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  const staleC = await staleRotationTwo.json();
+  assert(staleRotationTwo.status === 200, "second stale-refresh fixture rotation failed");
+  const staleAccessKey = `sha256:${await sha256Hex(staleC.access_token)}`;
+  const staleAccessRecord = structuredClone(store.tokens[staleAccessKey]);
+  const staleReplay = await exchangeOAuthToken(formTokenRequest({
+    grant_type: "refresh_token", refresh_token: staleA.refresh_token, client_id: CLIENT_ID, resource: `${BASE}/mcp`,
+  }), BASE, options);
+  assert(staleReplay.status === 400 && (await staleReplay.json()).error === "invalid_grant",
+    "an older consumed refresh token reactivated its already-rotated replacement");
+  const staleState = await loadOAuthRefreshStore(store, storage);
+  const actualStaleFamily = staleState.revoked_families[staleState.consumed[`sha256:${await sha256Hex(staleA.refresh_token)}`]?.family_id]
+    ? staleState.consumed[`sha256:${await sha256Hex(staleA.refresh_token)}`].family_id
+    : "";
+  assert(actualStaleFamily && !Object.values(staleState.tokens).some((token) => token.family_id === actualStaleFamily),
+    "stale refresh replay did not revoke the entire token family");
+  assert(!Object.hasOwn(store.tokens, staleAccessKey), "stale refresh replay left the newest access token active");
+  store.tokens[staleAccessKey] = staleAccessRecord;
+  assert(await currentOAuthTokenAuthority(store, staleAccessKey, "token-version", SERVER, BASE, staleState.revoked_families) === null
+      && !Object.hasOwn(store.tokens, staleAccessKey),
+    "access-token validation accepted a token whose refresh-token family had been revoked");
 
   for (const [field, value, expectedError] of [
     ["grant_type", ["refresh_token"], "unsupported_grant_type"],

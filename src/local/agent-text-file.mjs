@@ -17,6 +17,7 @@ export async function readOptionalRegularUtf8(filePath, maxBytes, label, assertC
 export async function readRegularUtf8(filePath, maxBytes, label, options = {}) {
   const expected = options.expectedInfo || await lstat(filePath, { bigint: true });
   if (!expected.isFile() || expected.isSymbolicLink()) throw new Error(`${label} is not a regular file: ${filePath}`);
+  if (expected.nlink > 1n) throw new Error(`${label} must not have multiple hard links: ${filePath}`);
   const canonical = await realpath(filePath);
   if (options.canonicalPath !== undefined && canonical !== options.canonicalPath) throw new Error(`${label} changed during read`);
   const assertCurrent = async () => {
@@ -30,6 +31,7 @@ export async function readRegularUtf8(filePath, maxBytes, label, options = {}) {
   try {
     const info = await handle.stat({ bigint: true });
     if (!sameRegularFile(info, expected)) throw new Error(`${label} changed during read`);
+    if (info.nlink > 1n) throw new Error(`${label} must not have multiple hard links: ${filePath}`);
     await assertCurrent();
     if (info.size > BigInt(maxBytes)) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
     const buffer = Buffer.alloc(Number(info.size));

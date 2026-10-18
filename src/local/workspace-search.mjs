@@ -2,15 +2,29 @@
 
 export const SEARCH_FILE_BATCH_SIZE = 16;
 
+/**
+ * @typedef {object} SearchWorkspaceOptions
+ * @property {number} maximumFiles
+ * @property {number} maximumMatches
+ * @property {(file: string) => Promise<Record<string, unknown>[]>} searchFile
+ * @property {(onFile: (file: string) => Promise<boolean>) => Promise<{truncated?: boolean}>} walk
+ * @property {(context: unknown) => void} [throwIfCancelled]
+ * @property {unknown} [context]
+ * @property {number} [batchSize]
+ */
+
+/** @param {SearchWorkspaceOptions} options */
 export async function searchWorkspaceFiles(options) {
   const maximumFiles = options.maximumFiles;
   const maximumMatches = options.maximumMatches;
   const throwIfCancelled = typeof options.throwIfCancelled === "function" ? options.throwIfCancelled : () => {};
   const context = options.context || {};
   const batchSize = boundedBatchSize(options.batchSize);
+  /** @type {Record<string, unknown>[]} */
   const matches = [];
   let visitedFiles = 0;
   let scheduledFiles = 0;
+  /** @type {string[]} */
   let batch = [];
 
   const flush = async () => {
@@ -50,6 +64,9 @@ export async function searchWorkspaceFiles(options) {
   };
 }
 
+/** @param {unknown} value */
 function boundedBatchSize(value) {
-  return Number.isInteger(value) && value > 0 && value <= 64 ? value : SEARCH_FILE_BATCH_SIZE;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 64
+    ? value
+    : SEARCH_FILE_BATCH_SIZE;
 }

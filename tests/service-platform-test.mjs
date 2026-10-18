@@ -3,7 +3,7 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSyn
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { buildServiceSpec, installAutostart, previewAutostartDefinition, runServiceCommand, stopLaunchdService, stopSystemdService } from "../src/local/service.mjs";
+import { buildServiceSpec, installAutostart, launchdPlist, previewAutostartDefinition, runServiceCommand, stopLaunchdService, stopSystemdService, systemdUnit } from "../src/local/service.mjs";
 import { inspectRuntimePackageIdentity } from "../src/local/runtime-package-identity.mjs";
 import { preflightServiceRestartability } from "../src/local/service-restartability.mjs";
 import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary } from "../src/local/service-status.mjs";
@@ -56,6 +56,10 @@ assert(shortAction.length <= 262, "launcher-based Task Scheduler action still ex
 assert.throws(() => windowsTaskAction("C:\\Users\\100%\\service-launcher.cmd"), /percent sign/);
 const launcherContent = windowsLauncherContent(representativeSpec);
 assert(launcherContent.includes(":restart"), "Windows launcher lost restart-on-failure behavior");
+assert(launcherContent.includes('set "mbm_restart_delay=5"')
+  && launcherContent.includes("timeout.exe\" /t %mbm_restart_delay%")
+  && launcherContent.includes("mbm_restart_delay=60"),
+"Windows launcher lost bounded exponential backoff for repeated crashes");
 assert(launcherContent.includes("--daemon-only"), "Windows launcher lost daemon-only startup arguments");
 assert(launcherContent.includes("1>>") && launcherContent.includes("2>>"), "Windows launcher lost bounded service log routing");
 assert(launcherContent.includes('if "%mbm_exit%"=="0" exit /b 0'), "Windows launcher restarts successful exits");
@@ -67,6 +71,13 @@ assert.equal(serviceInvocation.options.capture, true);
 assert.equal(serviceInvocation.options.allowFailure, true);
 assert.equal(serviceInvocation.options.timeoutMs, 30_000);
 assert.equal(serviceInvocation.options.maxOutputBytes, 64 * 1024);
+
+const launchdDefinition = launchdPlist({ args: ["/usr/bin/node", "/tmp/machine-mcp.mjs", "start"], pathEnv: "/usr/bin:/bin", stdout: "/tmp/daemon.out", stderr: "/tmp/daemon.err" });
+assert(launchdDefinition.includes("<key>ThrottleInterval</key><integer>10</integer>"),
+  "launchd definition does not throttle repeated daemon crashes");
+const systemdDefinition = systemdUnit({ node: "/usr/bin/node", daemonArgs: ["/tmp/machine-mcp.mjs", "start"], pathEnv: "/usr/bin:/bin", stdout: "/tmp/daemon.out", stderr: "/tmp/daemon.err" });
+assert(systemdDefinition.includes("StartLimitIntervalSec=60") && systemdDefinition.includes("StartLimitBurst=5"),
+  "systemd definition does not bound repeated daemon crashes");
 
 if (process.platform === "win32") windowsLauncherLiveTest();
 await serviceRestartabilityPreflightTest();

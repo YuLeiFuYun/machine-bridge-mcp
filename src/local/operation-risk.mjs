@@ -46,6 +46,11 @@ const SENSITIVE_SEGMENTS = new Set([
   ".git", ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".npmrc", ".pypirc",
   "keychains", "cookies", "login data", "credentials", "secrets",
 ]);
+const SENSITIVE_CONFIG_SEGMENTS = new Set(["gh", "gcloud", "azure", "1password"]);
+const PRIVATE_KEY_BASENAME = /^(?:id_(?:rsa|dsa|ecdsa|ed25519)|identity)(?:\.(?:pem|key))?$/i;
+const PRIVATE_KEY_EXTENSION = /\.(?:pem|key|p12|pfx|p8|jks|keystore)$/i;
+const SENSITIVE_STATE_BASENAME = /^(?:terraform\.tfstate(?:\.backup)?|.*\.tfstate(?:\.backup)?)$/i;
+const SENSITIVE_CREDENTIAL_BASENAME = /(?:token|secret|credential|private[-_]?key|client[-_]?secret|api[-_]?key|access[-_]?key)/i;
 const RESOURCE_TOKEN = /\{\{resource:[a-z][a-z0-9._-]{0,63}\}\}/;
 
 export function reviewedOperationToolNames() {
@@ -237,12 +242,15 @@ function isWithin(workspace, target) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-function isSensitivePath(target) {
+export function isSensitivePath(target) {
   const lower = path.resolve(target).toLowerCase();
   const segments = lower.split(/[\\/]+/);
   if (segments.some((segment) => SENSITIVE_SEGMENTS.has(segment))) return true;
+  if (segments.some((segment, index) => segment === ".config" && SENSITIVE_CONFIG_SEGMENTS.has(segments[index + 1]))) return true;
   const base = path.basename(lower);
-  return isSensitiveEnvironmentFile(base) || /(?:token|secret|credential|private[-_]?key)/.test(base);
+  if (isSensitiveEnvironmentFile(base)) return true;
+  if (PRIVATE_KEY_BASENAME.test(base) || PRIVATE_KEY_EXTENSION.test(base) || SENSITIVE_STATE_BASENAME.test(base)) return true;
+  return SENSITIVE_CREDENTIAL_BASENAME.test(base) || ["authorized_keys", "known_hosts.old", "id_ecdsa_sk", "id_ed25519_sk"].includes(base);
 }
 
 function isSensitiveWritePath(target) {

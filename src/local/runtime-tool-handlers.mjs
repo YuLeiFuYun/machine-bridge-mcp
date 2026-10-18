@@ -31,7 +31,7 @@ const RUNTIME_TOOL_HANDLERS = Object.freeze({
   browser_upload_files: (runtime, args, context) => runtime.browserBridgeManager.uploadFiles(args, context),
   list_roots: (runtime, _args, context) => runtime.listRoots(context),
   list_dir: (runtime, args, context) => runtime.listDir(args.path || ".", context),
-  list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInteger(args.max_files, 1000, 1, 10000), context),
+  list_files: (runtime, args, context) => runtime.listFiles(args.path || ".", clampInteger(args.max_files, 1000, 1, 10000), context, { includeIgnored: args.include_ignored === true }),
   read_file: (runtime, args, context) => runtime.readFile(args, context),
   view_image: (runtime, args, context) => runtime.viewImage(args, context),
   write_file: (runtime, args, context) => runtime.writeFile(args, context),

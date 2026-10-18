@@ -1,13 +1,22 @@
 // @ts-check
-import { createHash, randomBytes } from "node:crypto";
-import { link, mkdir, open, rename, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { link, mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { fileMutationPathKey } from "./file-mutation-coordinator.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { publishFileLinkWithIdentity, removeLinkedFileSnapshot, restoreFileSnapshotNoReplace, snapshotFileIdentitySync } from "./exclusive-publication-recovery.mjs";
+import { hasErrorCode, incompleteMutationError, patchRecoveryIncompleteError, removeArtifacts, requiredReadText, sha256, writeFlushedText } from "./workspace-file-transaction-helpers.mjs";
+export { sha256 } from "./workspace-file-transaction-helpers.mjs";
+
+/** @typedef {{kind: string, source?: string, target: string, content?: string, originalHash?: string, mode?: number}} PatchOperation */
+/** @typedef {(path: string) => Promise<string>} ReadText */
+/** @typedef {(path: string, options?: {force?: boolean}) => Promise<unknown>} RemovePath */
+/** @typedef {{expectedHash?: string, createOnly?: boolean, readText?: ReadText, remove?: RemovePath, link?: (source: string, target: string) => Promise<void>, rename?: (source: string, target: string) => Promise<void>, pathEntryIfExists?: (path: string) => Promise<import('node:fs').Stats | null>, restoreLink?: (source: string, target: string) => Promise<void>}} FileTransactionOptions */
+
+/** @param {string} full @param {string} content @param {{mode: number} | null} [existing] @param {FileTransactionOptions} [options] */
 export async function atomicWriteText(full, content, existing = null, options = {}) {
-  const readText = requiredReadText(options.readText, options.expectedHash);
+  const readText = requiredReadText(options.readText, Boolean(options.expectedHash));
   if (options.expectedHash && existing && !options.createOnly) return commitPatchTransaction([{
     kind: "update", source: full, target: full, content, originalHash: options.expectedHash, mode: existing.mode & 0o777,
   }], { ...options, readText });
@@ -23,7 +32,7 @@ export async function atomicWriteText(full, content, existing = null, options = 
     if (options.expectedHash) {
       let current;
       try { current = await readText(full); } catch (error) {
-        if (error?.code === "ENOENT") throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
+        if (hasErrorCode(error, "ENOENT")) throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
         throw error;
       }
       if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
@@ -47,6 +56,7 @@ export async function atomicWriteText(full, content, existing = null, options = 
     throw error;
   }
 }
+/** @param {PatchOperation[]} operations @param {string} [platform] */
 export function assertNoResolvedPatchCollisions(operations, platform = process.platform) {
   const owners = new Map();
   for (const operation of operations) {
@@ -62,20 +72,23 @@ export function assertNoResolvedPatchCollisions(operations, platform = process.p
   }
 }
 
+/** @param {PatchOperation[]} operations @param {FileTransactionOptions} [options] */
 export async function commitPatchTransaction(operations, options = {}) {
   const readText = requiredReadText(options.readText, operations.some((operation) => operation.source));
   const move = options.rename || rename;
   const createTarget = options.link || link;
   const remove = options.remove || rm;
   const exists = options.pathEntryIfExists || pathEntryIfExists;
+  /** @type {{operation: PatchOperation, temp: string}[]} */
   const staged = [];
+  /** @type {{operation: PatchOperation, backup: string | null, targetCreated: boolean, backupIdentity?: unknown, targetIdentity?: unknown}[]} */
   const committed = [];
   try {
     for (const operation of operations) {
       if (operation.content === undefined) continue;
       await mkdir(dirname(operation.target), { recursive: true });
       const temp = join(dirname(operation.target), `.${basename(operation.target)}.mbm-patch-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
-      await writeFlushedText(temp, operation.content, operation.mode, remove);
+      await writeFlushedText(temp, operation.content, operation.mode ?? 0o600, remove);
       staged.push({ operation, temp });
     }
 
@@ -95,6 +108,7 @@ export async function commitPatchTransaction(operations, options = {}) {
         backup = join(dirname(operation.source), `.${basename(operation.source)}.mbm-backup-${process.pid}-${randomBytes(6).toString("hex")}`);
         await move(operation.source, backup);
       }
+      /** @type {{operation: PatchOperation, backup: string | null, targetCreated: boolean, backupIdentity?: unknown, targetIdentity?: unknown}} */
       const record = { operation, backup, targetCreated: false };
       committed.push(record);
       if (backup) record.backupIdentity = snapshotFileIdentitySync(backup);
@@ -106,7 +120,7 @@ export async function commitPatchTransaction(operations, options = {}) {
       try {
         await publishFileLinkWithIdentity(stage.temp, operation.target, createTarget, record);
       } catch (error) {
-        if (error?.code === "EEXIST") {
+        if (hasErrorCode(error, "EEXIST")) {
           throw new BridgeError("conflict", "patch target appeared during apply", { cause: error, details: { reason: "target_appeared" } });
         }
         throw error;
@@ -130,60 +144,11 @@ export async function commitPatchTransaction(operations, options = {}) {
 
   const cleanupFailures = await removeArtifacts([
     ...staged.map((item) => item.temp),
-    ...committed.map((item) => item.backup).filter(Boolean),
+    ...committed.map((item) => item.backup).filter((value) => typeof value === "string"),
   ], remove);
   return {
     warnings: cleanupFailures.length
       ? [`Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed; inspect affected directories for .mbm-backup-* or .mbm-patch-* files.`]
       : [],
   };
-}
-export function sha256(value) {
-  return createHash("sha256").update(String(value)).digest("hex");
-}
-
-async function writeFlushedText(filePath, content, mode, remove) {
-  const handle = await open(filePath, "wx", mode);
-  let failure = null;
-  try {
-    await handle.writeFile(content, { encoding: "utf8" });
-    try { await handle.chmod(mode); } catch (error) { if (process.platform !== "win32") throw error; }
-    await handle.sync();
-  } catch (error) { failure = error; }
-  try { await handle.close(); } catch (error) {
-    failure = failure ? new AggregateError([failure, error], "staged file write and close both failed") : error;
-  }
-  if (!failure) return;
-  try { await remove(filePath, { force: true }); } catch (cleanupError) {
-    throw incompleteMutationError("staged file write failed and cleanup was incomplete", failure, [cleanupError]);
-  }
-  throw failure;
-}
-async function removeArtifacts(paths, remove) {
-  const failures = [];
-  for (const path of paths) {
-    try { await remove(path, { force: true }); } catch (error) { failures.push(error); }
-  }
-  return failures;
-}
-function patchRecoveryIncompleteError(primary, recoveryFailures) {
-  const message = "patch transaction may have partially modified files because recovery was incomplete; inspect affected paths before retrying";
-  return new BridgeError("execution_failed", message, {
-    cause: new AggregateError([primary, ...recoveryFailures], message),
-    expose: true,
-    retryable: false,
-    details: { reason: "patch_recovery_incomplete" },
-  });
-}
-function incompleteMutationError(message, primary, cleanupFailures) {
-  return new BridgeError("internal_error", message, {
-    cause: new AggregateError([primary, ...cleanupFailures], message),
-    expose: false,
-  });
-}
-
-function requiredReadText(value, required) {
-  if (typeof value === "function") return value;
-  if (required) throw new TypeError("workspace file transaction requires a bounded text reader");
-  return async () => { throw new TypeError("workspace file transaction text reader was not configured"); };
 }

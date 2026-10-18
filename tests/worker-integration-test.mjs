@@ -32,6 +32,7 @@ const wrangler = path.join(packageRoot, "node_modules", "wrangler", "bin", "wran
 const OWNER_PASSWORD = `integration_owner_${"A".repeat(43)}`;
 const REVIEWER_PASSWORD = `integration_reviewer_${"B".repeat(43)}`;
 const EDITOR_PASSWORD = `integration_editor_${"E".repeat(43)}`;
+const OPERATOR_PASSWORD = `integration_operator_${"O".repeat(43)}`;
 const DAEMON_DEVICE_IDENTITY = createDeviceIdentity();
 const DAEMON_SESSION_IDENTITY = createDeviceSessionIdentity(DAEMON_DEVICE_IDENTITY, base, "machine-bridge-mcp", pkg.version);
 const args = [
@@ -239,6 +240,10 @@ try {
     name: "editor", role: "editor", password: EDITOR_PASSWORD,
   }));
   assert(editorAccount.response.status === 201, `editor account creation failed: ${editorAccount.response.status}`);
+  const operatorAccount = await fetchJson(`${base}/admin/accounts`, adminRequest("POST", "/admin/accounts", {
+    name: "operator", role: "operator", password: OPERATOR_PASSWORD,
+  }));
+  assert(operatorAccount.response.status === 201, `operator account creation failed: ${operatorAccount.response.status}`);
 
   const invalidRegistration = await stableFetch(`${base}/oauth/register`, {
     method: "POST",
@@ -649,6 +654,16 @@ try {
     state: "editor-state",
   });
   const editorToken = editorCredentials.accessToken;
+  const operatorRegistration = await registerTestClient({ base, redirectUri, name: "Operator Integration Client" });
+  const operatorCredentials = await issueAccountToken({
+    base,
+    clientId: operatorRegistration.client_id,
+    redirectUri,
+    accountName: "operator",
+    password: OPERATOR_PASSWORD,
+    state: "operator-state",
+  });
+  const operatorToken = operatorCredentials.accessToken;
 
   const replay = await stableFetch(`${base}/oauth/token`, {
     method: "POST",
@@ -1699,6 +1714,29 @@ try {
   assert(!reviewerDeniedMessages.stop().includes("tool_call"), "reviewer process execution reached the daemon");
   assert(reviewerDenied.body.error?.code === -32602 && reviewerDenied.body.error?.message === "Unknown tool",
   "reviewer process execution was not rejected at the role-filtered protocol boundary");
+
+  const operatorTools = await callToolsList(base, operatorToken, 273);
+  assert(operatorTools.some((tool) => tool.name === "list_dir"), "operator lost ordinary workspace inspection");
+  const forbiddenOperatorTools = ["exec_command", "run_local_command", "run_process", "start_process", "read_process", "write_process", "kill_process", "stage_job", "start_job"];
+  assert(!operatorTools.some((tool) => forbiddenOperatorTools.includes(tool.name)),
+    "operator tools/list exposed an arbitrary process or persistent execution tool");
+  const operatorDeniedMessages = captureWsMessageTypes(candidateDaemon);
+  const operatorDeniedCalls = [
+    ["exec_command", { command: "true" }],
+    ["run_local_command", { name: "fixed" }],
+    ["run_process", { argv: ["true"] }],
+    ["start_process", { argv: ["true"] }],
+    ["read_process", { session_id: "unknown" }],
+    ["write_process", { session_id: "unknown", data: "input" }],
+    ["kill_process", { session_id: "unknown" }],
+  ];
+  for (let index = 0; index < operatorDeniedCalls.length; index += 1) {
+    const [name, arguments_] = operatorDeniedCalls[index];
+    const denied = await currentMcpCall(base, operatorToken, 274 + index, "tools/call", { name, arguments: arguments_ });
+    assert(denied.body.error?.code === -32602 && denied.body.error?.message === "Unknown tool",
+      `operator process boundary did not reject ${name} before dispatch`);
+  }
+  assert(!operatorDeniedMessages.stop().includes("tool_call"), "operator arbitrary process request reached the daemon");
 
   const reviewerRelayPromise = waitForWsMessage(candidateDaemon, "tool_call");
   const reviewerReadPromise = currentMcpCall(base, reviewerToken, 272, "tools/call", {

@@ -5,10 +5,12 @@ import { isCandidateRuntimeDirectoryName } from "./state-root-owned-namespaces.m
 
 export const RELEASE_BROWSER_EXTENSION_DIRECTORY = "browser-extension";
 
+/** @param {string} stateRoot */
 export function releaseBrowserExtensionPath(stateRoot) {
   return resolve(String(stateRoot || ""), "release-channels", RELEASE_BROWSER_EXTENSION_DIRECTORY);
 }
 
+/** @param {{stateRoot?: string, packageDirectory?: string}} [options] */
 export function browserExtensionPathForRuntime({ stateRoot = "", packageDirectory = packageRoot } = {}) {
   const packaged = resolve(packageDirectory, "browser-extension");
   if (!stateRoot) return packaged;

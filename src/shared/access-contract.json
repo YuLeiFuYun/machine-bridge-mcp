@@ -1,10 +1,17 @@
 {
-  "revision": 4,
+  "revision": 5,
   "defaultRole": "reviewer",
   "ownerRole": "owner",
   "ownerOnlyTools": [
     "diagnose_runtime",
     "list_local_resources",
+    "exec_command",
+    "run_process",
+    "start_process",
+    "run_local_command",
+    "read_process",
+    "write_process",
+    "kill_process",
     "stage_job",
     "start_job"
   ],
@@ -19,7 +26,7 @@
     },
     "operator": {
       "profile": "agent",
-      "description": "Workspace-confined file mutation and direct process execution."
+      "description": "Workspace-confined file mutation; process execution is reserved for the owner because arbitrary executables can read workspace credentials."
     },
     "owner": {
       "profile": "full",

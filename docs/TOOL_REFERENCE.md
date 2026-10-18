@@ -1984,7 +1984,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Local foreground execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.
+Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.
 
 | Contract field | Value |
 |---|---|
@@ -2093,7 +2093,7 @@ List direct children of a workspace directory.
 
 **List files**
 
-Recursively list files under a workspace path with bounded traversal and output.
+Recursively list files under a workspace path with bounded traversal and output. .git, node_modules, dist, build, coverage, .next, .turbo, .wrangler, Python cache directories, and virtual environments are ignored by default; set include_ignored=true to traverse them.
 
 | Contract field | Value |
 |---|---|
@@ -2118,6 +2118,10 @@ Recursively list files under a workspace path with bounded traversal and output.
       "minimum": 1,
       "maximum": 10000,
       "default": 1000
+    },
+    "include_ignored": {
+      "type": "boolean",
+      "default": false
     }
   },
   "additionalProperties": false
@@ -2328,7 +2332,7 @@ Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or 
 
 **Search text**
 
-Search UTF-8 text files under a workspace path for a literal substring.
+Search UTF-8 text files under a workspace path for a literal substring. Supports a relative glob, case sensitivity, and bounded surrounding lines. Generated and dependency directories (.git, node_modules, dist, build, coverage, .next, .turbo, .wrangler, Python caches, and virtual environments) are ignored by default; set include_ignored=true to traverse them. Reports skipped_files and truncated=true when candidate files are skipped because of read limits, hard-link protection, unsafe file types, or delegated sensitive-path restrictions.
 
 | Contract field | Value |
 |---|---|
@@ -2346,7 +2350,8 @@ Search UTF-8 text files under a workspace path for a literal substring.
   "properties": {
     "query": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 4096
     },
     "path": {
       "type": "string",
@@ -2363,6 +2368,25 @@ Search UTF-8 text files under a workspace path for a literal substring.
       "minimum": 1,
       "maximum": 100000,
       "default": 10000
+    },
+    "glob": {
+      "type": "string",
+      "maxLength": 512,
+      "description": "Optional relative glob used to filter paths, such as src/**/*.ts."
+    },
+    "case_sensitive": {
+      "type": "boolean",
+      "default": true
+    },
+    "context_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "default": 0
+    },
+    "include_ignored": {
+      "type": "boolean",
+      "default": false
     }
   },
   "required": [
@@ -2565,7 +2589,7 @@ Create one local Git commit from the repository's existing staged index. This to
 
 **Run process directly**
 
-Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Local foreground execution remains request-scoped. Remote execution is durable-first: the argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.
+Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.
 
 | Contract field | Value |
 |---|---|
@@ -2615,7 +2639,7 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
 
 **Start process session**
 
-Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly. Process sessions are daemon-lifetime state: use start_job/read_job when work must survive a Machine Bridge daemon restart, service replacement, or MCP disconnect. For an authorized remote call on macOS, a successfully admitted session keeps an idle-sleep assertion for the child lifetime; this does not override explicit sleep or lid-close behavior.
+Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly. Process sessions are daemon-lifetime state: use start_job/read_job when work must survive a Machine Bridge daemon restart, service replacement, or MCP disconnect. For an authorized remote call on macOS, a successfully admitted session keeps an idle-sleep assertion for the child lifetime; this does not override explicit sleep or lid-close behavior. Remote OAuth process-session access is owner-only because arbitrary executables can read workspace credentials.
 
 | Contract field | Value |
 |---|---|
@@ -2655,7 +2679,7 @@ Start a direct argv process without a shell and retain bounded stdout, stderr, a
 
 **Read process session**
 
-Read bounded stdout and stderr deltas from a running process session or a recently completed one-shot command continuation, optionally waiting briefly for new output.
+Read bounded stdout and stderr deltas from a running process session or a recently completed one-shot command continuation, optionally waiting briefly for new output. Remote OAuth process-session access is owner-only.
 
 | Contract field | Value |
 |---|---|
@@ -2712,7 +2736,7 @@ Read bounded stdout and stderr deltas from a running process session or a recent
 
 **Write process stdin**
 
-Write bounded UTF-8 data to a live process session and optionally close its stdin stream. Cancellation before any stdin mutation is definite. Once stdin.write or stdin.end has been invoked, callback/error/cancellation ambiguity is returned as a public non-retryable unknown outcome with the session_id; inspect the session before writing the same data again because the child may already have consumed it.
+Write bounded UTF-8 data to a live process session and optionally close its stdin stream. Cancellation before any stdin mutation is definite. Once stdin.write or stdin.end has been invoked, callback/error/cancellation ambiguity is returned as a public non-retryable unknown outcome with the session_id; inspect the session before writing the same data again because the child may already have consumed it. Remote OAuth process-session access is owner-only.
 
 | Contract field | Value |
 |---|---|
@@ -2751,7 +2775,7 @@ Write bounded UTF-8 data to a live process session and optionally close its stdi
 
 **Terminate process session**
 
-Terminate a live server-managed process tree with graceful or forced termination.
+Terminate a live server-managed process tree with graceful or forced termination. Remote OAuth process-session access is owner-only.
 
 | Contract field | Value |
 |---|---|
@@ -3411,7 +3435,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Local foreground execution remains request-scoped. Remote execution is durable-first: the shell argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer one multi-step start_job or a repository umbrella command instead of a chain of one-step shell calls; this reduces host-visible event density without shortening execution.
+Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the shell argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer one multi-step start_job or a repository umbrella command instead of a chain of one-step shell calls; this reduces host-visible event density without shortening execution.
 
 | Contract field | Value |
 |---|---|
