@@ -21,12 +21,7 @@ import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensure
 
 const CLI_FIXTURE_TIMEOUT_MS = 60_000;
 const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
-// Child processes must never inherit V8 coverage, and a present-but-empty NODE_V8_COVERAGE
-// still disqualifies the documented exact-runtime `node --version` light probe. Removing the
-// inherited variable keeps children uninstrumented without pushing managed-job steps behind
-// production resource admission, where shared-host pressure would become this phase's clock.
-delete process.env.NODE_V8_COVERAGE;
-const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({ ...process.env });
+const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({ ...process.env, NODE_V8_COVERAGE: "" });
 const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 5 * 60_000;
 const DAEMON_FIXTURE_TIMEOUT_MS = 30_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 60;
@@ -83,11 +78,22 @@ async function waitForSelfTestJob(manager, jobId, deadline, label) {
 }
 
 // Managed-job steps run in a detached runner that always builds the production resource
-// coordinator, so an adaptive step would wait on the shared host for up to thirty minutes
-// while this phase owns a five-minute budget. Fail fast with the actual classification instead
-// of letting shared-host pressure masquerade as a settlement timeout.
+// coordinator, so an adaptive step waits on shared-host pressure for up to thirty minutes while
+// this phase owns five minutes. Keep V8 coverage out of those children, but only override it
+// when the harness itself was instrumented: a present-but-empty NODE_V8_COVERAGE still
+// disqualifies the documented exact-runtime `node --version` light classification, and hosted
+// platform runs must keep that probe off the admission clock.
+function uninstrumentedJobStepEnv() {
+  return process.env.NODE_V8_COVERAGE ? { env: { NODE_V8_COVERAGE: "" } } : {};
+}
+
+// Fail fast with the actual classification instead of letting shared-host pressure masquerade
+// as a settlement timeout. An instrumented harness keeps the neutralizer, so its probe is
+// adaptive by design and only the hosted platform path is bound to the light classification.
 function assertManagedJobProbeIsLight(argv) {
-  const request = resourceCommandProfile(argv[0], argv.slice(1), { priority: "background", environment: process.env });
+  const stepEnvironment = { ...process.env, ...uninstrumentedJobStepEnv().env };
+  if (Object.hasOwn(stepEnvironment, "NODE_V8_COVERAGE")) return;
+  const request = resourceCommandProfile(argv[0], argv.slice(1), { priority: "background", environment: stepEnvironment });
   if (request.heavy) {
     throw new Error(`managed-job self-test probe lost its documented light classification (${request.family}); shared-host pressure would become the resource CLI phase clock`);
   }
@@ -591,7 +597,7 @@ setInterval(() => {}, 2 ** 31 - 1);
 async function fixtureLifecycleSelfTest() {
   const spawnFixture = (script) => spawn(process.execPath, ["-e", script], {
     stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-    env: { ...process.env },
+    env: { ...process.env, NODE_V8_COVERAGE: "" },
   });
   const readyChild = spawnFixture('process.stdout.write("rea");setTimeout(()=>process.stdout.write("dy\\n"),25);setInterval(()=>{},1000)');
   try {
@@ -671,9 +677,10 @@ async function fixtureLifecycleSelfTest() {
 }
 
 async function startDaemonFixture(fixture, workspace, stateRoot, extraArgs = [], options = {}) {
-  // The fixture models daemon ownership, not coverage. This harness drops inherited V8
-  // coverage for every child, so the lock-handoff assertion stays platform-timing stable.
   const fixtureEnv = { ...process.env };
+  // The fixture models daemon ownership, not coverage. Inheriting V8 coverage
+  // delays process teardown and makes the lock-handoff assertion platform-timing dependent.
+  fixtureEnv.NODE_V8_COVERAGE = "";
   if (options.implicitIdentity) {
     fixtureEnv.MBM_FIXTURE_WORKSPACE = workspace;
     fixtureEnv.MBM_FIXTURE_STATE_ROOT = stateRoot;
@@ -912,7 +919,7 @@ async function resourceCliSelfTest() {
     const approvedMarker = join(workspace, "approved-by-cli.txt");
     const stagedForCli = manager.stage({
       name: "CLI approval",
-      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "cli-approved"], env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "cli-approved"], ...uninstrumentedJobStepEnv(), env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
@@ -944,7 +951,7 @@ async function resourceCliSelfTest() {
     assertManagedJobProbeIsLight([process.execPath, "--version"]);
     const trustedStarted = manager.start({
       name: "Trusted direct start",
-      steps: [{ argv: [process.execPath, "--version"], env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "--version"], ...uninstrumentedJobStepEnv(), env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     if (trustedStarted.status !== "queued") throw new Error("trusted direct managed-job start was not queued");
     const trustedResult = await waitForSelfTestJob(manager, trustedStarted.job_id, phaseDeadline, "trusted direct managed-job start");
@@ -955,7 +962,7 @@ async function resourceCliSelfTest() {
     const planFile = join(workspace, "managed-plan.json");
     await writeFile(planFile, JSON.stringify({
       name: "local CLI fallback",
-      steps: [{ argv: [process.execPath, "--version"], timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "--version"], ...uninstrumentedJobStepEnv(), timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     }), "utf8");
     if (process.platform !== "win32") {
       const linkedPlan = join(workspace, "linked-plan.json");
