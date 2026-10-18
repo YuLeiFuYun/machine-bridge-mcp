@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 const root = process.cwd();
 const config = JSON.parse(readFileSync(join(root, "tsconfig.local.json"), "utf8"));
@@ -11,7 +11,7 @@ function walk(directory) {
   for (const entry of readdirSync(join(root, directory), { withFileTypes: true })) {
     const absolute = join(root, directory, entry.name);
     if (entry.isDirectory()) walk(relative(root, absolute));
-    else if (entry.name.endsWith(".mjs") || entry.name.endsWith(".js")) sourceFiles.add(relative(root, absolute));
+    else if (entry.name.endsWith(".mjs") || entry.name.endsWith(".js")) sourceFiles.add(relative(root, absolute).split(sep).join("/"));
   }
 }
 walk("src/local");
