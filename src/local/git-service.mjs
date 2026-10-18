@@ -12,6 +12,7 @@ import { parseStructuredGitLog } from "./git-log-parser.mjs";
 import { clampInteger } from "./numbers.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { gitCommandPrefix, structuredGitDiff, structuredGitShow } from "./git-content-service.mjs";
 export const MAX_GIT_COMMIT_MESSAGE_BYTES = 64 * 1024;
 const STRUCTURED_GIT_ENVIRONMENT = STRUCTURED_GIT_FIXED_ENVIRONMENT;
 
@@ -39,17 +40,14 @@ export class GitService {
   }
 
   async diff(args = {}, context = {}) {
-    const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, this.maximumBytes);
     const git = await this.context(args.path || ".", context);
     if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
     await this.assertSafeConfig(git, context, args.staged !== true);
-    const commandArgs = [...gitCommandPrefix(git), "-c", "diff.external=", "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"];
-    if (args.staged) commandArgs.push("--cached");
-    if (git.pathspec) commandArgs.push("--", git.pathspec);
-    const result = await this.runInternalProcess(
-      this.gitExecutable(), commandArgs, 60_000, true, maxBytes, context, git.root, null, STRUCTURED_GIT_ENVIRONMENT,
-    );
-    return { ...result, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context), staged: args.staged === true };
+    return structuredGitDiff({
+      args, context, git, maximumBytes: this.maximumBytes, displayPath: this.displayPath,
+      runInternalProcess: this.runInternalProcess, gitExecutable: this.gitExecutable(),
+      environment: STRUCTURED_GIT_ENVIRONMENT,
+    });
   }
 
   async log(args = {}, context = {}) {
@@ -71,14 +69,11 @@ export class GitService {
     const git = await this.context(args.path || ".", context);
     if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
     await this.assertSafeConfig(git, context, false);
-    const revision = validateRevision(args.revision || "HEAD");
-    const maxBytes = clampInteger(args.max_bytes, 1024 * 1024, 1, this.maximumBytes);
-    const commandArgs = [...gitCommandPrefix(git), "-c", "diff.external=", "-c", "log.showSignature=false", "show", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--ignore-submodules=all", "--decorate=no", revision];
-    if (git.pathspec) commandArgs.push("--", git.pathspec);
-    const result = await this.runInternalProcess(
-      this.gitExecutable(), commandArgs, 60_000, true, maxBytes, context, git.root, null, STRUCTURED_GIT_ENVIRONMENT,
-    );
-    return { ...result, revision, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
+    return structuredGitShow({
+      args, context, git, maximumBytes: this.maximumBytes, displayPath: this.displayPath,
+      runInternalProcess: this.runInternalProcess, gitExecutable: this.gitExecutable(),
+      environment: STRUCTURED_GIT_ENVIRONMENT,
+    });
   }
 
   async commit(args = {}, context = {}) {
@@ -175,16 +170,6 @@ export class GitService {
   }
 }
 
-function gitCommandPrefix(git) {
-  return [
-    "--no-pager",
-    "--literal-pathspecs",
-    `--git-dir=${git.gitDir}`,
-    `--work-tree=${git.root}`,
-    "-c", "core.fsmonitor=false",
-    "-c", "color.ui=false",
-  ];
-}
 function requiresMetadataTreeScan(context) {
   return Boolean(context?.authority) && context.authority.effectivePolicy?.unrestrictedPaths !== true;
 }
@@ -198,14 +183,6 @@ function readGitPathFile(file, label, gitdirPrefix) {
   const match = pattern.exec(text);
   if (!match || !match[1]) throw new BridgeError("invalid_request", `${label} is invalid`);
   return match[1];
-}
-
-function validateRevision(value) {
-  const revision = String(value || "HEAD");
-  if (!revision || revision.length > 256 || revision.startsWith("-") || revision.includes("\0") || /[\r\n]/.test(revision)) {
-    throw new BridgeError("invalid_request", "invalid Git revision");
-  }
-  return revision;
 }
 
 function validateCommitMessage(value) {

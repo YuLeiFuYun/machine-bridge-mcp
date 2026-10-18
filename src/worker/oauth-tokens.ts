@@ -89,6 +89,7 @@ async function exchangeAuthorizationCode(
 /** Validate current authority; callers persist any pruned token while holding the OAuth lock. */
 export async function currentOAuthTokenAuthority(
   store: OAuthStore, key: string, tokenVersion: string, serverName: string, base?: string,
+  revokedFamilies: Record<string, unknown> = {},
 ): Promise<AuthorizedToken | null> {
     const record = store.tokens[key];
     if (!record) return null;
@@ -99,6 +100,10 @@ export async function currentOAuthTokenAuthority(
     const currentVersion = tokenVersion;
     if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
     if (base !== undefined && record.resource !== `${base}/mcp`) return null;
+    if (record.family_id && Object.hasOwn(revokedFamilies, record.family_id)) {
+      delete store.tokens[key];
+      return null;
+    }
     if (normalizeOAuthScope(record.scope, serverName) !== record.scope) { delete store.tokens[key]; return null; }
     const account = store.accounts[record.account_id];
     const client = store.clients[record.client_id];

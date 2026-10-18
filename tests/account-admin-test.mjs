@@ -24,7 +24,10 @@ for (const [role, localTools] of [["reviewer", reviewerTools], ["editor", editor
 }
 assert(reviewerTools.has("read_file") && !reviewerTools.has("write_file") && !reviewerTools.has("run_process"), "reviewer tool boundary is incorrect");
 assert(editorTools.has("write_file") && !editorTools.has("run_process"), "editor tool boundary is incorrect");
-assert(operatorTools.has("run_process") && !operatorTools.has("exec_command"), "operator tool boundary is incorrect");
+assert(!operatorTools.has("run_process") && !operatorTools.has("exec_command")
+  && !operatorTools.has("start_process") && !operatorTools.has("run_local_command")
+  && !operatorTools.has("read_process") && !operatorTools.has("write_process") && !operatorTools.has("kill_process"),
+"operator tool boundary exposed arbitrary process execution or control");
 assert(!reviewerTools.has("diagnose_runtime") && !editorTools.has("diagnose_runtime") && !operatorTools.has("diagnose_runtime")
   && !reviewerTools.has("list_local_resources") && !editorTools.has("list_local_resources") && !operatorTools.has("list_local_resources")
   && !editorTools.has("stage_job") && !operatorTools.has("stage_job") && !operatorTools.has("start_job"),

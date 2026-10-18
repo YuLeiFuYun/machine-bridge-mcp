@@ -14,7 +14,7 @@ Use separate OS accounts, containers, VMs, state roots, Workers, and workspaces 
 |---|---|---|
 | `reviewer` | `review` | Read-only selected-workspace inspection |
 | `editor` | `edit` | Reviewer access plus deterministic workspace file mutation |
-| `operator` | `agent` | Editor access plus behaviorally sandboxed workspace-confined direct execution |
+| `operator` | `agent` | Editor access plus read-only application inventory; arbitrary process execution is owner-only |
 | `owner` | `full` | Complete bridge authority within the daemon capability ceiling |
 
 Effective authority is the intersection of:
@@ -130,7 +130,9 @@ For delegated (non-owner) principals, a different account, client, or token fami
 
 Hosted managed-job recovery adds a stricter Worker boundary even for owner accounts: detailed `list_jobs` handles are not remotely enumerable, and `read_job`, `cancel_job`, and `depends_on` require purpose-scoped capabilities bound to the accepting account version, OAuth client, refresh family, role, and job. This prevents Machine Bridge's own global owner inventory from becoming cross-conversation recovery authority. It does not claim to distinguish two host conversations if the host itself incorrectly forwards the other conversation's valid capability.
 
-Explicit persistent plan creation (`stage_job` / `start_job`) remains owner-only. Delegated `operator` process tools nevertheless use internal durable `transient_process` carriers so accepted one-step work can be recovered without granting plan authority. All accounts share the same profile job root and its global 512-state ceiling, so relay non-owner pending recovery is additionally bounded to 16 unresolved carriers per account ID plus account version. The account-version key deliberately spans OAuth clients and refresh families: one account may authorize several clients, and changing either client or family cannot reset the quota. Object read/control authority remains more narrowly bound to the original account/client/family capability. The account quota is checked under the existing root capacity lock from persisted job state before a genuinely new carrier publishes status or launches; it has no separate mutable ledger. A securely persisted valid same-key replay is still allowed at quota because it creates no new reservation. A deterministic directory with no persisted status is an incomplete transaction, not replay and not an account reservation; its retry must pass quota again. Hosted terminal delivery clears the pending marker and releases the account slot, as does terminal expiry beyond the existing 24-hour hard recovery grace. Owner/local submissions remain outside this delegated-account quota.
+Persistent plan creation (`stage_job` / `start_job`) and all arbitrary process/session tools are owner-only. Non-owner accounts cannot create a process carrier through a direct executable, shell, registered command, or process-session API. Local stdio and explicit local CLI operations remain separate local-owner entry points. The shared job store still applies its global retained-state cap and principal-bound recovery rules to accepted owner jobs; hosted recovery capabilities remain bound to the accepting account version, OAuth client, refresh family, and role.
+
+Pending transient-recovery capacity remains a defense-in-depth invariant for retained or internally generated delegated carriers: it is capped at 16 unresolved carriers per account ID plus account version, across OAuth clients and refresh families, and changing either client or family cannot reset the quota. A securely persisted same-key replay does not reserve another slot. A deterministic directory with no persisted status is an incomplete transaction, not replay, so its retry must pass the account quota again. This capacity guard remains useful for safe reconciliation of carriers accepted by older daemon versions while the public role boundary now denies new delegated process calls.
 
 ## Administrative boundary
 
@@ -144,11 +146,9 @@ The first start of a new deployment creates an owner account automatically and p
 
 ## Delegated execution
 
-`operator` direct execution requires a behaviorally verified OS sandbox. The sandbox must expose the selected workspace while denying the real user home, Machine Bridge state, Keychain, and desktop automation.
+All remote arbitrary process execution is owner-only, including `run_process`, `exec_command`, registered commands, process sessions, and process-session controls. A workspace sandbox limits filesystem reach but cannot make arbitrary code safe when the workspace itself may contain credentials; a process can read those credentials and send them through its network access. A minimal environment and `shell: false` do not prevent this.
 
-When the platform cannot prove that boundary, operator process execution is unavailable. The runtime does not fall back to a path blacklist that only appears isolated.
-
-Installed-application inventory is the deliberate read-only exception: reviewer/editor/operator accounts may use `list_local_applications`, with external paths projected rather than exposed absolutely. Browser/application content inspection or control, local data export, credential operations, persistent job creation, machine-wide runtime diagnostics, protected local-resource inventory, sensitive targets, and unrestricted paths remain owner-only. In the public remote catalog this additionally means `diagnose_runtime`, `list_local_resources`, `stage_job`, and `start_job` are not discoverable or callable by reviewer/editor/operator accounts even where the underlying local daemon profile would otherwise admit them.
+Reviewer, editor, and operator accounts use structured file and Git operations for delegated work. Installed-application inventory remains a read-only exception: all three non-owner roles may use `list_local_applications`, with external paths projected rather than exposed absolutely. Browser/application content inspection or control, local data export, credential operations, persistent job creation, machine-wide runtime diagnostics, protected local-resource inventory, sensitive targets, unrestricted paths, and all process execution remain owner-only. The public remote catalog therefore hides and rejects `diagnose_runtime`, `list_local_resources`, all process/session tools, `stage_job`, and `start_job` for non-owner accounts even where the underlying local daemon profile would otherwise admit them.
 
 ## Concurrency and revocation
 
@@ -183,6 +183,6 @@ Do not place unrelated machines or mutually untrusted teams behind one broad own
 
 ## Security limits
 
-A reviewer is restricted by Machine Bridge, but a bug or compromised dependency remains possible. An operator can execute interpreters and repository code inside the verified sandbox and can still damage the selected workspace. An owner has effectively the authority of the local OS user and granted browser or Accessibility permissions.
+A reviewer, editor, or operator is restricted by Machine Bridge, but a bug or compromised dependency remains possible. Non-owner roles cannot request arbitrary remote process execution; they can still inspect or mutate the workspace according to their role. An owner has effectively the authority of the local OS user and granted browser or Accessibility permissions.
 
 Roles, client binding, DPoP, object ownership, and targeted revocation are defense in depth. They do not replace least-privilege OS design, endpoint security, Cloudflare account protection, and careful review of untrusted repositories and instructions.

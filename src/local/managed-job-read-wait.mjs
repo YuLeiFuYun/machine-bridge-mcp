@@ -10,6 +10,18 @@ import {
 
 export { managedJobReadNonterminalProgressMinimumMs, managedJobReadWaitMs } from "./managed-job-read-policy.mjs";
 
+/**
+ * @typedef {object} ManagedJobReadWaitOptions
+ * @property {Record<string, unknown>} [args]
+ * @property {{authority?: {origin?: unknown} | null}} [context]
+ * @property {() => Promise<Record<string, unknown>>} readCurrent
+ * @property {() => Promise<Record<string, unknown>>} [readProgress]
+ * @property {() => void} [throwIfCancelled]
+ * @property {(ms: number) => Promise<unknown>} [sleep]
+ * @property {() => number} [now]
+ */
+
+/** @param {ManagedJobReadWaitOptions} options */
 export async function waitForManagedJobRead({
   args = {}, context = {}, readCurrent, readProgress = readCurrent, throwIfCancelled = () => {},
   sleep = defaultSleep, now = undefined,
@@ -17,6 +29,7 @@ export async function waitForManagedJobRead({
   throwIfCancelled();
   const waitMs = managedJobReadWaitMs(args, context);
   const nonterminalProgressMinimumMs = managedJobReadNonterminalProgressMinimumMs(args, context);
+  /** @param {Record<string, unknown>} value */
   const progressSignature = (value) => managedJobReadProgressSignature(value, context);
   if (waitMs <= 0) {
     const current = await readCurrent();
@@ -60,6 +73,7 @@ export async function waitForManagedJobRead({
     nonterminalProgressMinimumMs);
 }
 
+/** @param {number} ms */
 function defaultSleep(ms) {
   return new Promise((resolvePromise) => { setTimeout(resolvePromise, ms); });
 }

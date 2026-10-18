@@ -43,8 +43,7 @@ export function referenceMatches(value, requested) {
     }
     return false;
   }
-  const token = normalizeToken(requested);
-  return Boolean(token && normalizeToken(value).includes(token));
+  return value === requested;
 }
 
 export function resolveVersionedWorktree(repoPath, requestedVersion) {
@@ -113,7 +112,8 @@ export function resolveVersionedWorktree(repoPath, requestedVersion) {
 }
 
 function explicitVersionConflict(item, requested) {
-  return Boolean(item.version && item.head_version
+  const versionRequest = /^(?:\d+\.\d+\.\d+(?:-(?:dev|beta|rc)\.\d+)?|(?:dev|beta|rc)\.\d+)$/i.test(requested);
+  return Boolean(versionRequest && item.version && item.head_version
     && !versionMatches(item.version, requested) && !versionMatches(item.head_version, requested));
 }
 
@@ -144,10 +144,6 @@ function runGit(repo, args) {
 
 function directoryExists(path) {
   try { return statSync(path).isDirectory(); } catch { return false; }
-}
-
-function normalizeToken(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 async function main() {

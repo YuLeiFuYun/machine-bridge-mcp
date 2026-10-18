@@ -5,6 +5,8 @@ import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
+const policyContract = JSON.parse(await readFile(new URL("../src/shared/policy-contract.json", import.meta.url), "utf8"));
+assert(policyContract.defaultProfile === "full", "default policy profile is an explicit full-authority product contract and must not be narrowed incidentally");
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
 assert(metadata.protocolVersion === "2026-07-28", "shared primary protocol version is invalid");
 assert(JSON.stringify(metadata.supportedProtocolVersions) === JSON.stringify(["2026-07-28"]), "supported protocol inventory is not current-only");
@@ -38,7 +40,7 @@ assert(operationMayHaveSideEffects("__future_unreviewed_tool") === true,
 const computerActionSchema = catalog.find((tool) => tool.name === "computer_act")?.inputSchema;
 assert(computerActionSchema?.properties?.post_screenshot?.default === "auto"
   && !Object.hasOwn(computerActionSchema.properties, "include_post_screenshot")
-  && metadata.toolSchemaGeneration === 28,
+  && metadata.toolSchemaGeneration === 29,
 "computer_act exposes retired screenshot compatibility or an outdated schema generation");
 
 for (const tool of catalog) {

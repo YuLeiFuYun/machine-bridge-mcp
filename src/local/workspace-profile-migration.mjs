@@ -36,18 +36,31 @@ const PROFILE_NAME = /^[a-f0-9]{24}$/;
 const SERVICE_OWNER_SCHEMA_VERSION = 1;
 const SERVICE_OWNER_VERSION = /^[0-9A-Za-z.+_-]{1,64}$/;
 const SERVICE_OWNER_TRANSACTION = /^[A-Za-z0-9_-]{20,128}$/;
+/** @typedef {{workspace?: {path?: string, hash?: string, updatedAt?: string, [key: string]: unknown}, paths?: {stateRoot?: string, profileDir?: string, statePath?: string, [key: string]: unknown}, schemaVersion?: number, worker?: unknown, policy?: unknown, resources?: unknown, [key: string]: unknown}} MigrationState */
+/** @typedef {{schemaVersion?: unknown, sourceWorkspace?: unknown, sourceHash?: unknown, destinationWorkspace?: unknown, destinationHash?: unknown, stateRoot?: unknown, stateSha256?: unknown, createdAt?: unknown, [key: string]: unknown}} MigrationMarker */
+/** @typedef {{profile?: string, path?: string, [key: string]: unknown}} ActiveStateItem */
+/** @typedef {{_: unknown[], workspace?: unknown, [key: string]: unknown}} WorkspaceCommandArgs */
+/** @typedef {{sourceWorkspace?: string, destinationWorkspace?: string, stateRoot?: string, readProvider?: () => Promise<{active?: boolean | null}>, listActiveJobs?: (stateRoot: string) => ActiveStateItem[], listActiveLocks?: (stateRoot: string) => ActiveStateItem[], retireServiceOwner?: (spec: {sourceWorkspace: string, stateRoot: string}) => {retired?: boolean}}} WorkspaceMigrationOptions */
+/** @typedef {{stateRootFromArgs: (args: WorkspaceCommandArgs) => string, ask: (question: string) => Promise<string>}} WorkspaceCommandOptions */
+/** @typedef {{state: MigrationState, buffer: Buffer, statePath: string}} ProfileStateSnapshot */
+/** @typedef {{workspace: string, hash: string, stateRoot: string, profileDir: string, allowRelocatedProfile?: boolean}} WorkspaceEnvelopeOptions */
+/** @typedef {{source: string, sourceHash: string, destination: string, destinationHash: string, stateRoot: string}} ExpectedMigrationMarker */
+/** @typedef {{value: MigrationMarker, identity: ReturnType<typeof readBoundedRegularFileWithInfoSync>['identity']}} MigrationMarkerSnapshot */
+/** @type {ReadonlyArray<readonly [string, number]>} */
 const KNOWN_PROFILE_LOCKS = Object.freeze([
   ["daemon.lock", Number.POSITIVE_INFINITY],
   ["startup.lock", 2 * 60 * 60 * 1000],
   ["security-audit.lock", Number.POSITIVE_INFINITY],
 ]);
 
+/** @param {unknown} workspace @param {{platform?: string}} [options] */
 export function historicalWorkspaceHash(workspace, options = {}) {
   const normalized = normalizeHistoricalWorkspace(workspace);
   const identity = String(options.platform || process.platform) === "win32" ? normalized.toLowerCase() : normalized;
   return createHash("sha256").update(identity).digest("hex").slice(0, 24);
 }
 
+/** @param {{sourceWorkspace?: unknown, stateRoot?: unknown}} [spec] @param {import('./service-owner.mjs').ServiceOwnerOptions} [options] */
 export function retireMatchingServiceOwner(spec = {}, options = {}) {
   const file = serviceOwnerPath(options);
   const info = inspectPathIfPresentSync(file, "machine service owner file");
@@ -89,9 +102,11 @@ export function retireMatchingServiceOwner(spec = {}, options = {}) {
   return { retired: true, version: record.version, entryScript };
 }
 
-export function createWorkspaceCommand({ stateRootFromArgs, ask } = {}) {
+/** @param {WorkspaceCommandOptions} [options] */
+export function createWorkspaceCommand({ stateRootFromArgs, ask } = /** @type {WorkspaceCommandOptions} */ ({})) {
   if (typeof stateRootFromArgs !== "function") throw new TypeError("workspace command requires stateRootFromArgs");
   if (typeof ask !== "function") throw new TypeError("workspace command requires ask");
+  /** @param {WorkspaceCommandArgs} args */
   return async function workspaceCommand(args) {
     const action = String(args._[0] || "show");
     const stateRoot = stateRootFromArgs(args);
@@ -137,11 +152,12 @@ export function createWorkspaceCommand({ stateRootFromArgs, ask } = {}) {
   };
 }
 
+/** @param {WorkspaceMigrationOptions} [options] */
 export async function runWorkspaceMigrationCommand({
   sourceWorkspace,
   destinationWorkspace,
   stateRoot = defaultStateRoot(),
-} = {}) {
+} = /** @type {WorkspaceMigrationOptions} */ ({})) {
   const machineLock = await acquireMachineServiceLockWithWait({ operation: "workspace-migrate" });
   if (!machineLock?.acquired || typeof machineLock.release !== "function") {
     throw new Error("workspace migration could not acquire the machine-service operation lock");
@@ -162,6 +178,7 @@ export async function runWorkspaceMigrationCommand({
   }
 }
 
+/** @param {WorkspaceMigrationOptions} [options] */
 export async function migrateWorkspaceProfile({
   sourceWorkspace,
   destinationWorkspace,
@@ -170,7 +187,7 @@ export async function migrateWorkspaceProfile({
   listActiveJobs = activeStateJobs,
   listActiveLocks = activeStateLocks,
   retireServiceOwner = retireMatchingServiceOwner,
-} = {}) {
+} = /** @type {WorkspaceMigrationOptions} */ ({})) {
   const root = canonicalStateRoot(stateRoot);
   const source = normalizeHistoricalWorkspace(sourceWorkspace);
   const destination = resolveWorkspace(requiredPath(destinationWorkspace, "destination workspace"));
@@ -187,7 +204,9 @@ export async function migrateWorkspaceProfile({
   const sourceInfo = inspectPathIfPresentSync(sourceProfile, "source workspace profile");
   let destinationInfo = inspectPathIfPresentSync(destinationProfile, "destination workspace profile");
 
+  /** @type {string} */
   let activeProfile;
+  /** @type {"source" | "destination"} */
   let phase;
   let destinationShellObserved = false;
   if (sourceInfo) {
@@ -328,6 +347,7 @@ export async function migrateWorkspaceProfile({
   };
 }
 
+/** @param {unknown} value @returns {string} */
 function normalizeHistoricalWorkspace(value) {
   const requested = path.resolve(expandHome(requiredPath(value, "source workspace")));
   const info = inspectPathIfPresentSync(requested, "source workspace");
@@ -336,6 +356,7 @@ function normalizeHistoricalWorkspace(value) {
   return realpathSync.native ? realpathSync.native(requested) : realpathSync(requested);
 }
 
+/** @param {string} input */
 function canonicalizePotentialPath(input) {
   let existing = path.resolve(input);
   const suffix = [];
@@ -349,6 +370,7 @@ function canonicalizePotentialPath(input) {
   return path.join(canonicalExisting, ...suffix);
 }
 
+/** @param {unknown} value */
 function canonicalStateRoot(value) {
   const requested = path.resolve(expandHome(requiredPath(value, "state root")));
   const info = inspectPathIfPresentSync(requested, "state root");
@@ -356,16 +378,19 @@ function canonicalStateRoot(value) {
   return realpathSync.native ? realpathSync.native(requested) : realpathSync(requested);
 }
 
+/** @param {string} value @param {string} label */
 function assertRealDirectory(value, label) {
   const info = inspectPathIfPresentSync(value, label);
   if (!info) throw new Error(`${label} is missing`);
   assertDirectoryInfo(info, label);
 }
 
+/** @param {import('node:fs').Stats} info @param {string} label */
 function assertDirectoryInfo(info, label) {
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${label} must be a real directory`);
 }
 
+/** @param {string} profileDir */
 function assertProfileStructure(profileDir) {
   for (const entry of readdirSync(profileDir, { withFileTypes: true })) {
     const target = path.join(profileDir, entry.name);
@@ -380,6 +405,7 @@ function assertProfileStructure(profileDir) {
   }
 }
 
+/** @param {string} profileDir @returns {ProfileStateSnapshot} */
 function readProfileState(profileDir) {
   const statePath = path.join(profileDir, "state.json");
   if (inspectPathIfPresentSync(`${statePath}.recovery-required`, "state recovery marker")) {
@@ -395,35 +421,40 @@ function readProfileState(profileDir) {
   return { state, buffer: opened.buffer, statePath };
 }
 
+/** @param {unknown} state @param {WorkspaceEnvelopeOptions} options */
 function assertWorkspaceStateEnvelope(state, { workspace, hash, stateRoot, profileDir, allowRelocatedProfile = false }) {
-  if (!state || typeof state !== "object" || Array.isArray(state) || state.schemaVersion !== STATE_SCHEMA_VERSION) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
     throw new Error("workspace migration state schema is invalid");
   }
-  if (!state.workspace || !state.paths || !state.worker || !state.policy || !state.resources) {
+  const candidate = /** @type {MigrationState} */ (state);
+  if (candidate.schemaVersion !== STATE_SCHEMA_VERSION) throw new Error("workspace migration state schema is invalid");
+  if (!candidate.workspace || !candidate.paths || !candidate.worker || !candidate.policy || !candidate.resources) {
     throw new Error("workspace migration state envelope is incomplete");
   }
-  if (!samePath(state.workspace.path, workspace) || state.workspace.hash !== hash) {
+  if (!samePath(candidate.workspace.path, workspace) || candidate.workspace.hash !== hash) {
     throw new Error("workspace migration source evidence does not match the requested historical workspace identity");
   }
   const expectedState = path.join(profileDir, "state.json");
-  if (!samePath(state.paths.stateRoot, stateRoot)) throw new Error("workspace migration state root does not match the requested state root");
-  if (!allowRelocatedProfile && !samePath(state.paths.profileDir, profileDir)) throw new Error("workspace migration profile path does not match its state envelope");
-  if (!allowRelocatedProfile && !samePath(state.paths.statePath, expectedState)) throw new Error("workspace migration state path does not match its state envelope");
+  if (!samePath(candidate.paths?.stateRoot, stateRoot)) throw new Error("workspace migration state root does not match the requested state root");
+  if (!allowRelocatedProfile && !samePath(candidate.paths?.profileDir, profileDir)) throw new Error("workspace migration profile path does not match its state envelope");
+  if (!allowRelocatedProfile && !samePath(candidate.paths?.statePath, expectedState)) throw new Error("workspace migration state path does not match its state envelope");
   if (allowRelocatedProfile) {
     const historicalProfile = path.join(stateRoot, "profiles", hash);
-    if (!sameRelocatedHistoricalPath(state.paths.profileDir, historicalProfile)
-        || !sameRelocatedHistoricalPath(state.paths.statePath, path.join(historicalProfile, "state.json"))) {
+    if (!sameRelocatedHistoricalPath(candidate.paths?.profileDir, historicalProfile)
+        || !sameRelocatedHistoricalPath(candidate.paths?.statePath, path.join(historicalProfile, "state.json"))) {
       throw new Error("relocated workspace migration state no longer proves its historical profile path");
     }
   }
 }
 
+/** @param {string} profileDir @param {MigrationMarker} value */
 function writeMigrationMarker(profileDir, value) {
   const file = path.join(profileDir, MARKER_NAME);
   replaceFileAtomicallySync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   ownerOnlyFile(file);
 }
 
+/** @param {string} profileDir @returns {MigrationMarkerSnapshot | null} */
 function readMigrationMarker(profileDir) {
   const file = path.join(profileDir, MARKER_NAME);
   if (!inspectPathIfPresentSync(file, "workspace migration marker")) return null;
@@ -437,6 +468,7 @@ function readMigrationMarker(profileDir) {
   return { value, identity: opened.identity };
 }
 
+/** @param {MigrationMarker} value @param {ExpectedMigrationMarker} expected */
 function assertMarker(value, expected) {
   if (!value || value.schemaVersion !== MARKER_SCHEMA_VERSION
       || !samePath(value.sourceWorkspace, expected.source)
@@ -450,6 +482,7 @@ function assertMarker(value, expected) {
   }
 }
 
+/** @param {string} profileDir */
 function removeMigrationMarker(profileDir) {
   const marker = readMigrationMarker(profileDir);
   if (!marker) return;
@@ -459,6 +492,7 @@ function removeMigrationMarker(profileDir) {
   }
 }
 
+/** @param {string} profileDir */
 function removeReclaimableProfileLocks(profileDir) {
   for (const [name, maxAgeMs] of KNOWN_PROFILE_LOCKS) {
     const file = path.join(profileDir, name);
@@ -480,6 +514,7 @@ function removeReclaimableProfileLocks(profileDir) {
   }
 }
 
+/** @param {string} root @param {string} candidate */
 function pathInside(root, candidate) {
   const canonicalRoot = canonicalizePotentialPath(root);
   const canonicalCandidate = canonicalizePotentialPath(candidate);
@@ -487,11 +522,13 @@ function pathInside(root, candidate) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+/** @param {unknown} value @param {string} label */
 function historicalAbsolutePath(value, label) {
   if (typeof value !== "string" || !path.isAbsolute(value)) throw new Error(`machine service owner ${label} must be absolute`);
   return path.resolve(value);
 }
 
+/** @param {unknown} value @param {string} label */
 function inspectHistoricalRegularFile(value, label) {
   const requested = historicalAbsolutePath(value, label);
   const info = inspectPathIfPresentSync(requested, `machine service owner ${label}`);
@@ -500,6 +537,7 @@ function inspectHistoricalRegularFile(value, label) {
   return realpathSync.native ? realpathSync.native(requested) : realpathSync(requested);
 }
 
+/** @param {string} profileDir */
 export function isUnpopulatedProfileShell(profileDir) {
   const info = inspectPathIfPresentSync(profileDir, "destination workspace profile");
   if (!info) return false;
@@ -513,6 +551,7 @@ export function isUnpopulatedProfileShell(profileDir) {
   return false;
 }
 
+/** @param {string} profileDir */
 export function pruneUnpopulatedProfileShell(profileDir) {
   if (!isUnpopulatedProfileShell(profileDir)) return false;
   try {
@@ -527,6 +566,7 @@ export function pruneUnpopulatedProfileShell(profileDir) {
   }
 }
 
+/** @param {unknown} left @param {unknown} right @param {string} [platform] */
 function sameRelocatedHistoricalPath(left, right, platform = process.platform) {
   if (samePath(left, right, platform)) return true;
   if (typeof left !== "string" || typeof right !== "string") return false;
@@ -539,6 +579,7 @@ function sameRelocatedHistoricalPath(left, right, platform = process.platform) {
   }
 }
 
+/** @param {unknown} left @param {unknown} right @param {string} [platform] */
 function samePath(left, right, platform = process.platform) {
   if (typeof left !== "string" || typeof right !== "string") return false;
   const a = lexicalPathIdentity(left, platform);
@@ -553,6 +594,7 @@ function samePath(left, right, platform = process.platform) {
   }
 }
 
+/** @param {string} value @param {string} platform */
 function lexicalPathIdentity(value, platform) {
   const pathApi = platform === "win32" ? path.win32 : path;
   let resolved = pathApi.resolve(value);
@@ -563,7 +605,9 @@ function lexicalPathIdentity(value, platform) {
   return resolved;
 }
 
+/** @param {Uint8Array} buffer */
 function digest(buffer) { return createHash("sha256").update(buffer).digest("hex"); }
+/** @param {unknown} value @param {string} label */
 function requiredPath(value, label) {
   if (typeof value !== "string" || !value.trim()) throw new TypeError(`${label} is required`);
   return value;

@@ -9,39 +9,50 @@ const APPLICATION_ACTIONS = new Set(["activate", "click", "double_click", "drag"
 const INPUT_MODES = new Set(["auto", "trusted", "dom"]);
 const NAVIGATION_WAITS = new Set(["none", "domcontentloaded", "complete"]);
 
+/** @typedef {"browser" | "application"} ComputerSurface */
+/** @typedef {Record<string, unknown>} ComputerArgs */
+/** @typedef {{kind?: string, [key: string]: unknown} | null | undefined} ComputerTarget */
+
+/** @param {unknown} value @returns {ComputerSurface} */
 export function requiredSurface(value) {
   if (typeof value !== "string" || !["browser", "application"].includes(value)) throw new BridgeError("invalid_request", "surface must be browser or application");
-  return value;
+  return /** @type {ComputerSurface} */ (value);
 }
 
+/** @param {unknown} value */
 export function requiredSnapshotId(value) {
   if (typeof value !== "string" || !/^cu_[A-Za-z0-9_-]{8,80}$/.test(value)) throw new BridgeError("invalid_request", "snapshot_id is invalid");
   return value;
 }
 
+/** @param {unknown} value */
 export function requiredTargetRef(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BridgeError("invalid_request", "target must be an object containing a snapshot ref or supported snapshot-bound point");
   const keys = Object.keys(value);
   if (keys.length !== 1 || keys[0] !== "ref") throw new BridgeError("invalid_request", "semantic target accepts only ref");
-  return requiredString(value.ref, "target.ref", 100);
+  return requiredString(/** @type {Record<string, unknown>} */ (value).ref, "target.ref", 100);
 }
 
+/** @param {unknown} value */
 export function normalizeBrowserAction(value) {
   if (typeof value !== "string" || !BROWSER_ACTIONS.has(value)) throw new BridgeError("invalid_request", "unsupported browser computer action");
   return value;
 }
 
+/** @param {unknown} value */
 export function normalizeApplicationAction(value) {
   if (typeof value !== "string" || !APPLICATION_ACTIONS.has(value)) throw new BridgeError("invalid_request", "unsupported application computer action");
   return value;
 }
 
+/** @param {unknown} value */
 export function normalizeInputMode(value) {
   if (value === undefined) return "auto";
   if (typeof value !== "string" || !INPUT_MODES.has(value)) throw new BridgeError("invalid_request", "input_mode must be auto, trusted, or dom");
   return value;
 }
 
+/** @param {ComputerArgs} args @param {string} surface */
 export function normalizePostScreenshotPolicy(args, surface) {
   if (!["browser", "application"].includes(surface)) return "never";
   if (Object.hasOwn(args, "include_post_screenshot")) {
@@ -54,24 +65,28 @@ export function normalizePostScreenshotPolicy(args, surface) {
   return args.post_screenshot;
 }
 
+/** @param {string} policy @param {{surface: string, target?: ComputerTarget, expectation?: {visual_change?: unknown} | null, dispatchStatus?: string}} options */
 export function shouldIncludePostScreenshot(policy, { surface, target, expectation, dispatchStatus }) {
   if (!["browser", "application"].includes(surface) || policy === "never") return false;
   if (policy === "always") return true;
   return target?.kind === "point" || expectation?.visual_change !== undefined || dispatchStatus === "unknown";
 }
 
+/** @param {unknown} value @param {string} surface */
 export function normalizePostObservationDetail(value, surface) {
   if (value === undefined) return ["browser", "application"].includes(surface) ? "summary" : "full";
   if (typeof value !== "string" || !["summary", "full"].includes(value)) throw new BridgeError("invalid_request", "post_observation_detail must be summary or full");
   return value;
 }
 
+/** @param {unknown} value */
 export function normalizeNavigationWait(value) {
   if (value === undefined) return "none";
   if (typeof value !== "string" || !NAVIGATION_WAITS.has(value)) throw new BridgeError("invalid_request", "wait_for must be none, domcontentloaded, or complete");
   return value;
 }
 
+/** @param {string} surface @param {ComputerArgs} args */
 export function validateObserveArgs(surface, args) {
   if (surface === "browser") {
     for (const key of ["application", "max_depth", "include_menus"]) {
@@ -85,6 +100,7 @@ export function validateObserveArgs(surface, args) {
   }
 }
 
+/** @param {string} surface @param {string} action @param {ComputerArgs} args */
 export function validateSurfaceActionArgs(surface, action, args) {
   if (args.value !== undefined && args.value_resource !== undefined) {
     throw new BridgeError("invalid_request", "value and value_resource are mutually exclusive");
@@ -96,6 +112,7 @@ export function validateSurfaceActionArgs(surface, action, args) {
   validateApplicationActionArgs(action, args);
 }
 
+/** @param {string} action @param {ComputerArgs} args */
 export function validateBrowserActionArgs(action, args) {
   for (const key of ["include_menus", "post_max_depth"]) {
     if (args[key] !== undefined) throw new BridgeError("invalid_request", `${key} is only valid for application computer actions`);
@@ -123,6 +140,7 @@ export function validateBrowserActionArgs(action, args) {
   }
 }
 
+/** @param {string} action @param {ComputerArgs} args */
 export function validateApplicationActionArgs(action, args) {
   if (action === "drag") {
     if (args.destination === undefined || args.destination === null) throw new BridgeError("invalid_request", "application drag requires destination");
@@ -150,6 +168,7 @@ export function validateApplicationActionArgs(action, args) {
   }
 }
 
+/** @param {string} surface @param {string} action @param {ComputerTarget} target @param {ComputerArgs} args */
 export function validateActionDispatchArguments(surface, action, target, args) {
   clampInt(args.timeout_seconds, 30, 1, 60);
   clampInt(args.verify_timeout_seconds, 5, 1, 60);
@@ -190,6 +209,7 @@ export function validateActionDispatchArguments(surface, action, target, args) {
   if (args.key !== undefined) requiredString(args.key, "key", 100);
 }
 
+/** @param {string} surface @param {ComputerTarget} target @param {ComputerTarget} destination */
 export function validateDragTargets(surface, target, destination) {
   if (!target || !destination) throw new BridgeError("invalid_request", `${surface} drag requires both target and destination`);
   if (surface === "application") {
@@ -203,6 +223,7 @@ export function validateDragTargets(surface, target, destination) {
   }
 }
 
+/** @param {unknown} value @param {string} label */
 export function browserScrollDelta(value, label) {
   if (value === undefined) return 0;
   if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > 10_000) {
@@ -211,11 +232,13 @@ export function browserScrollDelta(value, label) {
   return Object.is(value, -0) ? 0 : value;
 }
 
+/** @param {unknown} value */
 export function optionalApplicationFocusQuery(value) {
   if (value === undefined) return "";
   return requiredStringAllowEmpty(value, "focus_query", 1000);
 }
 
+/** @param {unknown} value */
 export function requiredResource(value) {
   if (typeof value !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(value)) {
     throw new BridgeError("invalid_request", "value_resource is invalid");
@@ -223,18 +246,21 @@ export function requiredResource(value) {
   return value;
 }
 
+/** @param {unknown} value @param {string} label */
 export function optionalPositiveInt(value, label) {
   if (value === undefined) return undefined;
-  if (!Number.isInteger(value) || value < 1) throw new BridgeError("invalid_request", `${label} must be a positive integer`);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new BridgeError("invalid_request", `${label} must be a positive integer`);
   return value;
 }
 
+/** @param {unknown} value @param {number} fallback @param {number} min @param {number} max */
 export function clampInt(value, fallback, min, max) {
   if (value === undefined) return fallback;
-  if (!Number.isInteger(value) || value < min || value > max) throw new BridgeError("invalid_request", `expected an integer from ${min} to ${max}`);
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) throw new BridgeError("invalid_request", `expected an integer from ${min} to ${max}`);
   return value;
 }
 
+/** @param {unknown} value @param {string} label @param {number} maxLength */
 export function requiredString(value, label, maxLength) {
   if (typeof value !== "string" || !value || value.includes("\0") || value.length > maxLength) {
     throw new BridgeError("invalid_request", `${label} must be a non-empty string of at most ${maxLength} characters`);
@@ -242,6 +268,7 @@ export function requiredString(value, label, maxLength) {
   return value;
 }
 
+/** @param {unknown} value @param {string} label @param {number} maxLength */
 export function requiredStringAllowEmpty(value, label, maxLength) {
   if (typeof value !== "string" || value.includes("\0") || value.length > maxLength) {
     throw new BridgeError("invalid_request", `${label} must be a string of at most ${maxLength} characters`);
@@ -249,17 +276,20 @@ export function requiredStringAllowEmpty(value, label, maxLength) {
   return value;
 }
 
+/** @param {unknown} value @param {string} label @param {boolean} fallback */
 export function optionalBoolean(value, label, fallback) {
   if (value === undefined) return fallback;
   return requiredBoolean(value, label);
 }
 
+/** @param {unknown} value */
 export function computerScreenshotFormat(value) {
   if (value === undefined) return "png";
   if (value !== "png" && value !== "jpeg") throw new BridgeError("invalid_request", "screenshot_format must be png or jpeg");
   return value;
 }
 
+/** @param {unknown} value @param {string} label */
 export function requiredBoolean(value, label) {
   if (typeof value !== "boolean") throw new BridgeError("invalid_request", `${label} must be boolean`);
   return value;

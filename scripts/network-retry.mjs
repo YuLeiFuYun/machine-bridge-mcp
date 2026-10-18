@@ -4,7 +4,10 @@ const WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 const TRANSIENT_NETWORK_FAILURE = /(?:SSL_ERROR_SYSCALL|SSL_connect|TLS handshake timeout|Client network socket disconnected before secure TLS connection was established|unexpected EOF|unexpected eof while reading|\bEOF\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ECONNREFUSED|Could not resolve host|Failed to connect|connection (?:was )?reset|remote end hung up|unexpected disconnect|HTTP (?:429|5\d\d)|(?:502|503|504) (?:Bad Gateway|Service Unavailable|Gateway Timeout))/i;
 
 export function runNetworkCommand(command, args, options = {}) {
-  const attempts = clampInteger(options.attempts, 3, 1, 5);
+  // Replaying a timed-out mutation can duplicate a remote side effect. Retries are opt-in
+  // only for operations whose callers have classified as safe to repeat.
+  const retryMode = options.retryMode === "safe" ? "safe" : "never";
+  const attempts = retryMode === "safe" ? clampInteger(options.attempts, 3, 1, 5) : 1;
   const baseDelayMs = clampInteger(options.baseDelayMs, 750, 0, 10_000);
   const timeoutMs = clampInteger(options.timeoutMs, 120_000, 10, 600_000);
   const actualArgs = networkCommandArgs(command, args);

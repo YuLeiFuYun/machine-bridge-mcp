@@ -14,7 +14,13 @@ const MAX_DEPENDENCY_WAIT_MS = 14 * 24 * 60 * 60 * 1000;
 export const DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS = 45_000;
 const RETRYABLE_DEPENDENCY_READ_ERROR_CLASSES = new Set(["identity_changed", "permission_denied", "resource_unavailable"]);
 
+/** @typedef {{job_id: string, plan_sha256: string, created_at: string}} DependencyWitness */
+/** @typedef {{job_id?: string, plan_sha256?: string, created_at?: string, status?: string, error_class?: string | null, result_persisted?: boolean, [key: string]: unknown}} DependencyStatus */
+/** @typedef {{total: number, pending: number, completed: number}} DependencyProgress */
+/** @typedef {{jobRoot: string, dependencyIds?: string[], witnesses?: DependencyWitness[], throwIfCancelled?: () => void, onProgress?: (progress: DependencyProgress) => void, readStatus?: (jobId: string) => DependencyStatus | Promise<DependencyStatus>, sleep?: (ms: number) => Promise<unknown>, now?: () => number}} WaitDependenciesOptions */
+
 export class ManagedJobDependencyError extends Error {
+  /** @param {string} errorClass @param {string} message @param {Record<string, unknown>} [details] */
   constructor(errorClass, message, details = {}) {
     super(message);
     this.name = "ManagedJobDependencyError";
@@ -23,6 +29,7 @@ export class ManagedJobDependencyError extends Error {
   }
 }
 
+/** @param {{depends_on?: string[]} | null | undefined} plan @param {{dependency_pending_count?: unknown} | null | undefined} initial @param {boolean} recover */
 export function managedJobRunnerDependencyState(plan, initial, recover) {
   const dependencyIds = Array.isArray(plan?.depends_on) ? plan.depends_on : [];
   const waiting = recover !== true && dependencyIds.length > 0;
@@ -37,6 +44,7 @@ export function managedJobRunnerDependencyState(plan, initial, recover) {
   };
 }
 
+/** @param {WaitDependenciesOptions} options */
 export async function waitForManagedJobDependencies({
   jobRoot,
   dependencyIds = [],
@@ -48,6 +56,7 @@ export async function waitForManagedJobDependencies({
   now = undefined,
 }) {
   if (!dependencyIds.length) return { total: 0, pending: 0, completed: 0 };
+  /** @type {Map<string, DependencyWitness>} */
   const witnessById = new Map();
   for (const witness of witnesses) {
     const jobId = witness?.job_id;
@@ -96,7 +105,7 @@ export async function waitForManagedJobDependencies({
           dependency_error_class: status.error_class == null ? null : managedJobDependencyLabel(status.error_class),
         });
       }
-      if (status?.status === "staged" || !ACTIVE_JOB_STATES.has(status?.status)) {
+      if (status?.status === "staged" || typeof status?.status !== "string" || !ACTIVE_JOB_STATES.has(status.status)) {
         throw new ManagedJobDependencyError("dependency_state_invalid", "managed job dependency entered a non-executable state", {
           dependency_job_id: jobId,
           dependency_status: status?.status == null ? null : managedJobDependencyLabel(status.status),
@@ -117,6 +126,7 @@ export async function waitForManagedJobDependencies({
   });
 }
 
+/** @param {{jobRoot: string, dependencyIds: string[], witnesses: DependencyWitness[], waiting?: boolean, throwIfCancelled: () => void, updateStatus: (status: Record<string, unknown>) => void}} options */
 export async function waitForManagedJobDependencyGate({
   jobRoot, dependencyIds, witnesses, waiting = true, throwIfCancelled, updateStatus,
 }) {
@@ -141,6 +151,7 @@ export async function waitForManagedJobDependencyGate({
   });
 }
 
+/** @param {unknown} error */
 export function dependencyFailureDetails(error) {
   if (!(error instanceof ManagedJobDependencyError)) return null;
   return {
@@ -149,6 +160,7 @@ export function dependencyFailureDetails(error) {
   };
 }
 
+/** @param {string} jobRoot @param {string} jobId @returns {DependencyStatus} */
 export function readManagedJobDependencyStatus(jobRoot, jobId) {
   const dir = resolveManagedJobDirectory(jobRoot, jobId);
   const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "dependency job status");
@@ -161,6 +173,7 @@ export function readManagedJobDependencyStatus(jobRoot, jobId) {
   return terminalStatusFromResult(status, result, { resultPersisted: true, updatedAt: result.finished_at });
 }
 
+/** @param {DependencyStatus | null | undefined} status @param {DependencyWitness | undefined} witness @param {string} jobId */
 function assertDependencyWitness(status, witness, jobId) {
   if (!status || status.job_id !== jobId
     || status.plan_sha256 !== witness?.plan_sha256
@@ -171,10 +184,12 @@ function assertDependencyWitness(status, witness, jobId) {
   }
 }
 
+/** @param {DependencyStatus | null | undefined} status */
 export function managedJobDependencySucceeded(status) {
   return status?.status === "succeeded" && status?.result_persisted !== false;
 }
 
+/** @param {number} ms */
 function defaultSleep(ms) {
   return new Promise((resolvePromise) => { setTimeout(resolvePromise, ms); });
 }

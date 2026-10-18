@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
@@ -592,12 +592,77 @@ Use the linked workflow.
     if (error?.code !== "EPERM" && error?.code !== "EACCES") throw error;
   }
 
+  await testDelegatedSensitiveInstructionAndHardlinkBoundaries();
   await testSkillWarningDisplayBoundaries();
   console.log("agent context test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
 }
 
+
+async function testDelegatedSensitiveInstructionAndHardlinkBoundaries() {
+  const delegatedContext = {
+    origin: "relay",
+    authority: {
+      owner: false,
+      principal: { kind: "account", role: "reviewer" },
+      effectivePolicy: { unrestrictedPaths: false, allowExec: false },
+    },
+  };
+  const sensitiveWorkspace = join(root, "delegated-sensitive-workspace");
+  await mkdir(join(sensitiveWorkspace, ".machine-bridge"), { recursive: true });
+  await mkdir(join(sensitiveWorkspace, ".git"), { recursive: true });
+  await writeFile(join(sensitiveWorkspace, ".env"), "API_KEY=synthetic-agent-secret\n");
+  await writeFile(join(sensitiveWorkspace, ".git", "config"), "[remote \"origin\"]\n url = https://user:synthetic-git-secret@github.invalid/repo.git\n");
+  await writeFile(join(sensitiveWorkspace, ".machine-bridge", "agent.json"), JSON.stringify({
+    version: 1,
+    instruction_files: [".env", ".git/config"],
+  }));
+  const manager = new AgentContextManager({
+    workspace: sensitiveWorkspace,
+    policy: { profile: "review", unrestrictedPaths: false },
+    displayPath: (value) => relative(sensitiveWorkspace, value) || ".",
+    resolveExistingPath: async (value) => realpath(join(sensitiveWorkspace, String(value || "."))),
+  });
+  const bootstrap = await manager.sessionBootstrap({ path: "." }, delegatedContext);
+  const context = await manager.agentContext({ path: "." }, delegatedContext);
+  const capabilities = await manager.resolveTaskCapabilities({ path: ".", task: "inspect project" }, delegatedContext);
+  for (const value of [bootstrap, context, capabilities]) {
+    assert(!JSON.stringify(value).includes("synthetic-agent-secret") && !JSON.stringify(value).includes("synthetic-git-secret"),
+      "delegated context loader exposed a sensitive file selected by project configuration");
+    assert(value.instruction_warnings?.length > 0, "delegated context loader did not report skipped sensitive instruction paths");
+  }
+
+  const hardlinkWorkspace = join(root, "hardlink-instruction-workspace");
+  const externalInstruction = join(root, "outside-hardlink-instruction.md");
+  await mkdir(hardlinkWorkspace, { recursive: true });
+  await writeFile(externalInstruction, "SECRET=synthetic-hardlink-instruction-secret\n");
+  await link(externalInstruction, join(hardlinkWorkspace, "AGENTS.md"));
+  const hardlinkManager = new AgentContextManager({
+    workspace: hardlinkWorkspace,
+    policy: { profile: "review", unrestrictedPaths: false },
+    displayPath: (value) => relative(hardlinkWorkspace, value) || ".",
+    resolveExistingPath: async (value) => realpath(join(hardlinkWorkspace, String(value || "."))),
+  });
+  await expectReject(() => hardlinkManager.sessionBootstrap({ path: "." }, delegatedContext), "multiple hard links");
+
+  const hardlinkSkillWorkspace = join(root, "hardlink-skill-workspace");
+  const skillDirectory = join(hardlinkSkillWorkspace, ".agents", "skills", "external-skill");
+  const externalSkill = join(root, "outside-hardlink-skill.md");
+  await mkdir(skillDirectory, { recursive: true });
+  await writeFile(externalSkill, "---\nname: external-skill\ndescription: synthetic hardlink fixture\n---\nSECRET=synthetic-hardlink-skill-secret\n");
+  await link(externalSkill, join(skillDirectory, "SKILL.md"));
+  const skillManager = new AgentContextManager({
+    workspace: hardlinkSkillWorkspace,
+    policy: { profile: "review", unrestrictedPaths: false },
+    displayPath: (value) => relative(hardlinkSkillWorkspace, value) || ".",
+    resolveExistingPath: async (value) => realpath(join(hardlinkSkillWorkspace, String(value || "."))),
+  });
+  const listed = await skillManager.listLocalSkills({ path: "." }, delegatedContext);
+  assert(listed.skills.length === 0 && listed.warnings.length === 1
+      && !JSON.stringify(listed).includes("synthetic-hardlink-skill-secret"),
+    "skill discovery read a hard-linked entrypoint from outside the workspace");
+}
 
 async function testSkillWarningDisplayBoundaries() {
   for (const token of ["$&", "$'", "$$", String.fromCharCode(36, 96)]) {

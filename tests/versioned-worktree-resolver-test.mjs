@@ -50,6 +50,18 @@ try {
   const dirtyOnly = resolveVersionedWorktree(main, "beta.183");
   assert(dirtyOnly.status === "not_found" && dirtyOnly.rejected_dirty_version_matches.length === 1 && dirtyOnly.fallback_used === false,
   "resolver trusted a dirty package.json as standalone version identity");
+  const branch = resolveVersionedWorktree(main, "scratch");
+  assert(branch.status === "resolved" && branch.branch === "scratch" && branch.working_version_diverged
+      && branch.fallback_used === false,
+    "resolver compared an exact branch request to package version metadata");
+  assert(!referenceMatches("fix/topic-extra", "fix/topic") && !referenceMatches("fix/Topic", "fix/topic"),
+    "branch identity matching ignored Git's exact case-sensitive reference names");
+  await writeFile(join(beta, "package.json"), JSON.stringify({ name: "fixture", version: "3.0.0-beta.184" }));
+  git(beta, "add", "package.json");
+  git(beta, "commit", "-m", "fixture: beta184");
+  const stale = resolveVersionedWorktree(main, "beta.182");
+  assert(stale.status === "not_found" && stale.rejected_identity_version_conflicts.length === 1,
+    "branch routing fix weakened an explicit prerelease version conflict");
   console.log("versioned worktree resolver test ok");
 } finally {
   await rm(root, { recursive: true, force: true });

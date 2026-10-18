@@ -6,13 +6,16 @@ import { pathEntryIfExists } from "./path-inspection.mjs";
 
 export const DIRECTORY_METADATA_BATCH_SIZE = 16;
 
+/** @typedef {{openDirectory?: (directory: string) => Promise<import('node:fs').Dir>, inspect?: (path: string) => Promise<import('node:fs').Stats | null>, throwIfCancelled?: (context: unknown) => void, context?: unknown, batchSize?: number}} DirectoryMetadataOptions */
+/** @param {string} directory @param {DirectoryMetadataOptions} [options] */
 export async function* directoryEntriesWithMetadata(directory, options = {}) {
   const openDirectory = options.openDirectory || opendir;
   const inspect = options.inspect || pathEntryIfExists;
   const throwIfCancelled = typeof options.throwIfCancelled === "function" ? options.throwIfCancelled : () => {};
-  const context = options.context || {};
+  const context = options.context ?? {};
   const batchSize = positiveBatchSize(options.batchSize);
   const handle = await openDirectory(directory);
+  /** @type {{entry: import('node:fs').Dirent, path: string}[]} */
   let batch = [];
   for await (const entry of handle) {
     throwIfCancelled(context);
@@ -35,6 +38,7 @@ export async function* directoryEntriesWithMetadata(directory, options = {}) {
   }
 }
 
+/** @param {{entry: import('node:fs').Dirent, path: string}[]} batch @param {(path: string) => Promise<import('node:fs').Stats | null>} inspect @param {(context: unknown) => void} throwIfCancelled @param {unknown} context */
 async function inspectBatch(batch, inspect, throwIfCancelled, context) {
   return Promise.allSettled(batch.map(async (item) => {
     throwIfCancelled(context);
@@ -42,6 +46,7 @@ async function inspectBatch(batch, inspect, throwIfCancelled, context) {
   }));
 }
 
+/** @param {unknown} value @returns {number} */
 function positiveBatchSize(value) {
-  return Number.isInteger(value) && value > 0 && value <= 64 ? value : DIRECTORY_METADATA_BATCH_SIZE;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 64 ? value : DIRECTORY_METADATA_BATCH_SIZE;
 }

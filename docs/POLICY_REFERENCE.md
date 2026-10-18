@@ -88,7 +88,7 @@ This table describes the local daemon policy ceiling. Remote account roles apply
 
 ## Remote account-role tool access
 
-Account-access revision: **4**. Default role: **reviewer**. Remote effective authority is the intersection of this account-role ceiling with the connected daemon policy/tool ceiling; the MCP host may expose a further subset.
+Account-access revision: **5**. Default role: **reviewer**. Remote effective authority is the intersection of this account-role ceiling with the connected daemon policy/tool ceiling; the MCP host may expose a further subset.
 
 | Tool | reviewer | editor | operator | owner |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ Account-access revision: **4**. Default role: **reviewer**. Remote effective aut
 | `git_show` | yes | yes | yes | yes |
 | `git_status` | yes | yes | yes | yes |
 | `inspect_local_application` | no | no | no | yes |
-| `kill_process` | no | no | yes | yes |
+| `kill_process` | no | no | no | yes |
 | `list_dir` | yes | yes | yes | yes |
 | `list_files` | yes | yes | yes | yes |
 | `list_jobs` | yes | yes | yes | yes |
@@ -133,21 +133,21 @@ Account-access revision: **4**. Default role: **reviewer**. Remote effective aut
 | `project_overview` | yes | yes | yes | yes |
 | `read_file` | yes | yes | yes | yes |
 | `read_job` | yes | yes | yes | yes |
-| `read_process` | no | no | yes | yes |
+| `read_process` | no | no | no | yes |
 | `resolve_task_capabilities` | yes | yes | yes | yes |
-| `run_local_command` | no | no | yes | yes |
-| `run_process` | no | no | yes | yes |
+| `run_local_command` | no | no | no | yes |
+| `run_process` | no | no | no | yes |
 | `search_text` | yes | yes | yes | yes |
 | `server_info` | yes | yes | yes | yes |
 | `session_bootstrap` | yes | yes | yes | yes |
 | `stage_job` | no | no | no | yes |
 | `start_job` | no | no | no | yes |
-| `start_process` | no | no | yes | yes |
+| `start_process` | no | no | no | yes |
 | `view_image` | yes | yes | yes | yes |
 | `write_file` | no | yes | yes | yes |
-| `write_process` | no | no | yes | yes |
+| `write_process` | no | no | no | yes |
 
-Owner-only remote tools: `diagnose_runtime`, `list_local_resources`, `stage_job`, `start_job`. Their local availability class is unchanged; the extra restriction applies only to authenticated remote account roles.
+Owner-only remote tools: `diagnose_runtime`, `exec_command`, `kill_process`, `list_local_resources`, `read_process`, `run_local_command`, `run_process`, `stage_job`, `start_job`, `start_process`, `write_process`. Their local availability class is unchanged; the extra restriction applies only to authenticated remote account roles.
 
 ## Enforcement contract
 

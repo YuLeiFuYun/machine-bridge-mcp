@@ -8,7 +8,7 @@ import { hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-b
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
 import { clampInteger } from "./numbers.mjs";
-import { searchWorkspaceFiles } from "./workspace-search.mjs";
+import { searchWorkspaceText } from "./workspace-search-service.mjs";
 import {
   assertNoResolvedPatchCollisions as assertResolvedPatchCollisions,
   atomicWriteText as commitAtomicText,
@@ -22,6 +22,10 @@ const MAX_DIRECTORY_ENTRIES = 10_000;
 const MAX_PATH_RESULT_BYTES = 4 * 1024 * 1024;
 const MAX_WALK_ENTRIES = 200_000;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const DEFAULT_IGNORED_DIRECTORIES = new Set([
+  ".git", "node_modules", "dist", "build", "coverage", ".next", ".turbo", ".wrangler",
+  "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv",
+]);
 
 export class WorkspaceFileService {
   constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationPaths }) {
@@ -74,7 +78,7 @@ export class WorkspaceFileService {
     return { path: this.displayPath(full, context), entries, truncated };
   }
 
-  async listFiles(inputPath, maxFiles, context = {}) {
+  async listFiles(inputPath, maxFiles, context = {}, options = {}) {
     const root = await this.resolveExistingPath(inputPath, context);
     const info = await stat(root);
     if (info.isFile()) return { path: this.displayPath(root, context), files: [this.displayPath(root, context)], truncated: false };
@@ -89,7 +93,7 @@ export class WorkspaceFileService {
       files.push(shown);
       resultBytes += pathBytes;
       return true;
-    }, context);
+    }, context, { includeIgnored: options.includeIgnored === true });
     return { path: this.displayPath(root, context), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
   }
 
@@ -265,53 +269,17 @@ export class WorkspaceFileService {
     });
   }
   async searchText(args, context = {}) {
-    const query = String(args.query || "");
-    if (!query) throw new BridgeError("invalid_request", "query is required", { details: { reason: "missing_query" } });
-    const root = await this.resolveExistingPath(args.path || ".", context);
-    const max = clampInteger(args.max_matches, 100, 1, 1000);
-    const maxFiles = clampInteger(args.max_files, 10000, 1, 100000);
-    const matches = [];
-    const rootInfo = await stat(root);
-    if (rootInfo.isFile()) {
-      await this.searchOneFile(root, query, matches, max, context);
-      return { query, root: this.displayPath(root, context), matches, visited_files: 1, truncated: matches.length >= max };
-    }
-    if (!rootInfo.isDirectory()) throw new BridgeError("invalid_request", "path is not a file or directory", { details: { reason: "unsupported_path_type" } });
-    const result = await searchWorkspaceFiles({
-      maximumFiles: maxFiles, maximumMatches: max,
-      walk: (onFile) => this.walk(root, onFile, context),
-      searchFile: async (full) => {
-        const fileMatches = [];
-        await this.searchOneFile(full, query, fileMatches, max, context);
-        return fileMatches;
-      },
-      throwIfCancelled: this.throwIfCancelled, context,
+    return searchWorkspaceText({
+      args, context,
+      resolveExistingPath: this.resolveExistingPath,
+      displayPath: this.displayPath,
+      throwIfCancelled: this.throwIfCancelled,
+      walk: (root, onFile, currentContext, options) => this.walk(root, onFile, currentContext, options),
+      readBoundedFile,
     });
-    return { query, root: this.displayPath(root, context), matches: result.matches, visited_files: result.visitedFiles, truncated: result.truncated };
   }
 
-  async searchOneFile(full, query, matches, max, context = {}) {
-    this.throwIfCancelled(context);
-    let bounded;
-    try { bounded = await readBoundedFile(full, 1024 * 1024, "search file"); } catch (error) {
-      if (isSkippableSearchFileError(error)) return;
-      throw error;
-    }
-    if (bounded.buffer.includes(0)) return;
-    const buffer = bounded.buffer;
-    let text;
-    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer); } catch { return; }
-    if (!text) return;
-    const lines = text.split(/\r?\n/);
-    for (let index = 0; index < lines.length; index += 1) {
-      if (lines[index].includes(query)) {
-        matches.push({ path: this.displayPath(full, context), line: index + 1, text: lines[index].slice(0, 500) });
-        if (matches.length >= max) break;
-      }
-    }
-  }
-
-  async walk(root, onFile, context = {}) {
+  async walk(root, onFile, context = {}, options = {}) {
     const stack = [root];
     let visitedEntries = 0;
     while (stack.length) {
@@ -321,6 +289,7 @@ export class WorkspaceFileService {
       if (!entries) continue;
       for await (const entry of entries) {
         this.throwIfCancelled(context);
+        if (options.includeIgnored !== true && entry.isDirectory() && DEFAULT_IGNORED_DIRECTORIES.has(entry.name.toLowerCase())) continue;
         visitedEntries += 1;
         if (visitedEntries > MAX_WALK_ENTRIES) return { truncated: true, visitedEntries };
         const full = resolve(current, entry.name);
@@ -355,14 +324,6 @@ export async function readBoundedFile(filePath, maxBytes, label) {
   } finally {
     await handle.close();
   }
-}
-
-function isSkippableSearchFileError(error) {
-  const reason = String(error?.details?.reason || "");
-  return error?.code === "ELOOP"
-    || reason === "read_limit"
-    || reason === "unsupported_path_type"
-    || reason === "multiple_hard_links";
 }
 
 function decodeUtf8(buffer) {

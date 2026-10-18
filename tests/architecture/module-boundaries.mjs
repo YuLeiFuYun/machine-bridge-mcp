@@ -111,6 +111,7 @@ const boundaryModules = new Set([
   "directory-metadata.mjs",
   "filesystem-identity.mjs",
   "workspace-file-transaction.mjs",
+  "workspace-file-transaction-helpers.mjs",
   "workspace-search.mjs",
   "workspace-file-service.mjs",
   "cli-options.mjs",
@@ -358,6 +359,7 @@ const lineLimits = Object.freeze({
   "src/local/directory-metadata.mjs": 60,
   "src/local/filesystem-identity.mjs": 55,
   "src/local/workspace-file-transaction.mjs": 190,
+  "src/local/workspace-file-transaction-helpers.mjs": 80,
   "src/local/workspace-search.mjs": 80,
   "src/local/workspace-file-service.mjs": 430,
   "src/local/tool-executor.mjs": 180,
@@ -1158,7 +1160,9 @@ for (const required of ["pairFromBootstrap", "browserPairingBootstrap", "machine
 const workspaceFileSource = readFileSync(join(localRoot, "workspace-file-service.mjs"), "utf8");
 const directoryMetadataSource = readFileSync(join(localRoot, "directory-metadata.mjs"), "utf8");
 const workspaceSearchSource = readFileSync(join(localRoot, "workspace-search.mjs"), "utf8");
+const workspaceSearchServiceSource = readFileSync(join(localRoot, "workspace-search-service.mjs"), "utf8");
 const workspaceTransactionSource = readFileSync(join(localRoot, "workspace-file-transaction.mjs"), "utf8");
+const workspaceTransactionHelpersSource = readFileSync(join(localRoot, "workspace-file-transaction-helpers.mjs"), "utf8");
 if (!workspaceFileSource.includes("directoryEntriesWithMetadata(full")
     || workspaceFileSource.includes("await pathEntryIfExists(entryPath)")) {
   throw new Error("workspace list_dir lost bounded metadata fan-out or regained serial per-entry metadata reads");
@@ -1169,29 +1173,29 @@ for (const required of ["DIRECTORY_METADATA_BATCH_SIZE = 16", "Promise.allSettle
 for (const required of ["SEARCH_FILE_BATCH_SIZE = 16", "Promise.allSettled", "scheduledFiles >= maximumFiles", "matches.length >= maximumMatches", "if (result.status === \"rejected\") throw result.reason"]) {
   if (!workspaceSearchSource.includes(required)) throw new Error(`workspace search fan-out lost bounded ordering/error semantics: ${required}`);
 }
-if (!workspaceFileSource.includes("searchWorkspaceFiles({") || workspaceFileSource.includes("visitedFiles += 1")) {
+if (!workspaceFileSource.includes("searchWorkspaceText({") || workspaceFileSource.includes("visitedFiles += 1")) {
   throw new Error("workspace search lost bounded file fan-out or regained serial visited-file orchestration");
 }
 for (const reason of ["read_limit", "unsupported_path_type", "multiple_hard_links"]) {
-  if (!workspaceFileSource.includes(`reason === "${reason}"`)) throw new Error(`search_text lost typed skippable-file classification: ${reason}`);
+  if (!workspaceSearchServiceSource.includes(`reason === "${reason}"`)) throw new Error(`search_text lost typed skippable-file classification: ${reason}`);
 }
-const searchSkipBoundary = /function isSkippableSearchFileError[\s\S]*?\n}/.exec(workspaceFileSource)?.[0] || "";
+const searchSkipBoundary = /function isSkippableSearchFileError[\s\S]*?\n}/.exec(workspaceSearchServiceSource)?.[0] || "";
 for (const obsolete of ["search file exceeds maximum size", "search file is not a regular file", "refusing to read search file with multiple hard links"]) {
   if (searchSkipBoundary.includes(obsolete)) throw new Error(`search_text regained message-coupled skip classification: ${obsolete}`);
 }
-if (!workspaceTransactionSource.includes("async function writeFlushedText")
-    || !workspaceTransactionSource.includes("await handle.sync()")
-    || !workspaceTransactionSource.includes("staged file write failed and cleanup was incomplete")
+if (!workspaceTransactionHelpersSource.includes("async function writeFlushedText")
+    || !workspaceTransactionHelpersSource.includes("await handle.sync()")
+    || !workspaceTransactionHelpersSource.includes("staged file write failed and cleanup was incomplete")
     || (workspaceTransactionSource.match(/await writeFlushedText\(/g) || []).length !== 2) {
   throw new Error("workspace transaction boundary no longer flushes whole-file and patch staging files before commit");
 }
-if (!workspaceTransactionSource.includes("patch transaction may have partially modified files because recovery was incomplete; inspect affected paths before retrying")
+if (!workspaceTransactionHelpersSource.includes("patch transaction may have partially modified files because recovery was incomplete; inspect affected paths before retrying")
     || !workspaceTransactionSource.includes("patch transaction failed and staging cleanup was incomplete")
-    || !workspaceTransactionSource.includes('details: { reason: "patch_recovery_incomplete" }')
+    || !workspaceTransactionHelpersSource.includes('details: { reason: "patch_recovery_incomplete" }')
     || !workspaceTransactionSource.includes("Patch committed, but ${cleanupFailures.length} internal transaction artifact(s) could not be removed")
     || !workspaceTransactionSource.includes("file mutation failed and staging cleanup was incomplete")
-    || !workspaceTransactionSource.includes("new AggregateError([primary, ...recoveryFailures]")
-    || !workspaceTransactionSource.includes("new AggregateError([primary, ...cleanupFailures]")
+    || !workspaceTransactionHelpersSource.includes("new AggregateError([primary, ...recoveryFailures]")
+    || !workspaceTransactionHelpersSource.includes("new AggregateError([primary, ...cleanupFailures]")
     || !workspaceTransactionSource.includes("publishFileLinkWithIdentity(stage.temp, operation.target, createTarget, record)")
     || !workspaceTransactionSource.includes("reason: \"target_appeared\"")
     || !workspaceTransactionSource.includes("fileMutationPathKey(full, platform)")) {

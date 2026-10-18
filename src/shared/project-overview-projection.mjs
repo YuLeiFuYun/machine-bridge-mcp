@@ -1,9 +1,11 @@
 // @ts-check
 
+/** @param {Record<string, unknown>} [args] */
 export function projectOverviewDetail(args = {}) {
   return args?.detail === "summary" ? "summary" : "full";
 }
 
+/** @param {unknown} value @param {string} [detail] */
 export function projectProjectOverview(value, detail = "full") {
   if (detail !== "summary" || !isRecord(value)) return value;
   const authorization = record(value.authorization);
@@ -28,6 +30,7 @@ export function projectProjectOverview(value, detail = "full") {
   return summary;
 }
 
+/** @param {Record<string, unknown>} value */
 function compactAuthorization(value) {
   const account = record(value.account);
   const execution = record(value.execution_model);
@@ -44,6 +47,7 @@ function compactAuthorization(value) {
   };
 }
 
+/** @param {unknown} value */
 function compactCapabilityRouting(value) {
   const source = record(value);
   if (source.activity_hidden_by_authority === true) return { activity_hidden_by_authority: true };
@@ -67,6 +71,7 @@ function compactCapabilityRouting(value) {
   };
 }
 
+/** @param {unknown} value */
 function compactTopLevel(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
@@ -75,22 +80,27 @@ function compactTopLevel(value) {
   });
 }
 
+/** @param {unknown} value */
 function arrayLength(value) {
   return Array.isArray(value) ? value.length : 0;
 }
 
+/** @param {unknown} value @param {number} fallback */
 function numberOr(value, fallback) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
+/** @param {unknown} value @param {unknown} array */
 function numberOrLength(value, array) {
   return Number.isFinite(Number(value)) ? Number(value) : arrayLength(array);
 }
 
+/** @param {unknown} value @returns {value is Record<string, unknown>} */
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** @param {unknown} value @returns {Record<string, unknown>} */
 function record(value) {
   return isRecord(value) ? value : {};
 }

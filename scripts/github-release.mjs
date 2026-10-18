@@ -56,7 +56,7 @@ function run(command, args, options = {}) {
 
 
 function runNetwork(command, args, options = {}) {
-  const result = runNetworkCommand(command, args, { cwd: root, env: process.env });
+  const result = runNetworkCommand(command, args, { cwd: root, env: process.env, retryMode: options.retryMode });
   if (!options.capture) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
@@ -67,7 +67,7 @@ function runNetwork(command, args, options = {}) {
 }
 
 function outputNetwork(command, args, options = {}) {
-  const result = runNetwork(command, args, { ...options, capture: true });
+  const result = runNetwork(command, args, { ...options, capture: true, retryMode: options.retryMode || "safe" });
   return (result.stdout ?? "").trim();
 }
 
@@ -122,7 +122,7 @@ function ensureClean() {
 }
 
 function fetchRemote() {
-  runNetwork(git, ["fetch", "origin", "main", "--tags", "--prune"]);
+  runNetwork(git, ["fetch", "origin", "main", "--tags", "--prune"], { retryMode: "safe" });
 }
 
 function localTagCommit(tag) {
@@ -184,7 +184,7 @@ async function waitForSuccessfulCi(head) {
 }
 function releaseInfo(tag) {
   const args = ["api", githubReleaseByTagEndpoint(tag)];
-  const result = runNetwork(gh, args, { capture: true, allowFailure: true });
+  const result = runNetwork(gh, args, { capture: true, allowFailure: true, retryMode: "safe" });
   if (result.status !== 0 || result.error) {
     const detail = `${result.stdout ?? ""}${result.stderr ?? ""}${result.error?.message ?? ""}`.trim();
     if (/\bHTTP 404\b|\bstatus 404\b|\b404 Not Found\b/i.test(detail)) return null;

@@ -14,12 +14,13 @@ const TRANSPORT_ERROR_REASONS = new Set([
 ]);
 const RECENT_RELAY_OUTAGE_LIMIT = 8;
 
+/** @param {unknown} value */
 export function relayHandshakeDiagnostics(value = {}) {
   const status = isPlainRecord(value) ? value : {};
   const heartbeat = isPlainRecord(status.heartbeat) ? status.heartbeat : {};
   return {
     schema_version: 1,
-    transport: ["websocket", "https"].includes(status.transport) ? status.transport : "unknown",
+    transport: typeof status.transport === "string" && ["websocket", "https"].includes(status.transport) ? status.transport : "unknown",
     network_route: typeof status.network_route === "string" ? status.network_route : "unresolved",
     connect_timeout_ms: clampInteger(status.connect_timeout_ms, 30_000, 1_000, 10 * 60_000),
     last_connect_stage: typeof status.last_connect_stage === "string" ? status.last_connect_stage : "idle",
@@ -74,6 +75,7 @@ export function relayHandshakeDiagnostics(value = {}) {
   };
 }
 
+/** @param {unknown} value */
 function recentOutages(value) {
   if (!Array.isArray(value)) return [];
   const result = [];
@@ -93,7 +95,7 @@ function recentOutages(value) {
         ? clampInteger(candidate.https_fallback_takeover_ms, 0, 0, 10 * 60_000) : 0,
       attempts: clampInteger(candidate.attempts, 0, 0, 1_000_000),
       close_category: typeof candidate.close_category === "string" ? candidate.close_category.slice(0, 128) : null,
-      close_code: Number.isSafeInteger(candidate.close_code) && candidate.close_code >= 0 && candidate.close_code <= 4999
+      close_code: typeof candidate.close_code === "number" && Number.isSafeInteger(candidate.close_code) && candidate.close_code >= 0 && candidate.close_code <= 4999
         ? candidate.close_code : null,
       network_route: typeof candidate.network_route === "string" ? candidate.network_route.slice(0, 128) : "unresolved",
       last_transport_error_class: typeof candidate.last_transport_error_class === "string"
@@ -124,14 +126,17 @@ function recentOutages(value) {
   return result;
 }
 
+/** @param {unknown} value */
 function boundedTimestamp(value) {
   if (typeof value !== "string" || value.length > 64) return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
+/** @param {unknown} value */
 function connectMilestones(value) {
   const source = isPlainRecord(value) ? value : {};
+  /** @type {Record<string, number>} */
   const out = {};
   for (const key of CONNECT_STAGES) {
     const duration = Number(source[key]);
@@ -140,6 +145,7 @@ function connectMilestones(value) {
   return out;
 }
 
+/** @param {unknown} value */
 function boundedHttpStatus(value) {
-  return Number.isSafeInteger(value) && value >= 100 && value <= 599 ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 100 && value <= 599 ? value : null;
 }

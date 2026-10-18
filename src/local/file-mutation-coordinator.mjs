@@ -20,7 +20,12 @@ export class FileMutationCoordinator {
     const keys = [...new Set(paths.map((value) => fileMutationPathKey(value)))].sort();
     const reservations = keys.map((key) => {
       const current = this.queues.get(key) ?? Promise.resolve();
-      const { promise: gate, resolve: release } = Promise.withResolvers();
+      /** @type {{release?: () => void}} */
+      const gateState = {};
+      /** @type {Promise<void>} */
+      const gate = new Promise((resolve) => { gateState.release = () => resolve(undefined); });
+      const release = gateState.release;
+      if (typeof release !== "function") throw new Error("file mutation gate failed to initialize");
       const tail = current.then(() => gate);
       this.queues.set(key, tail);
       return { key, current, tail, release };

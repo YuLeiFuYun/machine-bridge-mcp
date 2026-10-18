@@ -108,6 +108,7 @@ function runNpmView(args, options = {}) {
   const result = runNetworkCommand(process.execPath, [npmCli, "view", "--workspaces=false", "--global=false", ...args], {
     env: nestedNpmEnvironment(options.env || process.env),
     timeoutMs: options.timeoutMs,
+    retryMode: "safe",
   });
   if (result.error || result.status !== 0) {
     const detail = String(result.stderr || result.stdout || result.error?.message || "");
@@ -126,6 +127,7 @@ function runGh(args) {
   const result = runNetworkCommand(resolveTrustedGithubCli({ workspace: process.cwd() }), args, {
     env: process.env,
     timeoutMs: 120_000,
+    retryMode: "safe",
   });
   if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("gh", args, result));
   try { return JSON.parse(result.stdout); } catch { throw new Error("GitHub prerelease query returned invalid JSON"); }

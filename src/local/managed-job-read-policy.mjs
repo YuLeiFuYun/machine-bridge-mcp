@@ -5,6 +5,10 @@ import { clampInteger } from "./numbers.mjs";
 
 const LOCAL_MAXIMUM_WAIT_MS = 40_000;
 
+/** @typedef {{wait_ms?: unknown}} ManagedJobReadArgs */
+/** @typedef {{authority?: {origin?: unknown} | null} | null | undefined} ManagedJobReadContext */
+
+/** @param {ManagedJobReadArgs} [args] @param {ManagedJobReadContext} [context] */
 export function managedJobReadWaitMs(args = {}, context = {}) {
   const hosted = context?.authority?.origin === "relay";
   const fallback = hosted ? relayContract.defaultManagedJobReadWaitMs : 0;
@@ -12,12 +16,14 @@ export function managedJobReadWaitMs(args = {}, context = {}) {
   return args.wait_ms === undefined ? fallback : clampInteger(args.wait_ms, fallback, 0, maximum);
 }
 
+/** @param {ManagedJobReadArgs} [args] @param {ManagedJobReadContext} [context] */
 export function managedJobReadNonterminalProgressMinimumMs(args = {}, context = {}) {
   const waitMs = managedJobReadWaitMs(args, context);
   if (context?.authority?.origin !== "relay" || waitMs <= 0) return 0;
   return Math.min(waitMs, relayContract.managedJobReadNonterminalProgressMinimumMs);
 }
 
+/** @param {Record<string, unknown>} value @param {ManagedJobReadContext} [context] */
 export function managedJobReadProgressSignature(value, context = {}) {
   const currentStep = context?.authority?.origin === "relay" ? null : value?.current_step;
   return JSON.stringify([
@@ -28,6 +34,7 @@ export function managedJobReadProgressSignature(value, context = {}) {
   ]);
 }
 
+/** @param {Record<string, unknown>} value @param {ManagedJobReadContext} context @param {number} waitedMs @param {boolean} timedOut @param {number} progressMinimumMs */
 export function withHostedManagedJobReadMetadata(value, context, waitedMs, timedOut, progressMinimumMs) {
   if (context?.authority?.origin !== "relay") return value;
   return {

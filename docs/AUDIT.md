@@ -12,6 +12,10 @@ This review is scoped to source contracts, risk-bearing control paths, isolated 
 
 ## Current conclusions
 
+- **Delegated content paths are filtered before reads.** Search, project instructions, skills, and structured Git content omit sensitive paths; hard-linked text inputs are rejected. Empty Git path enumeration returns empty content without an unfiltered second command. Search reports omitted candidate files as incomplete and bounds surrounding text and serialized output. Filename classification cannot identify credentials stored under arbitrary ordinary filenames.
+- **Arbitrary remote execution is owner-only.** Workspace isolation alone cannot prevent an executable from reading in-workspace credentials and exporting them. Local role gates and Worker discovery/dispatch enforce the same restriction. Fatal process events log only fixed event/error classes and terminate even when rejection inspection or logging throws; raw rejection content is not operational log data.
+- **Refresh retries cannot recreate consumed replacements.** A retry may return only the still-active derived token pair. Revoked families and consumed replacements are rejected, and access-token authorization checks family revocation. Local regression fixtures do not replace deployed OAuth acceptance.
+- **Branch and prerelease identities have different evidence.** Explicit branch requests match exact case-sensitive names despite pending version edits; explicit prerelease requests still reject contradictory package generations. Resolver regressions cover both paths.
 - **Output budgets include producer backing retention.** Both diagnostic and continuation buffers trim before allocating retained bytes and copy independent snapshots. Allocation/aliasing regressions and partition properties supplement the existing UTF-8 and continuation tests.
 - **Successful settlement terminates retry classification.** Application stdout/stderr cannot cause a successful release command to run again. Failures retain bounded transient classification, while npm pre-lifecycle errors remain observable.
 

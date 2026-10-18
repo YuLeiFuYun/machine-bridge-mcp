@@ -24,7 +24,7 @@ try {
   const branch = output(git, ["branch", "--show-current"]);
   if (!branch) throw new Error("cannot push from a detached HEAD");
   if (branch === "main") throw new Error("direct pushes to main are prohibited; push a reviewed branch and merge through a pull request");
-  runNetwork(git, ["fetch", "origin", "main", "--prune"]);
+  runNetwork(git, ["fetch", "origin", "main", "--prune"], { retryMode: "safe" });
   const backlog = assertGitHubBacklogReady({ cwd: root, branch, git, gh, run: runBacklogCommand });
   console.log(backlog.message);
 
@@ -84,8 +84,8 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function runNetwork(command, args) {
-  const result = runNetworkCommand(command, args, { cwd: root, env: process.env, timeoutMs: 120_000 });
+function runNetwork(command, args, options = {}) {
+  const result = runNetworkCommand(command, args, { cwd: root, env: process.env, timeoutMs: 120_000, retryMode: options.retryMode });
   if (result.error || result.status !== 0) throw new Error(releaseCommandFailure(command, args, result));
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
@@ -93,7 +93,7 @@ function runNetwork(command, args) {
 }
 
 function runBacklogCommand(command, args, cwd) {
-  const result = runNetworkCommand(command, args, { cwd, env: process.env, timeoutMs: 120_000 });
+  const result = runNetworkCommand(command, args, { cwd, env: process.env, timeoutMs: 120_000, retryMode: "safe" });
   if (result.error || result.status !== 0) throw new Error(releaseCommandFailure(command, args, result));
   return result;
 }

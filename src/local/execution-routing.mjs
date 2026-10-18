@@ -12,6 +12,10 @@ const MAX_ROUTES = 6;
 const MAX_RANKED_TOOLS = 12;
 const MAX_RECOMMENDED_TOOLS = 18;
 
+/** @typedef {{id: string, title: string, tools: readonly string[], guidance: string, keywords: readonly string[]}} RouteDefinition */
+/** @typedef {{id: string, title: string, score: number, tools: string[], guidance: string, reasons: string[]}} ScoredRoute */
+/** @typedef {Record<string, unknown> & {availableTools?: Iterable<unknown> | null, policy?: Record<string, unknown>, seedTools?: unknown[], skillRelevant?: boolean, commandRelevant?: boolean, applicationMatches?: unknown[], browserAvailable?: boolean}} ExecutionRoutingOptions */
+
 const ROUTES = Object.freeze([
   route("guided-workflow", "Guided workflow", [
     "load_local_skill", "agent_context", "list_local_skills",
@@ -103,6 +107,7 @@ const ROUTE_FALLBACKS = Object.freeze({
 });
 
 /** Build bounded advisory routing without changing effective authority. */
+/** @param {string} task @param {ExecutionRoutingOptions} [options] */
 export function buildExecutionRouting(task, options = {}) {
   const text = String(task || "");
   const availableNames = options.availableTools === null || options.availableTools === undefined
@@ -110,7 +115,7 @@ export function buildExecutionRouting(task, options = {}) {
     : new Set([...options.availableTools].map((tool) => String(tool || "")).filter(Boolean));
   const toolScores = [...availableNames]
     .map((name) => toolDefinition(name))
-    .filter(Boolean)
+    .filter((tool) => tool !== null)
     .map((tool) => ({
       tool: String(tool.name),
       score: relevanceScore(text, `${tool.title || ""} ${tool.description || ""}`, tool.name),
@@ -121,13 +126,16 @@ export function buildExecutionRouting(task, options = {}) {
 
   const scoredRoutes = ROUTES
     .map((definition) => scoreRoute(definition, text, availableNames, scoreByTool, options))
-    .filter(Boolean)
+    .filter((routeValue) => routeValue !== null)
     .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
 
   if (!scoredRoutes.length) {
     const fallback = ROUTES.find((item) => item.id === "shell" && item.tools.some((tool) => availableNames.has(tool)))
       || ROUTES.find((item) => item.id === "diagnostics" && item.tools.some((tool) => availableNames.has(tool)));
-    if (fallback) scoredRoutes.push(scoreRoute(fallback, text, availableNames, scoreByTool, options, 1));
+    if (fallback) {
+      const fallbackRoute = scoreRoute(fallback, text, availableNames, scoreByTool, options, 1);
+      if (fallbackRoute) scoredRoutes.push(fallbackRoute);
+    }
   }
 
   const availableRouteIds = new Set(ROUTES
@@ -179,6 +187,7 @@ export function buildExecutionRouting(task, options = {}) {
   };
 }
 
+/** @param {ScoredRoute[]} scoredRoutes @param {Set<string>} availableRouteIds */
 function selectRoutes(scoredRoutes, availableRouteIds) {
   const routes = scoredRoutes.slice(0, MAX_ROUTES);
   if (!availableRouteIds.has("shell") || routes.some((routeValue) => routeValue.id === "shell")) return routes;
@@ -188,6 +197,7 @@ function selectRoutes(scoredRoutes, availableRouteIds) {
   return [...routes.slice(0, MAX_ROUTES - 1), shell];
 }
 
+/** @param {ScoredRoute} routeValue @param {Map<string, number>} scoreByTool @param {number} maximum */
 function rankedRouteTools(routeValue, scoreByTool, maximum) {
   return routeValue.tools
     .map((tool, index) => ({ tool, index, score: scoreByTool.get(tool) || 0 }))
@@ -196,16 +206,19 @@ function rankedRouteTools(routeValue, scoreByTool, maximum) {
     .map((item) => item.tool);
 }
 
+/** @param {string} id @param {string} title @param {string[]} tools @param {string} guidance @param {string[]} keywords @returns {RouteDefinition} */
 function route(id, title, tools, guidance, keywords) {
   return Object.freeze({ id, title, tools: Object.freeze(tools), guidance, keywords: Object.freeze(keywords) });
 }
 
+/** @param {RouteDefinition} definition @param {string} task @param {Set<string>} availableNames @param {ExecutionRoutingOptions} [options] */
 function routeUsable(definition, task, availableNames, options = {}) {
   if (!definition.tools.some((tool) => availableNames.has(tool))) return false;
   return definition.id !== "managed-job" || !managedJobCreationIntent(task, options)
     || availableNames.has("start_job") || availableNames.has("stage_job");
 }
 
+/** @param {RouteDefinition} definition @param {string} task @param {Set<string>} availableNames @param {Map<string, number>} scoreByTool @param {ExecutionRoutingOptions} options @param {number} [fallbackScore] @returns {ScoredRoute | null} */
 function scoreRoute(definition, task, availableNames, scoreByTool, options, fallbackScore = 0) {
   if (!routeUsable(definition, task, availableNames, options)) return null;
   const tools = definition.tools.filter((tool) => availableNames.has(tool));
@@ -232,10 +245,13 @@ function scoreRoute(definition, task, availableNames, scoreByTool, options, fall
   };
 }
 
+/** @param {string} id @param {string} task @param {ExecutionRoutingOptions} options */
 function dynamicBoost(id, task, options) {
   const lower = String(task || "").toLowerCase();
+  /** @type {string[]} */
   const reasons = [];
   let score = 0;
+  /** @param {number} amount @param {string} reason */
   const add = (amount, reason) => { score += amount; reasons.push(reason); };
   if (id === "guided-workflow" && options.skillRelevant === true) add(18, "relevant_skill_found");
   if (id === "registered-command" && options.commandRelevant === true) add(20, "relevant_registered_command_found");
@@ -257,10 +273,13 @@ function dynamicBoost(id, task, options) {
   return { score, reasons };
 }
 
+/** @param {ScoredRoute} routeValue @param {Set<string>} availableRouteIds */
 function publicRoute(routeValue, availableRouteIds) {
-  return { id: routeValue.id, title: routeValue.title, score: routeValue.score, tools: [...routeValue.tools], guidance: routeValue.guidance, reasons: [...routeValue.reasons], fallback_routes: (ROUTE_FALLBACKS[routeValue.id] || []).filter((id) => availableRouteIds.has(id)) };
+  const fallbackRoutes = ROUTE_FALLBACKS[/** @type {keyof typeof ROUTE_FALLBACKS} */ (routeValue.id)] || [];
+  return { id: routeValue.id, title: routeValue.title, score: routeValue.score, tools: [...routeValue.tools], guidance: routeValue.guidance, reasons: [...routeValue.reasons], fallback_routes: fallbackRoutes.filter((id) => availableRouteIds.has(id)) };
 }
 
+/** @param {unknown[]} values */
 function unique(values) {
   return [...new Set(values.map((value) => String(value || "")).filter(Boolean))];
 }

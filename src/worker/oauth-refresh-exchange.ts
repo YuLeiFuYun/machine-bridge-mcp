@@ -18,6 +18,7 @@ import {
 import { normalizeOAuthScope, safeEqual, sha256Hex, type OAuthRefreshToken, type OAuthStore } from "./oauth-state.ts";
 import { refreshFamilyAuthority } from "./oauth-refresh-authority.ts";
 import { saveOAuthRefreshStore } from "./oauth-refresh-persistence.ts";
+import { activeConsumedRefreshRetryPair } from "./oauth-refresh-retry.ts";
 
 export async function exchangeRefreshToken(
   body: Record<string, unknown>,
@@ -36,7 +37,9 @@ export async function exchangeRefreshToken(
     if (!record) {
       const consumed = refreshStore.consumed[refreshKey];
       if (!consumed || consumed.expires_at <= now) return reject(options);
-      const retrySource = consumedRefreshRetrySource(consumed, now);
+      if (Object.hasOwn(refreshStore.revoked_families, consumed.family_id)) return reject(options);
+      let retrySource = consumedRefreshRetrySource(consumed, now);
+      let replacementPairUnavailable = false;
       if (retrySource) {
         const validation = await validateRefreshGrant(retrySource, body, base, options, dpop, oauthStore, false);
         if (validation.response) return rejected(options, validation.response);
@@ -44,22 +47,22 @@ export async function exchangeRefreshToken(
         if (validation.accessScope !== retryAccessScope) {
           return rejected(options, json({ error: "invalid_scope" }, 400));
         }
-        if (dpop && !(await consumeDpopProof(options.storage, dpop))) return rejectDpop(options);
-        const issued = await issueTokenPair(
-          oauthStore,
-          refreshStore,
-          retrySource,
-          options.tokenVersion,
-          retrySource.dpop_jkt,
-          { derivationSeed: refreshToken, issuedAt: consumed.consumed_at, accessScope: retryAccessScope },
+        const replacement = await activeConsumedRefreshRetryPair(
+          options.tokenVersion, refreshToken, retrySource, consumed.family_id, retryAccessScope, oauthStore, refreshStore, now,
         );
-        recordConsumedRefreshRetry(consumed);
-        validation.client.last_used_at = now;
-        await saveOAuthStores(oauthStore, refreshStore, options.storage);
-        options.onRefreshEvent?.("retry_issued");
-        return tokenResponse(issued, retryAccessScope, retrySource.dpop_jkt);
+        if (!replacement) {
+          retrySource = null;
+          replacementPairUnavailable = true;
+        } else {
+          if (dpop && !(await consumeDpopProof(options.storage, dpop))) return rejectDpop(options);
+          recordConsumedRefreshRetry(consumed);
+          validation.client.last_used_at = now;
+          await saveOAuthStores(oauthStore, refreshStore, options.storage);
+          options.onRefreshEvent?.("retry_issued");
+          return tokenResponse(replacement, retryAccessScope, retrySource.dpop_jkt);
+        }
       }
-      if (Number.isSafeInteger(consumed.retry_until) && consumed.retry_until! >= now
+      if (!replacementPairUnavailable && Number.isSafeInteger(consumed.retry_until) && consumed.retry_until! >= now
         && Number(consumed.retry_issues) >= MAX_REFRESH_RETRY_ISSUES) {
         options.onRefreshEvent?.("retry_exhausted");
         return json({

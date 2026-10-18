@@ -1,8 +1,9 @@
 // @ts-check
-
 import { TRANSIENT_PROCESS_RECOVERY_SLOTS, transientProcessWithinRecoveryGrace } from "./managed-job-retention-policy.mjs";
 import { ACTIVE_JOB_STATES } from "./managed-job-terminal.mjs";
+/** @typedef {{job_id?: string, status?: string, finished_at?: string | null, created_at?: string | null, [key: string]: unknown}} RecoveryJob @typedef {{job: RecoveryJob, retentionClass: string, recoveryPending?: boolean}} RecoveryJobRecord */
 
+/** @param {RecoveryJob} job @param {string} retentionClass @returns {number} */
 export function managedJobRecoveryPriority(job, retentionClass) {
   if (job?.status === "unreadable") return 0;
   if (ACTIVE_JOB_STATES.has(String(job?.status || ""))) return 1;
@@ -10,6 +11,7 @@ export function managedJobRecoveryPriority(job, retentionClass) {
   return retentionClass === "transient_process" ? 4 : 3;
 }
 
+/** @param {RecoveryJobRecord[]} records @param {RecoveryJob[]} visibleJobs @param {number} [now] */
 export function recentProcessRecoveryJobs(records, visibleJobs, now = Date.now()) {
   const visibleJobIds = new Set(visibleJobs.map((job) => job.job_id));
   return records

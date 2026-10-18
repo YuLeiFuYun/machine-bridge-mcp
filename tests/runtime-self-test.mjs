@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
-import { delegatedProcessIsolationStatus } from "../src/local/delegated-process-sandbox.mjs";
 import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
 import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
@@ -286,37 +285,24 @@ export async function runtimeSelfTest() {
       () => fullAuthority.executeTool("write_file", { path: join(outside, "editor-escape.txt"), content: "blocked" }, relayContext(editorAuthorization)),
       "outside the configured workspace",
     );
-    if (delegatedProcessIsolationStatus().available) {
-      const operatorAcceptance = await fullAuthority.executeTool("run_process", {
-        argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_DAEMON_SELFTEST_SECRET || \"unset\")"],
-        timeout_seconds: SUCCESS_PROCESS_TIMEOUT_SECONDS,
-        idempotency_key: "operator-durable-environment",
-      }, relayContext(operatorAuthorization));
-      if (operatorAcceptance.execution_mode !== "durable_job" || typeof operatorAcceptance.job_id !== "string") {
-        throw new Error("operator run_process did not receive a durable execution handle");
-      }
-      const operatorEnvironment = await waitForManagedJob(fullAuthority.managedJobManager, operatorAcceptance.job_id, relayContext(operatorAuthorization));
-      if (operatorEnvironment.result?.steps?.[0]?.stdout !== "unset") throw new Error("operator inherited the full daemon parent environment");
-      await expectReject(
-        () => fullAuthority.executeTool("start_job", { steps: [{ argv: [process.execPath, "-e", ""] }] }, relayContext(operatorAuthorization)),
-        "not allowed",
-      );
-    } else {
-      await expectReject(
-        () => fullAuthority.executeTool("run_process", {
-          argv: [process.execPath, "-e", "process.exit(0)"],
-          idempotency_key: "operator-durable-sandbox-unavailable",
-        }, relayContext(operatorAuthorization)),
-        "requires a behavior-verified OS workspace sandbox",
-      );
-    }
+    await expectReject(
+      () => fullAuthority.executeTool("run_process", {
+        argv: [process.execPath, "-e", "process.exit(0)"],
+        idempotency_key: "operator-process-execution-denied",
+      }, relayContext(operatorAuthorization)),
+      "reserved for the owner account",
+    );
+    await expectReject(
+      () => fullAuthority.executeTool("start_job", { steps: [{ argv: [process.execPath, "-e", ""] }] }, relayContext(operatorAuthorization)),
+      "reserved for the owner account",
+    );
 
     const ownedProcess = await fullAuthority.executeTool("start_process", {
       argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"],
     }, relayContext(ownerAuthorization));
     await expectReject(
       () => fullAuthority.executeTool("read_process", { session_id: ownedProcess.session_id }, relayContext(otherOperatorAuthorization)),
-      "belongs to another account",
+      "reserved for the owner account",
     );
     await fullAuthority.executeTool("kill_process", { session_id: ownedProcess.session_id, force: true }, relayContext(ownerAuthorization));
 
