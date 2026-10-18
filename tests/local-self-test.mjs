@@ -11,6 +11,7 @@ import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { runFixtureChild, stopFixtureChild, waitForFixtureExit, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { ResourceCoordinator } from "../src/local/resource-admission.mjs";
 import { isTerminalManagedJobStatus } from "../src/local/managed-job-terminal.mjs";
 import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
@@ -63,7 +64,16 @@ async function waitForSelfTestJob(manager, jobId, deadline, label) {
     if (isTerminalManagedJobStatus(value.status) && value.artifact_cleanup_pending !== true) return value;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
   }
-  throw new Error(`${label} did not settle within the shared resource CLI self-test budget; state=${JSON.stringify(lastState)}`);
+  let admission = null;
+  if (lastState?.current_phase === "resource_admission") {
+    try {
+      const { host, pressure, active_leases, waiters } = await new ResourceCoordinator().snapshot({ cwd: manager.workspace });
+      admission = { host, pressure, active_leases, waiters };
+    } catch {
+      admission = { diagnostic_unavailable: true };
+    }
+  }
+  throw new Error(`${label} did not settle within the shared resource CLI self-test budget; state=${JSON.stringify(lastState)}; admission=${JSON.stringify(admission)}`);
 }
 
 function remainingSelfTestBudget(deadline, label, maximum) {
