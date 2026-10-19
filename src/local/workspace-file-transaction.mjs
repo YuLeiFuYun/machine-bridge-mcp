@@ -17,9 +17,6 @@ export { sha256 } from "./workspace-file-transaction-helpers.mjs";
 /** @param {string} full @param {string} content @param {{mode: number} | null} [existing] @param {FileTransactionOptions} [options] */
 export async function atomicWriteText(full, content, existing = null, options = {}) {
   const readText = requiredReadText(options.readText, Boolean(options.expectedHash));
-  if (options.expectedHash && existing && !options.createOnly) return commitPatchTransaction([{
-    kind: "update", source: full, target: full, content, originalHash: options.expectedHash, mode: existing.mode & 0o777,
-  }], { ...options, readText });
   const remove = options.remove || rm;
   const createTarget = options.link || link;
   const move = options.rename || rename;

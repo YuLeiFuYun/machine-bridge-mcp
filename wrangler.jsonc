@@ -1,4 +1,5 @@
 {
+  // Canonical schema and binding definitions for `wrangler types` generation and IDE type safety.
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "machine-bridge-mcp",
   "main": "src/worker/index.ts",

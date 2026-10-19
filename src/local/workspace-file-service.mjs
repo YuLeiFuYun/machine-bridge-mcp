@@ -28,7 +28,7 @@ const DEFAULT_IGNORED_DIRECTORIES = new Set([
 ]);
 
 export class WorkspaceFileService {
-  constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationPaths }) {
+  constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationPaths, isProtectedPath = null, fileTransactionOptions = null }) {
     this.workspace = workspace;
     this.policy = policy;
     this.policyGate = policyGate;
@@ -38,6 +38,8 @@ export class WorkspaceFileService {
     this.displayPath = displayPath;
     this.throwIfCancelled = throwIfCancelled;
     this.withMutationPaths = withMutationPaths;
+    this.isProtectedPath = typeof isProtectedPath === "function" ? isProtectedPath : () => false;
+    this.fileTransactionOptions = fileTransactionOptions && typeof fileTransactionOptions === "object" ? fileTransactionOptions : {};
   }
 
   listRoots(context = {}) {
@@ -81,12 +83,25 @@ export class WorkspaceFileService {
   async listFiles(inputPath, maxFiles, context = {}, options = {}) {
     const root = await this.resolveExistingPath(inputPath, context);
     const info = await stat(root);
-    if (info.isFile()) return { path: this.displayPath(root, context), files: [this.displayPath(root, context)], truncated: false };
+    if (info.isFile()) {
+      const protectedPath = context?.origin === "relay" && await this.isProtectedPath(root, context);
+      return {
+        path: this.displayPath(root, context),
+        files: protectedPath ? [] : [this.displayPath(root, context)],
+        ...(protectedPath ? { skipped_files: 1 } : {}),
+        truncated: protectedPath,
+      };
+    }
     if (!info.isDirectory()) throw new BridgeError("invalid_request", "path is not a file or directory", { details: { reason: "unsupported_path_type" } });
     const files = [];
     let resultBytes = 0;
+    let skippedFiles = 0;
     const walkResult = await this.walk(root, async full => {
       this.throwIfCancelled(context);
+      if (context?.origin === "relay" && await this.isProtectedPath(full, context)) {
+        skippedFiles += 1;
+        return true;
+      }
       const shown = this.displayPath(full, context);
       const pathBytes = Buffer.byteLength(shown) + 8;
       if (files.length >= maxFiles || resultBytes + pathBytes > MAX_PATH_RESULT_BYTES) return false;
@@ -94,7 +109,11 @@ export class WorkspaceFileService {
       resultBytes += pathBytes;
       return true;
     }, context, { includeIgnored: options.includeIgnored === true });
-    return { path: this.displayPath(root, context), files, truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated };
+    return {
+      path: this.displayPath(root, context), files,
+      ...(skippedFiles ? { skipped_files: skippedFiles } : {}),
+      truncated: files.length >= maxFiles || resultBytes >= MAX_PATH_RESULT_BYTES || walkResult.truncated || skippedFiles > 0,
+    };
   }
 
   async readFile(args, context = {}) {
@@ -176,6 +195,7 @@ export class WorkspaceFileService {
       }
       this.throwIfCancelled(context);
       const commit = await commitAtomicText(full, content, existing, {
+        ...this.fileTransactionOptions,
         readText: readUtf8File,
         createOnly: args.create_only === true,
         expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
@@ -204,8 +224,19 @@ export class WorkspaceFileService {
       const bytes = Buffer.byteLength(updated);
       if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       this.throwIfCancelled(context);
-      await commitAtomicText(full, updated, info, { expectedHash: sha256(current), readText: readUtf8File });
-      return { ok: true, path: this.displayPath(full, context), replacements: args.replace_all ? occurrences : 1, sha256: sha256(updated), bytes };
+      const commit = await commitAtomicText(full, updated, info, {
+        ...this.fileTransactionOptions,
+        expectedHash: sha256(current),
+        readText: readUtf8File,
+      });
+      return {
+        ok: true,
+        path: this.displayPath(full, context),
+        replacements: args.replace_all ? occurrences : 1,
+        sha256: sha256(updated),
+        bytes,
+        ...(commit.warnings.length ? { warnings: commit.warnings } : {}),
+      };
     });
   }
   async applyPatch(args, context = {}) {
@@ -255,7 +286,7 @@ export class WorkspaceFileService {
         prepared.push({ kind: item.kind, source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
       }
       this.throwIfCancelled(context);
-      const transaction = await commitPatchOperations(prepared, { readText: readUtf8File });
+      const transaction = await commitPatchOperations(prepared, { ...this.fileTransactionOptions, readText: readUtf8File });
       return {
         ok: true,
         ...(transaction.warnings.length ? { warnings: transaction.warnings } : {}),
@@ -275,6 +306,7 @@ export class WorkspaceFileService {
       displayPath: this.displayPath,
       throwIfCancelled: this.throwIfCancelled,
       walk: (root, onFile, currentContext, options) => this.walk(root, onFile, currentContext, options),
+      isProtectedPath: this.isProtectedPath,
       readBoundedFile,
     });
   }

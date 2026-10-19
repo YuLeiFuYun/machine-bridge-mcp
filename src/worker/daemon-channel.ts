@@ -17,14 +17,6 @@ export function readyDaemonChannels(registry: ReadyDaemonRegistry): DaemonChanne
   return [];
 }
 
-export function daemonChannelOpen(channel: DaemonChannel | undefined): boolean {
-  return Boolean(channel && channel.readyState === DAEMON_CHANNEL_OPEN);
-}
-
-export function daemonChannelTransport(channel: DaemonChannel | undefined): "https" | "websocket" {
-  return channel?.daemonTransport === "https" ? "https" : "websocket";
-}
-
 export function trySendDaemonChannel(channel: DaemonChannel | undefined, value: unknown): boolean {
   if (!channel || channel.readyState !== DAEMON_CHANNEL_OPEN) return false;
   try {

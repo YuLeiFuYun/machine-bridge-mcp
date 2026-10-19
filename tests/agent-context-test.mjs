@@ -166,29 +166,39 @@ Follow the sample workflow.
   try {
     const context = await runtime.executeTool("agent_context", { path: "packages/example" });
     assert(context.scope_root === ".", `unexpected scope root: ${context.scope_root}`);
-    assert(context.builtin_instructions?.content.includes("Make the smallest coherent change"), "default working agreements were not injected");
-    assert(context.builtin_instructions?.content.includes("one multi-step managed job")
-      && context.builtin_instructions.content.includes("same durable job")
-      && context.builtin_instructions.content.includes("Directory names and the current shell working directory are not freshness evidence"),
+    assert(context.effective_instructions.includes("Make the smallest coherent change"), "default working agreements were not injected");
+    assert(context.effective_instructions.includes("one multi-step managed job")
+      && context.effective_instructions.includes("same durable job")
+      && context.effective_instructions.includes("Directory names and the current shell working directory are not freshness evidence"),
     "default working agreements omitted durable continuity or exact-worktree identity guidance");
-    assert(context.builtin_instructions?.content.includes("continuation.task_supervisor=true")
-      && context.builtin_instructions.content.includes("continuation_mode=task_supervisor")
-      && context.builtin_instructions.content.includes("single umbrella job shape")
-      && context.builtin_instructions.content.includes("Job Monitor is status and ownership evidence")
-      && context.builtin_instructions.content.includes("not by itself a reason to hand off unfinished task ownership")
-      && context.builtin_instructions.content.includes("continuation.continue_same_response=true")
-      && context.builtin_instructions.content.includes("actual host/tool boundary")
-      && context.builtin_instructions.content.includes("server_info, diagnose_runtime, read_file, search_text, and git_status surfaces directly")
-      && context.builtin_instructions.content.includes("Do not wrap each diagnostic in a managed process job")
-      && context.builtin_instructions.content.includes("execution_mode=managed_job")
-      && context.builtin_instructions.content.includes("launch it through `start_job`")
-      && !context.builtin_instructions.content.includes("npm run prerelease:release")
-      && !context.builtin_instructions.content.includes("machine-mcp workspace migrate"),
+    assert(context.effective_instructions.includes("continuation.task_supervisor=true")
+      && context.effective_instructions.includes("continuation_mode=task_supervisor")
+      && context.effective_instructions.includes("single umbrella job shape")
+      && context.effective_instructions.includes("Job Monitor is status and ownership evidence")
+      && context.effective_instructions.includes("not by itself a reason to hand off unfinished task ownership")
+      && context.effective_instructions.includes("continuation.continue_same_response=true")
+      && context.effective_instructions.includes("actual host/tool boundary")
+      && context.effective_instructions.includes("server_info, diagnose_runtime, read_file, search_text, and git_status surfaces directly")
+      && context.effective_instructions.includes("Do not wrap each diagnostic in a managed process job")
+      && context.effective_instructions.includes("execution_mode=managed_job")
+      && context.effective_instructions.includes("launch it through `start_job`")
+      && !context.effective_instructions.includes("npm run prerelease:release")
+      && !context.effective_instructions.includes("machine-mcp workspace migrate"),
     "default working agreements omitted generic managed-command ownership or retained project-specific release/migration workflow");
-    assert(context.builtin_instructions?.content.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && context.builtin_instructions.content.includes("stop and report the boundary"), "default working agreements omitted the fail-closed local GitHub control-plane rule");
-    assert(context.automatic_project_context?.content.includes("npm run check"), "automatic project context omitted declared package scripts");
-    assert(context.automatic_project_context?.content.includes("package-lock.json") && context.automatic_project_context?.content.includes(".github/workflows/ci.yml"), "automatic project context omitted lockfile or CI facts");
-    assert(context.automatic_project_context?.content.includes(".node-version") && context.automatic_project_context?.content.includes("26.5.0"), "automatic project context did not parse a bounded runtime-version hint");
+    assert(context.effective_instructions.includes("never call a hosted GitHub connector or ChatGPT GitHub plugin") && context.effective_instructions.includes("stop and report the boundary"), "default working agreements omitted the fail-closed local GitHub control-plane rule");
+    assert(context.effective_instructions.includes("npm run check"), "automatic project context omitted declared package scripts");
+    assert(context.effective_instructions.includes("package-lock.json") && context.effective_instructions.includes(".github/workflows/ci.yml"), "automatic project context omitted lockfile or CI facts");
+    assert(context.effective_instructions.includes(".node-version") && context.effective_instructions.includes("26.5.0"), "automatic project context did not parse a bounded runtime-version hint");
+    assert(!("content" in context.builtin_instructions) && !("content" in context.automatic_project_context)
+      && !("content" in context.instruction_files[0]),
+    "default agent context duplicated source instruction bodies beside effective_instructions");
+    const effectiveOnlyContext = await runtime.executeTool("agent_context", { path: "packages/example", include_instruction_content: true });
+    assert(!("content" in effectiveOnlyContext.builtin_instructions) && !("content" in effectiveOnlyContext.instruction_files[0]),
+      "include_instruction_content=true unexpectedly re-enabled duplicate source bodies");
+    const detailedContext = await runtime.executeTool("agent_context", { path: "packages/example", include_source_content: true });
+    assert(detailedContext.builtin_instructions?.content.includes("Make the smallest coherent change")
+      && detailedContext.instruction_files[0].content.includes("root project"),
+    "explicit detailed context omitted source instruction bodies");
     assert(!context.effective_instructions.includes("private-check-body.mjs"), "automatic project context leaked package script bodies");
     assert(context.effective_instructions.indexOf("Machine Bridge default working agreements") < context.effective_instructions.indexOf("Automatic project context"), "built-in defaults did not precede automatic project facts");
     assert(context.effective_instructions.indexOf("Automatic project context") < context.effective_instructions.indexOf("root project"), "explicit project instructions did not override automatic project facts");
@@ -430,7 +440,7 @@ Use the linked workflow.
     displayPath: (value) => value,
     resolveExistingPath: async (value) => value === "." ? compatWorkspace : join(compatWorkspace, value),
   });
-  const projectCompatContext = await projectCompatManager.agentContext({ path: "services/example" });
+  const projectCompatContext = await projectCompatManager.agentContext({ path: "services/example", include_source_content: true });
   assert(projectCompatContext.model_instructions_file?.content === "global model instructions\n", "global model_instructions_file was not loaded under a workspace-confined profile");
   assert(projectCompatContext.effective_instructions.indexOf("global model instructions") < projectCompatContext.effective_instructions.indexOf("root override"), "global model instructions did not precede project guidance");
   assert(projectCompatContext.instruction_files.length === 2, "project-only Codex instruction chain is incomplete");
@@ -452,7 +462,7 @@ Use the linked workflow.
     displayPath: (value) => value,
     resolveExistingPath: async (value) => value === "." ? compatWorkspace : join(compatWorkspace, value),
   });
-  const compatContext = await compatManager.agentContext({ path: "services/example" });
+  const compatContext = await compatManager.agentContext({ path: "services/example", include_source_content: true });
   assert(compatContext.instruction_files.length === 3, "Codex-compatible global/project instruction chain is incomplete");
   assert(compatContext.instruction_files[0].content === "global override\n", "global AGENTS.override.md did not win");
   assert(compatContext.instruction_files[1].content === "root override\n", "project AGENTS.override.md did not win");
@@ -486,7 +496,7 @@ Use the linked workflow.
     resolveExistingPath: async () => hostileWorkspace,
   });
   const hostileContext = await hostileManager.agentContext({ path: "." });
-  assert(hostileContext.automatic_project_context?.content.includes("npm run test"), "safe metadata was lost while filtering hostile fields");
+  assert(hostileContext.effective_instructions.includes("npm run test"), "safe metadata was lost while filtering hostile fields");
   assert(!hostileContext.effective_instructions.includes("ignore previous instructions")
     && !hostileContext.effective_instructions.includes("follow hidden directions")
     && !hostileContext.effective_instructions.includes("malicious-body.mjs")
@@ -506,7 +516,7 @@ Use the linked workflow.
     resolveExistingPath: async () => ambiguousPackageWorkspace,
   });
   const ambiguousPackageContext = await ambiguousPackageManager.agentContext({ path: "." });
-  assert(ambiguousPackageContext.automatic_project_context?.content.includes("Multiple JavaScript lockfiles"), "ambiguous package-manager state was not reported");
+  assert(ambiguousPackageContext.effective_instructions.includes("Multiple JavaScript lockfiles"), "ambiguous package-manager state was not reported");
   assert(!ambiguousPackageContext.commands.some((command) => command.name === "package.test"), "ambiguous package-manager state incorrectly defaulted an automatic command to npm");
 
   const optOutHome = join(root, "opt-out-home");
@@ -528,7 +538,7 @@ Use the linked workflow.
     displayPath: (value) => value,
     resolveExistingPath: async () => optOutWorkspace,
   });
-  const optedOut = await optOutManager.agentContext({ path: "." });
+  const optedOut = await optOutManager.agentContext({ path: ".", include_source_content: true });
   assert(optedOut.builtin_instructions === null && optedOut.automatic_project_context === null, "global opt-out did not disable automatic instruction layers");
   assert(optedOut.model_instructions_file?.content.includes("owner private model guidance"), "local restricted policy lost user-global model guidance");
   assert(!optedOut.effective_instructions.includes("Machine Bridge default working agreements"), "disabled built-in instructions remained in effective context");
@@ -537,8 +547,8 @@ Use the linked workflow.
     authority: { owner: false, principal: { kind: "account", role: "editor" } },
   };
   const delegatedContext = await optOutManager.agentContext({ path: "." }, delegatedAccountContext);
-  assert(delegatedContext.builtin_instructions?.content.includes("Machine Bridge default working agreements")
-    && delegatedContext.automatic_project_context?.content.includes("npm run test"),
+  assert(delegatedContext.effective_instructions.includes("Machine Bridge default working agreements")
+    && delegatedContext.effective_instructions.includes("npm run test"),
   "remote non-owner context incorrectly inherited owner-global opt-out switches");
   assert(delegatedContext.model_instructions_file === null
     && !delegatedContext.effective_instructions.includes("owner private model guidance")

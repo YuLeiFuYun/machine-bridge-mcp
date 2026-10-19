@@ -43,7 +43,7 @@ It is therefore an optional compatibility and reuse surface, not a replacement f
 
 The MCP specification defines stdio and Streamable HTTP as standard transports. In stdio, the host launches the server as a subprocess and exchanges newline-delimited JSON-RPC through stdin/stdout. Streamable HTTP runs the server independently behind an HTTP endpoint.
 
-Machine Bridge uses MCP `2026-07-28` for both stdio and remote Streamable HTTP. Requests carry version and capabilities in `_meta`; `server/discover` replaces initialization, there is no MCP protocol session, and an HTTP response stream belongs to exactly one request. `initialize`, `Mcp-Session-Id`, `Last-Event-ID`, replay markers, and other explicit removed protocol-session markers receive bounded upgrade guidance and cannot dispatch tool work. Remote `/mcp` is POST-only, so GET returns 405 rather than acting as a recovery channel. Closing a current request stream cancels that request, and a connection, process, OAuth token, or stdio lifetime is never treated as conversation identity.
+Machine Bridge uses MCP `2026-07-28` for both stdio and remote Streamable HTTP. Requests carry version and capabilities in `_meta`; `server/discover` replaces initialization, there is no MCP protocol session, and an HTTP response stream belongs to exactly one request. Under default protocol handling, `initialize`, `Mcp-Session-Id`, `Last-Event-ID`, replay markers, and other explicit removed protocol-session markers receive bounded upgrade guidance and cannot dispatch tool work; the opt-in stdio `--compat` shim is the only exception for the initialization handshake. Remote `/mcp` is POST-only, so GET returns 405 rather than acting as a recovery channel. Closing a current request stream cancels that request, and a connection, process, OAuth token, or stdio lifetime is never treated as conversation identity.
 
 ## Automatic capability selection
 
@@ -72,6 +72,10 @@ machine-mcp client-config --client all --workspace /path/to/project --profile ag
 machine-mcp client-config --client all --workspace /path/to/project --profile edit
 machine-mcp client-config --client all --workspace /path/to/project --profile review
 ```
+
+## Current protocol requirements
+
+Use a client that sends the current protocol version and client capabilities in request metadata on every supported request. The default stdio path and remote HTTP reject `initialize` and missing or unsupported request metadata. A narrow, opt-in stdio `--compat` shim answers `initialize`/`notifications/initialized` for hosts that require the handshake and fills metadata fields only when they are absent. It does not support older protocol versions: explicit retired, future, or malformed metadata is still rejected. The environment variable `MBM_MCP_COMPAT=1` enables the same stdio-only shim unless an explicit CLI value overrides it.
 
 ## JSON stdio configuration
 

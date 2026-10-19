@@ -75,6 +75,7 @@ export const COVERAGE_FIXTURE_TESTS = Object.freeze([
   "tests/relay-connection-test.mjs",
   "tests/relay-http-fallback-test.mjs",
   "tests/managed-job-boundary-test.mjs",
+  "tests/managed-job-terminal-maintenance-test.mjs",
   "tests/managed-jobs-test.mjs",
   "tests/account-admin-test.mjs",
   "tests/monotonic-deadline-test.mjs",

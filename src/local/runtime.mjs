@@ -60,7 +60,7 @@ export function runtimeToolHandlerNames() {
 }
 
 export class LocalRuntime {
-  constructor({ workerUrl = "", deviceIdentity = null, renewDeviceSession = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null, idleSleepMode = "activity" }) {
+  constructor({ workerUrl = "", deviceIdentity = null, renewDeviceSession = null, expectedRelayVersion = "", workspace, policy, logger = console, onSuperseded = null, onFatal = null, jobRoot = "", securityStateRoot = "", serviceControlRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "", agentHome = process.env.HOME || process.env.USERPROFILE || "", codexHome = process.env.CODEX_HOME || "", recoverJobs = true, applicationAutomation = {}, deviceRootStatus = null, resolveGitExecutable = null, processResourceWaitMs = undefined, resourceCoordinatorRoot = "", resourceCoordinatorOptions = null, idleSleepMode = "activity" }) {
     if (typeof workerUrl !== "string") throw new TypeError("runtime Worker URL must be a string");
     const remoteWorkerUrl = workerUrl;
     this.workspaceInput = resolve(workspace || process.cwd());
@@ -114,6 +114,7 @@ export class LocalRuntime {
       displayPath: (value, context) => this.displayPath(value, context),
       throwIfCancelled: (context) => this.throwIfCancelled(context),
       withMutationPaths: (paths, operation) => this.fileMutationCoordinator.withPaths(paths, operation),
+      isProtectedPath: (target) => this.operationAuthorizer?.isProtectedPath(target) === true,
     });
     if (typeof jobRoot !== "string" || !jobRoot.trim()) throw new Error("persistent managed-job root is required");
     this.managedJobManager = new ManagedJobManager({
@@ -192,10 +193,9 @@ export class LocalRuntime {
     this.securityAudit = new SecurityAuditLog({ root: securityStateRoot });
     this.operationAuthorizer = new OperationAuthorizer({
       workspace: this.workspace,
-      root: securityStateRoot,
       resolveExistingPath: (value, context) => this.resolveExistingPath(value, context),
       resolveWritePath: (value, context) => this.resolveWritePath(value, context),
-      protectedRoots: [securityStateRoot, browserStateRoot],
+      protectedRoots: [securityStateRoot, browserStateRoot, serviceControlRoot],
     });
     this.browserBridgeManager = new BrowserBridgeManager({
       policy: this.policy,

@@ -17,12 +17,13 @@ const MAX_SEARCH_RESULT_BYTES = 1024 * 1024;
  * @property {(path: string, context: unknown) => string} displayPath
  * @property {(context: unknown) => void} throwIfCancelled
  * @property {(root: string, onFile: (full: string) => Promise<boolean>, context: unknown, options: {includeIgnored: boolean}) => Promise<{truncated: boolean}>} walk
+ * @property {(path: string, context: unknown) => boolean | Promise<boolean>} [isProtectedPath]
  * @property {(path: string, maxBytes: number, label: string) => Promise<{buffer: Buffer, info: import('node:fs').Stats}>} readBoundedFile
  */
 
 /** @param {SearchWorkspaceTextOptions} options */
 export async function searchWorkspaceText(options) {
-  const { args, context, resolveExistingPath, displayPath, throwIfCancelled, walk, readBoundedFile } = options;
+  const { args, context, resolveExistingPath, displayPath, throwIfCancelled, walk, readBoundedFile, isProtectedPath } = options;
   const query = typeof args.query === "string" ? args.query : "";
   if (!query) throw new BridgeError("invalid_request", "query is required", { details: { reason: "missing_query" } });
   if (query.length > 4096) throw new BridgeError("invalid_request", "query exceeds the maximum length of 4096 characters", { details: { reason: "query_too_long" } });
@@ -44,6 +45,9 @@ export async function searchWorkspaceText(options) {
     if (glob && !path.posix.matchesGlob(path.basename(root), glob)) {
       return finalizeSearchResult({ query, root: displayPath(root, context), matches, visited_files: 0, skipped_files: 0, truncated: false });
     }
+    if (isRelayContext(context) && isProtectedPath && await isProtectedPath(root, context)) {
+      return finalizeSearchResult({ query, root: displayPath(root, context), matches, visited_files: 0, skipped_files: 1, truncated: true });
+    }
     const outcome = await searchOneFile(root, query, matches, maximumMatches, context, displayPath, throwIfCancelled, readBoundedFile, { caseSensitive, contextLines });
     if (outcome.reportableSkip) skippedFiles += 1;
     return finalizeSearchResult({
@@ -57,6 +61,10 @@ export async function searchWorkspaceText(options) {
     walk: (onFile) => walk(root, async (full) => {
       const relativePath = path.relative(root, full).split(path.sep).join("/");
       if (glob && !path.posix.matchesGlob(relativePath, glob)) return true;
+      if (isRelayContext(context) && isProtectedPath && await isProtectedPath(full, context)) {
+        skippedFiles += 1;
+        return true;
+      }
       return onFile(full);
     }, context, { includeIgnored: args.include_ignored === true }),
     searchFile: async (full) => {
@@ -195,4 +203,10 @@ function isDelegatedRelayContext(context) {
   const principal = /** @type {Record<string, unknown>} */ (authority.principal !== null && typeof authority.principal === "object" ? authority.principal : {});
   return record.origin === "relay" && principal.kind === "account"
     && principal.role !== "owner" && authority.owner !== true;
+}
+
+/** @param {unknown} context */
+function isRelayContext(context) {
+  const record = /** @type {Record<string, unknown>} */ (context !== null && typeof context === "object" ? context : {});
+  return record.origin === "relay";
 }

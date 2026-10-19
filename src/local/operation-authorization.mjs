@@ -1,4 +1,7 @@
+// @ts-check
+
 import { createHmac, randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import accessContract from "../shared/access-contract.json" with { type: "json" };
 import { BridgeError } from "./errors.mjs";
@@ -8,20 +11,34 @@ export { OPERATION_APPROVAL_SCOPES, classifyOperation };
 
 const OWNER_ONLY_TOOLS = new Set((accessContract.ownerOnlyTools || []).map(String));
 
+/** @typedef {ReturnType<typeof import("./authority-context.mjs").buildAuthorityContext>} AuthorityContext */
+/** @typedef {{origin?: string, authority?: AuthorityContext, operationAuthorization?: OperationAuthorizationDecision}} OperationContext */
+/** @typedef {{tool: string, args: Record<string, unknown>, context?: OperationContext}} AuthorizedOperation */
+/** @typedef {{source: "local" | "trusted-owner" | "role-ceiling", category: string, scopes: string[], targetHash: string}} OperationAuthorizationBaseDecision */
+/** @typedef {OperationAuthorizationBaseDecision & {allowed: boolean}} OperationAuthorizationDecision */
+/** @typedef {{category?: string, scope?: string, scopes?: string[], targetHash?: string, canonicalTargets?: string[]}} OperationRequirement */
+/** @typedef {{workspace: string, resolveExistingPath: (value: unknown, context?: OperationContext) => Promise<string>, resolveWritePath: (value: unknown, context?: OperationContext) => Promise<string>, protectedRoots: string[], auditTargetKey?: Uint8Array}} OperationAuthorizerOptions */
+
 export class OperationAuthorizer {
-  constructor(options = {}) {
-    this.workspace = path.resolve(String(options.workspace || process.cwd()));
-    this.root = options.root ? path.resolve(String(options.root)) : "";
+  /** @param {OperationAuthorizerOptions} options */
+  constructor(options) {
+    this.workspace = path.resolve(options.workspace);
     this.resolveExistingPath = options.resolveExistingPath;
     this.resolveWritePath = options.resolveWritePath;
-    this.protectedRoots = Array.isArray(options.protectedRoots) ? options.protectedRoots.filter(Boolean).map((value) => path.resolve(String(value))) : [];
+    this.protectedRoots = options.protectedRoots.filter(Boolean).map(canonicalProtectedRoot);
     this.auditTargetKey = Buffer.from(options.auditTargetKey || randomBytes(32));
-    this.now = typeof options.now === "function" ? options.now : Date.now;
   }
 
+  /** @param {string} target */
+  isProtectedPath(target) {
+    const canonicalTarget = canonicalizePathForPolicy(target);
+    return this.protectedRoots.some((root) => isWithinRoot(root, canonicalTarget));
+  }
+
+  /** @param {AuthorizedOperation} operation @returns {Promise<OperationAuthorizationDecision>} */
   async authorize(operation) {
     if (operation?.context?.origin !== "relay") {
-      return { allowed: true, source: "local", category: "local operation", scopes: [], targetHash: "" };
+      return /** @type {OperationAuthorizationDecision} */ ({ allowed: true, source: "local", category: "local operation", scopes: [], targetHash: "" });
     }
     const authority = operation.context?.authority;
     const principal = authority?.principal;
@@ -40,14 +57,20 @@ export class OperationAuthorizer {
         details: { reason: "account_role_owner_only_tool_ceiling", tool: operation.tool, role: principal.role },
       });
     }
+    const operationContext = operation.context;
+    /** @type {(value: unknown) => Promise<string>} */
+    const resolveExistingPath = (value) => this.resolveExistingPath(value, operationContext);
+    /** @type {(value: unknown) => Promise<string>} */
+    const resolveWritePath = (value) => this.resolveWritePath(value, operationContext);
+    /** @type {OperationRequirement | null} */
     const requirement = await classifyOperation(operation.tool, operation.args, {
       workspace: this.workspace,
-      resolveExistingPath: (value) => this.resolveExistingPath(value, operation.context),
-      resolveWritePath: (value) => this.resolveWritePath(value, operation.context),
+      resolveExistingPath,
+      resolveWritePath,
     });
     const decision = operationDecision(requirement, authority, this.auditTargetKey);
     operation.context.operationAuthorization = { ...decision, allowed: false };
-    if (requirement && requirement.canonicalTargets?.some((target) => this.protectedRoots.some((root) => isWithinRoot(root, target)))) {
+    if (requirement && requirement.canonicalTargets?.some((target) => this.isProtectedPath(target))) {
       throw new BridgeError("authorization_denied", "Machine Bridge control-plane state cannot be accessed through generic path-based remote tools", {
         details: { reason: "control_plane_state_protected", tool: operation.tool },
       });
@@ -57,6 +80,8 @@ export class OperationAuthorizer {
   }
 }
 
+/** @param {OperationRequirement | null} requirement @param {AuthorityContext} authority @param {Uint8Array} auditTargetKey */
+/** @param {OperationRequirement | null} requirement @param {AuthorityContext} authority @param {Uint8Array} auditTargetKey @returns {OperationAuthorizationBaseDecision} */
 function operationDecision(requirement, authority, auditTargetKey) {
   return {
     source: authority.owner ? "trusted-owner" : "role-ceiling",
@@ -66,20 +91,47 @@ function operationDecision(requirement, authority, auditTargetKey) {
   };
 }
 
+/** @param {Uint8Array} key @param {unknown} value */
 function auditTargetFingerprint(key, value) {
   return createHmac("sha256", key).update(String(value || "")).digest("hex");
 }
 
+/** @param {unknown} scopes */
 function normalizeScopes(scopes) {
   const requested = new Set((Array.isArray(scopes) ? scopes : []).map((scope) => String(scope || "")));
   return OPERATION_APPROVAL_SCOPES.filter((scope) => requested.has(scope));
 }
 
+/** @param {string} root @param {string} target */
 function isWithinRoot(root, target) {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+/** @param {string} value */
+function canonicalProtectedRoot(value) {
+  return canonicalizePathForPolicy(value);
+}
+
+/** @param {string} value */
+function canonicalizePathForPolicy(value) {
+  let candidate = path.resolve(String(value));
+  /** @type {string[]} */
+  const suffix = [];
+  while (true) {
+    try {
+      const canonical = realpathSync.native ? realpathSync.native(candidate) : realpathSync(candidate);
+      return suffix.length ? path.resolve(canonical, ...suffix.reverse()) : canonical;
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return path.resolve(String(value));
+      suffix.push(path.basename(candidate));
+      candidate = parent;
+    }
+  }
+}
+
+/** @param {OperationRequirement} requirement @param {AuthorityContext} authority @param {string} tool */
 function assertRequirementWithinAuthority(requirement, authority, tool) {
   const scopes = normalizeScopes(requirement.scopes || [requirement.scope]);
   const policy = authority.effectivePolicy;

@@ -1436,6 +1436,7 @@ const managedJobCancellationSource = readFileSync(join(root, "src", "local", "ma
 const managedJobDirectorySource = readFileSync(join(root, "src", "local", "managed-job-directory.mjs"), "utf8");
 const managedJobDirectoryGenerationSource = readFileSync(join(root, "src", "local", "managed-job-directory-generation.mjs"), "utf8");
 const managedJobCapacitySource = readFileSync(join(root, "src", "local", "managed-job-capacity.mjs"), "utf8");
+const managedJobCapacityMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-capacity-maintenance.mjs"), "utf8");
 const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
 if (!managedJobsIntegrationSource.includes("RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500")
     || !managedJobsIntegrationSource.includes("withFixtureResourceTransactionLock(coordinatorRoot")
@@ -1500,7 +1501,7 @@ if (!managedJobsManagerSource.includes('retentionClass = "managed"')
     || !managedJobTransientRecoverySource.includes('context?.origin === "relay"')
     || !managedJobTransientRecoverySource.includes('context?.authority?.origin === "relay"')
     || !managedJobTransientRecoverySource.includes('transient_recovery_pending: true')
-    || !managedJobsManagerSource.includes("incomingRetentionClass: retentionClass")
+    || !managedJobCapacityMaintenanceSource.includes("incomingRetentionClass: retentionClass")
     || !managedJobDurableProcessSource.includes('retentionClass: "transient_process"')
     || !managedJobRetentionSource.includes("orderManagedJobTerminalEviction(removable")
     || !managedJobRetentionPolicySource.includes("TRANSIENT_PROCESS_RECOVERY_GRACE_MS = 30 * 60 * 1000")
@@ -1538,7 +1539,7 @@ if (!managedJobTransientRecoveryCapacitySource.includes("NON_OWNER_TRANSIENT_PEN
     || !managedJobTransientRecoveryCapacitySource.includes("assertTerminalJobEvidence(dir, status)")
     || !managedJobsManagerSource.includes("assertTransientProcessRecoveryAccountCapacity")
     || !managedJobsManagerSource.includes("idempotencyReplayEligible: idempotencyDigest !== null")
-    || !managedJobsManagerSource.includes("recoveryAccountCapacity.applies && alreadyExists")
+    || !managedJobCapacityMaintenanceSource.includes("recoveryAccountCapacity.applies && alreadyExists")
     || !managedJobModuleBoundariesSource.includes('"src/local/managed-job-transient-recovery-capacity.mjs": 180')
     || !managedJobsIntegrationSource.includes("seventeenth same-account pending recovery was not rejected before durable state publication or process launch")
     || !managedJobsIntegrationSource.includes("full account pending-recovery quota blocked or relaunched a genuine persisted same-key replay")
@@ -1570,7 +1571,7 @@ if (!managedJobDirectoryGenerationSource.includes('startsWith("retired_job_")') 
 for (const forbidden of ["existsSync(dir)", "quarantine could not be restored", "renameSync(quarantine, dir)"]) {
   if (managedJobDirectoryGenerationSource.includes(forbidden)) throw new Error(`managed-job retirement regained unsafe pathname rollback: ${forbidden}`);
 }
-if (!managedJobsManagerSource.includes('state_kind: "retired_managed_job"') || !managedJobsManagerSource.includes("managedJobCapacitySnapshot")) {
+if (!managedJobsManagerSource.includes('state_kind: "retired_managed_job"') || !managedJobCapacityMaintenanceSource.includes("managedJobCapacitySnapshot")) {
   throw new Error("managed-job retired-state privacy/capacity projection contract is missing");
 }
 for (const removed of ["approve(args", '"pending-local-operator"', "start the staged job through"]) {

@@ -7,7 +7,7 @@ import { inspectProcessInstance } from "./process-identity.mjs";
 import { runStdioServer } from "./stdio.mjs";
 import { assertCanonicalFullPolicy, POLICY_PROFILES, toolsForPolicy } from "./tools.mjs";
 import { resolvePolicy } from "./cli-policy.mjs";
-import { effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
+import { effectiveCompatMode, effectiveLogFormat, effectiveLogLevel, normalizeCommand, parseArgs, validateCommandOptions, validateLoggingOptions, validatePositionals } from "./cli-options.mjs";
 import { createLocalAdminCommands } from "./cli-local-admin.mjs";
 import { createServiceCommand } from "./cli-service.mjs";
 import { createActivateCommand } from "./cli-activate.mjs";
@@ -46,6 +46,7 @@ import {
   ensureWorkspaceDirectory,
   expandHome,
   loadState,
+  machineServiceControlRoot,
   readDaemonLockOwner,
   redactState,
   removeStateRoot,
@@ -351,6 +352,7 @@ function createRemoteRuntime({ args, workspace, state, daemonLock, deviceSession
     logger: createLogger({ level: args.json ? "error" : effectiveLogLevel(args), format: effectiveLogFormat(args), component: "daemon" }),
     jobRoot: join(state.paths.profileDir, "jobs"),
     securityStateRoot: state.paths.profileDir,
+    serviceControlRoot: machineServiceControlRoot(),
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
@@ -404,7 +406,9 @@ async function stdioCommand(args) {
     resources: state.resources,
     resourceStatePath: state.paths.statePath,
     browserStateRoot: state.paths.stateRoot,
+    serviceControlRoot: machineServiceControlRoot(),
     deviceRootStatus: state.worker?.deviceIdentity ? deviceRootProviderStatus(state.worker.deviceIdentity) : null,
+    compatMode: effectiveCompatMode(args),
   });
 }
 
@@ -820,6 +824,10 @@ Commands:
   browser reset     Offline-revoke browser pairing credentials; re-pair after restart
   browser path      Print the packaged unpacked-extension directory
   uninstall         Delete known Worker(s), remove autostart and local state
+
+stdio options:
+  --compat              Accept the removed initialize/initialized handshake for legacy stdio clients;
+                        the server still speaks only its own protocol version and creates no session
 
 Start options:
   --workspace PATH      Use and remember this workspace path

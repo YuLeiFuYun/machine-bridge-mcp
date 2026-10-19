@@ -50,7 +50,7 @@ const SENSITIVE_CONFIG_SEGMENTS = new Set(["gh", "gcloud", "azure", "1password"]
 const PRIVATE_KEY_BASENAME = /^(?:id_(?:rsa|dsa|ecdsa|ed25519)|identity)(?:\.(?:pem|key))?$/i;
 const PRIVATE_KEY_EXTENSION = /\.(?:pem|key|p12|pfx|p8|jks|keystore)$/i;
 const SENSITIVE_STATE_BASENAME = /^(?:terraform\.tfstate(?:\.backup)?|.*\.tfstate(?:\.backup)?)$/i;
-const SENSITIVE_CREDENTIAL_BASENAME = /(?:token|secret|credential|private[-_]?key|client[-_]?secret|api[-_]?key|access[-_]?key)/i;
+const SENSITIVE_CREDENTIAL_BASENAME = /^(?:\.?netrc|_netrc|\.curlrc|(?:access|refresh|auth|oauth|api|client)[-_]?(?:token|key|secret)s?|service[-_]?account|(?:token|tokens|secret|secrets|credential|credentials))(?:\.(?:json|ya?ml|toml|ini|conf|cfg|txt|db|sqlite))?$/i;
 const RESOURCE_TOKEN = /\{\{resource:[a-z][a-z0-9._-]{0,63}\}\}/;
 
 export function reviewedOperationToolNames() {

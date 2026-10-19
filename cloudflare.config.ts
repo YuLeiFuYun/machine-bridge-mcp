@@ -1,3 +1,4 @@
+// Canonical Cloudflare deployment configuration for the `@cloudflare/workers-shared` / `cf` toolchain.
 import { bindings, defineConfig, exports as workerExports } from "cf/config";
 
 const name = process.env.MBM_WORKER_NAME || "machine-bridge-mcp";

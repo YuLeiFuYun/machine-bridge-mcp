@@ -145,3 +145,7 @@ For incident response:
 6. restart and reconnect only trusted clients.
 
 Version 3 has no capability-lease command or runtime surface and never creates pending approval IDs. Persisted state from unsupported older schemas is preserved and rejected rather than interpreted as current authorization state.
+
+## Machine-service control root and recursive traversal
+
+Relay-originated path operations treat the machine-service control root as protected alongside profile security state and browser state. Direct access is denied, and recursive search and file listing apply the same protected-root check to each candidate rather than relying only on the requested root. Filtered results expose `skipped_files` and `truncated` so omitted content is not mistaken for no matches. This is a structured-tool boundary, not an operating-system sandbox.

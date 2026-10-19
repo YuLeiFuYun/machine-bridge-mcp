@@ -23,6 +23,12 @@ export interface OuterWorkerEnv {
 
 const logOuterFetchFailure = createThrottledEdgeLogger();
 
+// One bridge-specific Durable Object per deployment is the documented topology: it
+// owns OAuth clients, tokens, the daemon registry, and pending calls as one
+// consistency domain. A request-supplied workspace name must never select that
+// object, because it is unauthenticated and would fork authoritative state.
+const BRIDGE_OBJECT_NAME = "default";
+
 export async function handleOuterWorkerFetch(
   request: Request,
   env: OuterWorkerEnv,
@@ -38,7 +44,7 @@ export async function handleOuterWorkerFetch(
     if (globallyLimited) return globallyLimited;
     const limited = await admitStatefulRequest(request, env.STATEFUL_RATE_LIMITER, extraOrigins);
     if (limited) return limited;
-    const stub = env.BRIDGE.getByName("default");
+    const stub = env.BRIDGE.getByName(BRIDGE_OBJECT_NAME);
     const streamed = await proxyMcpResponseStream({ request, bridge: stub, ctx });
     return streamed ?? await stub.fetch(sanitizeBridgeRequest(request));
   } catch (error) {

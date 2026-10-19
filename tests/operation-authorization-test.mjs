@@ -10,8 +10,10 @@ import { policyProfile } from "../src/local/policy.mjs";
 const root = mkdtempSync(path.join(tmpdir(), "mbm-authority-test-"));
 const workspace = path.join(root, "workspace");
 const securityStateRoot = path.join(root, "state");
+const serviceControlRoot = path.join(root, "machine-service-control");
 mkdirSync(workspace, { recursive: true });
 mkdirSync(securityStateRoot, { recursive: true });
+mkdirSync(serviceControlRoot, { recursive: true });
 writeFileSync(path.join(workspace, "README.md"), "ok\n");
 const outside = path.join(root, "ordinary.txt");
 writeFileSync(outside, "outside\n");
@@ -21,7 +23,6 @@ writeFileSync(sensitive, "synthetic\n", { mode: 0o600 });
 
 const accountId = `acct_${"a".repeat(32)}`;
 const clientId = `mcp_client_${"b".repeat(43)}`;
-let now = Date.UTC(2026, 6, 21, 0, 0, 0);
 
 try {
   const catalogNames = new Set(catalog.map((tool) => tool.name));
@@ -33,11 +34,9 @@ try {
 
   const authorizer = new OperationAuthorizer({
     workspace,
-    root: securityStateRoot,
-    now: () => now,
     resolveExistingPath: async (value) => path.resolve(workspace, String(value)),
     resolveWritePath: async (value) => path.resolve(workspace, String(value)),
-    protectedRoots: [securityStateRoot],
+    protectedRoots: [securityStateRoot, serviceControlRoot],
     auditTargetKey: Buffer.alloc(32, 7),
   });
   const validRelayAuthorization = {
@@ -112,13 +111,25 @@ try {
   const reviewerSensitive = await rejected(() => authorizer.authorize(operation("read_file", { path: sensitive }, "reviewer")));
   assert(reviewerSensitive.details?.reason === "account_role_path_ceiling" || reviewerSensitive.details?.reason === "account_role_sensitive_ceiling", "reviewer sensitive read was not denied");
 
-  for (const sensitiveName of ["id_ed25519", "id_rsa", "server.key", "signing.pem", "terraform.tfstate"]) {
+  for (const sensitiveName of [
+    "id_ed25519", "id_rsa", "server.key", "signing.pem", "terraform.tfstate",
+    ".netrc", "_netrc", ".curlrc", "oauth-tokens.json", "client_secret.json",
+  ]) {
     writeFileSync(path.join(workspace, sensitiveName), "synthetic credential material\n", { mode: 0o600 });
     const denied = await rejected(() => authorizer.authorize(operation("read_file", { path: sensitiveName }, "reviewer")));
     assert(denied.details?.reason === "account_role_sensitive_ceiling",
       `reviewer could read sensitive credential filename ${sensitiveName}`);
     const classified = await authorizer.authorize(operation("read_file", { path: sensitiveName }, "owner"));
     assert(classified.scopes.includes("sensitive-read"), `owner read of ${sensitiveName} was not classified as sensitive`);
+  }
+
+  for (const ordinarySource of ["src/tokenizer.js", "src/worker/oauth-tokens.ts", "tests/private-key-test.mjs"]) {
+    const full = path.join(workspace, ordinarySource);
+    mkdirSync(path.dirname(full), { recursive: true });
+    writeFileSync(full, "export const ordinaryCode = true;\n", "utf8");
+    const allowed = await authorizer.authorize(operation("read_file", { path: ordinarySource }, "reviewer"));
+    assert(!allowed.scopes.includes("sensitive-read"),
+      `ordinary source filename was incorrectly classified as a credential: ${ordinarySource}`);
   }
 
   const ownerSensitive = await authorizer.authorize(operation("read_file", { path: sensitive }, "owner"));
@@ -141,6 +152,13 @@ try {
   assert(ownerControlPlaneOperation.context.operationAuthorization?.allowed === false
       && /^[a-f0-9]{64}$/.test(ownerControlPlaneOperation.context.operationAuthorization.targetHash),
   "control-plane denial lost its privacy-bounded classified target evidence for audit");
+
+  const serviceControlState = path.join(serviceControlRoot, "service-operation.lock");
+  writeFileSync(serviceControlState, "synthetic service control marker\n", { mode: 0o600 });
+  const ownerServiceControlOperation = operation("read_file", { path: serviceControlState }, "owner");
+  const ownerServiceControl = await rejected(() => authorizer.authorize(ownerServiceControlOperation));
+  assert(ownerServiceControl.details?.reason === "control_plane_state_protected",
+    "owner path-based access could read the independent machine-service control root");
 
   const ownerBrowser = await authorizer.authorize(operation("browser_action", { action: "navigate", url: "https://example.com" }, "owner"));
   assert(ownerBrowser.scopes.includes("browser-session"), "owner browser session was not classified");

@@ -144,6 +144,14 @@ assert.equal(screenshot.$mcp.content[0].data, PNG_BASE64);
 assert.equal(screenshot.$mcp.structuredContent.tab_metadata_verified, true);
 assert.deepEqual(Object.keys(screenshot.$mcp.content[0]).sort(), ["data", "mimeType", "type"],
   "screenshot returned private decoded bytes instead of the fixed MCP image projection");
+// `allow_tab_switch` must survive the MCP -> extension hop; when it did not, the catalog
+// option was unreachable and the documented non-disruptive capture mode could not be used.
+const screenshotRequest = requests.findLast((entry) => entry.method === "screenshot");
+assert.equal(screenshotRequest.params.allowTabSwitch, true, "screenshot dropped the default allowTabSwitch");
+await service.screenshot({ tab_id: 7, allow_tab_switch: false, timeout_seconds: 5 });
+assert.equal(requests.findLast((entry) => entry.method === "screenshot").params.allowTabSwitch, false,
+  "screenshot ignored allow_tab_switch=false");
+await assert.rejects(service.screenshot({ tab_id: 7, allow_tab_switch: "false" }), /allow_tab_switch must be boolean/);
 for (const data of [
   "data:image/png;base64,QUJD",
   "data:image/png;base64,==",

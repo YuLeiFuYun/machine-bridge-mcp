@@ -30,6 +30,24 @@ assert(output.text().startsWith("x".repeat(40)) && output.text().endsWith("x".re
 assert.equal(stream.baseOffset, chunk.length - capacity);
 assert.equal(output.truncatedBytes, chunk.length * 2 - capacity);
 
+const amplificationCapacity = 1024 * 1024;
+const amplificationStream = new ProcessOutputStream(amplificationCapacity);
+const amplificationOutput = new BoundedOutput(amplificationCapacity);
+const amplificationChunk = Buffer.alloc(4096, 97);
+let concatenatedBytes = 0;
+try {
+  Buffer.concat = (buffers, length) => {
+    concatenatedBytes += buffers.reduce((sum, bytes) => sum + bytes.length, 0);
+    return originalConcat(buffers, length);
+  };
+  for (let index = 0; index < 513; index += 1) {
+    amplificationStream.append(amplificationChunk);
+    amplificationOutput.append(amplificationChunk);
+  }
+} finally { Buffer.concat = originalConcat; }
+assert(concatenatedBytes < amplificationCapacity * 4,
+  `bounded output re-copied retained windows instead of only incoming bytes (${concatenatedBytes} bytes concatenated)`);
+
 fc.assert(fc.property(
   fc.integer({ min: 1, max: 128 }),
   fc.array(fc.string({ unit: fc.constantFrom("a", "b", "c"), maxLength: 200 }), { maxLength: 25 }),

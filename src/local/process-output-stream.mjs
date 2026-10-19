@@ -13,9 +13,21 @@ export class ProcessOutputStream {
       throw new Error("maximum retained output bytes must be a positive safe integer");
     }
     this.maximumBytes = maximum;
-    this.buffer = Buffer.alloc(0);
+    this.storage = Buffer.alloc(maximum);
+    this.writeOffset = 0;
+    this.retainedBytes = 0;
     this.baseOffset = 0;
     this.totalBytes = 0;
+  }
+
+  get buffer() {
+    const start = (this.writeOffset - this.retainedBytes + this.maximumBytes) % this.maximumBytes;
+    const end = start + this.retainedBytes;
+    if (end <= this.maximumBytes) return Buffer.from(this.storage.subarray(start, end));
+    return Buffer.concat([
+      this.storage.subarray(start),
+      this.storage.subarray(0, end - this.maximumBytes),
+    ], this.retainedBytes);
   }
 
   /** @param {unknown} chunk */
@@ -23,11 +35,19 @@ export class ProcessOutputStream {
     const input = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""));
     if (!input.length) return;
     this.totalBytes += input.length;
-    // Trim before copying: a small subarray can otherwise retain a huge backing allocation.
-    const tail = input.subarray(Math.max(0, input.length - this.maximumBytes));
-    const retained = Math.min(this.buffer.length, this.maximumBytes - tail.length);
-    this.buffer = Buffer.concat([this.buffer.subarray(this.buffer.length - retained), tail]);
-    this.baseOffset = this.totalBytes - this.buffer.length;
+    if (input.length >= this.maximumBytes) {
+      this.storage.set(input.subarray(input.length - this.maximumBytes));
+      this.writeOffset = 0;
+      this.retainedBytes = this.maximumBytes;
+      this.baseOffset = this.totalBytes - this.retainedBytes;
+      return;
+    }
+    const first = Math.min(input.length, this.maximumBytes - this.writeOffset);
+    this.storage.set(input.subarray(0, first), this.writeOffset);
+    if (first < input.length) this.storage.set(input.subarray(first), 0);
+    this.writeOffset = (this.writeOffset + input.length) % this.maximumBytes;
+    this.retainedBytes = Math.min(this.maximumBytes, this.retainedBytes + input.length);
+    this.baseOffset = this.totalBytes - this.retainedBytes;
   }
 
   /** @param {unknown} requestedOffset @param {unknown} maximumBytes */
@@ -37,7 +57,12 @@ export class ProcessOutputStream {
     const clampedOffset = Math.min(requested, this.totalBytes);
     const effectiveOffset = Math.max(clampedOffset, this.baseOffset);
     const start = effectiveOffset - this.baseOffset;
-    const slice = this.buffer.subarray(start, Math.min(this.buffer.length, start + maximum));
+    const length = Math.min(maximum, this.retainedBytes - start);
+    const ringStart = (this.writeOffset - this.retainedBytes + start + this.maximumBytes) % this.maximumBytes;
+    const ringEnd = ringStart + length;
+    const slice = length <= 0 ? Buffer.alloc(0)
+      : ringEnd <= this.maximumBytes ? this.storage.subarray(ringStart, ringEnd)
+        : Buffer.concat([this.storage.subarray(ringStart), this.storage.subarray(0, ringEnd - this.maximumBytes)], length);
     const decoded = decodeProcessBytes(slice);
     return {
       ...decoded,
@@ -50,6 +75,7 @@ export class ProcessOutputStream {
       truncated_after: effectiveOffset + slice.length < this.totalBytes,
     };
   }
+
 }
 
 /** @param {Buffer} bytes */

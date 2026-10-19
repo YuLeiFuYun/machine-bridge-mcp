@@ -1,19 +1,16 @@
 # Changelog
 
-## 3.0.0-beta.202 - 2026-10-18
+## 3.0.0-beta.203 - 2026-10-19
 
-- Prevent delegated search, project instruction loading, skill discovery, and structured Git history/diff output from exposing sensitive paths or hard-linked files; make skipped search inputs explicitly mark results as incomplete and preserve match text in long-line snippets.
-- Make arbitrary remote process execution and process-session controls owner-only because workspace-scoped execution can still read workspace credentials and exfiltrate them over the network.
-- Reject stale refresh-token retries after their replacement has been consumed, prevent retries from reviving revoked families, and validate access-token family revocation on every authorization check.
-- Expand sensitive filename classification for common private keys, key containers, and infrastructure state files; make network retries opt-in for operations known to be safe to replay.
-- Add regression coverage for the security boundaries, install redacted fail-fast process handlers, throttle platform-service crash loops, and expand strict local type checking with a guard against silently omitted checked modules.
-- Make workspace listing and literal search ignore common generated/dependency directories by default, with an explicit include-ignored override; add relative glob filtering, case-insensitive matching, and bounded context lines.
-- Consolidate numeric parsing and plain-record validation into shared primitives while retaining the existing local import paths; reject non-record objects in tool-capacity accounting.
-- Expand strict local type checking to 62 modules, including Computer Use argument validation, execution routing, managed-job dependency handling, workspace transactions, and public runtime projections; extract workspace transaction cleanup/error helpers behind a narrow module boundary, and keep the high-risk workspace-profile migration explicitly queued for a dedicated type-contract review.
-- Add a regression assertion that the product default remains the full-authority profile.
-- Bring workspace-profile migration into strict local type checking with explicit contracts for state envelopes, migration markers, service-provider state, and active-job/lock inventory; keep migration behavior unchanged.
-- Preserve exact branch selection across pending version edits without weakening prerelease conflict checks; prevent empty delegated Git path enumeration from falling back to an unfiltered content command.
-- Keep arbitrary rejection content out of fatal logs and guarantee termination when rejection inspection or logging throws; synchronize the remote-execution security and threat-model documentation.
+- Keep one bridge Durable Object per deployment. The `x-mbm-workspace` / `?workspace=` shard selector is removed: it had no producer, and an unauthenticated request header could fork OAuth clients, tokens, the daemon registry, and pending calls into a second consistency domain.
+- Add an opt-in `--compat` stdio mode for legacy hosts that refuse to start without `initialize`. It accepts the removed handshake and `notifications/initialized` without creating a session, advertises the server's own protocol version instead of echoing the client's, and fills request metadata only when fields are absent; explicit retired, future, or malformed metadata remains subject to normal rejection. `client-config` no longer injects the flag, and `--help` documents it.
+- Make `browser_screenshot.allow_tab_switch` reachable over MCP: the catalog now declares the option and the service parses it as a strict boolean, so non-disruptive capture can fail on an inactive target instead of activating it.
+- Replace the `MBM_DEBUG`-driven verbose error projection with an explicit per-call option. `MBM_DEBUG` no longer widens tool error output, the stdio server opts in per process with `MBM_VERBOSE_ERRORS=1`, the relay never opts in, and verbose messages and causes share the single sanitized 2000-character ceiling of the public message field.
+- Drop the placeholder Desktop Automation and Power Management abstraction classes; capability reporting is now a plain function over the platform.
+- Align `cloudflare.config.ts`, `wrangler.config.ts`, and `wrangler.jsonc` on the documented deployment topology, and relax `devEngines.packageManager` to `warn` so older npm setups do not hard-fail initialization.
+- Bound stdio response backlog and output-buffer copying; harden protected-path resolution, terminal-job evidence checks, file-transaction cleanup reporting, and default instruction-context payloads. Add regression tests for the associated security, settlement, and performance boundaries.
+- Repository hygiene: ignore the generated `.workflow/` directory and drop cached review artifacts and intermediate backups from the local workspace.
+
 
 ## Historical releases
 
