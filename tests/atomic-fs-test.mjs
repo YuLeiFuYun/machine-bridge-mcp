@@ -449,6 +449,26 @@ try {
   assert(integratedAttempts === 3 && await readFile(integratedRetryTarget, "utf8") === "replacement",
     "workspace atomic replacement did not use the bounded retry");
 
+  const retryRaceTarget = join(root, "retry-precondition-target.txt");
+  await writeFile(retryRaceTarget, "observed", "utf8");
+  let retryRaceAttempts = 0;
+  await expectAsyncThrow(() => atomicWriteText(retryRaceTarget, "replacement", { mode: 0o600 }, {
+    expectedHash: sha256("observed"),
+    readText: (filePath) => readFile(filePath, "utf8"),
+    async rename(source, target) {
+      retryRaceAttempts += 1;
+      if (retryRaceAttempts === 1) {
+        await writeFile(target, "external-generation", "utf8");
+        throw Object.assign(new Error("transient sharing violation"), { code: "EPERM" });
+      }
+      await rename(source, target);
+    },
+  }), "file changed before atomic commit", "conflict", true, "hash_mismatch");
+  assert(retryRaceAttempts === 1 && await readFile(retryRaceTarget, "utf8") === "external-generation",
+    "atomic replacement retry overwrote a generation that changed after the initial precondition check");
+  assert(!(await readdir(root)).some((name) => name.startsWith(".retry-precondition-target.txt.mbm-")),
+    "atomic replacement conflict during retry retained its staging artifact");
+
   const atomicRaceTarget = join(root, "atomic-generation-race.txt");
   await writeFile(atomicRaceTarget, "observed", { encoding: "utf8", mode: 0o600 });
   // atomicWriteText only needs the preserved permission bits here. Supplying

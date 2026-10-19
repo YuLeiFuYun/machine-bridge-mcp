@@ -24,18 +24,20 @@ export async function atomicWriteText(full, content, existing = null, options = 
   await mkdir(dirname(full), { recursive: true });
   const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   let staged = false;
+  const verifyPrecondition = async () => {
+    if (!options.expectedHash) return;
+    let current;
+    try { current = await readText(full); } catch (error) {
+      if (hasErrorCode(error, "ENOENT")) throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
+      throw error;
+    }
+    if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
+  };
   try {
     await writeFlushedText(temp, content, existing ? existing.mode & 0o777 : 0o600, remove);
     staged = true;
-    if (options.expectedHash) {
-      let current;
-      try { current = await readText(full); } catch (error) {
-        if (hasErrorCode(error, "ENOENT")) throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
-        throw error;
-      }
-      if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
-    }
     if (options.createOnly) {
+      await verifyPrecondition();
       await createTarget(temp, full);
       const cleanupFailures = await removeArtifacts([temp], remove);
       staged = cleanupFailures.length > 0;
@@ -45,7 +47,10 @@ export async function atomicWriteText(full, content, existing = null, options = 
           : [],
       };
     }
-    await renameWithRetry(temp, full, move);
+    await renameWithRetry(temp, full, async (source, target) => {
+      await verifyPrecondition();
+      await move(source, target);
+    });
     return { warnings: [] };
   } catch (error) {
     if (!staged) throw error;

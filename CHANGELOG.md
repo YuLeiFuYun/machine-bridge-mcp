@@ -1,8 +1,9 @@
 # Changelog
 
-## 3.0.0-beta.204 - 2026-10-19
+## 3.0.0-beta.205 - 2026-10-19
 
-- Supersede the rejected beta.203 candidate after its Windows atomic-replacement and macOS resource CLI checks failed. Repeat exact-package activation and deployed OAuth acceptance for the new candidate.
+- Supersede beta.203 after its Windows atomic-replacement and macOS resource CLI checks failed, and beta.204 after review reproduced an external-generation overwrite during a replacement retry. Repeat exact-package activation and deployed OAuth acceptance for the new candidate.
+- Revalidate the expected content digest before every atomic-replacement attempt so an external edit after a transient sharing failure returns a conflict and retains the external generation; regression coverage also verifies staging cleanup.
 - Preserve an absent coverage environment variable in uninstrumented CLI test children so an exact-runtime version probe retains its light resource classification; assert the actual CLI environment before submission.
 
 - Keep one bridge Durable Object per deployment. The `x-mbm-workspace` / `?workspace=` shard selector is removed: it had no producer, and an unauthenticated request header could fork OAuth clients, tokens, the daemon registry, and pending calls into a second consistency domain.
