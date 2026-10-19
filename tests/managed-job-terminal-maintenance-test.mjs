@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scrubTerminalJobArtifacts } from "../src/local/managed-job-terminal-maintenance.mjs";
@@ -12,6 +12,7 @@ const dir = join(root, jobId);
 const statusFile = join(dir, "status.json");
 const resultFile = join(dir, "result.json");
 const finishedAt = new Date().toISOString();
+const stableResultMtime = new Date("2020-01-01T00:00:00.000Z");
 const status = { job_id: jobId, status: "succeeded", finished_at: finishedAt, result_persisted: true };
 const result = { job_id: jobId, status: "succeeded", finished_at: finishedAt, steps: [], finally_steps: [] };
 
@@ -19,6 +20,7 @@ try {
   mkdirSync(dir, { mode: 0o700 });
   writeFileSync(statusFile, JSON.stringify(status), { mode: 0o600 });
   writeFileSync(resultFile, JSON.stringify(result), { mode: 0o600 });
+  utimesSync(resultFile, stableResultMtime, stableResultMtime);
   let resultReads = 0;
   const countedRead = (...args) => {
     resultReads += 1;
@@ -66,9 +68,8 @@ try {
     /terminal evidence changed during validation/);
 
   writeFileSync(statusFile, JSON.stringify(status), { mode: 0o600 });
-  const previousMtime = statSync(resultFile).mtime;
   writeFileSync(resultFile, JSON.stringify({ ...result, status: "failed" }), { mode: 0o600 });
-  utimesSync(resultFile, previousMtime, previousMtime);
+  utimesSync(resultFile, stableResultMtime, stableResultMtime);
   assert.throws(() => assertTerminalJobEvidence(dir, status, { readResult: countedRead }), /terminal status and result are inconsistent/);
   assert.equal(resultReads, 2, "changed terminal evidence reused a stale cache entry");
 
