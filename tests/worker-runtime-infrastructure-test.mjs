@@ -3035,6 +3035,48 @@ async function test_outer_async_gateway_failure_escapes() {
 
 await test_outer_async_gateway_failure_escapes();
 
+async function test_outer_bridge_single_object_routing() {
+  const limiter = { limit: async () => ({ success: true }) };
+  const requestedObjects = [];
+  const fakeEnv = {
+    BRIDGE: {
+      getByName(name) {
+        requestedObjects.push(name);
+        return { fetch: async () => new Response("ok", { status: 200 }) };
+      },
+    },
+    STATEFUL_GLOBAL_RATE_LIMITER: limiter,
+    STATEFUL_RATE_LIMITER: limiter,
+  };
+  const ctx = { waitUntil() {} };
+  const identity = { server: "machine-bridge-mcp", version: "3.0.0-test" };
+
+  // OAuth clients, tokens, the daemon registry, and pending calls share one
+  // consistency domain. A client-supplied name must never select another object:
+  // that key is unauthenticated and would fork authoritative state across shards.
+  await handleOuterWorkerFetch(new Request("https://relay.example.invalid/daemon/http", { method: "POST" }), fakeEnv, ctx, identity);
+  nodeAssert.equal(requestedObjects[0], "default");
+
+  await handleOuterWorkerFetch(new Request("https://relay.example.invalid/daemon/http", {
+    method: "POST",
+    headers: { "x-mbm-workspace": "project_alpha-1" },
+  }), fakeEnv, ctx, identity);
+  nodeAssert.equal(requestedObjects[1], "default");
+
+  await handleOuterWorkerFetch(new Request("https://relay.example.invalid/daemon/http?workspace=ws_beta", {
+    method: "POST",
+  }), fakeEnv, ctx, identity);
+  nodeAssert.equal(requestedObjects[2], "default");
+
+  await handleOuterWorkerFetch(new Request("https://relay.example.invalid/mcp", {
+    method: "POST",
+    headers: { "x-mbm-workspace": "../../../etc/passwd" },
+  }), fakeEnv, ctx, identity);
+  nodeAssert.equal(requestedObjects[3], "default");
+}
+
+await test_outer_bridge_single_object_routing();
+
 async function test_metrics_capacity_recurses() {
  const m=new WorkerObservability();
  for(let i=0;i<160;i++){m.callStarted("tool_"+i);m.callFinished("tool_"+i);}

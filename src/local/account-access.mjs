@@ -3,13 +3,11 @@ import { BridgeError } from "./errors.mjs";
 import { buildAuthorityContext } from "./authority-context.mjs";
 import { policyProfile, toolNamesForPolicy, assertToolAllowed } from "./policy.mjs";
 
-export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
 const OWNER_ONLY_TOOLS = new Set((accessContract.ownerOnlyTools || []).map(String));
 const ACCOUNT_ROLE_ENTRIES = Object.entries(accessContract.roles)
   .map(([name, value]) => [name, Object.freeze({ ...value })]);
 const ACCOUNT_ROLE_BY_NAME = new Map(ACCOUNT_ROLE_ENTRIES);
 export const ACCOUNT_ROLES = Object.freeze(Object.fromEntries(ACCOUNT_ROLE_ENTRIES));
-export const DEFAULT_ACCOUNT_ROLE = String(accessContract.defaultRole);
 export const OWNER_ACCOUNT_ROLE = String(accessContract.ownerRole);
 
 export function normalizeAccountRole(value) {

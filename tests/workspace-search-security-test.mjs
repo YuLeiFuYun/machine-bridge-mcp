@@ -6,13 +6,28 @@ import { WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-workspace-search-security-"));
 let workspace = join(root, "workspace");
+const controlStateRoot = join(root, "state");
+const serviceControlRoot = join(root, "machine-service-control");
 try {
   await mkdir(join(workspace, "nested"), { recursive: true });
   await mkdir(join(workspace, "node_modules", "fixture"), { recursive: true });
   await mkdir(join(workspace, "dist"), { recursive: true });
+  await mkdir(controlStateRoot, { recursive: true });
+  await mkdir(serviceControlRoot, { recursive: true });
   workspace = await realpath(workspace);
+  const protectedRoots = [await realpath(controlStateRoot), await realpath(serviceControlRoot)];
+  await writeFile(join(controlStateRoot, "state.json"), "CONTROL_PLANE_MARKER state\n");
+  await writeFile(join(serviceControlRoot, "service-operation.lock"), "CONTROL_PLANE_MARKER service\n");
   await writeFile(join(workspace, ".env"), "API_KEY=synthetic-search-secret\n");
   await writeFile(join(workspace, "nested", "server.key"), "synthetic-key-secret\n");
+  await writeFile(join(workspace, ".netrc"), "login synthetic-netrc-login password synthetic-netrc-secret\n");
+  await writeFile(join(workspace, "_netrc"), "login synthetic-windows-login password synthetic-windows-secret\n");
+  await writeFile(join(workspace, ".curlrc"), "user = synthetic-curl-secret\n");
+  await mkdir(join(workspace, "src", "worker"), { recursive: true });
+  await mkdir(join(workspace, "tests"), { recursive: true });
+  await writeFile(join(workspace, "src", "tokenizer.js"), "ordinary-code-marker tokenizer\n");
+  await writeFile(join(workspace, "src", "worker", "oauth-tokens.ts"), "ordinary-code-marker oauth source\n");
+  await writeFile(join(workspace, "tests", "private-key-test.mjs"), "ordinary-code-marker private-key test\n");
   await writeFile(join(workspace, "visible.txt"), "ordinary NEEDLE visible text\n");
   await writeFile(join(workspace, "node_modules", "fixture", "ignored.txt"), "IGNORED_MATCH from dependency tree\n");
   await writeFile(join(workspace, "dist", "ignored.txt"), "IGNORED_MATCH from build output\n");
@@ -26,6 +41,10 @@ try {
     displayPath: (value) => relative(workspace, value) || ".",
     throwIfCancelled() {},
     withMutationPaths: async (_paths, run) => run(),
+    isProtectedPath: (value) => protectedRoots.some((protectedRoot) => {
+      const candidate = resolve(value);
+      return candidate === protectedRoot || candidate.startsWith(`${protectedRoot}${sep}`);
+    }),
   });
   const delegated = {
     origin: "relay",
@@ -37,10 +56,36 @@ try {
   };
   const delegatedSearch = await service.searchText({ path: ".", query: "synthetic-" , max_matches: 100 }, delegated);
   assert(!JSON.stringify(delegatedSearch.matches).includes("synthetic-search-secret")
-    && !JSON.stringify(delegatedSearch.matches).includes("synthetic-key-secret"),
+    && !JSON.stringify(delegatedSearch.matches).includes("synthetic-key-secret")
+    && !JSON.stringify(delegatedSearch.matches).includes("synthetic-netrc-secret")
+    && !JSON.stringify(delegatedSearch.matches).includes("synthetic-windows-secret")
+    && !JSON.stringify(delegatedSearch.matches).includes("synthetic-curl-secret"),
   "delegated recursive search exposed a sensitive file");
-  assert(delegatedSearch.skipped_files >= 2 && delegatedSearch.truncated === true,
+  assert(delegatedSearch.skipped_files >= 5 && delegatedSearch.truncated === true,
     "delegated recursive search did not report skipped sensitive files as incomplete");
+  const ordinaryCodeSearch = await service.searchText({ path: ".", query: "ordinary-code-marker", max_matches: 100 }, delegated);
+  assert(ordinaryCodeSearch.matches.length === 3
+      && ordinaryCodeSearch.matches.some((match) => match.path === join("src", "tokenizer.js"))
+      && ordinaryCodeSearch.matches.some((match) => match.path === join("src", "worker", "oauth-tokens.ts"))
+      && ordinaryCodeSearch.matches.some((match) => match.path === join("tests", "private-key-test.mjs")),
+    "delegated recursive search blocked ordinary source files with credential-related substrings in their names");
+
+  const delegatedOwner = {
+    origin: "relay",
+    authority: {
+      owner: true,
+      principal: { kind: "account", role: "owner" },
+      effectivePolicy: { unrestrictedPaths: true, allowExec: true },
+    },
+  };
+  const protectedStateSearch = await service.searchText({ path: "..", query: "CONTROL_PLANE_MARKER", max_matches: 100 }, delegatedOwner);
+  assert(protectedStateSearch.matches.length === 0 && protectedStateSearch.skipped_files >= 2 && protectedStateSearch.truncated === true,
+    `recursive search exposed control-plane files when the requested root was their ancestor: ${JSON.stringify(protectedStateSearch)}`);
+  const protectedStateListing = await service.listFiles("..", 1000, delegatedOwner);
+  assert(!protectedStateListing.files.some((value) => value.startsWith(`..${sep}state${sep}`)
+      || value.startsWith(`..${sep}machine-service-control${sep}`))
+      && protectedStateListing.skipped_files >= 2 && protectedStateListing.truncated === true,
+    "recursive file listing exposed protected control-plane paths or hid that its results were incomplete");
 
   const ownerSearch = await service.searchText({ path: ".", query: "API_KEY=synthetic-search-secret", max_matches: 100 }, { origin: "local" });
   assert(ownerSearch.matches.some((match) => match.path === ".env"),

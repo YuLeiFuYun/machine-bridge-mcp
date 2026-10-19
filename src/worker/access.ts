@@ -20,9 +20,7 @@ const profiles = policyContract.profiles as unknown as Record<string, DaemonPoli
 const ownerOnlyTools = new Set((accessContract.ownerOnlyTools as string[] | undefined)?.map(String) ?? []);
 const toolAvailability = new Map((toolCatalog as Array<{ name: string; availability: string }>).map((tool) => [tool.name, tool.availability]));
 
-export const ACCOUNT_ACCESS_REVISION = Number(accessContract.revision);
 export const ACCOUNT_ROLES = Object.freeze(Object.keys(roles));
-export const DEFAULT_ACCOUNT_ROLE = String(accessContract.defaultRole) as AccountRole;
 export const OWNER_ACCOUNT_ROLE = String(accessContract.ownerRole) as AccountRole;
 
 export function normalizeAccountRole(value: unknown): AccountRole | null {

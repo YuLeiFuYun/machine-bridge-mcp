@@ -68,17 +68,8 @@ export class AppAutomationManager {
 
   capabilities() {
     return {
-      platform: this.platform,
-      discovery: true,
-      open: true,
-      accessibility_inspection: this.platform === "darwin",
-      structured_accessibility_actions: this.platform === "darwin",
-      window_screenshot: this.platform === "darwin",
+      ...desktopAutomationCapabilities(this.platform),
       background_visual_point: this.visualPointCapability(),
-      arbitrary_script_execution: false,
-      permission_note: this.platform === "darwin"
-        ? "UI inspection and actions require macOS Accessibility permission for the Machine Bridge runtime."
-        : "Structured UI inspection currently requires macOS; application discovery and opening remain cross-platform.",
     };
   }
 
@@ -1051,6 +1042,22 @@ function optionalString(value, label, maxLength) {
   if (value === undefined) return "";
   if (typeof value !== "string" || value.includes("\0") || value.length > maxLength) throw new Error(`${label} must be a string of at most ${maxLength} characters without NUL bytes`);
   return value;
+}
+
+export function desktopAutomationCapabilities(platform = process.platform) {
+  const isDarwin = platform === "darwin";
+  return {
+    platform,
+    discovery: true,
+    open: true,
+    accessibility_inspection: isDarwin,
+    structured_accessibility_actions: isDarwin,
+    window_screenshot: isDarwin,
+    arbitrary_script_execution: false,
+    permission_note: isDarwin
+      ? "UI inspection and actions require macOS Accessibility permission for the Machine Bridge runtime."
+      : "Structured UI inspection currently requires macOS; application discovery and opening remain cross-platform.",
+  };
 }
 
 function assertMacAccessibility(platform) {

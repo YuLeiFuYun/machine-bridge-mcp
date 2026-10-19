@@ -123,7 +123,7 @@ The full-only `generate_ssh_key_resource` operation is implemented locally. The 
 
 ### Stdio MCP server
 
-The stdio server implements newline-delimited JSON-RPC over stdin/stdout. Each executable request must carry the single supported MCP `2026-07-28` metadata contract; there is no initialize-time version negotiation or protocol session. It advertises policy-filtered tools through current discovery/list results, returns text plus structured content, supports native image content, maps current stdio cancellation notifications to runtime call IDs, and sends process diagnostics only to stderr.
+The stdio server implements newline-delimited JSON-RPC over stdin/stdout. Each executable request must satisfy the single supported MCP `2026-07-28` metadata contract; there is no protocol session. An explicit `--compat` (or `MBM_MCP_COMPAT=1`) mode exists only for legacy stdio clients that still send the removed handshake: it answers `initialize` with the supported version (never an echoed client version) and ignores `notifications/initialized`. It fills request metadata only when fields are absent; explicit retired, future, or malformed metadata is preserved and rejected by normal validation. It creates no session, stores no replay state, and is never enabled for the remote relay. It advertises policy-filtered tools through current discovery/list results, returns text plus structured content, supports native image content, maps current stdio cancellation notifications to runtime call IDs, and sends process diagnostics only to stderr.
 
 ### Cloudflare Worker and Durable Object
 

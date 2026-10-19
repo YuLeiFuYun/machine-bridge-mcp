@@ -50,10 +50,8 @@ The complete component and trust-boundary diagram is in [docs/OVERVIEW.md](docs/
 
 ## MCP protocol model
 
-Machine Bridge uses MCP `2026-07-28` for both stdio and remote HTTP. There is no successful initialization-era adapter: every supported request is current and request-scoped.
-
-- **Native current requests are self-describing.** Protocol version and client capabilities travel in `_meta`; HTTP requests also mirror the version, method, and applicable name/parameter values into validated headers. Current `2026-07-28` clients use `server/discover` and do not create an MCP protocol session.
-- **Removed protocol requests fail closed.** `initialize`, `Mcp-Session-Id`, `Last-Event-ID`, and other explicit removed session/replay markers do not dispatch tool work and receive bounded upgrade guidance. Remote `/mcp` is POST-only; GET remains a 405 method rejection. Obsolete clients must reconnect with MCP `2026-07-28`.
+Machine Bridge uses MCP `2026-07-28` for both stdio and remote HTTP under one current request-scoped protocol contract. The default stdio path and remote HTTP require current request-scoped metadata. The opt-in stdio `--compat` shim answers only the legacy initialization handshake and fills metadata fields only when absent; explicit retired, future, or malformed versions remain rejected. It does not restore sessions or replay behavior.
+Removed protocol requests fail closed with bounded upgrade guidance; hosted clients must reconnect with MCP `2026-07-28` and use `server/discover` rather than initialization.
 - **HTTP streams are request-scoped and non-resumable.** Closing the response stream cancels that request. There is no recovery GET, SSE event-ID replay, or session-bound delivery store.
 - **Removed session/replay semantics never execute.** Unsupported protocol dates and requests for the retired session/recovery model receive bounded rejection or upgrade guidance rather than legacy state or replay behavior.
 - **Transport identity is not conversation identity.** Stdio and HTTP processes/connections may interleave unrelated requests; state that spans calls must use an explicit tool, job, process-session, or resource identifier.
@@ -67,7 +65,7 @@ The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered t
 - Node.js 26 or newer
 - npm 12 or newer
 
-The project intentionally follows one current runtime baseline rather than carrying compatibility branches for older Node/npm behavior. Node 26 provides the tested process, module, permission, and platform semantics used by the release gates; npm 12 provides the installation-script controls used by the documented global install. `.node-version`, `.nvmrc`, `packageManager`, strict engines, local checks, and CI keep that baseline consistent.
+The project intentionally follows one current runtime baseline rather than carrying compatibility branches for older Node/npm behavior. Node 26 provides the tested process, module, permission, and platform semantics used by the release gates; npm 12 provides the installation-script controls used by the documented global install. `.node-version`, `.nvmrc`, `packageManager`, published `engines`, and `.npmrc engine-strict=true` keep that baseline consistent; `devEngines` is advisory (`onFail: warn`) so dependency automation can still refresh the lockfile on a newer Node.
 
 ## Install
 

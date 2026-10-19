@@ -5,7 +5,7 @@ import { TRANSIENT_PROCESS_RECOVERY_SLOTS, transientProcessUndeliveredRecoveryPr
 import { readJson, resourceErrorClass, safeReadDir } from "./managed-job-storage.mjs";
 import { assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity } from "./managed-job-state-validation.mjs";
 import { isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
-import { assertTerminalJobEvidence } from "./managed-job-terminal-maintenance.mjs";
+import { assertTerminalJobEvidence } from "./managed-job-terminal-evidence.mjs";
 
 export const NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS = TRANSIENT_PROCESS_RECOVERY_SLOTS;
 const ACCOUNT_ID = /^acct_[A-Za-z0-9_-]{20,96}$/;

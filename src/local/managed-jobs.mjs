@@ -30,15 +30,18 @@ import { assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity, managed
 import { managedJobRecoveryAttempts, MAX_MANAGED_JOB_RECOVERY_ATTEMPTS } from "./managed-job-recovery-history.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
 import { retiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
-import { managedJobCapacitySnapshot, MAX_JOBS } from "./managed-job-capacity.mjs";
+import { MAX_JOBS } from "./managed-job-capacity.mjs";
+import { pruneManagedJobsAtCapacity } from "./managed-job-capacity-maintenance.mjs";
 import { writeManagedJobCancellation } from "./managed-job-cancellation.mjs";
 import { pruneManagedJobs } from "./managed-job-retention.mjs";
-import { assertTerminalJobEvidence, scrubTerminalJobArtifacts } from "./managed-job-terminal-maintenance.mjs";
+import { scrubTerminalJobArtifacts } from "./managed-job-terminal-maintenance.mjs";
+import { assertTerminalJobEvidence } from "./managed-job-terminal-evidence.mjs";
 import {
   ACTIVE_JOB_STATES, isTerminalManagedJobResult, isTerminalManagedJobStatus, persistManagedJobTerminal, terminalStatusFromResult,
 } from "./managed-job-terminal.mjs";
 export { launchRunner } from "./managed-job-runner.mjs";
 const MAX_PLAN_BYTES = 1024 * 1024;
+const PRUNE_INTERVAL_MS = 30_000;
 
 export class ManagedJobManager {
   constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true, runnerEnvironmentOverrides = {}, runnerSpawnProcess = null }) {
@@ -59,6 +62,7 @@ export class ManagedJobManager {
       throw new TypeError("runnerSpawnProcess must be a function when configured");
     }
     this.runnerSpawnProcess = runnerSpawnProcess;
+    this.lastPruneAt = 0;
     this.runnerExitRecovery = createManagedJobRunnerExitRecovery({
       reconcileStatus: (dir) => this.reconcileStatus(dir), logger: this.logger,
     });
@@ -188,16 +192,8 @@ export class ManagedJobManager {
           context,
           reconcileStatus: (dependencyDir) => this.reconcileStatus(dependencyDir),
         });
-      if (!(recoveryAccountCapacity.applies && alreadyExists)) {
-        pruneManagedJobs({
-          jobRoot: this.jobRoot,
-          logger: this.logger,
-          reserveSlots: alreadyExists ? 0 : 1,
-          protectedJobIds: new Set(plan.depends_on || []),
-          incomingRetentionClass: retentionClass,
-        });
-      }
-      const capacitySnapshot = managedJobCapacitySnapshot(this.jobRoot);
+      const { snapshot: capacitySnapshot, pruned } = pruneManagedJobsAtCapacity(this.jobRoot, this.logger, { alreadyExists, recoveryAccountCapacity, plan, retentionClass });
+      if (pruned) this.lastPruneAt = Date.now();
       if (!alreadyExists && capacitySnapshot.retained_state >= MAX_JOBS) {
         throw new BridgeError("limit_exceeded", `managed job capacity is fully occupied (${MAX_JOBS})`, {
           retryable: true,
@@ -292,17 +288,21 @@ export class ManagedJobManager {
     }
   }
 
-
   list(args = {}, context = {}, options = {}) {
     this.authorizeTool("list_jobs");
     this.assertMaintenanceAvailable();
-    this.prune();
-    return listManagedJobs({
+    const listOptions = {
       jobRoot: this.jobRoot, args, context, logger: this.logger,
       reconcileStatus: (dir) => this.reconcileStatus(dir),
       assertKnownStatus: (dir, status) => { assertManagedJobDirectoryIdentity(dir, status); assertKnownManagedJobStatus(status); },
       maximumLimit: options.maximumLimit,
-    });
+    };
+    let listing = listManagedJobs(listOptions);
+    if (listing.maintenanceRequired || listing.retained >= MAX_JOBS || Date.now() - this.lastPruneAt >= PRUNE_INTERVAL_MS) {
+      if (this.prune()) listing = listManagedJobs(listOptions);
+    }
+    const { maintenanceRequired: _maintenanceRequired, ...result } = listing;
+    return result;
   }
 
   read(args = {}, context = {}, options = {}) {
@@ -429,7 +429,6 @@ export class ManagedJobManager {
     if (this.stateRoot) assertStateMaintenanceAvailable(this.stateRoot);
   }
 
-
   jobDir(value) {
     return resolveManagedJobDirectory(this.jobRoot, value);
   }
@@ -443,6 +442,12 @@ export class ManagedJobManager {
     assertKnownManagedJobStatus(initial);
     if (initial.status === "staged") return;
     if (isTerminalManagedJobStatus(initial.status)) {
+      // The runner persists terminal evidence before its final cleanup-status write. Let a
+      // still-live runner finish that two-phase commit instead of racing its status replacement.
+      if (initial.artifact_cleanup_pending === true) {
+        try { if (runnerProcessIsCurrent(initial, dir)) return; }
+        catch { /* If ownership cannot be established, fall through to fail-closed evidence checks. */ }
+      }
       scrubTerminalJobArtifacts(dir, initial);
       return;
     }
@@ -520,11 +525,13 @@ export class ManagedJobManager {
     if (!capacity) return false;
     try {
       pruneManagedJobs({ jobRoot: this.jobRoot, logger: this.logger, reserveSlots });
+      this.lastPruneAt = Date.now();
       return true;
     } finally {
       capacity.release();
     }
   }
+
 }
 
 function reconcileTerminalResult(dir, statusFile, status) {

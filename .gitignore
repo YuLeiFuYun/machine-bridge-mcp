@@ -8,5 +8,5 @@ src/worker/worker-configuration.d.ts
 .privacy-denylist
 .project-local/
 .freebuff/
-
+.workflow/
 .release-candidate/

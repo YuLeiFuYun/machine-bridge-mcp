@@ -1,3 +1,5 @@
+// @ts-check
+
 import { BridgeError } from "./errors.mjs";
 import { intersectPolicies, normalizePolicy, policyProfile } from "./policy.mjs";
 
@@ -5,6 +7,16 @@ const ACCOUNT_ID = /^acct_[A-Za-z0-9_-]{20,96}$/;
 const CLIENT_ID = /^mcp_client_[A-Za-z0-9_-]{43}$/;
 const FAMILY_ID = /^mcp_family_[A-Za-z0-9_-]{43}$/;
 
+/** @typedef {"reviewer" | "editor" | "operator" | "owner"} AccountRole */
+/** @typedef {{account_id?: unknown, account_version?: unknown, client_id?: unknown, family_id?: unknown, role?: unknown}} RelayAuthorization */
+/** @typedef {{kind: "local", role: "owner"} | {kind: "account", accountId: string, accountVersion: number, clientId: string, familyId: string, role: AccountRole}} AuthorityPrincipal */
+/** @typedef {ReturnType<typeof normalizePolicy>} NormalizedPolicy */
+/** @typedef {{origin: "local" | "relay", principal: AuthorityPrincipal, daemonPolicy: NormalizedPolicy, accountPolicy: NormalizedPolicy, effectivePolicy: NormalizedPolicy, owner: boolean}} AuthorityContext */
+/** @typedef {{authorization?: RelayAuthorization, daemonPolicy?: unknown, origin?: "local" | "relay"}} BuildAuthorityOptions */
+/** @typedef {{authority?: {principal?: AuthorityPrincipal, effectivePolicy?: NormalizedPolicy}}} OperationContext */
+/** @typedef {{owner_kind?: unknown, owner_account_id?: unknown, owner_account_version?: unknown, owner_client_id?: unknown, owner_family_id?: unknown}} OwnedRecord */
+
+/** @param {BuildAuthorityOptions} [options] */
 export function buildAuthorityContext({ authorization = {}, daemonPolicy, origin = "local" } = {}) {
   if (origin !== "relay") {
     const policy = normalizePolicy(daemonPolicy || {});
@@ -26,8 +38,8 @@ export function buildAuthorityContext({ authorization = {}, daemonPolicy, origin
   if (typeof accountId !== "string" || !ACCOUNT_ID.test(accountId)
       || typeof clientId !== "string" || !CLIENT_ID.test(clientId)
       || typeof familyId !== "string" || !FAMILY_ID.test(familyId)
-      || typeof role !== "string"
-      || !Number.isSafeInteger(accountVersion) || accountVersion <= 0) {
+      || !isAccountRole(role)
+      || typeof accountVersion !== "number" || !Number.isSafeInteger(accountVersion) || accountVersion <= 0) {
     throw new BridgeError("authorization_denied", "relay operation is missing authenticated principal identity");
   }
   const accountPolicy = policyProfile(roleProfile(role), "explicit");
@@ -51,16 +63,19 @@ export function buildAuthorityContext({ authorization = {}, daemonPolicy, origin
   });
 }
 
+/** @param {OperationContext | null | undefined} context @param {NormalizedPolicy | undefined} fallbackPolicy */
 export function policyForContext(context, fallbackPolicy) {
   return normalizePolicy(context?.authority?.effectivePolicy || fallbackPolicy || {});
 }
 
+/** @param {OperationContext | null | undefined} context */
 export function principalForContext(context) {
   const principal = context?.authority?.principal;
   if (principal?.kind === "account") return principal;
   return Object.freeze({ kind: "local", role: "owner" });
 }
 
+/** @param {OperationContext | null | undefined} context */
 export function principalBinding(context) {
   const principal = principalForContext(context);
   if (principal.kind !== "account") return { owner_kind: "local" };
@@ -74,6 +89,7 @@ export function principalBinding(context) {
   };
 }
 
+/** @param {OwnedRecord | null | undefined} record @param {OperationContext | null | undefined} context @param {string} [label] */
 export function assertOwnedByContext(record, context, label = "object") {
   const principal = principalForContext(context);
   if (principal.kind !== "account" || principal.role === "owner") return;
@@ -88,6 +104,7 @@ export function assertOwnedByContext(record, context, label = "object") {
   }
 }
 
+/** @param {OwnedRecord | null | undefined} record @param {OperationContext | null | undefined} context */
 export function visibleToContext(record, context) {
   try {
     assertOwnedByContext(record, context);
@@ -97,6 +114,7 @@ export function visibleToContext(record, context) {
   }
 }
 
+/** @param {AccountRole} role */
 function roleProfile(role) {
   const mapping = {
     reviewer: "review",
@@ -104,7 +122,10 @@ function roleProfile(role) {
     operator: "agent",
     owner: "full",
   };
-  const profile = mapping[role];
-  if (!profile) throw new BridgeError("authorization_denied", `unknown account role: ${role}`);
-  return profile;
+  return mapping[role];
+}
+
+/** @param {unknown} value @returns {value is AccountRole} */
+function isAccountRole(value) {
+  return value === "reviewer" || value === "editor" || value === "operator" || value === "owner";
 }

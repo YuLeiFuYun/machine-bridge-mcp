@@ -1,4 +1,5 @@
 import { link, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
 } from "../src/local/atomic-fs.mjs";
 import { publicError } from "../src/local/errors.mjs";
 import { WorkspaceFileService, assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
+import { renameWithRetry } from "../src/local/workspace-file-rename-retry.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
 try {
@@ -36,6 +38,43 @@ try {
   const editedBom = await service.editFile({ path: bomName, old_text: "TOKEN", new_text: "changed", expected_sha256: writtenBom.sha256 });
   assert(await readFile(join(root, bomName), "utf8") === bomText.replace("TOKEN", "changed")
     && editedBom.sha256 === sha256(bomText.replace("TOKEN", "changed")), "unchanged BOM file failed its write/read/edit hash precondition");
+  assert(!(await readdir(root)).some((name) => name.startsWith(`.${bomName}.mbm-backup-`)),
+    "single-file edit left a transaction backup after atomic replacement");
+
+  let failStagingCleanup = true;
+  let failBackupCleanup = false;
+  const warningService = new WorkspaceFileService({
+    workspace: root, policyGate: { assert() {} }, throwIfCancelled() {},
+    resolveExistingPath: async (name) => join(root, name), resolveWritePath: async (name) => join(root, name), displayPath: (name) => name,
+    withMutationPaths: async (_paths, run) => run(),
+    fileTransactionOptions: {
+      async remove(target, options) {
+        if (failStagingCleanup && target.includes(".mbm-") && target.endsWith(".tmp")) throw new Error("synthetic staging cleanup failure");
+        if (failBackupCleanup && target.includes(".mbm-backup-")) throw new Error("synthetic backup cleanup failure");
+        return rm(target, options);
+      },
+    },
+  });
+  const warnedWrite = await warningService.writeFile({ path: "write-warning.txt", content: "committed", create_only: true });
+  assert(await readFile(join(root, "write-warning.txt"), "utf8") === "committed"
+    && warnedWrite.warnings?.length === 1 && warnedWrite.warnings[0].includes("File committed"),
+  "write_file hid a post-commit staging cleanup warning or implied the committed file was not written");
+
+  failStagingCleanup = false;
+  failBackupCleanup = true;
+  await writeFile(join(root, "patch-warning.txt"), "old\n", { encoding: "utf8", mode: 0o600 });
+  const warnedPatch = await warningService.applyPatch({ patch: "*** Begin Patch\n*** Update File: patch-warning.txt\n@@\n-old\n+new\n*** End Patch" });
+  assert(await readFile(join(root, "patch-warning.txt"), "utf8") === "new\n"
+    && warnedPatch.warnings?.length === 1 && warnedPatch.warnings[0].includes("Patch committed"),
+  "apply_patch hid a post-commit backup cleanup warning or implied the committed file was not written");
+
+  failBackupCleanup = false;
+  await writeFile(join(root, "edit-warning.txt"), "old\n", { encoding: "utf8", mode: 0o600 });
+  const warnedEdit = await warningService.editFile({ path: "edit-warning.txt", old_text: "old", new_text: "new" });
+  assert(await readFile(join(root, "edit-warning.txt"), "utf8") === "new\n"
+    && warnedEdit.ok === true && warnedEdit.warnings === undefined
+    && !(await readdir(root)).some((name) => name.startsWith(".edit-warning.txt.mbm-backup-")),
+  "edit_file did not settle cleanly after the backup-free atomic replacement");
 
   for (const replaceBeforeConfirmation of [false, true]) {
     const custodyTarget = join(root, replaceBeforeConfirmation ? "confirmation-replacement.txt" : "rollback-replacement.txt");
@@ -318,6 +357,118 @@ try {
   assert(injectedCommitRace && await readFile(commitRaceTarget, "utf8") === "concurrent-generation",
     "patch delete removed or overwrote a source generation that changed between preflight and rename");
 
+  const interruptedTarget = join(root, "interrupted-atomic-write.txt");
+  await writeFile(interruptedTarget, "old", { encoding: "utf8", mode: 0o600 });
+  const transactionModuleUrl = new URL("../src/local/workspace-file-transaction.mjs", import.meta.url).href;
+  const interruptedScript = `
+    import { atomicWriteText, sha256 } from ${JSON.stringify(transactionModuleUrl)};
+    await atomicWriteText(${JSON.stringify(interruptedTarget)}, "new", { mode: 0o600 }, {
+      expectedHash: sha256("old"),
+      readText: async () => { process.exit(71); },
+    });
+  `;
+  const interrupted = spawnSync(process.execPath, ["--input-type=module", "-e", interruptedScript], {
+    cwd: process.cwd(), encoding: "utf8",
+  });
+  const interruptedStaging = (await readdir(root)).filter((name) => name.startsWith(".interrupted-atomic-write.txt.mbm-") && name.endsWith(".tmp"));
+  assert(interrupted.status === 71 && await readFile(interruptedTarget, "utf8") === "old" && interruptedStaging.length === 1,
+    "process interruption before the atomic rename left the destination missing or changed");
+
+  const committedBeforeExitTarget = join(root, "committed-before-exit.txt");
+  await writeFile(committedBeforeExitTarget, "old", { encoding: "utf8", mode: 0o600 });
+  const committedBeforeExitScript = `
+    import { rename } from "node:fs/promises";
+    import { atomicWriteText, sha256 } from ${JSON.stringify(transactionModuleUrl)};
+    await atomicWriteText(${JSON.stringify(committedBeforeExitTarget)}, "new", { mode: 0o600 }, {
+      expectedHash: sha256("old"),
+      readText: (filePath) => import("node:fs/promises").then((fs) => fs.readFile(filePath, "utf8")),
+      rename: async (source, target) => {
+        await rename(source, target);
+        if (target === ${JSON.stringify(committedBeforeExitTarget)}) process.exit(72);
+      },
+    });
+  `;
+  const committedBeforeExit = spawnSync(process.execPath, ["--input-type=module", "-e", committedBeforeExitScript], {
+    cwd: process.cwd(), encoding: "utf8",
+  });
+  const committedStaging = (await readdir(root)).filter((name) => name.startsWith(".committed-before-exit.txt.mbm-") && name.endsWith(".tmp"));
+  assert(committedBeforeExit.status === 72 && await readFile(committedBeforeExitTarget, "utf8") === "new" && committedStaging.length === 0,
+    "process interruption after atomic replacement did not leave a complete committed target");
+
+  const visibleTarget = join(root, "continuously-visible.txt");
+  await writeFile(visibleTarget, "initial", { encoding: "utf8", mode: 0o600 });
+  const readFailures = [];
+  const readers = Array.from({ length: 4 }, async () => {
+    for (let index = 0; index < 100; index += 1) {
+      try { await readFile(visibleTarget, "utf8"); }
+      catch (error) { readFailures.push(error?.code || String(error)); }
+    }
+  });
+  for (let index = 0; index < 20; index += 1) {
+    await atomicWriteText(visibleTarget, `version-${index}`, { mode: 0o600 });
+  }
+  await Promise.all(readers);
+  assert(readFailures.length === 0, `atomic replacement exposed a missing destination to readers: ${readFailures.join(",")}`);
+
+  const retrySource = join(root, "transient-retry-source.txt");
+  const retryTarget = join(root, "transient-retry-target.txt");
+  await writeFile(retrySource, "replacement", "utf8");
+  let renameAttempts = 0;
+  const retryResult = await renameWithRetry(retrySource, retryTarget, async (source, target) => {
+    renameAttempts += 1;
+    if (renameAttempts < 3) throw Object.assign(new Error("transient sharing violation"), { code: "EPERM" });
+    await rename(source, target);
+  }, { attempts: 4, baseDelayMs: 1, maxDelayMs: 2 });
+  assert(retryResult.attempts === 3 && renameAttempts === 3 && await readFile(retryTarget, "utf8") === "replacement",
+    "atomic replacement did not retry a transient filesystem sharing violation");
+
+  for (const [code, expectedAttempts] of [["EPERM", 4], ["EIO", 1]]) {
+    const failure = Object.assign(new Error("injected rename failure"), { code });
+    let attempts = 0;
+    let caught;
+    try {
+      await renameWithRetry(retrySource, retryTarget, async () => {
+        attempts += 1;
+        throw failure;
+      }, { attempts: 4, baseDelayMs: 0, maxDelayMs: 0 });
+    } catch (error) { caught = error; }
+    assert(caught === failure && attempts === expectedAttempts,
+      "atomic replacement exceeded its retry bound or retried a non-transient failure");
+  }
+
+  const integratedRetryTarget = join(root, "integrated-retry-target.txt");
+  await writeFile(integratedRetryTarget, "old", "utf8");
+  let integratedAttempts = 0;
+  await atomicWriteText(integratedRetryTarget, "replacement", { mode: 0o600 }, {
+    async rename(source, target) {
+      integratedAttempts += 1;
+      if (integratedAttempts < 3) throw Object.assign(new Error("transient sharing violation"), { code: "EPERM" });
+      await rename(source, target);
+    },
+  });
+  assert(integratedAttempts === 3 && await readFile(integratedRetryTarget, "utf8") === "replacement",
+    "workspace atomic replacement did not use the bounded retry");
+
+  const retryRaceTarget = join(root, "retry-precondition-target.txt");
+  await writeFile(retryRaceTarget, "observed", "utf8");
+  let retryRaceAttempts = 0;
+  await expectAsyncThrow(() => atomicWriteText(retryRaceTarget, "replacement", { mode: 0o600 }, {
+    expectedHash: sha256("observed"),
+    readText: (filePath) => readFile(filePath, "utf8"),
+    async rename(source, target) {
+      retryRaceAttempts += 1;
+      if (retryRaceAttempts === 1) {
+        await writeFile(target, "external-generation", "utf8");
+        throw Object.assign(new Error("transient sharing violation"), { code: "EPERM" });
+      }
+      await rename(source, target);
+    },
+  }), "file changed before atomic commit", "conflict", true, "hash_mismatch");
+  assert(retryRaceAttempts === 1 && await readFile(retryRaceTarget, "utf8") === "external-generation",
+    "atomic replacement retry overwrote a generation that changed after the initial precondition check");
+  assert(!(await readdir(root)).some((name) => name.startsWith(".retry-precondition-target.txt.mbm-")),
+    "atomic replacement conflict during retry retained its staging artifact");
+
   const atomicRaceTarget = join(root, "atomic-generation-race.txt");
   await writeFile(atomicRaceTarget, "observed", { encoding: "utf8", mode: 0o600 });
   // atomicWriteText only needs the preserved permission bits here. Supplying
@@ -329,16 +480,16 @@ try {
   let injectedAtomicRace = false;
   await expectAsyncThrow(() => atomicWriteText(atomicRaceTarget, "replacement", atomicRaceInfo, {
     expectedHash: sha256("observed"),
-    async rename(from, to) {
-      if (from === atomicRaceTarget && !injectedAtomicRace) {
+    async readText(filePath) {
+      if (filePath === atomicRaceTarget && !injectedAtomicRace) {
         injectedAtomicRace = true;
-        await writeFile(atomicRaceTarget, "concurrent-generation", { encoding: "utf8", mode: 0o600 });
+        await writeFile(filePath, "concurrent-generation", { encoding: "utf8", mode: 0o600 });
       }
-      return rename(from, to);
+      return readFile(filePath, "utf8");
     },
-  }), "source changed during commit", "conflict", true, "hash_mismatch");
+  }), "file changed before atomic commit", "conflict", true, "hash_mismatch");
   assert(injectedAtomicRace && await readFile(atomicRaceTarget, "utf8") === "concurrent-generation",
-    "expected-hash atomic write overwrote a source generation that changed between preflight and rename");
+    "expected-hash atomic write failed to detect a source generation that changed before the final precondition check");
 
   console.log("atomic file replacement and patch recovery test ok");
 } finally {

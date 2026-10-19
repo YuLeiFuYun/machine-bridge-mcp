@@ -15,6 +15,13 @@ assertIssue(validators.validate("list_files", { max_files: "10" }), "/max_files"
 assert(validators.validate("server_info", {}).valid && validators.validate("server_info", { detail: "summary" }).valid
   && validators.validate("server_info", { detail: "full" }).valid, "server_info detail modes were rejected");
 assertIssue(validators.validate("server_info", { detail: "verbose" }), "/detail", "enum");
+// The catalog is the MCP boundary: an option that is missing here is rejected with
+// additionalProperties before any handler can read it, however well the handler parses it.
+for (const args of [{ allow_tab_switch: true }, { allow_tab_switch: false }, { tab_id: 7, allow_tab_switch: false }]) {
+  assert(validators.validate("browser_screenshot", args).valid,
+    `browser_screenshot rejected documented arguments ${JSON.stringify(args)}`);
+}
+assertIssue(validators.validate("browser_screenshot", { allow_tab_switch: "false" }), "/allow_tab_switch", "type");
 assertIssue(validators.validate("write_file", { path: "x", content: "y", expected_sha256: "secret-value" }), "/expected_sha256", "pattern");
 const oversizedGitPath = "x".repeat(32769);
 for (const name of ["git_status", "git_diff", "git_log", "git_show", "git_commit"]) {

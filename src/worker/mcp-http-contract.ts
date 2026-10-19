@@ -82,20 +82,6 @@ export function validateHttpRequest(input: {
   return metadata;
 }
 
-export function validateOptionalCompatibilityMirrors(input: {
-  headers: Headers;
-  body: JsonRpcRequest;
-  tools?: readonly ToolDefinition[];
-}): void {
-  validateMirroredMethod(input.headers, input.body.method, false);
-  const params = asObject(input.body.params);
-  const nameField = MIRRORED_NAME_METHODS.get(input.body.method);
-  if (nameField) validateMirroredName(input.headers, params, nameField, false);
-  else rejectUnexpectedMirroredName(input.headers);
-  if (input.body.method === "tools/call") validateToolParameterHeaders(input.headers, params, input.tools ?? [], false);
-  else rejectUnexpectedToolParameterHeaders(input.headers, []);
-}
-
 export function validateToolHeaderSchemas(tools: readonly ToolDefinition[]): void {
   toolParameterHeaderNames(tools);
 }
@@ -164,30 +150,19 @@ function positiveHttpQuality(value: string): boolean {
   return Number(value) > 0;
 }
 
-function validateMirroredMethod(headers: Headers, bodyMethod: string, required = true): void {
+function validateMirroredMethod(headers: Headers, bodyMethod: string): void {
   const headerValue = headers.get("Mcp-Method");
-  if (headerValue === null) {
-    if (required) throw headerMismatch("Mcp-Method header is required");
-    return;
-  }
-  if (required && !headerValue) throw headerMismatch("Mcp-Method header is required");
+  if (headerValue === null || !headerValue) throw headerMismatch("Mcp-Method header is required");
   if (headerValue !== bodyMethod) throw headerMismatch("Mcp-Method does not match the JSON-RPC method");
 }
 
-function validateMirroredName(headers: Headers, params: JsonObject, field: string, required = true): void {
+function validateMirroredName(headers: Headers, params: JsonObject, field: string): void {
   const bodyValue = params[field];
-  if (required && typeof bodyValue !== "string") {
+  if (typeof bodyValue !== "string") {
     throw new McpHttpContractError(-32602, `${field} must be a string`);
   }
   const headerValue = headers.get("Mcp-Name");
-  if (headerValue === null) {
-    if (required) throw headerMismatch("Mcp-Name header is required");
-    return;
-  }
-  if (required && !headerValue) throw headerMismatch("Mcp-Name header is required");
-  if (typeof bodyValue !== "string") {
-    throw headerMismatch(`Mcp-Name does not match params.${field}`);
-  }
+  if (headerValue === null || !headerValue) throw headerMismatch("Mcp-Name header is required");
   if (decodeMcpHeaderValue(headerValue) !== bodyValue) throw headerMismatch(`Mcp-Name does not match params.${field}`);
 }
 
@@ -195,7 +170,7 @@ function rejectUnexpectedMirroredName(headers: Headers): void {
   if (headers.has("Mcp-Name")) throw headerMismatch("Mcp-Name is not applicable to this JSON-RPC method");
 }
 
-function validateToolParameterHeaders(headers: Headers, params: JsonObject, tools: readonly ToolDefinition[], required = true): void {
+function validateToolParameterHeaders(headers: Headers, params: JsonObject, tools: readonly ToolDefinition[]): void {
   const toolName = params.name;
   const tool = typeof toolName === "string" ? tools.find((candidate) => candidate.name === toolName) : undefined;
   const bindings = tool ? collectHeaderBindings(tool.inputSchema, tool.name) : [];
@@ -210,8 +185,7 @@ function validateToolParameterHeaders(headers: Headers, params: JsonObject, tool
       continue;
     }
     if (headerValue === null) {
-      if (required) throw headerMismatch(`${binding.headerName} is required for this tool call`);
-      continue;
+      throw headerMismatch(`${binding.headerName} is required for this tool call`);
     }
     if (!mirroredValueEquals(decodeMcpHeaderValue(headerValue), bodyValue, binding.type)) {
       throw headerMismatch(`${binding.headerName} does not match the tool argument`);

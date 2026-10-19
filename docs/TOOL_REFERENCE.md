@@ -137,7 +137,7 @@ Summarize the connected workspace, repository root, top-level entries, and proje
 
 **Load session bootstrap**
 
-Load built-in working agreements, bounded automatic project facts, authority-permitted user-global guidance, root workspace instructions, and capability refresh metadata. Delegated remote accounts do not read the daemon owner's home-scoped agent config unless their effective authority permits unrestricted paths. Clients call it explicitly when refreshed authority-scoped project context is needed; MCP 2026-07-28 has no initialization-time compatibility adapter.
+Load built-in working agreements, bounded automatic project facts, authority-permitted user-global guidance, root workspace instructions, and capability refresh metadata. Delegated remote accounts do not read the daemon owner's home-scoped agent config unless their effective authority permits unrestricted paths. Clients call it explicitly when refreshed authority-scoped project context is needed; the optional stdio --compat handshake does not load session context.
 
 | Contract field | Value |
 |---|---|
@@ -1662,7 +1662,7 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 
 **Capture browser screenshot**
 
-Capture the visible area of the active or selected tab from the paired existing browser profile and return native MCP image content without focusing another window. Selecting an inactive tab may temporarily activate it. Immediately before activation, the extension revalidates that the same restore-baseline tab is still active in that window; a concurrent user tab switch fails definite pre-dispatch without activating anything. If the activation response is then lost, or if the resolved activation no longer verifies the same target tab in the restore-baseline window, the outcome is unknown, no capture or automatic rollback is attempted, and callers should inspect browser_list_tabs before retrying. Broker response loss after extension dispatch is attempted is also reported as unknown because the temporary activation/capture lifecycle may already have run. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown because temporary tab activation/restoration may already have occurred. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Cancellation observed before temporary activation prevents activation; if it arrives after confirmed temporary activation but before capture, capture is skipped and the previous active tab is restored when safely verifiable. After confirmed temporary activation, later capture or verification failures restore the previous active tab when safe while preserving a concurrent user tab switch; restoration revalidates that the baseline tab still belongs to the capture window before activating it. Once the restore activation API is invoked, a rejected response, returned window mismatch, or failed post-restore verification is an unknown active-tab outcome and callers must inspect browser_list_tabs before retrying; no same screenshot is replayed automatically. Successful results use the verified post-capture active-tab observation for title/URL provenance and report tab_metadata_verified=true. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Capture the visible area of the active or selected tab from the paired existing browser profile and return native MCP image content without focusing another window. Selecting an inactive tab may temporarily activate it; pass allow_tab_switch=false to refuse that activation, in which case an inactive target fails before capture and the active tab is never changed. Immediately before activation, the extension revalidates that the same restore-baseline tab is still active in that window; a concurrent user tab switch fails definite pre-dispatch without activating anything. If the activation response is then lost, or if the resolved activation no longer verifies the same target tab in the restore-baseline window, the outcome is unknown, no capture or automatic rollback is attempted, and callers should inspect browser_list_tabs before retrying. Broker response loss after extension dispatch is attempted is also reported as unknown because the temporary activation/capture lifecycle may already have run. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown because temporary tab activation/restoration may already have occurred. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Cancellation observed before temporary activation prevents activation; if it arrives after confirmed temporary activation but before capture, capture is skipped and the previous active tab is restored when safely verifiable. After confirmed temporary activation, later capture or verification failures restore the previous active tab when safe while preserving a concurrent user tab switch; restoration revalidates that the baseline tab still belongs to the capture window before activating it. Once the restore activation API is invoked, a rejected response, returned window mismatch, or failed post-restore verification is an unknown active-tab outcome and callers must inspect browser_list_tabs before retrying; no same screenshot is replayed automatically. Successful results use the verified post-capture active-tab observation for title/URL provenance and report tab_metadata_verified=true. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
 
 | Contract field | Value |
 |---|---|
@@ -1702,6 +1702,11 @@ Capture the visible area of the active or selected tab from the paired existing 
       "minimum": 1,
       "maximum": 60,
       "default": 30
+    },
+    "allow_tab_switch": {
+      "type": "boolean",
+      "default": true,
+      "description": "When false, an inactive target tab fails before capture instead of being activated temporarily; the active tab is never changed."
     }
   }
 }
@@ -1829,7 +1834,7 @@ Populate a browser file input from registered local resource files without retur
 
 **Load agent context**
 
-Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Use this when the caller needs the context itself; use resolve_task_capabilities when it needs task-specific ranking and execution-route advice.
+Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.
 
 | Contract field | Value |
 |---|---|
@@ -1853,6 +1858,10 @@ Discover the instruction, skill, and registered-command inventory for a target p
     "include_instruction_content": {
       "type": "boolean",
       "default": true
+    },
+    "include_source_content": {
+      "type": "boolean",
+      "default": false
     },
     "max_skills": {
       "type": "integer",
@@ -2132,7 +2141,7 @@ Recursively list files under a workspace path with bounded traversal and output.
 
 **Read text file**
 
-Read a UTF-8 regular file or an inclusive 1-based line range. The server does not block sensitive-looking filenames; access follows the active local policy and operating-system permissions.
+Read a UTF-8 regular file or an inclusive 1-based line range. Delegated remote roles are denied known credential-sensitive paths and protected control-plane roots; local/owner access follows its authority and operating-system permissions. Filename rules cannot detect secrets stored under arbitrary ordinary names.
 
 | Contract field | Value |
 |---|---|
@@ -2208,7 +2217,7 @@ Read a bounded PNG, JPEG, GIF, or WebP image from the workspace and return nativ
 
 **Write text file**
 
-Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic SHA-256 checks; expected state failures return typed conflict reasons without exposing file content or hashes.
+Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 preconditions checked before replacement; the hash check is not a cross-process compare-and-swap. Expected state failures return typed conflict reasons without exposing file content or hashes.
 
 | Contract field | Value |
 |---|---|
@@ -2251,7 +2260,7 @@ Atomically write a UTF-8 file up to 5 MiB. Supports create-only and optimistic S
 
 **Edit text file**
 
-Atomically replace an exact text fragment in one UTF-8 file. Missing text returns not_found; ambiguous text, stale SHA-256 preconditions, and unsupported targets return typed conflicts.
+Atomically replace an exact text fragment in one UTF-8 file while keeping the destination path visible through replacement. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts.
 
 | Contract field | Value |
 |---|---|

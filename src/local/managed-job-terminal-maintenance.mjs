@@ -1,36 +1,23 @@
+// @ts-check
+
 import { rmSync } from "node:fs";
-import { basename, join } from "node:path";
-import { BridgeError } from "./errors.mjs";
+import { join } from "node:path";
 import { managedJobActiveChildFile, managedJobActiveChildRecoveryReady } from "./managed-job-active-child.mjs";
-import { atomicWriteJson, readJson, resourceErrorClass } from "./managed-job-storage.mjs";
-import { isTerminalManagedJobResult, isTerminalManagedJobStatus, scrubManagedJobArtifacts } from "./managed-job-terminal.mjs";
+import { atomicWriteJson, resourceErrorClass } from "./managed-job-storage.mjs";
+import { scrubManagedJobArtifacts } from "./managed-job-terminal.mjs";
+import { assertTerminalJobEvidence } from "./managed-job-terminal-evidence.mjs";
 
-export function assertTerminalJobEvidence(dir, status) {
-  if (status?.job_id !== basename(dir) || !isTerminalManagedJobStatus(status?.status)) {
-    throw new BridgeError("integrity_error", "managed job terminal state does not match its directory");
-  }
-  if (status.result_persisted === false) {
-    if (typeof status.finished_at !== "string" || !Number.isFinite(Date.parse(status.finished_at))
-        || typeof status.terminal_record_error_class !== "string"
-        || !/^[a-z0-9._-]{1,80}$/.test(status.terminal_record_error_class)) {
-      throw new BridgeError("integrity_error", "managed job unpersisted terminal result lacks valid failure evidence");
-    }
-    return;
-  }
-  const result = readJson(join(dir, "result.json"), 4 * 1024 * 1024, "job result");
-  if (!result) throw new BridgeError("integrity_error", "managed job terminal result is missing");
-  if (!isTerminalManagedJobResult(result, status.job_id)
-      || result.status !== status.status || result.finished_at !== status.finished_at) {
-    throw new BridgeError("integrity_error", "managed job terminal status and result are inconsistent");
-  }
-}
+/** @typedef {Record<string, unknown> & {job_id?: unknown, status?: unknown, result_persisted?: unknown, finished_at?: unknown, terminal_record_error_class?: unknown, artifact_cleanup_pending?: unknown, artifact_cleanup_error_class?: unknown, updated_at?: unknown}} TerminalJobStatusRecord */
 
-export function scrubTerminalJobArtifacts(dir, status) {
+/** @param {string} dir @param {TerminalJobStatusRecord} status @param {{removeArtifact?: (file: string) => void}} [options] */
+export function scrubTerminalJobArtifacts(dir, status, options = {}) {
   assertTerminalJobEvidence(dir, status);
   const activeChildReady = managedJobActiveChildRecoveryReady(managedJobActiveChildFile(dir));
+  /** @type {(file: string) => void} */
+  const removeArtifact = options.removeArtifact || ((file) => rmSync(file, { recursive: true, force: true }));
   const cleanup = scrubManagedJobArtifacts([
     join(dir, "runtime"), join(dir, "plan.json"), join(dir, "runner.pid"), join(dir, "cancel"),
-  ], (file) => rmSync(file, { recursive: true, force: true }), resourceErrorClass);
+  ], removeArtifact, terminalCleanupErrorClass);
   if (!activeChildReady) {
     cleanup.scrubbed = false;
     cleanup.errorClass ||= "active_child_unsettled";
@@ -45,4 +32,12 @@ export function scrubTerminalJobArtifacts(dir, status) {
     atomicWriteJson(join(dir, "status.json"), status, 256 * 1024);
   }
   return cleanup;
+}
+
+/** @param {unknown} error @returns {"not_found" | "permission_denied" | "persistence_failed" | "storage_limit"} */
+function terminalCleanupErrorClass(error) {
+  const category = resourceErrorClass(error);
+  if (category === "not_found" || category === "permission_denied") return category;
+  if (category === "size_limit") return "storage_limit";
+  return "persistence_failed";
 }

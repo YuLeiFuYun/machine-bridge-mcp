@@ -329,6 +329,7 @@ export class BrowserOperationService {
       tabId: optionalInteger(args.tab_id, "tab_id", 1, Number.MAX_SAFE_INTEGER),
       format: normalizeImageFormat(args.format, "format"),
       quality: clampInt(args.quality, 90, 1, 100),
+      allowTabSwitch: optionalBoolean(args.allow_tab_switch, "allow_tab_switch", true),
     }, clampInt(args.timeout_seconds, 30, 1, 120), context);
     const image = parseBrowserScreenshot(result.data);
     if (!image) throw new Error("browser extension returned an invalid screenshot");

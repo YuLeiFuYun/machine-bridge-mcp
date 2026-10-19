@@ -2906,6 +2906,24 @@ function testErrors() {
   assert(!cyclicPublic.details && cyclicPublic.message === "bounded", "cyclic public error details were not omitted");
   const hugePublic = publicError(new BridgeError("execution_failed", "bounded", { details: { data: "x".repeat(600 * 1024) } }));
   assert(!hugePublic.details, "oversized public error details were not omitted");
+  const verboseError = publicError(new BridgeError("internal_error", "detailed debugging reason", { expose: false }), { verbose: true });
+  assert(verboseError.message === "detailed debugging reason" && verboseError.details?.debug_error?.message === "detailed debugging reason", "verbose error failed to expose debugging message");
+  const verboseUnsafe = publicError(new BridgeError("internal_error", `path /Users/private\u0000\u001b[31m`, { expose: false }), { verbose: true });
+  assert(!verboseUnsafe.details?.debug_error?.message.includes("\u0000") && !verboseUnsafe.details?.debug_error?.message.includes("\u001b"), "verbose error details retained control characters");
+  const verboseHuge = publicError(new BridgeError("internal_error", "y".repeat(50_000), { expose: false }), { verbose: true });
+  assert(verboseHuge.message.length === 2000 && verboseHuge.details?.debug_error?.message.length === 2000,
+    "verbose error details were not bounded by the single public message ceiling");
+  const previousDebug = process.env.MBM_DEBUG;
+  const previousVerbose = process.env.MBM_VERBOSE_ERRORS;
+  process.env.MBM_DEBUG = "1";
+  process.env.MBM_VERBOSE_ERRORS = "1";
+  try {
+    const envIgnored = publicError(new BridgeError("internal_error", "env must not expose this", { expose: false }));
+    assert(envIgnored.message === "internal error" && !envIgnored.details, "process environment disabled the public error redaction boundary");
+  } finally {
+    if (previousDebug === undefined) delete process.env.MBM_DEBUG; else process.env.MBM_DEBUG = previousDebug;
+    if (previousVerbose === undefined) delete process.env.MBM_VERBOSE_ERRORS; else process.env.MBM_VERBOSE_ERRORS = previousVerbose;
+  }
 }
 
 function testWorkspaceShellSelection() {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { PassThrough, Writable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import readline from "node:readline";
@@ -10,6 +11,8 @@ import { ResourceCoordinator } from "../src/local/resource-admission.mjs";
 import { resourceProjectHash } from "../src/local/resource-project-key.mjs";
 import { captureProcessTreeOwnership } from "../src/local/process-tree-ownership.mjs";
 import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { createBoundedStdioWriter } from "../src/local/stdio.mjs";
+import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -75,6 +78,38 @@ const refreshResourceHostSample = () => {
 refreshResourceHostSample();
 const resourceHostSampleTimer = setInterval(refreshResourceHostSample, 200);
 resourceHostSampleTimer.unref?.();
+
+const slowInput = new PassThrough();
+const slowOutput = new Writable({
+  highWaterMark: 1,
+  write(_chunk, _encoding, callback) { setTimeout(callback, 2); },
+});
+let outputOverload = null;
+const boundedWriter = createBoundedStdioWriter({
+  inputStream: slowInput,
+  outputStream: slowOutput,
+  maxQueuedBytes: 4096,
+  onOverload: (details) => { outputOverload = details; },
+});
+let maximumQueuedOutputBytes = 0;
+for (let id = 0; id < 1000; id += 1) {
+  void boundedWriter.send({ jsonrpc: "2.0", id, result: { padding: "x".repeat(64) } });
+  maximumQueuedOutputBytes = Math.max(maximumQueuedOutputBytes, boundedWriter.queuedBytes);
+  if (boundedWriter.overloaded) break;
+}
+await new Promise((resolvePromise) => { void setImmediate(resolvePromise); });
+assert(slowOutput.writableNeedDrain, "stdio writer did not observe the slow consumer's writable backpressure");
+assert(boundedWriter.overloaded && slowInput.destroyed && maximumQueuedOutputBytes <= 4096
+    && outputOverload?.queuedBytes <= 4096,
+  "stdio response queue exceeded its hard byte bound instead of closing input under overload");
+await boundedWriter.waitForPendingWrites();
+await new Promise((resolvePromise, rejectPromise) => {
+  slowOutput.end((error) => {
+    if (error) rejectPromise(error);
+    else resolvePromise();
+  });
+});
+
 const currentMeta = Object.freeze({
   "io.modelcontextprotocol/protocolVersion": "2026-07-28",
   "io.modelcontextprotocol/clientCapabilities": {},
@@ -537,6 +572,73 @@ try {
   }
   const detachedResult = JSON.parse(await readFile(resultFile, "utf8"));
   assert(["succeeded", "recovered"].includes(detachedResult.status), `detached managed job ended as ${detachedResult.status}`);
+
+  const compatChild = spawn(process.execPath, [
+    join(root, "bin", "machine-mcp.mjs"),
+    "stdio",
+    "--workspace", workspace,
+    "--state-dir", stateDir,
+    "--compat",
+  ], {
+    cwd: root,
+    env: { ...childEnvironment, AGENT_RESOURCE_COORDINATOR_ROOT: resourceCoordinatorRoot },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let compatStderr = "";
+  compatChild.stderr.on("data", (chunk) => { compatStderr = appendBounded(compatStderr, chunk); });
+  try {
+    const compatRl = readline.createInterface({ input: compatChild.stdout, crlfDelay: Infinity });
+    const compatResponses = [];
+    compatRl.on("line", (line) => {
+      try { compatResponses.push(JSON.parse(line)); } catch { /* best-effort parse */ }
+    });
+    compatChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 101, method: "initialize", params: { protocolVersion: "2024-11-05" } }) + "\n");
+    compatChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    compatChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 102, method: "tools/list", params: {} }) + "\n");
+    // Compatibility mode supplies metadata only when the client omits it. Explicit
+    // retired/future/malformed versions remain subject to the normal protocol gate.
+    compatChild.stdin.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 103,
+      method: "tools/list",
+      params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2024-11-05" } },
+    }) + "\n");
+    compatChild.stdin.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 104,
+      method: "tools/list",
+      params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2099-01-01" } },
+    }) + "\n");
+    compatChild.stdin.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 105,
+      method: "tools/list",
+      params: { _meta: { "io.modelcontextprotocol/protocolVersion": null } },
+    }) + "\n");
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && compatResponses.length < 5) {
+      await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+    }
+    const initRes = compatResponses.find(r => r.id === 101);
+    const listRes = compatResponses.find(r => r.id === 102);
+    const staleMetaRes = compatResponses.find(r => r.id === 103);
+    assert(initRes?.result?.serverInfo?.name === "machine-bridge-mcp", "compat stdio failed to handle initialize");
+    assert(initRes.result.protocolVersion === MCP_PROTOCOL_VERSION,
+      `compat initialize advertised ${JSON.stringify(initRes.result.protocolVersion)} instead of ${MCP_PROTOCOL_VERSION}`);
+    assert(Array.isArray(listRes?.result?.tools), `compat stdio failed to list tools without _meta: responses=${JSON.stringify(compatResponses)} stderr=${compatStderr}`);
+    assert(staleMetaRes?.error?.message?.includes("Unsupported protocol version"),
+      `compat stdio silently rewrote an explicitly retired protocol version: ${JSON.stringify(staleMetaRes)}`);
+    const futureMetaRes = compatResponses.find(r => r.id === 104);
+    const malformedMetaRes = compatResponses.find(r => r.id === 105);
+    assert(futureMetaRes?.error?.message?.includes("Unsupported protocol version"),
+      `compat stdio silently rewrote an explicitly future protocol version: ${JSON.stringify(futureMetaRes)}`);
+    assert(malformedMetaRes?.error?.code === -32602,
+      `compat stdio silently rewrote malformed explicit protocol metadata: ${JSON.stringify(malformedMetaRes)}`);
+    compatRl.close();
+  } finally {
+    if (compatChild.exitCode === null) compatChild.kill("SIGKILL");
+  }
+
   console.log("stdio MCP integration test ok");
 } finally {
   clearInterval(resourceHostSampleTimer);

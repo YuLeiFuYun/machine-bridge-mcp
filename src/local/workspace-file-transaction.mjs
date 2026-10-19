@@ -6,6 +6,7 @@ import { BridgeError } from "./errors.mjs";
 import { fileMutationPathKey } from "./file-mutation-coordinator.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { publishFileLinkWithIdentity, removeLinkedFileSnapshot, restoreFileSnapshotNoReplace, snapshotFileIdentitySync } from "./exclusive-publication-recovery.mjs";
+import { renameWithRetry } from "./workspace-file-rename-retry.mjs";
 import { hasErrorCode, incompleteMutationError, patchRecoveryIncompleteError, removeArtifacts, requiredReadText, sha256, writeFlushedText } from "./workspace-file-transaction-helpers.mjs";
 export { sha256 } from "./workspace-file-transaction-helpers.mjs";
 
@@ -17,27 +18,26 @@ export { sha256 } from "./workspace-file-transaction-helpers.mjs";
 /** @param {string} full @param {string} content @param {{mode: number} | null} [existing] @param {FileTransactionOptions} [options] */
 export async function atomicWriteText(full, content, existing = null, options = {}) {
   const readText = requiredReadText(options.readText, Boolean(options.expectedHash));
-  if (options.expectedHash && existing && !options.createOnly) return commitPatchTransaction([{
-    kind: "update", source: full, target: full, content, originalHash: options.expectedHash, mode: existing.mode & 0o777,
-  }], { ...options, readText });
   const remove = options.remove || rm;
   const createTarget = options.link || link;
   const move = options.rename || rename;
   await mkdir(dirname(full), { recursive: true });
   const temp = join(dirname(full), `.${basename(full)}.mbm-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   let staged = false;
+  const verifyPrecondition = async () => {
+    if (!options.expectedHash) return;
+    let current;
+    try { current = await readText(full); } catch (error) {
+      if (hasErrorCode(error, "ENOENT")) throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
+      throw error;
+    }
+    if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
+  };
   try {
     await writeFlushedText(temp, content, existing ? existing.mode & 0o777 : 0o600, remove);
     staged = true;
-    if (options.expectedHash) {
-      let current;
-      try { current = await readText(full); } catch (error) {
-        if (hasErrorCode(error, "ENOENT")) throw new BridgeError("conflict", "file changed before atomic commit", { cause: error, details: { reason: "precondition_target_missing" } });
-        throw error;
-      }
-      if (sha256(current) !== options.expectedHash) throw new BridgeError("conflict", "file changed before atomic commit", { details: { reason: "hash_mismatch" } });
-    }
     if (options.createOnly) {
+      await verifyPrecondition();
       await createTarget(temp, full);
       const cleanupFailures = await removeArtifacts([temp], remove);
       staged = cleanupFailures.length > 0;
@@ -47,7 +47,10 @@ export async function atomicWriteText(full, content, existing = null, options = 
           : [],
       };
     }
-    await move(temp, full);
+    await renameWithRetry(temp, full, async (source, target) => {
+      await verifyPrecondition();
+      await move(source, target);
+    });
     return { warnings: [] };
   } catch (error) {
     if (!staged) throw error;

@@ -48,7 +48,8 @@ export class AgentContextManager {
 
   async agentContext(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
-    const includeContent = args.include_instruction_content !== false;
+    const includeEffectiveContent = args.include_instruction_content !== false;
+    const includeSourceContent = args.include_source_content === true;
     const skillLimit = clampInteger(args.max_skills, 100, 1, MAX_SKILL_RESULTS);
     const discoveredSkills = await this.discoverSkills(state, { maxResults: MAX_SKILL_RESULTS }, context);
     const contextSkills = contextSkillSummaries(discoveredSkills.skills, (value) => this.displayPath(value, context), skillLimit, MAX_CONTEXT_SKILL_SUMMARY_CHARS);
@@ -57,13 +58,13 @@ export class AgentContextManager {
       scope_root: this.displayPath(state.scopeRoot, context),
       precedence: "built-in defaults, automatic project facts, user-global guidance, then scope root to target directory; explicit files loaded later have higher precedence",
       config_files: state.configFiles.map((file) => this.displayPath(file, context)),
-      builtin_instructions: publicVirtualInstruction(state.builtinInstructions, includeContent),
-      automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, includeContent),
+      builtin_instructions: publicVirtualInstruction(state.builtinInstructions, includeSourceContent),
+      automatic_project_context: publicVirtualInstruction(state.automaticProjectContext, includeSourceContent),
       model_instructions_file: state.modelInstructions ? {
         path: this.displayPath(state.modelInstructions.path, context),
         bytes: state.modelInstructions.bytes,
         sha256: state.modelInstructions.sha256,
-        ...(includeContent ? { content: state.modelInstructions.content } : {}),
+        ...(includeSourceContent ? { content: state.modelInstructions.content } : {}),
       } : null,
       instruction_files: state.instructions.map((item) => ({
         scope: item.scope,
@@ -71,7 +72,7 @@ export class AgentContextManager {
         bytes: item.bytes,
         sha256: item.sha256,
         precedence: item.precedence,
-        ...(includeContent ? { content: item.content } : {}),
+        ...(includeSourceContent ? { content: item.content } : {}),
       })),
       skills: contextSkills.skills,
       skills_truncated: discoveredSkills.truncated || contextSkills.truncated,
@@ -87,7 +88,7 @@ export class AgentContextManager {
         "Prefer run_local_command for registered repeatable commands. Use run_process or exec_command only when no registered command fits and policy permits it.",
       ],
     };
-    if (includeContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context));
+    if (includeEffectiveContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context));
     return result;
   }
 

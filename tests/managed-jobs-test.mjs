@@ -916,6 +916,22 @@ async function testManagedJobAccountRecoveryCapacity() {
     resources: {}, recover: false,
     runnerSpawnProcess: (...args) => { runnerLaunches += 1; return spawnManagedJobTestRunner(...args); },
   });
+  const initialPruneAt = quotaManager.lastPruneAt;
+  const inventoryBeforeWork = quotaManager.list({ limit: 1 });
+  assert(quotaManager.lastPruneAt === initialPruneAt,
+    "routine empty/terminal-only inventory repeated full retention maintenance inside the throttle interval");
+  assert(!Object.hasOwn(inventoryBeforeWork, "maintenanceRequired"),
+    "internal managed-job maintenance decision leaked into the public inventory result");
+  const underCapacityJob = quotaManager.createJob({
+    name: "under-capacity creation skips retention scan",
+    steps: [{ argv: [process.execPath, "-e", ""] }],
+  }, { launch: false });
+  assert(quotaManager.lastPruneAt === initialPruneAt,
+    "managed-job creation repeated full retention maintenance while retained state was below capacity");
+  quotaManager.list({ limit: 1 });
+  assert(quotaManager.lastPruneAt === initialPruneAt,
+    "routine inventory repeated full retention maintenance while an under-capacity staged job existed");
+  quotaManager.cancel({ job_id: underCapacityJob.job_id });
   const accountA = relayRecoveryQuotaContext();
   const accountASecondClient = relayRecoveryQuotaContext({ clientChar: "b", familyChar: "c" });
   const accountAThirdClient = relayRecoveryQuotaContext({ clientChar: "d", familyChar: "e" });

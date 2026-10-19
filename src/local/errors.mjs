@@ -6,6 +6,8 @@ const ERROR_CODES = new Set([
 ]);
 
 const RETRYABLE_CODES = new Set(["timeout", "network_error", "unavailable"]);
+// One ceiling for every error string a caller can read, verbose or not. Two different
+// caps for the same text only makes the message field and its debug copy disagree.
 const MAX_PUBLIC_ERROR_MESSAGE_CHARS = 2000;
 const MAX_PUBLIC_ERROR_DETAILS_BYTES = 512 * 1024;
 const UNSAFE_ERROR_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
@@ -53,10 +55,14 @@ export function errorCode(error, fallback = "execution_failed") {
 
 export function publicError(error, options = {}) {
   const normalized = normalizeBridgeError(error, options);
-  const details = normalized.expose ? publicErrorDetails(normalized.details) : undefined;
+  // Verbose diagnostics are an explicit, per-call decision made by a local boundary.
+  // They are never derived from process-wide environment state, because the same
+  // projection also serves remote relay callers.
+  const verbose = options.verbose === true;
+  const details = normalized.expose || verbose ? publicErrorDetails(normalized.details, verbose ? normalized : null) : undefined;
   return {
     code: normalized.code,
-    message: publicErrorMessage(normalized.expose ? normalized.message : defaultMessage(normalized.code)),
+    message: publicErrorMessage(normalized.expose || verbose ? normalized.message : defaultMessage(normalized.code)),
     retryable: normalized.retryable,
     ...(details ? { details } : {}),
   };
@@ -104,10 +110,20 @@ function publicErrorMessage(value) {
   return (normalized || "operation failed").slice(0, MAX_PUBLIC_ERROR_MESSAGE_CHARS);
 }
 
-function publicErrorDetails(value) {
-  if (!isRecord(value)) return undefined;
+function publicErrorDetails(value, debugNormalized = null) {
+  let target = isRecord(value) ? { ...value } : (debugNormalized ? {} : undefined);
+  if (debugNormalized && !target?.debug_error) {
+    target = {
+      ...target,
+      debug_error: {
+        message: publicErrorMessage(debugNormalized.message),
+        ...(debugNormalized.cause ? { cause: publicErrorMessage(debugNormalized.cause?.message || debugNormalized.cause) } : {}),
+      },
+    };
+  }
+  if (!isRecord(target)) return undefined;
   try {
-    const serialized = JSON.stringify(value, (_key, current) => {
+    const serialized = JSON.stringify(target, (_key, current) => {
       if (["bigint", "function", "symbol", "undefined"].includes(typeof current)) throw new TypeError("unsupported error detail");
       if (typeof current === "number" && !Number.isFinite(current)) throw new TypeError("unsupported error detail");
       return current;

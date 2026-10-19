@@ -21,8 +21,11 @@ import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensure
 
 const CLI_FIXTURE_TIMEOUT_MS = 60_000;
 const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
-const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({ ...process.env, NODE_V8_COVERAGE: "" });
-const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 5 * 60_000;
+const UNINSTRUMENTED_JOB_CLI_ENV = Object.freeze({
+  ...process.env,
+  ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: "" } : {}),
+});
+const RESOURCE_CLI_SELF_TEST_TIMEOUT_MS = 10 * 60_000;
 const DAEMON_FIXTURE_TIMEOUT_MS = 30_000;
 const MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS = 60;
 const MANAGED_JOB_MARKER_SCRIPT = "if (process.env.NODE_V8_COVERAGE) process.exit(9); require('node:fs').writeFileSync(process.argv[1], process.argv[2])";
@@ -79,7 +82,7 @@ async function waitForSelfTestJob(manager, jobId, deadline, label) {
 
 // Managed-job steps run in a detached runner that always builds the production resource
 // coordinator, so an adaptive step waits on shared-host pressure for up to thirty minutes while
-// this phase owns five minutes. Keep V8 coverage out of those children, but only override it
+// this phase owns ten minutes. Keep V8 coverage out of those children, but only override it
 // when the harness itself was instrumented: a present-but-empty NODE_V8_COVERAGE still
 // disqualifies the documented exact-runtime `node --version` light classification, and hosted
 // platform runs must keep that probe off the admission clock.
@@ -90,8 +93,8 @@ function uninstrumentedJobStepEnv() {
 // Fail fast with the actual classification instead of letting shared-host pressure masquerade
 // as a settlement timeout. An instrumented harness keeps the neutralizer, so its probe is
 // adaptive by design and only the hosted platform path is bound to the light classification.
-function assertManagedJobProbeIsLight(argv) {
-  const stepEnvironment = { ...process.env, ...uninstrumentedJobStepEnv().env };
+function assertManagedJobProbeIsLight(argv, environment = process.env) {
+  const stepEnvironment = { ...environment, ...uninstrumentedJobStepEnv().env };
   if (Object.hasOwn(stepEnvironment, "NODE_V8_COVERAGE")) return;
   const request = resourceCommandProfile(argv[0], argv.slice(1), { priority: "background", environment: stepEnvironment });
   if (request.heavy) {
@@ -976,6 +979,7 @@ async function resourceCliSelfTest() {
         throw new Error("local job submit accepted a symbolic-link plan file");
       }
     }
+    assertManagedJobProbeIsLight([process.execPath, "--version"], resourceCliEnv);
     const submitted = spawnSync(process.execPath, [entry, "job", "submit", planFile, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
       env: resourceCliEnv,
