@@ -6,6 +6,7 @@ import { BridgeError } from "./errors.mjs";
 import { fileMutationPathKey } from "./file-mutation-coordinator.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { publishFileLinkWithIdentity, removeLinkedFileSnapshot, restoreFileSnapshotNoReplace, snapshotFileIdentitySync } from "./exclusive-publication-recovery.mjs";
+import { renameWithRetry } from "./workspace-file-rename-retry.mjs";
 import { hasErrorCode, incompleteMutationError, patchRecoveryIncompleteError, removeArtifacts, requiredReadText, sha256, writeFlushedText } from "./workspace-file-transaction-helpers.mjs";
 export { sha256 } from "./workspace-file-transaction-helpers.mjs";
 
@@ -44,7 +45,7 @@ export async function atomicWriteText(full, content, existing = null, options = 
           : [],
       };
     }
-    await move(temp, full);
+    await renameWithRetry(temp, full, move);
     return { warnings: [] };
   } catch (error) {
     if (!staged) throw error;

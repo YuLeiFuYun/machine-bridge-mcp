@@ -8,6 +8,7 @@ import {
 } from "../src/local/atomic-fs.mjs";
 import { publicError } from "../src/local/errors.mjs";
 import { WorkspaceFileService, assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
+import { renameWithRetry } from "../src/local/workspace-file-rename-retry.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
 try {
@@ -408,6 +409,45 @@ try {
   }
   await Promise.all(readers);
   assert(readFailures.length === 0, `atomic replacement exposed a missing destination to readers: ${readFailures.join(",")}`);
+
+  const retrySource = join(root, "transient-retry-source.txt");
+  const retryTarget = join(root, "transient-retry-target.txt");
+  await writeFile(retrySource, "replacement", "utf8");
+  let renameAttempts = 0;
+  const retryResult = await renameWithRetry(retrySource, retryTarget, async (source, target) => {
+    renameAttempts += 1;
+    if (renameAttempts < 3) throw Object.assign(new Error("transient sharing violation"), { code: "EPERM" });
+    await rename(source, target);
+  }, { attempts: 4, baseDelayMs: 1, maxDelayMs: 2 });
+  assert(retryResult.attempts === 3 && renameAttempts === 3 && await readFile(retryTarget, "utf8") === "replacement",
+    "atomic replacement did not retry a transient filesystem sharing violation");
+
+  for (const [code, expectedAttempts] of [["EPERM", 4], ["EIO", 1]]) {
+    const failure = Object.assign(new Error("injected rename failure"), { code });
+    let attempts = 0;
+    let caught;
+    try {
+      await renameWithRetry(retrySource, retryTarget, async () => {
+        attempts += 1;
+        throw failure;
+      }, { attempts: 4, baseDelayMs: 0, maxDelayMs: 0 });
+    } catch (error) { caught = error; }
+    assert(caught === failure && attempts === expectedAttempts,
+      "atomic replacement exceeded its retry bound or retried a non-transient failure");
+  }
+
+  const integratedRetryTarget = join(root, "integrated-retry-target.txt");
+  await writeFile(integratedRetryTarget, "old", "utf8");
+  let integratedAttempts = 0;
+  await atomicWriteText(integratedRetryTarget, "replacement", { mode: 0o600 }, {
+    async rename(source, target) {
+      integratedAttempts += 1;
+      if (integratedAttempts < 3) throw Object.assign(new Error("transient sharing violation"), { code: "EPERM" });
+      await rename(source, target);
+    },
+  });
+  assert(integratedAttempts === 3 && await readFile(integratedRetryTarget, "utf8") === "replacement",
+    "workspace atomic replacement did not use the bounded retry");
 
   const atomicRaceTarget = join(root, "atomic-generation-race.txt");
   await writeFile(atomicRaceTarget, "observed", { encoding: "utf8", mode: 0o600 });

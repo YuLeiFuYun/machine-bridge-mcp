@@ -79,6 +79,7 @@
     "src/local/windows-service-convergence.mjs",
     "src/local/authority-context.mjs",
     "src/local/operation-authorization.mjs",
+    "src/local/workspace-file-rename-retry.mjs",
     "src/local/bounded-output-helpers.mjs",
     "src/local/managed-job-capacity-maintenance.mjs",
     "src/local/managed-job-terminal-evidence.mjs",
