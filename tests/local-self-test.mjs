@@ -11,6 +11,8 @@ import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { runFixtureChild, stopFixtureChild, waitForFixtureExit, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
+import { ResourceCoordinator } from "../src/local/resource-admission.mjs";
+import { resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
 import { isTerminalManagedJobStatus } from "../src/local/managed-job-terminal.mjs";
 import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
 import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
@@ -63,7 +65,38 @@ async function waitForSelfTestJob(manager, jobId, deadline, label) {
     if (isTerminalManagedJobStatus(value.status) && value.artifact_cleanup_pending !== true) return value;
     await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
   }
-  throw new Error(`${label} did not settle within the shared resource CLI self-test budget; state=${JSON.stringify(lastState)}`);
+  let admission = null;
+  if (lastState?.current_phase === "resource_admission") {
+    try {
+      const { host, pressure, active_leases, waiters } = await new ResourceCoordinator().snapshot({ cwd: manager.workspace });
+      admission = { host, pressure, active_leases, waiters };
+    } catch {
+      admission = { diagnostic_unavailable: true };
+    }
+  }
+  throw new Error(`${label} did not settle within the shared resource CLI self-test budget; state=${JSON.stringify(lastState)}; admission=${JSON.stringify(admission)}`);
+}
+
+// Managed-job steps run in a detached runner that always builds the production resource
+// coordinator, so an adaptive step waits on shared-host pressure for up to thirty minutes while
+// this phase owns five minutes. Keep V8 coverage out of those children, but only override it
+// when the harness itself was instrumented: a present-but-empty NODE_V8_COVERAGE still
+// disqualifies the documented exact-runtime `node --version` light classification, and hosted
+// platform runs must keep that probe off the admission clock.
+function uninstrumentedJobStepEnv() {
+  return process.env.NODE_V8_COVERAGE ? { env: { NODE_V8_COVERAGE: "" } } : {};
+}
+
+// Fail fast with the actual classification instead of letting shared-host pressure masquerade
+// as a settlement timeout. An instrumented harness keeps the neutralizer, so its probe is
+// adaptive by design and only the hosted platform path is bound to the light classification.
+function assertManagedJobProbeIsLight(argv) {
+  const stepEnvironment = { ...process.env, ...uninstrumentedJobStepEnv().env };
+  if (Object.hasOwn(stepEnvironment, "NODE_V8_COVERAGE")) return;
+  const request = resourceCommandProfile(argv[0], argv.slice(1), { priority: "background", environment: stepEnvironment });
+  if (request.heavy) {
+    throw new Error(`managed-job self-test probe lost its documented light classification (${request.family}); shared-host pressure would become the resource CLI phase clock`);
+  }
 }
 
 function remainingSelfTestBudget(deadline, label, maximum) {
@@ -886,7 +919,7 @@ async function resourceCliSelfTest() {
     const approvedMarker = join(workspace, "approved-by-cli.txt");
     const stagedForCli = manager.stage({
       name: "CLI approval",
-      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "cli-approved"], env: { NODE_V8_COVERAGE: "" }, env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "-e", MANAGED_JOB_MARKER_SCRIPT, approvedMarker, "cli-approved"], ...uninstrumentedJobStepEnv(), env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     const inspectedPlan = spawnSync(process.execPath, [entry, "job", "inspect", stagedForCli.job_id, "--workspace", workspace, "--state-dir", stateRoot, "--json"], {
       encoding: "utf8", timeout: MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS,
@@ -915,9 +948,10 @@ async function resourceCliSelfTest() {
       throw new Error("reviewed staged plan did not cancel without execution");
     }
 
+    assertManagedJobProbeIsLight([process.execPath, "--version"]);
     const trustedStarted = manager.start({
       name: "Trusted direct start",
-      steps: [{ argv: [process.execPath, "--version"], env: { NODE_V8_COVERAGE: "" }, env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "--version"], ...uninstrumentedJobStepEnv(), env_resources: { MBM_REVIEW_ONLY: "test-key" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     });
     if (trustedStarted.status !== "queued") throw new Error("trusted direct managed-job start was not queued");
     const trustedResult = await waitForSelfTestJob(manager, trustedStarted.job_id, phaseDeadline, "trusted direct managed-job start");
@@ -928,7 +962,7 @@ async function resourceCliSelfTest() {
     const planFile = join(workspace, "managed-plan.json");
     await writeFile(planFile, JSON.stringify({
       name: "local CLI fallback",
-      steps: [{ argv: [process.execPath, "--version"], env: { NODE_V8_COVERAGE: "" }, timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+      steps: [{ argv: [process.execPath, "--version"], ...uninstrumentedJobStepEnv(), timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
     }), "utf8");
     if (process.platform !== "win32") {
       const linkedPlan = join(workspace, "linked-plan.json");
