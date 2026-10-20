@@ -15,6 +15,7 @@ import {
 } from "../src/worker/mcp-stream-proxy-contract.ts";
 
 await testJsonRpcStreamSettlement();
+await testJsonRpcStreamProgress();
 await testPublicReaderCancellation();
 await testRequestSignalCancellation();
 await testAlreadyAbortedRequest();
@@ -82,6 +83,32 @@ async function testJsonRpcStreamSettlement() {
     await Promise.resolve();
     assert(cancellations === 1 && errorProjections === 0, "client cancellation leaked late JSON-RPC result handling");
   } finally { reader.releaseLock(); }
+}
+
+async function testJsonRpcStreamProgress() {
+  let emitProgress;
+  const result = new Promise((resolve) => {
+    setTimeout(() => resolve({ jsonrpc: "2.0", id: 1, result: { success: true } }), 20);
+  });
+  const response = jsonRpcResponseStream(result, {
+    onError: () => ({}),
+    onCancel: () => {},
+    onProgress: (emit) => { emitProgress = emit; },
+  });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const frames = [];
+  const readPromise = (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      frames.push(decoder.decode(value));
+    }
+  })();
+  emitProgress?.({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "tok-1", progress: 50 } });
+  await readPromise;
+  assert(frames.some((f) => f.includes("notifications/progress") && f.includes('"progress":50')), "progress frame omitted");
+  assert(frames.some((f) => f.includes('"success":true')), "terminal result omitted");
 }
 
 async function testPublicReaderCancellation() {

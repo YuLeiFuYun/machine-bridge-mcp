@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { BridgeError, errorCode, publicError } from "../src/local/errors.mjs";
+import { BridgeError, actionableGuidance, errorCode, publicError } from "../src/local/errors.mjs";
 import { CallRegistry } from "../src/local/call-registry.mjs";
 import { RuntimeObservability } from "../src/local/observability.mjs";
 import { ProcessTracker } from "../src/local/process-tracker.mjs";
@@ -2924,6 +2924,10 @@ function testErrors() {
     if (previousDebug === undefined) delete process.env.MBM_DEBUG; else process.env.MBM_DEBUG = previousDebug;
     if (previousVerbose === undefined) delete process.env.MBM_VERBOSE_ERRORS; else process.env.MBM_VERBOSE_ERRORS = previousVerbose;
   }
+  assert(actionableGuidance(new BridgeError("not_found", "missing")).includes("Verify target path"), "actionable guidance omitted for not_found");
+  assert(actionableGuidance(new BridgeError("path_boundary", "outside")).includes("workspace boundary"), "actionable guidance omitted for path_boundary");
+  assert(actionableGuidance(new BridgeError("conflict", "busy")).includes("inspect current state"), "actionable guidance omitted for conflict");
+  assert(actionableGuidance(new BridgeError("internal_error", "fatal")) === null, "unexpected guidance for internal_error");
 }
 
 function testWorkspaceShellSelection() {

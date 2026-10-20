@@ -124,11 +124,9 @@ const boundaryModules = new Set([
   "resource-staging-recovery.mjs",
   "resource-wait.mjs",
   "managed-job-plan.mjs",
-  "numbers.mjs",
   "private-toolchain-integrity.mjs",
   "package-identity.mjs",
   "project-metadata.mjs",
-  "records.mjs",
   "state-inventory.mjs",
   "state-owner-lock-inventory.mjs",
   "state-root-owned-namespaces.mjs",
@@ -410,10 +408,8 @@ const lineLimits = Object.freeze({
   "src/local/managed-job-directory.mjs": 80,
   "src/local/managed-job-directory-generation.mjs": 70,
   "src/local/managed-job-plan.mjs": 300,
-  "src/local/numbers.mjs": 30,
   "src/local/package-identity.mjs": 20,
   "src/local/project-metadata.mjs": 80,
-  "src/local/records.mjs": 20,
   "src/local/state-inventory.mjs": 170,
   "src/local/state-owner-lock-inventory.mjs": 60,
   "src/local/state-root-owned-namespaces.mjs": 90,
@@ -483,6 +479,8 @@ const lineLimits = Object.freeze({
   "src/worker/mcp-subscription-capacity.ts": 60,
   "src/worker/mcp-subscription-registry.ts": 130,
   "src/worker/mcp-controller.ts": 220,
+  "src/worker/mcp-tasks.ts": 80,
+  "src/worker/mcp-prompts.ts": 120,
   "src/worker/mcp-job-monitor-ui.ts": 130,
   "src/worker/mcp-job-monitor-claims.ts": 130,
   "src/worker/mcp-job-monitor-store.ts": 150,
@@ -535,6 +533,13 @@ const lineLimits = Object.freeze({
   "src/worker/pending-call-registration.ts": 80,
   "src/worker/pending-call-deadlines.ts": 80,
   "src/worker/mcp-jsonrpc.ts": 130,
+  "src/worker/mcp-task-store.ts": 310,
+  "src/worker/mcp-task-result-codec.ts": 60,
+  "src/worker/mcp-task-dispatch.ts": 130,
+  "src/worker/mcp-task-projection.ts": 70,
+  "src/worker/mcp-task-seed.ts": 60,
+  "src/worker/mcp-streamed-tool-dispatch.ts": 60,
+  "src/worker/mcp-tool-call-dispatch.ts": 100,
   "src/worker/websocket-protocol.ts": 60,
   "browser-extension/browser-operation-contract.js": 110,
   "browser-extension/browser-operations.js": 1810,
@@ -1535,7 +1540,7 @@ for (const required of [
   if (!mcpStreamProxyContractBoundary.includes(required)) throw new Error(`MCP stream proxy contract lost boundary hardening: ${required}`);
 }
 const mcpControllerBoundary = readFileSync(join(root, "src", "worker", "mcp-controller.ts"), "utf8");
-for (const required of ["class McpController", "server/discover", "tools/list", "tools/call", "dispatchManagedJobMonitorResource", "subscriptions/listen", "streamedMcpToolResponse", "McpRequestCancellationRegistry"]) {
+for (const required of ["class McpController", "server/discover", "tools/list", "tools/call", "dispatchManagedJobMonitorResource", "subscriptions/listen", "createStreamedToolResponse", "McpRequestCancellationRegistry"]) {
   if (!mcpControllerBoundary.includes(required)) throw new Error(`current MCP controller lost request-scoped responsibility: ${required}`);
 }
 const mcpStreamedToolResponseBoundary = readFileSync(join(root, "src", "worker", "mcp-streamed-tool-response.ts"), "utf8");

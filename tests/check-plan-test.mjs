@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   FAST_CHECK_TASKS,
@@ -31,6 +32,15 @@ for (const [name, tasks] of Object.entries({
   assert.equal(new Set(tasks).size, tasks.length, `${name} check plan contains duplicate tasks`);
 }
 for (const task of FULL_CHECK_TASKS) assert.equal(typeof scripts[task], "string", `check plan references missing package script: ${task}`);
+// A test file no plan task runs cannot fail, so it protects nothing. Keep every test reachable
+// from a planned package script or from the curated coverage-fixture list.
+const plannedCommands = FULL_CHECK_TASKS.map((task) => String(scripts[task] || ""));
+const runnerSource = await readFile(new URL("../scripts/check-runner.mjs", import.meta.url), "utf8");
+for (const name of readdirSync(new URL("../tests", import.meta.url))) {
+  if (!/-test\.(?:mjs|js)$/.test(name)) continue;
+  const reachable = plannedCommands.some((command) => command.includes(`tests/${name}`)) || runnerSource.includes(`tests/${name}`);
+  assert(reachable, `test file is not reachable from any check plan task: tests/${name}`);
+}
 for (const task of SERIAL_FAST_CHECK_TASKS) assert(FAST_CHECK_TASKS.includes(task), `serial fast task is not in the fast plan: ${task}`);
 assert.equal(new Set(SERIAL_FAST_CHECK_TASKS).size, SERIAL_FAST_CHECK_TASKS.length, "serial fast task list contains duplicates");
 for (const task of ["coverage:test", "browser-bridge:test", "package:test", "sbom:test", "install:test", "stdio:integration-test", "worker:integration-test", "oauth-browser:test"]) {

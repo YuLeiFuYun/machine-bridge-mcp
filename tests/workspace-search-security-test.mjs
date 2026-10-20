@@ -7,16 +7,19 @@ import { WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
 const root = await mkdtemp(join(tmpdir(), "mbm-workspace-search-security-"));
 let workspace = join(root, "workspace");
 const controlStateRoot = join(root, "state");
+const browserStateRoot = join(root, "browser-state");
 const serviceControlRoot = join(root, "machine-service-control");
 try {
   await mkdir(join(workspace, "nested"), { recursive: true });
   await mkdir(join(workspace, "node_modules", "fixture"), { recursive: true });
   await mkdir(join(workspace, "dist"), { recursive: true });
   await mkdir(controlStateRoot, { recursive: true });
+  await mkdir(browserStateRoot, { recursive: true });
   await mkdir(serviceControlRoot, { recursive: true });
   workspace = await realpath(workspace);
-  const protectedRoots = [await realpath(controlStateRoot), await realpath(serviceControlRoot)];
+  const protectedRoots = [await realpath(controlStateRoot), await realpath(browserStateRoot), await realpath(serviceControlRoot)];
   await writeFile(join(controlStateRoot, "state.json"), "CONTROL_PLANE_MARKER state\n");
+  await writeFile(join(browserStateRoot, "browser-pairing.json"), "CONTROL_PLANE_MARKER browser\n");
   await writeFile(join(serviceControlRoot, "service-operation.lock"), "CONTROL_PLANE_MARKER service\n");
   await writeFile(join(workspace, ".env"), "API_KEY=synthetic-search-secret\n");
   await writeFile(join(workspace, "nested", "server.key"), "synthetic-key-secret\n");
@@ -79,12 +82,13 @@ try {
     },
   };
   const protectedStateSearch = await service.searchText({ path: "..", query: "CONTROL_PLANE_MARKER", max_matches: 100 }, delegatedOwner);
-  assert(protectedStateSearch.matches.length === 0 && protectedStateSearch.skipped_files >= 2 && protectedStateSearch.truncated === true,
+  assert(protectedStateSearch.matches.length === 0 && protectedStateSearch.skipped_files >= 3 && protectedStateSearch.truncated === true,
     `recursive search exposed control-plane files when the requested root was their ancestor: ${JSON.stringify(protectedStateSearch)}`);
   const protectedStateListing = await service.listFiles("..", 1000, delegatedOwner);
   assert(!protectedStateListing.files.some((value) => value.startsWith(`..${sep}state${sep}`)
+      || value.startsWith(`..${sep}browser-state${sep}`)
       || value.startsWith(`..${sep}machine-service-control${sep}`))
-      && protectedStateListing.skipped_files >= 2 && protectedStateListing.truncated === true,
+      && protectedStateListing.skipped_files >= 3 && protectedStateListing.truncated === true,
     "recursive file listing exposed protected control-plane paths or hid that its results were incomplete");
 
   const ownerSearch = await service.searchText({ path: ".", query: "API_KEY=synthetic-search-secret", max_matches: 100 }, { origin: "local" });

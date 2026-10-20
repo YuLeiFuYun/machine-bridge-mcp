@@ -1,4 +1,5 @@
 import { ESLint } from "eslint";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,6 +49,47 @@ if (!unusedResults[0].messages.some((message) => message.ruleId === "no-unused-v
   throw new Error(`semantic lint configuration did not reject an unused import: ${JSON.stringify(unusedResults[0].messages)}`);
 }
 
+// Scope guard: a lint command that silently ignores part of the tree is worse than no lint
+// command, because it reports success. Every source file must therefore be covered by
+// eslint.config.mjs or be listed below with the reason it cannot be.
+const UNLINTED_SOURCE_EXCEPTIONS = Object.freeze([
+  {
+    prefix: "src/",
+    suffix: ".d.ts",
+    reason: "ambient declaration file with no runtime code to lint",
+  },
+  {
+    prefix: "src/worker/",
+    suffix: ".ts",
+    reason: "eslint 10 has no TypeScript parser that accepts typescript 7; src/worker is covered by `tsc -p tsconfig.json` with strict, noUnusedLocals and noUnusedParameters",
+  },
+]);
+const lintTargets = String(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts?.lint || "")
+  .trim().split(/\s+/).slice(1);
+const isExcepted = (file) => UNLINTED_SOURCE_EXCEPTIONS.some((entry) => file.startsWith(entry.prefix) && file.endsWith(entry.suffix));
+const sourceRoots = ["bin", "src", "scripts", "tests", "browser-extension", ".github/scripts"];
+const unlinted = [];
+for (const file of sourceFiles(sourceRoots)) {
+  const config = await eslint.calculateConfigForFile(file);
+  const hasRules = config !== undefined && Object.values(config.rules || {}).some((severity) => severity !== "off" && severity !== 0);
+  if (!hasRules && !isExcepted(file)) unlinted.push(file);
+}
+if (unlinted.length) {
+  throw new Error(`source files are outside every eslint config block: ${unlinted.slice(0, 10).join(", ")}${unlinted.length > 10 ? ` (+${unlinted.length - 10})` : ""}`);
+}
+for (const exception of UNLINTED_SOURCE_EXCEPTIONS) {
+  if (!sourceFiles(["src"]).some(isExcepted)) {
+    throw new Error(`stale lint exception for ${exception.prefix}**${exception.suffix}; remove it so the tree stays honestly covered`);
+  }
+}
+for (const directory of readdirSync(join(root, "src"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => `src/${entry.name}`)) {
+  const files = sourceFiles(["src"]).filter((file) => file.startsWith(`${directory}/`));
+  if (!files.length || files.every(isExcepted)) continue;
+  if (!lintTargets.includes(directory)) {
+    throw new Error(`the lint command does not traverse ${directory}; eslint.config.mjs may cover it, but nothing would ever check`);
+  }
+}
+
 console.log("semantic JavaScript lint gate test ok");
 
 function assertNoUndef(result, name, label) {
@@ -55,4 +97,21 @@ function assertNoUndef(result, name, label) {
   if (!findings.some((message) => message.message.includes(name))) {
     throw new Error(`${label} did not reject the undefined identifier ${name}: ${JSON.stringify(result.messages)}`);
   }
+}
+
+function sourceFiles(roots) {
+  const files = [];
+  const walk = (directory) => {
+    for (const entry of readdirSync(join(root, directory), { withFileTypes: true })) {
+      const relativePath = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === ".wrangler") continue;
+        walk(relativePath);
+      } else if (/\.(?:mjs|js|ts)$/.test(entry.name)) {
+        files.push(relativePath);
+      }
+    }
+  };
+  for (const directory of roots) walk(directory);
+  return files;
 }

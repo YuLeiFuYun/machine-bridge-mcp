@@ -1,9 +1,11 @@
+// @ts-check
 import path from "node:path";
 
 const NODE_TARGET_NAMES = new Set(["node", "node.exe"]);
 const CANARY_ENTRY_NAME = "release-oauth-canary.mjs";
 const CANARY_FLAG = "--allow-live-oauth-canary";
 
+/** @param {unknown} base @param {readonly unknown[]} [args] @returns {boolean} */
 export function releaseControlCommandIsLight(base, args = []) {
   const head = String(base || "").toLowerCase();
   if (!NODE_TARGET_NAMES.has(head)) return false;

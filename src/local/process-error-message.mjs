@@ -1,3 +1,9 @@
+// @ts-check
+/**
+ * @param {unknown} error
+ * @param {string} [fallback]
+ * @returns {string}
+ */
 export function boundedProcessErrorMessage(error, fallback = "process failed") {
   let message = "";
   try { message = error instanceof Error ? error.message : String(error); }

@@ -55,9 +55,10 @@ import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBu
 import { daemonToolRedeliveryArguments } from "./daemon-tool-redelivery.ts";
 import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./managed-job-hosted-authority.ts";
 import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
+import { McpTaskService } from "./mcp-task-service.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.205";
+const SERVER_VERSION = "3.0.0-beta.206";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -66,13 +67,14 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonRegistry;
-  private readonly mcp: McpController; private readonly jobMonitorClaims: ManagedJobMonitorClaimStore;
+  private readonly mcp: McpController; private readonly jobMonitorClaims: ManagedJobMonitorClaimStore; private readonly mcpTaskService: McpTaskService;
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env); this.jobMonitorClaims = new ManagedJobMonitorClaimStore(ctx.storage);
     this.oauth = new OAuthController(
       ctx, env, SERVER_NAME, SERVER_VERSION,
       (event) => this.observability.oauthRefreshEvent(event),
     );
+    this.mcpTaskService = new McpTaskService(ctx.storage, () => this.oauth.identityKey());
     this.daemonRegistry = new DaemonRegistry(ctx);
     this.mcp = new McpController({
       capabilities: MCP_SERVER_CAPABILITIES,
@@ -81,11 +83,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       supportedVersions: MCP_PROTOCOL_VERSIONS,
       discoveryTtlMs: MCP_DISCOVERY_TTL_MS,
       toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
+      taskStore: this.mcpTaskService.store,
+      resolveTaskCredentials: this.mcpTaskService.resolveCredentials,
       tools: (authorized) => workerToolsForRole(authorized.role),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
-      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities }) => this.callTool(
-        name, args, base, authorized, requestKey, signal, clientCapabilities,
+      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken }) => this.callTool(
+        name, args, base, authorized, requestKey, signal, clientCapabilities, progressToken,
       ),
     });
   }
@@ -162,6 +166,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       cancelledPending += await this.pending.cancelAuthority(revocation, () => revokedDaemonAuthorityError());
       cancelledSubscriptions += this.mcp.cancelAuthority(revocation);
       await cancelManagedJobMonitorClaimsIfAvailable(this.jobMonitorClaims, revocation, (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }));
+      const removedTasks = await this.mcpTaskService.cancelAuthority(revocation,
+        (error) => this.observability.event("warn", "mcp.tasks.revocation_cleanup_unavailable", { error_class: workerErrorClass(error) }));
+      if (removedTasks > 0) this.observability.event("info", "mcp.tasks.authority_revoked", { tasks: removedTasks });
     }
     if (cancelledWaiters > 0) {
       this.observability.event("info", "authority.revocation.pre_dispatch_waiters_cancelled", { waiters: cancelledWaiters });
@@ -446,12 +453,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       const removed = removedProtocolResponse(request, body, MCP_PROTOCOL_VERSIONS);
       if (removed) return removed;
-      validateHttpRequest({
-        request,
-        body,
-        tools: workerToolsForRole(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
+      const mcpMetadata = validateHttpRequest({
+        request, body, tools: workerToolsForRole(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
       });
-      return await this.mcp.handleRequest({ request, body, base, authorized: access.authorized, proxyMode });
+      return await this.mcp.handleRequest({ request, body, base, authorized: access.authorized, proxyMode, progressToken: mcpMetadata.progressToken });
     } catch (error) {
       if (error instanceof McpHttpContractError) {
         return json(rpcError(body.id, error.code, error.message, error.data), error.status);
@@ -487,13 +492,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
   }
   private async callTool(
-    name: string,
-    args: Record<string, unknown>,
-    base: string,
-    authorized: AuthorizedToken,
-    requestKey?: string,
-    signal?: AbortSignal,
-    clientCapabilities?: Record<string, unknown>,
+    name: string, args: Record<string, unknown>, base: string, authorized: AuthorizedToken,
+    requestKey?: string, signal?: AbortSignal, clientCapabilities?: Record<string, unknown>, _progressToken?: unknown,
   ): Promise<unknown> {
     this.assertWorkerToolArguments(name, args);
     if (name === "server_info") return this.serverInfoResult(base, authorized, args);

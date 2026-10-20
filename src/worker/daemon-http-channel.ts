@@ -89,8 +89,8 @@ export class DaemonHttpChannel implements DaemonChannel {
     if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= this.nextWorkerSeq) return false;
     if (sequence <= this.acknowledgedWorkerSeq) return true;
     this.acknowledgedWorkerSeq = sequence;
-    while (this.outbound[0]?.seq <= sequence) {
-      this.queuedBytes -= this.outbound.shift()!.bytes;
+    for (let head = this.outbound[0]; head !== undefined && head.seq <= sequence; head = this.outbound[0]) {
+      this.queuedBytes -= head.bytes; this.outbound.shift();
     }
     return true;
   }

@@ -6,6 +6,7 @@ import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publicati
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstanceAsync } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 const LOCK_NAME = "transaction.lock";
 const LOCK_PURPOSE = "resource-coordinator";
@@ -113,5 +114,4 @@ function readJson(file, maxBytes, label) {
   return { value, residueIdentity };
 }
 
-function positiveInteger(value, fallback) { const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback; }
 function defaultSleep(milliseconds) { return new Promise((resolvePromise) => { setTimeout(resolvePromise, milliseconds); }); }

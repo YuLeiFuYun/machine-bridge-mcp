@@ -1,5 +1,10 @@
 import globals from "globals";
 
+// Scope contract: every runtime source file is covered by one of the blocks below, and
+// `tests/lint-gate-test.mjs` fails if that stops being true. `src/worker/**/*.ts` is the one
+// documented exception — eslint 10 has no TypeScript parser that accepts typescript 7, so the
+// Worker is gated by `tsc -p tsconfig.json` (strict, noUnusedLocals, noUnusedParameters,
+// noFallthroughCasesInSwitch, noImplicitReturns) instead of by these rules.
 const correctnessRules = {
   "no-undef": "error",
   "no-redeclare": "error",
@@ -26,7 +31,7 @@ export default [
     ignores: ["node_modules/**", ".wrangler/**"],
   },
   {
-    files: ["eslint.config.mjs", "bin/**/*.mjs", "src/local/**/*.{js,mjs}", "src/shared/**/*.{js,mjs}", "scripts/**/*.{js,mjs}", ".github/scripts/**/*.{js,mjs}", "tests/**/*.mjs"],
+    files: ["eslint.config.mjs", "bin/**/*.mjs", "src/local/**/*.{js,mjs}", "src/shared/**/*.{js,mjs}", "scripts/**/*.{js,mjs}", ".github/scripts/**/*.{js,mjs}", "tests/**/*.{js,mjs}"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

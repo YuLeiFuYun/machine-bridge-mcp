@@ -1,6 +1,7 @@
 export const MCP_PROTOCOL_VERSION: "2026-07-28";
 export const MCP_PROTOCOL_VERSIONS: readonly string[];
 export const MCP_HEADER_MISMATCH: -32020;
+export const MCP_MISSING_REQUIRED_CLIENT_CAPABILITY: -32021;
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION: -32022;
 export const MCP_REMOVED_PROTOCOL_MESSAGE: "MCP session protocol was removed; upgrade the client and use request-scoped metadata/server/discover";
 export class McpProtocolError extends Error {
@@ -20,6 +21,7 @@ export function validateRequestMetadata(value: unknown, supportedVersions?: read
 };
 export function serverImplementation(input: { name: unknown; version: unknown; title?: unknown; description?: unknown }): Record<string, unknown>;
 export function completeResult(fields?: Record<string, unknown>, serverInfo?: Record<string, unknown>): Record<string, unknown>;
+export function taskCreatedResult(fields?: Record<string, unknown>, serverInfo?: Record<string, unknown>): Record<string, unknown>;
 export function cacheableResult(fields: Record<string, unknown>, options: { ttlMs: number; cacheScope: "public" | "private"; serverInfo?: Record<string, unknown> }): Record<string, unknown>;
 export function discoverResult(input: { supportedVersions: readonly string[]; capabilities: Record<string, unknown>; instructions?: string; ttlMs?: number; serverInfo?: Record<string, unknown> }): Record<string, unknown>;
 export function validateSubscriptionRequest(value: unknown): Readonly<{ toolsListChanged: boolean; promptsListChanged: boolean; resourcesListChanged: boolean; resourceSubscriptions: readonly string[] }>;

@@ -1,6 +1,7 @@
 // @ts-check
 
 import { trimAutostartLogs } from "./service.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -28,10 +29,4 @@ export function startAutostartLogMaintenance(stateRoot, options = {}) {
   const timer = scheduler.setInterval(maintain, intervalMs);
   timer?.unref?.();
   return { intervalMs, maintain };
-}
-
-/** @param {unknown} value @param {number} fallback */
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }

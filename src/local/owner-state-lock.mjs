@@ -5,6 +5,7 @@ import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publicati
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 const MAX_LOCK_BYTES = 8 * 1024;
 const DEFAULT_WAIT_MS = 5_000;
@@ -117,11 +118,6 @@ function boundedFileName(value, fallback) {
   const name = path.basename(String(value || fallback));
   if (!/^[a-z0-9][a-z0-9._-]{0,95}\.lock$/.test(name)) throw new Error("owner-state lock filename is invalid");
   return name;
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
 function delay(milliseconds) {

@@ -1,9 +1,17 @@
+// @ts-check
 import { existsSync } from "node:fs";
 
 const POSIX_NICE = "/usr/bin/nice";
 const BACKGROUND_NICE_INCREMENT = 5;
 const UNBOUNDED_NICE_INCREMENT = 2;
 
+/**
+ * @param {string} command
+ * @param {readonly unknown[]} args
+ * @param {{ heavy?: boolean, priority?: string, unbounded?: boolean }} [request]
+ * @param {{ niceExecutable?: string }} [options]
+ * @returns {{ command: string, args: string[] }}
+ */
 export function applyResourceProcessPriority(command, args, request, options = {}) {
   const values = args.map(String);
   if (process.platform === "win32" || request?.heavy !== true) return { command, args: values };

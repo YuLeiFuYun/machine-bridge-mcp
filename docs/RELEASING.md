@@ -26,6 +26,8 @@ Supported versions and registry channels are:
 | `x.y.z-rc.n` | `next` | Prerelease | optional final candidate after beta |
 | `x.y.z` | `latest` | final release | stable users only |
 
+The browser extension manifest has two distinct version fields. Chromium uses numeric `version` for update ordering; `version_name` carries the full Machine Bridge candidate identity used by project-side verification. The current prerelease flow installs candidates from the owner-only local release-channel directory and does not upload each prerelease to the Chrome Web Store. Do not treat `version_name` as the store update-order field. Any future Chrome Web Store publication path must separately enforce a strictly increasing numeric `version` and have its own release gate.
+
 Do not assign the final `x.y.z` version while implementation is still under candidate testing. A major or behaviorally risky change normally starts at `beta.1`. A release candidate may use `rc.n` after beta when a final freeze checkpoint is useful.
 
 Minimum published-prerelease soak periods are:

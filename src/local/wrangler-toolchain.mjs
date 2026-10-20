@@ -13,6 +13,7 @@ import { validateNpmAudit } from "./npm-audit-report.mjs";
 import { withHardenedNpmLauncher } from "./hardened-npm-launcher.mjs";
 import { resolveNpmCli } from "./npm-cli.mjs";
 import { isPrivateToolchainIntegrityError } from "./private-toolchain-integrity.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 import {
   readWranglerToolchainMarker,
   verifyWranglerToolchain,
@@ -198,9 +199,4 @@ function parseJsonObject(bytes, label) {
   try { value = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new Error(`${label} is not valid JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value;
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }

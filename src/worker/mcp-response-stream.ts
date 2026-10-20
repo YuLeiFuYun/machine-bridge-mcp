@@ -1,6 +1,10 @@
 export function jsonRpcResponseStream(
   result: Promise<Record<string, unknown>>,
-  options: { onCancel: () => void; onError: (error: unknown) => Record<string, unknown> },
+  options: {
+    onCancel: () => void;
+    onError: (error: unknown) => Record<string, unknown>;
+    onProgress?: (emit: (event: unknown) => void) => void;
+  },
 ): Response {
   const encoder = new TextEncoder();
   let writable = true;
@@ -18,6 +22,15 @@ export function jsonRpcResponseStream(
           catch { /* Client already closed the response stream. */ }
         }
       };
+      if (options.onProgress) {
+        try {
+          options.onProgress((event) => {
+            if (!writable) return;
+            try { controller.enqueue(encoder.encode(sseMessage(event))); }
+            catch { /* Client already closed the response stream. */ }
+          });
+        } catch { /* Progress subscription ignored. */ }
+      }
       void result.then(
         (message) => finish(() => message),
         (error) => finish(() => options.onError(error)),

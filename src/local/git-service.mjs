@@ -9,7 +9,7 @@ import { assertStructuredGitConfigSafe } from "./git-config-safety.mjs";
 import { resolveGitMetadataBoundary } from "./git-metadata-boundary.mjs";
 import { assertGitMetadataTreesSafe } from "./git-metadata-tree-safety.mjs";
 import { parseStructuredGitLog } from "./git-log-parser.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { pathEntryIfExists } from "./path-inspection.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { gitCommandPrefix, structuredGitDiff, structuredGitShow } from "./git-content-service.mjs";

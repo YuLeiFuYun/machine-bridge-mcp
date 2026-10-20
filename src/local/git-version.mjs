@@ -1,3 +1,9 @@
+// @ts-check
+/**
+ * @param {string} output
+ * @param {{ major: number, minor: number }} [minimum]
+ * @returns {{ major: number, minor: number, patch: number }}
+ */
 export function requireGitVersion(output, minimum = { major: 2, minor: 50 }) {
   if (typeof output !== "string") throw new Error("Git version output is invalid");
   const match = /^git version ([0-9]+)\.([0-9]+)(?:\.([0-9]+))?(?:\.windows\.[0-9]+)?(?:\s|$)/.exec(output.trim());

@@ -3,7 +3,7 @@ import { lstat, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from "./default-instructions.mjs";
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { isSensitivePath } from "./operation-risk.mjs";
 import {
   discoverLocalSkills, listSkillFiles, MAX_SKILL_ENTRY_BYTES, MAX_SKILL_FILES, MAX_SKILL_RESULTS,

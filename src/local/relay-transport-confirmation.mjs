@@ -1,5 +1,6 @@
 import { RelayProbeDeadline } from "./relay-probe-deadline.mjs";
 import { RelayProbeDispatch } from "./relay-probe-dispatch.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 export class RelayTransportConfirmation {
   constructor(options = {}) {
@@ -72,8 +73,4 @@ export class RelayTransportConfirmation {
       last_transport_confirmation_timeout_age_ms: response.last_probe_timeout_age_ms,
     };
   }
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value); return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }

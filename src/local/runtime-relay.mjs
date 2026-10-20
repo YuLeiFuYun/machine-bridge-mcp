@@ -4,7 +4,7 @@ import { ResilientRelayConnection } from "./resilient-relay-connection.mjs";
 import { createDeviceSessionIdentity, validateDeviceSessionIdentity } from "./device-identity.mjs";
 import { SERVER_NAME } from "./tools.mjs";
 import { normalizeAccountRole } from "./account-access.mjs";
-import { isPlainRecord } from "./records.mjs";
+import { isPlainRecord } from "../shared/records.mjs";
 import { MAX_RELAY_MESSAGE_BYTES, runtimeRelayConnectionOptions } from "./runtime-relay-connection-options.mjs";
 export { MAX_RELAY_MESSAGE_BYTES } from "./runtime-relay-connection-options.mjs";
 const RELAY_CALL_ID = /^call_[A-Za-z0-9_-]{8,240}$/; const RELAY_TOOL_NAME = /^[a-z][a-z0-9_]{0,127}$/;

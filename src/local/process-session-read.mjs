@@ -1,5 +1,5 @@
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { finishRemoteProcessRead, planRemoteProcessRead } from "./process-session-remote-poll.mjs";
 import { sessionHasOutputAfter, waitForSessionChange } from "./process-session-events.mjs";

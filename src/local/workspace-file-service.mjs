@@ -7,7 +7,7 @@ import { BridgeError } from "./errors.mjs";
 import { hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { searchWorkspaceText } from "./workspace-search-service.mjs";
 import {
   assertNoResolvedPatchCollisions as assertResolvedPatchCollisions,

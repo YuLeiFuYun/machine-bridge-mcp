@@ -29,7 +29,7 @@ import { createRuntimeAppAutomationManager } from "./runtime-application-automat
 import { BrowserBridgeManager } from "./browser-bridge.mjs";
 import { ComputerUseManager } from "./computer-use.mjs";
 import { CapabilityObserver } from "./capability-observer.mjs";
-import { isPlainRecord } from "./records.mjs";
+import { isPlainRecord } from "../shared/records.mjs";
 import { AccountAccessGate } from "./account-access.mjs";
 import { buildProjectOverview, buildRuntimeInfo } from "./runtime-reporting.mjs";
 import { diagnoseRuntime as runRuntimeDiagnostics } from "./runtime-diagnostics.mjs";

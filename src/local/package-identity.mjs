@@ -1,3 +1,4 @@
+// @ts-check
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };

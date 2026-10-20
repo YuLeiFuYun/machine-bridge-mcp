@@ -1,3 +1,5 @@
+// @ts-check
+/** @param {{ definitionPresent?: boolean, disableCode?: unknown, status?: { state?: unknown, active?: unknown } }} options */
 export function systemdRemovalDecision({ definitionPresent, disableCode, status }) {
   const state = String(status?.state || "unknown");
   const active = status?.active;

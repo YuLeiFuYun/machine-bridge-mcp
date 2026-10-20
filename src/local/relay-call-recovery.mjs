@@ -2,7 +2,7 @@
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { RelayResultRetention } from "./relay-result-retention.mjs";
 import { RelayRedeliverySafety } from "./relay-redelivery-safety.mjs";
-import { positiveInteger } from "./numbers.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 import { shortCallId } from "./short-identifiers.mjs";
 /** @typedef {{id?: unknown, [key: string]: unknown}} RelayResult */
 /** @typedef {{event?: (level: string, name: string, fields: Record<string, unknown>, message: string) => void, warn?: (message: string) => void}} RecoveryLogger */

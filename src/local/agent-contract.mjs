@@ -1,8 +1,8 @@
 // @ts-check
 
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { clampInteger } from "./numbers.mjs";
-import { isPlainRecord } from "./records.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
+import { isPlainRecord } from "../shared/records.mjs";
 
 export const MAX_TOTAL_INSTRUCTION_BYTES = 2 * 1024 * 1024;
 export const MAX_SKILL_ROOTS = 32;

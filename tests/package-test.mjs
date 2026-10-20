@@ -7,6 +7,10 @@ import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+if (packageLock.version !== packageJson.version || packageLock.packages?.[""]?.version !== packageJson.version) {
+  throw new Error("package.json and package-lock.json root versions must match");
+}
 const output = mkdtempSync(join(tmpdir(), "mbm-package-test-"));
 try {
   const npmCli = process.env.npm_execpath;
@@ -126,7 +130,9 @@ try {
   if (!record.files.some((item) => item.path === "src/local/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
   if (!record.files.some((item) => item.path === "src/worker/index.ts")) throw new Error("npm package omitted the worker entrypoint");
   for (const module of [
-    "mcp-jsonrpc.ts", "websocket-protocol.ts", "mcp-http-contract.ts", "mcp-controller.ts",
+    "mcp-jsonrpc.ts", "websocket-protocol.ts", "mcp-http-contract.ts", "mcp-controller.ts", "mcp-tasks.ts", "mcp-prompts.ts",
+    "mcp-task-service.ts", "mcp-task-store.ts", "mcp-task-result-codec.ts", "mcp-task-projection.ts", "mcp-task-seed.ts", "mcp-task-dispatch.ts",
+    "mcp-streamed-tool-dispatch.ts", "mcp-tool-call-dispatch.ts",
     "mcp-response-proxy.ts", "mcp-response-stream.ts", "mcp-http-accept.ts", "mcp-stream-proxy-contract.ts", "mcp-removed-protocol.ts",
     "mcp-tool-call-input.ts", "worker-mcp-config.ts", "worker-runtime-config.ts", "server-info.ts", "daemon-status.ts",
   ]) {

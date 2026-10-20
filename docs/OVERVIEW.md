@@ -110,6 +110,20 @@ The repository uses several complementary layers:
 
 `npm run check:fast` is the development feedback loop. `npm run check` runs the complete release-relevant suite.
 
+## Canonical contract ownership
+
+Use these sources when changing externally observable behavior. Other documents may explain, summarize, or link to the contract, but must not introduce a competing rule.
+
+| Contract | Authoritative implementation and policy source | Normative operator/client documentation |
+|---|---|---|
+| MCP protocol and Tasks | `src/shared/mcp-protocol.mjs`, `src/shared/mcp-task-contract.mjs`, `src/shared/server-metadata.json` | [Client contract](CLIENTS.md) |
+| Authorization and role ceilings | `src/shared/access-contract.json`, `src/shared/policy-contract.json`, `src/local/operation-authorization.mjs` | [Local authorization](LOCAL_AUTHORIZATION.md), generated [policy reference](POLICY_REFERENCE.md) |
+| Managed-job lifecycle and recovery | `src/local/managed-job-terminal.mjs`, `src/local/managed-job-state-validation.mjs`, `src/local/managed-job-storage.mjs`, and the job-runner/recovery modules | [Managed jobs](MANAGED_JOBS.md); [Operations](OPERATIONS.md) is the runbook, not a second lifecycle specification |
+| Computer Use | `src/local/computer-use-observation-contract.mjs`, `src/local/computer-use-dispatch-settlement.mjs`, `src/local/computer-use-snapshot-store.mjs`, and the Computer Use dispatcher | [Computer Use](COMPUTER_USE.md) |
+| Release and migration gates | `package.json`, `scripts/`, and the release workflow definitions | repository `docs/RELEASING.md`; [Upgrading](UPGRADING.md) documents the supported migration path |
+
+`MULTI_AGENT.md` and `COMPARATIVE_REVIEW.md` are explanatory/research material. Their examples and external references do not override the current protocol, authorization, recovery, or release contracts above.
+
 ## Read next
 
 - [Computer Use](COMPUTER_USE.md) for snapshot identity, verified UI actions, visual grounding, and retry settlement

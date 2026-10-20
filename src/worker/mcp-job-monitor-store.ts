@@ -137,7 +137,7 @@ function matchesAuthorized(claim: Claim, authorized: AuthorizedToken): boolean {
 }
 function prune(state: State, now: number): void { state.claims = state.claims.filter((claim) => claim.state === "claimed" || claim.expiresAt > now); }
 function replaceClaim(state: State, previous: Claim, next: Claim): void { state.claims[state.claims.findIndex((claim) => claim.monitorId === previous.monitorId)] = Object.freeze(next); }
-function evictOldest(state: State): void { state.claims.splice(state.claims.reduce((best, claim, index, all) => claim.sequence < all[best].sequence ? index : best, 0), 1); }
+function evictOldest(state: State): void { state.claims.splice(state.claims.reduce((best, claim, index, all) => claim.sequence < (all[best]?.sequence ?? Number.MAX_SAFE_INTEGER) ? index : best, 0), 1); }
 function bumpSequence(state: State): number {
   if (state.sequence >= Number.MAX_SAFE_INTEGER - 1) { state.claims.sort((a, b) => a.sequence - b.sequence); state.claims = state.claims.map((claim, index) => Object.freeze({ ...claim, sequence: index + 1 })); state.sequence = state.claims.length; }
   return ++state.sequence;

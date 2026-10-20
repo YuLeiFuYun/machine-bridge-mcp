@@ -22,11 +22,12 @@ export async function verifyDpopProof(input: {
 }): Promise<VerifiedDpopProof | null> {
   const encoded = input.request.headers.get("DPoP") || "";
   if (!encoded) return null;
-  const parts = encoded.split(".");
-  if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) return null;
-  const header = decodeJson(parts[0]);
-  const payload = decodeJson(parts[1]);
-  const signature = decodeBase64Url(parts[2], 64);
+  const [headerPart, payloadPart, signaturePart, ...extraParts] = encoded.split(".");
+  if (!headerPart || !payloadPart || !signaturePart || extraParts.length) return null;
+  if (![headerPart, payloadPart, signaturePart].every((part) => /^[A-Za-z0-9_-]+$/.test(part))) return null;
+  const header = decodeJson(headerPart);
+  const payload = decodeJson(payloadPart);
+  const signature = decodeBase64Url(signaturePart, 64);
   if (!header || !payload || !signature) return null;
   if (header.typ !== "dpop+jwt" || header.alg !== "ES256" || !plainRecord(header.jwk)) return null;
   if (header.crit !== undefined || header.b64 !== undefined) return null;
@@ -59,7 +60,7 @@ export async function verifyDpopProof(input: {
       { name: "ECDSA", hash: "SHA-256" },
       key,
       signature as unknown as BufferSource,
-      new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
+      new TextEncoder().encode(`${headerPart}.${payloadPart}`),
     );
     if (!verified) return null;
   } catch {

@@ -10,9 +10,11 @@ import { policyProfile } from "../src/local/policy.mjs";
 const root = mkdtempSync(path.join(tmpdir(), "mbm-authority-test-"));
 const workspace = path.join(root, "workspace");
 const securityStateRoot = path.join(root, "state");
+const browserStateRoot = path.join(root, "browser-state");
 const serviceControlRoot = path.join(root, "machine-service-control");
 mkdirSync(workspace, { recursive: true });
 mkdirSync(securityStateRoot, { recursive: true });
+mkdirSync(browserStateRoot, { recursive: true });
 mkdirSync(serviceControlRoot, { recursive: true });
 writeFileSync(path.join(workspace, "README.md"), "ok\n");
 const outside = path.join(root, "ordinary.txt");
@@ -36,7 +38,7 @@ try {
     workspace,
     resolveExistingPath: async (value) => path.resolve(workspace, String(value)),
     resolveWritePath: async (value) => path.resolve(workspace, String(value)),
-    protectedRoots: [securityStateRoot, serviceControlRoot],
+    protectedRoots: [securityStateRoot, browserStateRoot, serviceControlRoot],
     auditTargetKey: Buffer.alloc(32, 7),
   });
   const validRelayAuthorization = {
@@ -159,6 +161,12 @@ try {
   const ownerServiceControl = await rejected(() => authorizer.authorize(ownerServiceControlOperation));
   assert(ownerServiceControl.details?.reason === "control_plane_state_protected",
     "owner path-based access could read the independent machine-service control root");
+
+  const browserPairingState = path.join(browserStateRoot, "browser-pairing.json");
+  writeFileSync(browserPairingState, "synthetic browser pairing state\\n", { mode: 0o600 });
+  const ownerBrowserState = await rejected(() => authorizer.authorize(operation("read_file", { path: browserPairingState }, "owner")));
+  assert(ownerBrowserState.details?.reason === "control_plane_state_protected",
+    "owner path-based access could read browser pairing control-plane state");
 
   const ownerBrowser = await authorizer.authorize(operation("browser_action", { action: "navigate", url: "https://example.com" }, "owner"));
   assert(ownerBrowser.scopes.includes("browser-session"), "owner browser session was not classified");

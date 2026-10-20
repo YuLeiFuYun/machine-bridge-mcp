@@ -395,6 +395,34 @@ try {
   assert(committedBeforeExit.status === 72 && await readFile(committedBeforeExitTarget, "utf8") === "new" && committedStaging.length === 0,
     "process interruption after atomic replacement did not leave a complete committed target");
 
+  const patchCrashTarget = join(root, "patch-crash-window.txt");
+  await writeFile(patchCrashTarget, "old", { encoding: "utf8", mode: 0o600 });
+  const patchCrashScript = `
+    import { readFile, rename } from "node:fs/promises";
+    import { commitPatchTransaction, sha256 } from ${JSON.stringify(transactionModuleUrl)};
+    const target = ${JSON.stringify(patchCrashTarget)};
+    await commitPatchTransaction([{
+      kind: "update", source: target, target, content: "new",
+      originalHash: sha256("old"), mode: 0o600,
+    }], {
+      readText: (filePath) => readFile(filePath, "utf8"),
+      rename: async (from, to) => {
+        await rename(from, to);
+        if (from === target && to.includes(".mbm-backup-")) process.exit(73);
+      },
+    });
+  `;
+  const patchCrash = spawnSync(process.execPath, ["--input-type=module", "-e", patchCrashScript], {
+    cwd: process.cwd(), encoding: "utf8",
+  });
+  const patchCrashArtifacts = await readdir(root);
+  const patchCrashBackup = patchCrashArtifacts.find((name) => name.startsWith(".patch-crash-window.txt.mbm-backup-"));
+  const patchCrashStaging = patchCrashArtifacts.filter((name) => name.startsWith(".patch-crash-window.txt.mbm-patch-") && name.endsWith(".tmp"));
+  assert(patchCrash.status === 73 && !patchCrashArtifacts.includes("patch-crash-window.txt")
+      && patchCrashBackup && patchCrashStaging.length === 1
+      && await readFile(join(root, patchCrashBackup), "utf8") === "old",
+    "multi-file patch crash window was not reproducible: source should be recoverable from its retained backup while the target is temporarily absent");
+
   const visibleTarget = join(root, "continuously-visible.txt");
   await writeFile(visibleTarget, "initial", { encoding: "utf8", mode: 0o600 });
   const readFailures = [];

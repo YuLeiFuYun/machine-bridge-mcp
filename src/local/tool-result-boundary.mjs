@@ -1,8 +1,14 @@
+// @ts-check
 import { Buffer } from "node:buffer";
 import { BridgeError } from "./errors.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 export const MAX_TOOL_RESULT_BYTES = 7 * 1024 * 1024;
 
+/**
+ * @param {unknown} value
+ * @param {{ maximumBytes?: number }} [options]
+ */
 export function normalizeToolResult(value, options = {}) {
   const maximumBytes = positiveInteger(options.maximumBytes, MAX_TOOL_RESULT_BYTES);
   let serialized;
@@ -35,6 +41,10 @@ export function normalizeToolResult(value, options = {}) {
   }
 }
 
+/**
+ * @param {string} _key
+ * @param {unknown} current
+ */
 function rejectUnsupportedJsonValue(_key, current) {
   if (typeof current === "bigint" || typeof current === "function" || typeof current === "symbol" || typeof current === "undefined") {
     throw new BridgeError("internal_error", "tool returned a non-JSON value", { expose: false });
@@ -43,9 +53,4 @@ function rejectUnsupportedJsonValue(_key, current) {
     throw new BridgeError("internal_error", "tool returned a non-finite number", { expose: false });
   }
   return current;
-}
-
-function positiveInteger(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
