@@ -6,9 +6,22 @@ This file defines the **currently supported upgrade path only**. Older version n
 
 Machine Bridge supports direct upgrade from the immediately preceding published release. The repository may also need one bounded transition from the exact live owner-machine candidate named in the current changelog. Obsolete MCP transports, protocol sessions, replay stores, authorization workflows, and alternate runtime implementations are not retained as hidden compatibility paths.
 
-Version 3 is a coordinated Worker, daemon, CLI, and browser-extension system. Components are expected to converge on the same exact package version before an upgrade is considered healthy. Mixed 2.x/3.x operation is unsupported. MCP `2026-07-28` is the only supported request-scoped protocol for both stdio and remote HTTP. The default stdio path and remote HTTP reject obsolete initialization/session/replay behavior. The optional stdio `--compat` shim accepts only the initialization handshake and does not restore sessions, replay, or older protocol versions.
+Version 3 is a coordinated Worker, daemon, CLI, and browser-extension system. Components are expected to converge on the same exact package version before an upgrade is considered healthy. Mixed 2.x/3.x operation is unsupported. MCP `2026-07-28` is the only supported request-scoped protocol for both stdio and remote HTTP. Both transports reject obsolete initialization/session/replay behavior. There is no stdio compatibility shim or environment override; missing or unsupported request metadata must be fixed in the client.
 
 State migration is different from protocol compatibility. A bounded one-way reader may transform only the explicitly supported immediately preceding/live state for a subsystem without deleting credentials or creating split-brain ownership; ambiguous state fails closed and removed runtime behavior is not restored. Browser pairing uses schema 3, with one narrow beta.198-to-beta.199 transition: only the exact stable beta.198 schema-2 envelope with `pairingAuthVersion: 2` and `migrationPending: false` is accepted, and its two existing credentials plus port are preserved while the obsolete marker is removed. A beta.198 envelope with `migrationPending: true` remains blocked until beta.198 completes that earlier migration; older, extra-field, malformed, or coercible shapes remain unsupported. Security-audit persistence uses schema 3, with one deliberately narrow beta.198-to-beta.199 transition: the reader accepts only the exact beta.198 schema-1 envelope, validates its exact keys and native field types, verifies the existing hash chain, and preserves every prior event object and hash unchanged as an explicit legacy prefix before current events are appended. Schema 2 and unrelated older audit shapes remain unsupported. OAuth refresh persistence remains schema 3 with bounded consumed-token shards. Beta.198 already writes that current sharded OAuth shape; beta.199 no longer carries the older schema-1/schema-2 refresh upgrader or the pre-shard consumed-marker merger. An older runtime cannot safely read current state. Rollback must restore the complete pre-upgrade state root together with the prior package, Worker, service definition, and browser extension.
+
+## Supported source-version and state-format matrix
+
+The following matrix records only transitions explicitly supported by the current release contract. It is not a promise that every earlier prerelease can be upgraded directly to the latest version.
+
+| Source version or state shape | Target | Supported behavior | Recovery if encountered outside that path |
+|---|---|---|---|
+| Version 2.x runtime/state | Version 3.x runtime | Mixed 2.x/3.x operation is unsupported. Use a release-specific migration and rollback plan; no general cross-major state-reader compatibility is promised. | Stop the upgrade and restore a complete compatible deployment snapshot rather than running mixed components. |
+| Beta.198 browser-pairing/OAuth state | Beta.199 | Beta.199 updates the exact beta.198 pairing writer in place without rotating pairing credentials or changing its port. A pending beta.198 pairing migration is not collapsed into the new schema; older OAuth refresh shapes must be normalized by the supported beta.198 path first. | Return to the documented beta.198 normalization path before upgrading. Do not delete pairing or OAuth state to force progress. |
+| Historical `transaction.lock/owner.json` directory mutex | Current owner-state regular-file format | No current reader migrates the directory format. The current runtime fails closed and leaves it unchanged. | Preserve the directory and either traverse a supported immediately preceding release path or restore the complete pre-upgrade rollback snapshot. |
+| Unknown, malformed, or unrecognized state schema | Any current release | No implicit rewrite or best-effort interpretation is supported. | Stop, preserve the original state and audit evidence, and use the matching release's documented migration or rollback path. |
+
+Do not infer support for an unlisted source-to-target transition from semantic-version ordering alone. Keep audit history and recovery evidence intact unless a specific, reviewed retention rule authorizes removal.
 
 ## Historical resource transaction-lock formats
 
@@ -18,7 +31,7 @@ Existing browser pairing and OAuth state should be left in place. Beta.199 upgra
 
 ## MCP client transition
 
-Machine Bridge uses MCP `2026-07-28` for both remote HTTP and stdio. Full initialization/session protocol compatibility is not retained. Stdio has one narrow, opt-in `--compat` handshake shim for hosts that require `initialize`; it creates no session or replay state and does not enable older protocol versions. See [client transport guidance](CLIENTS.md#current-protocol-requirements).
+Machine Bridge uses MCP `2026-07-28` for both remote HTTP and stdio. Initialization/session protocol compatibility is not retained, and there is no `--compat` shim or environment override. Clients must send request-scoped protocol and capability metadata on each supported request. See [client transport guidance](CLIENTS.md#current-protocol-requirements).
 
 Current/native clients must:
 

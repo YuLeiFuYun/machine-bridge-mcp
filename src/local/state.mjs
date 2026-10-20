@@ -12,7 +12,7 @@ import { isOAuthTokenVersion, isPreviousWorkerNames, isWorkerName } from "./work
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { retryProcessLockIdentityReadSync } from "./process-lock-read-retry.mjs";
 import { ensureOwnerOnlyDir, inspectPathIfPresentSync, ownerOnlyFile, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "./secure-file.mjs";
-import { isPlainRecord } from "./records.mjs";
+import { isPlainRecord } from "../shared/records.mjs";
 import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "./filesystem-identity.mjs";
 import { appName, packageRoot } from "./package-identity.mjs";
 import { inspectStateRootGeneration, pruneRetiredStateRootDirectories, removeStateRootGenerationIfCurrent } from "./state-root-retirement.mjs";

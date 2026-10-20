@@ -1,7 +1,7 @@
 // @ts-check
 
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 
 const LOCAL_MAXIMUM_WAIT_MS = 40_000;
 

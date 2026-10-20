@@ -3,7 +3,7 @@ import { normalizeLogLevel } from "./log.mjs";
 const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker", "allowInsecurePermissions", "showPaths", "compat",
+  "yes", "keepWorker", "allowInsecurePermissions", "showPaths",
 ]);
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel", "logFormat",
@@ -21,7 +21,7 @@ const COMMAND_OPTIONS = new Map(Object.entries({
     "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "logLevel", "logFormat", "rotateSecrets", "forceWorker",
     "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
   ]),
-  stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat", "compat"]),
+  stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat"]),
   "client-config": new Set(["workspace", "stateDir", "profile", "client", "json"]),
   status: new Set(["workspace", "stateDir"]),
   doctor: new Set(["workspace", "stateDir"]),
@@ -149,11 +149,6 @@ export function effectiveLogLevel(args = {}) {
 
 export function effectiveLogFormat(args = {}) {
   return String(args.logFormat || "text").toLowerCase();
-}
-
-/** @param {Record<string, unknown>} [args] @param {Record<string, string | undefined>} [environment] */
-export function effectiveCompatMode(args = {}, environment = process.env) {
-  return typeof args.compat === "boolean" ? args.compat : environment.MBM_MCP_COMPAT === "1";
 }
 
 function positionalRule(command, args) {

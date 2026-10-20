@@ -30,7 +30,8 @@ export function normalizeAccountRole(value: unknown): AccountRole | null {
 }
 
 export function accountRolePolicy(role: AccountRole): DaemonPolicy {
-  const profileName = Object.hasOwn(roles, role) ? roles[role].profile : undefined;
+  const roleEntry = Object.hasOwn(roles, role) ? roles[role] : undefined;
+  const profileName = roleEntry?.profile;
   const profile = profileName && Object.hasOwn(profiles, profileName) ? profiles[profileName] : undefined;
   if (!profile) throw new Error(`account role references an unknown policy profile: ${role}`);
   return {

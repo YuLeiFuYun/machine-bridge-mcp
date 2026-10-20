@@ -1,3 +1,4 @@
+// @ts-check
 import { MANAGED_JOB_ID } from "./managed-job-directory.mjs";
 import { retiredManagedJobDirectories } from "./managed-job-directory-generation.mjs";
 import { safeReadDir } from "./managed-job-storage.mjs";
@@ -5,6 +6,7 @@ import { safeReadDir } from "./managed-job-storage.mjs";
 export const MAX_JOBS = 512;
 export const MAX_LISTED_JOBS = 50;
 
+/** @param {string} jobRoot */
 export function managedJobCapacitySnapshot(jobRoot) {
   const retired = retiredManagedJobDirectories(jobRoot);
   const reservedJobs = safeReadDir(jobRoot).filter((entry) => MANAGED_JOB_ID.test(entry.name));

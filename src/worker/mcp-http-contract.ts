@@ -13,6 +13,9 @@ const MIRRORED_NAME_METHODS = new Map([
   ["tools/call", "name"],
   ["prompts/get", "name"],
   ["resources/read", "uri"],
+  ["tasks/get", "taskId"],
+  ["tasks/update", "taskId"],
+  ["tasks/cancel", "taskId"],
 ]);
 
 type JsonObject = Record<string, unknown>;
@@ -101,7 +104,7 @@ export function decodeMcpHeaderValue(value: string): string {
     return value;
   }
   const encoded = match[1];
-  if (encoded.length % 4 !== 0) throw headerMismatch("Mirrored MCP header contains invalid Base64");
+  if (encoded === undefined || encoded.length % 4 !== 0) throw headerMismatch("Mirrored MCP header contains invalid Base64");
   let bytes: Uint8Array;
   try {
     const binary = atob(encoded);
@@ -120,7 +123,7 @@ export function decodeMcpHeaderValue(value: string): string {
 
 export function validateHttpContentType(headers: Headers): void {
   const value = headers.get("Content-Type") ?? "";
-  const mediaType = value.split(";", 1)[0].trim().toLowerCase();
+  const mediaType = (value.split(";", 1)[0] ?? "").trim().toLowerCase();
   if (mediaType !== "application/json") {
     throw new McpHttpContractError(-32600, "Content-Type must be application/json", undefined, 415);
   }
@@ -130,14 +133,15 @@ function validateAcceptHeader(headers: Headers): void {
   const value = headers.get("Accept") ?? "";
   const accepted = new Set<string>();
   for (const entry of value.split(",")) {
-    const [rawType, ...parameters] = entry.split(";");
+    const [rawType = "", ...parameters] = entry.split(";");
     const mediaType = rawType.trim().toLowerCase();
     if (!mediaType) continue;
     const qualities = parameters
       .map((parameter) => parameter.trim().toLowerCase())
       .filter((parameter) => parameter.startsWith("q="));
     if (qualities.length > 1) continue;
-    if (qualities.length === 1 && !positiveHttpQuality(qualities[0].slice(2))) continue;
+    const [quality] = qualities;
+    if (quality !== undefined && !positiveHttpQuality(quality.slice(2))) continue;
     accepted.add(mediaType);
   }
   if (!accepted.has("application/json") || !accepted.has("text/event-stream")) {

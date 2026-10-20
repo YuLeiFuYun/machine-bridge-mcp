@@ -1,6 +1,8 @@
+// @ts-check
 import { isRelayReadyContext } from "./relay-connection-classification.mjs";
 import { handleRuntimeRelayShutdownAck } from "./runtime-relay-shutdown-drain.mjs";
 
+/** @param {any} runtime @param {any} message @param {Record<string, unknown>} [relayContext] @returns {boolean} */
 export function handleRuntimeRelayAcknowledgement(runtime, message, relayContext = {}) {
   if (message.type === "tool_result_ack") {
     if (!isRelayReadyContext(relayContext, runtime.relay)

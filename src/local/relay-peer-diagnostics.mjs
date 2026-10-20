@@ -1,7 +1,7 @@
 // @ts-check
 
-import { clampInteger } from "./numbers.mjs";
-import { isPlainRecord } from "./records.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
+import { isPlainRecord } from "../shared/records.mjs";
 
 const CONNECT_STAGES = new Set([
   "socket_constructing", "proxy_connecting", "tcp_connecting", "dns_resolved",

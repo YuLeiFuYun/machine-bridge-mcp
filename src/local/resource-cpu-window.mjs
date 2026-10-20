@@ -1,16 +1,19 @@
+// @ts-check
 import { aggregateResourceLeases } from "./resource-lease-accounting.mjs";
 
+/** @param {any} leases @param {Record<string, unknown>} [accounting] @param {number} [sampledAtMs] @returns {number} */
 export function unobservedResourceCpu(leases, accounting = {}, sampledAtMs = 0) {
   const sampledAt = Number(sampledAtMs);
   if (!Number.isFinite(sampledAt) || sampledAt <= 0) return 0;
   const all = aggregateResourceLeases(leases, accounting);
   const observed = aggregateResourceLeases(
-    (leases || []).filter((lease) => leaseObservedBySample(lease, sampledAt)),
+    (leases || []).filter((/** @type {any} */ lease) => leaseObservedBySample(lease, sampledAt)),
     accounting,
   );
   return Math.max(0, all.cpu - observed.cpu);
 }
 
+/** @param {any} lease @param {number} sampledAtMs */
 function leaseObservedBySample(lease, sampledAtMs) {
   const boundAt = Date.parse(String(lease?.bound_at || ""));
   if (Number.isFinite(boundAt)) return boundAt <= sampledAtMs;

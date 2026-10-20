@@ -12,7 +12,6 @@ import { resourceProjectHash } from "../src/local/resource-project-key.mjs";
 import { captureProcessTreeOwnership } from "../src/local/process-tree-ownership.mjs";
 import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 import { createBoundedStdioWriter } from "../src/local/stdio.mjs";
-import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -80,35 +79,100 @@ const resourceHostSampleTimer = setInterval(refreshResourceHostSample, 200);
 resourceHostSampleTimer.unref?.();
 
 const slowInput = new PassThrough();
+const writtenLines = [];
 const slowOutput = new Writable({
   highWaterMark: 1,
-  write(_chunk, _encoding, callback) { setTimeout(callback, 2); },
+  write(chunk, _encoding, callback) { writtenLines.push(String(chunk)); setTimeout(callback, 2); },
 });
 let outputOverload = null;
 const boundedWriter = createBoundedStdioWriter({
   inputStream: slowInput,
   outputStream: slowOutput,
   maxQueuedBytes: 4096,
+  reserveBytes: 512,
   onOverload: (details) => { outputOverload = details; },
 });
-let maximumQueuedOutputBytes = 0;
-for (let id = 0; id < 1000; id += 1) {
-  void boundedWriter.send({ jsonrpc: "2.0", id, result: { padding: "x".repeat(64) } });
-  maximumQueuedOutputBytes = Math.max(maximumQueuedOutputBytes, boundedWriter.queuedBytes);
-  if (boundedWriter.overloaded) break;
-}
-await new Promise((resolvePromise) => { void setImmediate(resolvePromise); });
-assert(slowOutput.writableNeedDrain, "stdio writer did not observe the slow consumer's writable backpressure");
-assert(boundedWriter.overloaded && slowInput.destroyed && maximumQueuedOutputBytes <= 4096
-    && outputOverload?.queuedBytes <= 4096,
-  "stdio response queue exceeded its hard byte bound instead of closing input under overload");
+void boundedWriter.send({ jsonrpc: "2.0", id: 1, result: { padding: "x".repeat(3000) } });
+void boundedWriter.send({ jsonrpc: "2.0", id: 2, result: { padding: "x".repeat(3000) } });
+assert(boundedWriter.queuedBytes <= 4096, "stdio response queue exceeded its hard byte bound");
+assert(!slowInput.destroyed && !boundedWriter.overloaded,
+  "stdio writer tore down the transport instead of reporting one oversized response");
 await boundedWriter.waitForPendingWrites();
+const rejectedResponse = writtenLines.find((line) => line.includes('"id":2'));
+assert(JSON.parse(rejectedResponse || "{}").error?.code === -31900,
+  "stdio writer did not report the response that exceeded the output queue limit");
+assert(outputOverload?.queuedBytes + outputOverload?.responseBytes > 4096 && outputOverload?.queuedBytes <= 4096,
+  "stdio writer overload diagnostics lost the bounded queue accounting");
 await new Promise((resolvePromise, rejectPromise) => {
   slowOutput.end((error) => {
     if (error) rejectPromise(error);
     else resolvePromise();
   });
 });
+
+const errorInput = new PassThrough();
+const errorLines = [];
+const errorOutput = new Writable({
+  highWaterMark: 1,
+  write(chunk, _encoding, callback) { errorLines.push(String(chunk)); setTimeout(callback, 2); },
+});
+const errorWriter = createBoundedStdioWriter({
+  inputStream: errorInput,
+  outputStream: errorOutput,
+  maxQueuedBytes: 512,
+  reserveBytes: 256,
+});
+void errorWriter.send({ jsonrpc: "2.0", id: 5, result: { padding: "x".repeat(400) } });
+void errorWriter.send({ jsonrpc: "2.0", id: 6, error: { code: -32603, message: "x".repeat(1024) } });
+assert(!errorWriter.overloaded && !errorInput.destroyed,
+  "stdio writer dropped an oversized error response even though a bounded rejection could fit");
+await errorWriter.waitForPendingWrites();
+const rejectedErrorResponse = errorLines.find((line) => line.includes('"id":6'));
+assert(JSON.parse(rejectedErrorResponse || "{}").error?.code === -31900,
+  "stdio writer did not replace an oversized error response with a bounded JSON-RPC rejection");
+await new Promise((resolvePromise, rejectPromise) => {
+  errorOutput.end((error) => {
+    if (error) rejectPromise(error);
+    else resolvePromise();
+  });
+});
+
+const saturatedInput = new PassThrough();
+const saturatedOutput = new Writable({ highWaterMark: 1, write(_chunk, _encoding, callback) { setTimeout(callback, 2); } });
+const saturatedWriter = createBoundedStdioWriter({
+  inputStream: saturatedInput,
+  outputStream: saturatedOutput,
+  maxQueuedBytes: 512,
+  reserveBytes: 0,
+});
+void saturatedWriter.send({ jsonrpc: "2.0", id: 3, result: { padding: "x".repeat(400) } });
+void saturatedWriter.send({ jsonrpc: "2.0", id: 4, result: { padding: "x".repeat(4000) } });
+assert(saturatedWriter.overloaded && saturatedInput.destroyed,
+  "stdio writer kept a transport alive after even the rejection could not be queued");
+await saturatedWriter.waitForPendingWrites();
+await new Promise((resolvePromise, rejectPromise) => {
+  saturatedOutput.end((error) => {
+    if (error) rejectPromise(error);
+    else resolvePromise();
+  });
+});
+
+const failedInput = new PassThrough();
+const failedOutput = new Writable({
+  highWaterMark: 1,
+  write(_chunk, _encoding, callback) { callback(new Error("injected stdio output failure")); },
+});
+let writerFailureCount = 0;
+const failedWriter = createBoundedStdioWriter({
+  inputStream: failedInput,
+  outputStream: failedOutput,
+  maxQueuedBytes: 1024,
+  onFailure: () => { writerFailureCount += 1; },
+});
+void failedWriter.send({ jsonrpc: "2.0", id: 8, result: { ok: true } });
+await failedWriter.waitForPendingWrites();
+assert(failedWriter.outputFailed && failedInput.destroyed && writerFailureCount === 1,
+  "stdio output failure did not latch failure state and stop further input");
 
 const currentMeta = Object.freeze({
   "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -330,6 +394,7 @@ try {
     && createConflictError?.code === "conflict"
     && createConflictError?.retryable === false
     && createConflictError?.details?.reason === "already_exists"
+    && typeof createConflictError?.actionable_remedy === "string"
     && !JSON.stringify(createConflictError).includes(canonicalWorkspace),
   "write_file create-only conflict lost its stable private error contract");
   assert(await readFile(join(workspace, "sample.txt"), "utf8") === "one\ntwo\nthree\n", "create-only conflict overwrote the existing file");
@@ -375,6 +440,25 @@ try {
   send({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "read_process", arguments: { session_id: failedDetails.output_session_id, stdout_offset: 0, stderr_offset: 0, max_bytes: 262144 } } });
   const failedPage = await responseFor(10);
   assert(failedPage.result?.structuredContent?.stderr?.data.endsWith("STDIO-FAIL-END"), "stdio failure continuation lost the retained stderr tail");
+
+  // Regression: two maximum-size tool results must both reach the client. The reader is
+  // paused long enough for both responses to sit in the output queue together, which is
+  // the case where a queue sized like a single result silently dropped the second one.
+  const largeText = "Z".repeat(4 * 1024 * 1024);
+  await writeFile(join(workspace, "large-result.txt"), largeText, "utf8");
+  child.stdout.pause();
+  for (const id of [720, 721]) {
+    send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "read_file", arguments: {
+      path: "large-result.txt", max_bytes: 5 * 1024 * 1024,
+    } } });
+  }
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 1000); });
+  child.stdout.resume();
+  const [firstLarge, secondLarge] = await Promise.all([responseFor(720, 30_000), responseFor(721, 30_000)]);
+  for (const [label, response] of [["first", firstLarge], ["second", secondLarge]]) {
+    assert(response.result?.isError === false && response.result?.structuredContent?.content?.length === largeText.length,
+      `stdio ${label} concurrent maximum-size tool result was dropped or truncated: ${JSON.stringify(response.error || response.result?.structuredContent?.error || null)}`);
+  }
 
   send({ jsonrpc: "2.0", id: 600, method: "tools/call", params: { name: "run_process", arguments: { argv: [process.execPath, "-e", "process.stdout.write(process.env.MBM_STDIO_FULL_ENV_TEST || 'missing')"], timeout_seconds: 5 } } });
   const fullEnvResult = await responseFor(600, PROCESS_TOOL_RESPONSE_WAIT_MS);
@@ -528,6 +612,28 @@ try {
   const stagedCancelled = await responseFor(692);
   assert(stagedCancelled.result?.structuredContent?.status === "cancelled_before_start" && stagedCancelled.result?.structuredContent?.execution_started === false, "cancel_job did not cancel the staged plan without execution");
 
+  for (const [id, method] of [[693, "tasks/list"], [694, "tasks/get"], [6941, "tasks/result"], [6942, "tasks/cancel"], [6943, "tasks/update"]]) {
+    send({ jsonrpc: "2.0", id, method, params: {} });
+    const response = await responseFor(id);
+    assert(response.error?.code === -32601, `local stdio unexpectedly advertised or handled the unnegotiated task extension method ${method}`);
+  }
+
+  send({ jsonrpc: "2.0", id: 695, method: "prompts/list", params: {} });
+  const promptsListed = await responseFor(695);
+  assert(Array.isArray(promptsListed.result?.prompts) && promptsListed.result?.prompts.some((p) => p.name === "agent_instructions"), "prompts/list did not return prompts");
+
+  send({ jsonrpc: "2.0", id: 696, method: "prompts/get", params: { name: "agent_instructions" } });
+  const promptGet = await responseFor(696);
+  assert(Array.isArray(promptGet.result?.messages), "prompts/get did not return messages array");
+
+  send({ jsonrpc: "2.0", id: 697, method: "resources/list", params: {} });
+  const resourcesListed = await responseFor(697);
+  assert(Array.isArray(resourcesListed.result?.resources) && resourcesListed.result?.resources.some((r) => r.uri === "diag://runtime/status"), "resources/list did not return resources");
+
+  send({ jsonrpc: "2.0", id: 698, method: "resources/read", params: { uri: "diag://runtime/status" } });
+  const resourceRead = await responseFor(698);
+  assert(resourceRead.result?.contents?.[0]?.mimeType === "application/json", "resources/read did not return resource contents");
+
   const detachedMarker = join(workspace, "detached-job-marker.txt");
   const detachedCleanup = join(workspace, "detached-job-cleanup.txt");
   const detachedScript = "setTimeout(()=>require('node:fs').writeFileSync(process.argv[1],'detached-complete'),500)";
@@ -573,70 +679,72 @@ try {
   const detachedResult = JSON.parse(await readFile(resultFile, "utf8"));
   assert(["succeeded", "recovered"].includes(detachedResult.status), `detached managed job ended as ${detachedResult.status}`);
 
-  const compatChild = spawn(process.execPath, [
+  const envChild = spawn(process.execPath, [
     join(root, "bin", "machine-mcp.mjs"),
     "stdio",
     "--workspace", workspace,
     "--state-dir", stateDir,
-    "--compat",
   ], {
     cwd: root,
-    env: { ...childEnvironment, AGENT_RESOURCE_COORDINATOR_ROOT: resourceCoordinatorRoot },
+    env: { ...childEnvironment, AGENT_RESOURCE_COORDINATOR_ROOT: resourceCoordinatorRoot, MBM_MCP_COMPAT: "1" },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  let compatStderr = "";
-  compatChild.stderr.on("data", (chunk) => { compatStderr = appendBounded(compatStderr, chunk); });
+  let envStderr = "";
+  envChild.stderr.on("data", (chunk) => { envStderr = appendBounded(envStderr, chunk); });
   try {
-    const compatRl = readline.createInterface({ input: compatChild.stdout, crlfDelay: Infinity });
-    const compatResponses = [];
-    compatRl.on("line", (line) => {
-      try { compatResponses.push(JSON.parse(line)); } catch { /* best-effort parse */ }
+    const envRl = readline.createInterface({ input: envChild.stdout, crlfDelay: Infinity });
+    const envResponses = [];
+    envRl.on("line", (line) => {
+      try { envResponses.push(JSON.parse(line)); } catch { /* best-effort parse */ }
     });
-    compatChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 101, method: "initialize", params: { protocolVersion: "2024-11-05" } }) + "\n");
-    compatChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-    compatChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 102, method: "tools/list", params: {} }) + "\n");
-    // Compatibility mode supplies metadata only when the client omits it. Explicit
-    // retired/future/malformed versions remain subject to the normal protocol gate.
-    compatChild.stdin.write(JSON.stringify({
-      jsonrpc: "2.0",
-      id: 103,
-      method: "tools/list",
-      params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2024-11-05" } },
-    }) + "\n");
-    compatChild.stdin.write(JSON.stringify({
-      jsonrpc: "2.0",
-      id: 104,
-      method: "tools/list",
-      params: { _meta: { "io.modelcontextprotocol/protocolVersion": "2099-01-01" } },
-    }) + "\n");
-    compatChild.stdin.write(JSON.stringify({
-      jsonrpc: "2.0",
-      id: 105,
-      method: "tools/list",
-      params: { _meta: { "io.modelcontextprotocol/protocolVersion": null } },
-    }) + "\n");
+    envChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 101, method: "initialize", params: { protocolVersion: "2024-11-05" } }) + "\n");
+    envChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 102, method: "tools/list", params: {} }) + "\n");
     const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && compatResponses.length < 5) {
+    while (Date.now() < deadline && envResponses.length < 2) {
       await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
     }
-    const initRes = compatResponses.find(r => r.id === 101);
-    const listRes = compatResponses.find(r => r.id === 102);
-    const staleMetaRes = compatResponses.find(r => r.id === 103);
-    assert(initRes?.result?.serverInfo?.name === "machine-bridge-mcp", "compat stdio failed to handle initialize");
-    assert(initRes.result.protocolVersion === MCP_PROTOCOL_VERSION,
-      `compat initialize advertised ${JSON.stringify(initRes.result.protocolVersion)} instead of ${MCP_PROTOCOL_VERSION}`);
-    assert(Array.isArray(listRes?.result?.tools), `compat stdio failed to list tools without _meta: responses=${JSON.stringify(compatResponses)} stderr=${compatStderr}`);
-    assert(staleMetaRes?.error?.message?.includes("Unsupported protocol version"),
-      `compat stdio silently rewrote an explicitly retired protocol version: ${JSON.stringify(staleMetaRes)}`);
-    const futureMetaRes = compatResponses.find(r => r.id === 104);
-    const malformedMetaRes = compatResponses.find(r => r.id === 105);
-    assert(futureMetaRes?.error?.message?.includes("Unsupported protocol version"),
-      `compat stdio silently rewrote an explicitly future protocol version: ${JSON.stringify(futureMetaRes)}`);
-    assert(malformedMetaRes?.error?.code === -32602,
-      `compat stdio silently rewrote malformed explicit protocol metadata: ${JSON.stringify(malformedMetaRes)}`);
-    compatRl.close();
+    const initializeResponse = envResponses.find((response) => response.id === 101);
+    const missingMetadataResponse = envResponses.find((response) => response.id === 102);
+    assert(initializeResponse?.error?.code === -32601,
+      `MBM_MCP_COMPAT unexpectedly enabled initialize compatibility: ${JSON.stringify(initializeResponse)} stderr=${envStderr}`);
+    assert(missingMetadataResponse?.error?.code === -32602
+        && (missingMetadataResponse.error.message.includes("Missing required request metadata")
+          || missingMetadataResponse.error.message.includes("Unsupported protocol version")),
+      `MBM_MCP_COMPAT unexpectedly supplied missing request metadata: ${JSON.stringify(missingMetadataResponse)} stderr=${envStderr}`);
+    envRl.close();
+    envChild.stdin.end();
+    await waitForExit(envChild, 5000);
   } finally {
-    if (compatChild.exitCode === null) compatChild.kill("SIGKILL");
+    if (envChild.exitCode === null) envChild.kill("SIGKILL");
+  }
+
+  {
+    let eofStderr = "";
+    const eofChild = spawn(process.execPath, [
+      join(root, "bin", "machine-mcp.mjs"),
+      "stdio",
+      "--workspace", workspace,
+      "--state-dir", stateDir,
+    ], {
+      cwd: workspace,
+      env: { ...childEnvironment, AGENT_RESOURCE_COORDINATOR_ROOT: resourceCoordinatorRoot },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    eofChild.stderr.on("data", (chunk) => { eofStderr += chunk; });
+    const eofStarted = join(workspace, "stdio-eof-started.txt");
+    const eofLateEffect = join(workspace, "stdio-eof-late-effect.txt");
+    const eofCommand = `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(eofStarted)}, "started"); setTimeout(() => fs.writeFileSync(${JSON.stringify(eofLateEffect)}, "late"), 1500);`;
+    eofChild.stdin.write(JSON.stringify({
+      jsonrpc: "2.0", id: 90, method: "tools/call",
+      params: { name: "run_process", arguments: { argv: [process.execPath, "-e", eofCommand], timeout_seconds: 30 }, _meta: currentMeta },
+    }) + "\n");
+    await waitForFile(eofStarted, 10_000);
+    eofChild.stdin.end();
+    await waitForExit(eofChild, 10_000);
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 2000); });
+    let eofLateEffectExists = true;
+    try { await readFile(eofLateEffect); } catch { eofLateEffectExists = false; }
+    assert(!eofLateEffectExists, `stdio EOF did not cancel an already-running tool process; stderr=${eofStderr}`);
   }
 
   console.log("stdio MCP integration test ok");

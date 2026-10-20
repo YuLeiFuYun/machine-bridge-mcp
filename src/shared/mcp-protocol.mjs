@@ -1,6 +1,7 @@
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
 export const MCP_PROTOCOL_VERSIONS = Object.freeze([MCP_PROTOCOL_VERSION]);
 export const MCP_HEADER_MISMATCH = -32020;
+export const MCP_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022;
 export const MCP_REMOVED_PROTOCOL_MESSAGE = "MCP session protocol was removed; upgrade the client and use request-scoped metadata/server/discover";
 const MCP_RESULT_COMPLETE = "complete";
@@ -92,6 +93,12 @@ export function completeResult(fields = {}, serverInfo) {
   return result(MCP_RESULT_COMPLETE, fields, serverInfo);
 }
 
+export function taskCreatedResult(fields = {}, serverInfo) {
+  const output = completeResult(fields, serverInfo);
+  output.resultType = "task";
+  return output;
+}
+
 export function cacheableResult(fields, { ttlMs, cacheScope, serverInfo }) {
   const normalizedTtl = Number(ttlMs);
   if (!Number.isFinite(normalizedTtl) || normalizedTtl < 0) throw new Error("ttlMs must be a non-negative number");
@@ -167,6 +174,16 @@ export function subscriptionCompleteResult(requestId, serverInfo) {
   const output = completeResult({}, serverInfo);
   output._meta = { ...asMcpObject(output._meta), [SUBSCRIPTION_ID_KEY]: requestId };
   return output;
+}
+
+// `notifications/progress` is the only in-flight signal a client can use to distinguish a slow
+// tool from a stalled one. `progress` must strictly increase for a given token, so callers pass
+// elapsed milliseconds rather than a step counter that could repeat.
+export function progressNotification({ progressToken, progress, total, message }) {
+  const params = { progressToken, progress: Math.max(0, Number(progress) || 0) };
+  if (total !== undefined) params.total = total;
+  if (message) params.message = String(message);
+  return { jsonrpc: "2.0", method: "notifications/progress", params };
 }
 
 function serverInfoMeta(serverInfo) {

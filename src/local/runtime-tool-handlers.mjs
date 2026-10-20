@@ -1,4 +1,4 @@
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { settleManagedJobAcceptance } from "./durable-process-initial-settlement.mjs";
 import { waitForManagedJobRead } from "./managed-job-read-wait.mjs";
 

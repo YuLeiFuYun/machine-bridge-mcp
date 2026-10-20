@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { clampInteger, positiveInteger } from "../src/local/numbers.mjs";
-import { nonNegativeInteger } from "../src/shared/numbers.mjs";
+import { clampInteger, nonNegativeInteger, positiveInteger } from "../src/shared/numbers.mjs";
 
 assert.equal(clampInteger(5, 3, 1, 10), 5);
 assert.equal(clampInteger(0, 3, 1, 10), 1);

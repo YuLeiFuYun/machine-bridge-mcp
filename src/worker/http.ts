@@ -104,7 +104,8 @@ export function baseUrl(request: Request): string {
 export function oauthAccessToken(request: Request): { scheme: "bearer" | "dpop" | ""; token: string } {
   const match = (request.headers.get("Authorization") ?? "").match(/^(Bearer|DPoP)\s+(.+)$/i);
   if (!match) return { scheme: "", token: "" };
-  return { scheme: match[1].toLowerCase() as "bearer" | "dpop", token: match[2].trim() };
+  const [, scheme = "", token = ""] = match;
+  return { scheme: scheme.toLowerCase() as "bearer" | "dpop", token: token.trim() };
 }
 
 export async function parseJsonRequest(request: Request, limit: number): Promise<unknown> {

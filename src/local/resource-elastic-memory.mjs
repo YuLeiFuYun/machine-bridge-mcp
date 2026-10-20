@@ -1,3 +1,5 @@
+// @ts-check
+/** @param {any} request @param {any} pressure @param {number} maximumJobs @param {any} floorValue @returns {number} */
 export function elasticMemoryJobLimit(request, pressure, maximumJobs, floorValue) {
   if (floorValue === null || floorValue === undefined || floorValue === "") return maximumJobs;
   const floor = Number(floorValue); const limit = Number(pressure?.limits?.memory_mb);
@@ -12,6 +14,7 @@ export function elasticMemoryJobLimit(request, pressure, maximumJobs, floorValue
   return 1;
 }
 
+/** @param {any} request @param {number} jobs @param {any} floorValue */
 export function elasticMemoryMb(request, jobs, floorValue) {
   const floor = Number(floorValue);
   if (!Number.isFinite(floor)) return request.memory_mb;

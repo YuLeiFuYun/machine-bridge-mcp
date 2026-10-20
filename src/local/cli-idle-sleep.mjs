@@ -1,5 +1,7 @@
+// @ts-check
 import { configuredIdleSleepMode, defaultStateRoot, expandHome, setConfiguredIdleSleepMode } from "./state.mjs";
 
+/** @param {{ _?: readonly string[], stateDir?: string }} [args] @returns {void} */
 export function idleSleepCommand(args = {}) {
   const action = String(args._?.[0] || "show");
   const stateRoot = args.stateDir ? expandHome(String(args.stateDir)) : defaultStateRoot();

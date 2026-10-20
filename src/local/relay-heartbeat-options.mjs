@@ -1,3 +1,15 @@
+// @ts-check
+import { positiveInteger } from "../shared/numbers.mjs";
+
+/**
+ * @param {{
+ *   intervalMs?: number,
+ *   timeoutMs?: number,
+ *   stallThresholdMs?: number,
+ *   recoveryGraceMs?: number,
+ *   dispatchTimeoutMs?: number,
+ * }} [options]
+ */
 export function normalizeRelayHeartbeatTiming(options = {}) {
   const intervalMs = positiveInteger(options.intervalMs, 25_000);
   const timeoutMs = positiveInteger(options.timeoutMs, 75_000);
@@ -10,7 +22,4 @@ export function normalizeRelayHeartbeatTiming(options = {}) {
   };
 }
 
-export function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
-}
+export { positiveInteger };

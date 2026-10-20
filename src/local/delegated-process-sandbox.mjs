@@ -34,10 +34,15 @@ export function delegatedProcessCommand({ command, args = [], workspace, runtime
       isolation: "macos-sandbox-exec-workspace",
     };
   }
+  const containmentHint = platform === "linux"
+    ? "On Linux, run machine-bridge-mcp within an unprivileged container or isolated user namespace."
+    : platform === "win32"
+      ? "On Windows, run machine-bridge-mcp within Windows Sandbox or an isolated container."
+      : "Ensure OS containment boundary is configured or operate under the owner account.";
   throw new BridgeError(
     "policy_denied",
-    "delegated process execution requires a behavior-verified OS workspace sandbox; use the owner account or an isolated worker account/VM",
-    { details: { reason: "delegated_process_isolation_unavailable", platform } },
+    `delegated process execution requires a behavior-verified OS workspace sandbox; use the owner account or an isolated worker account/VM. ${containmentHint}`,
+    { details: { reason: "delegated_process_isolation_unavailable", platform, containment_hint: containmentHint } },
   );
 }
 

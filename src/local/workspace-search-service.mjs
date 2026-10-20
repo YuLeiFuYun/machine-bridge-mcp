@@ -3,7 +3,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isSensitivePath } from "./operation-risk.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { BridgeError } from "./errors.mjs";
 import { searchWorkspaceFiles } from "./workspace-search.mjs";
 

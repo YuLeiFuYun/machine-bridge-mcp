@@ -137,7 +137,7 @@ Summarize the connected workspace, repository root, top-level entries, and proje
 
 **Load session bootstrap**
 
-Load built-in working agreements, bounded automatic project facts, authority-permitted user-global guidance, root workspace instructions, and capability refresh metadata. Delegated remote accounts do not read the daemon owner's home-scoped agent config unless their effective authority permits unrestricted paths. Clients call it explicitly when refreshed authority-scoped project context is needed; the optional stdio --compat handshake does not load session context.
+Load built-in working agreements, bounded automatic project facts, authority-permitted user-global guidance, root workspace instructions, and capability refresh metadata. Delegated remote accounts do not read the daemon owner's home-scoped agent config unless their effective authority permits unrestricted paths. Clients call it explicitly when refreshed authority-scoped project context is needed; stdio has no legacy handshake or protocol session.
 
 | Contract field | Value |
 |---|---|

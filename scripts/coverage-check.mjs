@@ -173,8 +173,6 @@ try {
     "src/local/child-process-settlement.mjs": [100, 85],
     "src/local/cli-options.mjs": [65, 35],
     "src/local/cli-policy.mjs": [70, 35],
-    "src/local/numbers.mjs": [100, 100],
-    "src/local/records.mjs": [100, 100],
     "src/local/project-metadata.mjs": [95, 55],
     "src/local/state-inventory.mjs": [85, 55],
     "src/local/network-proxy.mjs": [90, 65],

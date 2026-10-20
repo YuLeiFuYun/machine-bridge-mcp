@@ -11,7 +11,7 @@ import { validateArgv } from "./process-contract.mjs";
 import { terminateProcessTree, terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError, errorCode } from "./errors.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
 import { boundedProcessErrorMessage } from "./process-error-message.mjs";
 import { notifySessionWaiters, waitForSpawn } from "./process-session-events.mjs";

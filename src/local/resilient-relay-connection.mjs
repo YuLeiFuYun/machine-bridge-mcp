@@ -2,6 +2,7 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { RelayConnection } from "./relay-connection.mjs";
 import { DaemonHttpRelayConnection } from "./daemon-http-relay-connection.mjs";
 import { relayServerErrorReconnectCategory, sanitizeProtocolErrorCode } from "./relay-connection-classification.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 export class ResilientRelayConnection {
   constructor(options = {}) {
@@ -313,11 +314,6 @@ function boundedFallbackTakeoverMs(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return 0;
   return Math.min(10 * 60_000, Math.round(number));
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
 function relayTransport(relayContext = {}) {

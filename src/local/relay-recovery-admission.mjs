@@ -1,6 +1,8 @@
+// @ts-check
 import { toolCallAdmission } from "../shared/tool-call-capacity.mjs";
 import { RELAY_RECOVERY_CAPACITY, relayRecoveryCapacityInput } from "./relay-recovery-capacity.mjs";
 
+/** @param {any} activeTools @param {any} retainedResults @param {unknown} toolName @param {unknown} callId */
 export function relayRecoveryCapacityRejection(activeTools, retainedResults, toolName, callId) {
   const { active, byTool } = relayRecoveryCapacityInput(activeTools, retainedResults);
   const decision = toolCallAdmission({ active, byTool }, RELAY_RECOVERY_CAPACITY, String(toolName || ""));

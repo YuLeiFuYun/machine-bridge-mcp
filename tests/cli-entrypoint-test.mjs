@@ -8,20 +8,17 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readLoopbackJson } from "../src/local/loopback-health.mjs";
 import { workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
-import { effectiveCompatMode, parseArgs } from "../src/local/cli-options.mjs";
+import { parseArgs } from "../src/local/cli-options.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const entry = resolve(root, "bin", "machine-mcp.mjs");
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 
-assert(effectiveCompatMode(parseArgs([]), { MBM_MCP_COMPAT: "1" }) === true,
-  "stdio compatibility did not inherit the environment when the CLI option was omitted");
-assert(effectiveCompatMode(parseArgs(["--compat=true"]), { MBM_MCP_COMPAT: "0" }) === true,
-  "explicit --compat=true did not enable compatibility mode");
-assert(effectiveCompatMode(parseArgs(["--compat=false"]), { MBM_MCP_COMPAT: "1" }) === false,
-  "explicit --compat=false did not override the inherited compatibility environment flag");
-assert(effectiveCompatMode(parseArgs([]), { MBM_MCP_COMPAT: "0" }) === false,
-  "compatibility mode accepted an environment value other than the exact opt-in marker");
+for (const args of [["--compat"], ["--compat=true"], ["--compat=false"]]) {
+  let rejected = false;
+  try { parseArgs(args); } catch (error) { rejected = String(error).includes("Unknown option: --compat"); }
+  assert(rejected, `removed compatibility option was still accepted: ${args.join(" ")}`);
+}
 
 await testDirectLoopbackHealth();
 await testLoopbackHealthDeadline();

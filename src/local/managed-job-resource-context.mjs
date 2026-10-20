@@ -1,6 +1,10 @@
+// @ts-check
+/** @param {() => any} materialize */
 export function createManagedJobResourceContext(materialize) {
   let attempted = false;
+  /** @type {any} */
   let value = { paths: {}, bytes: {}, redactions: {}, temporaryPaths: {} };
+  /** @type {any} */
   let error = null;
   return {
     get attempted() { return attempted; },

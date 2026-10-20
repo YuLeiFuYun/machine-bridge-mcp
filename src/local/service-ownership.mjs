@@ -1,3 +1,13 @@
+// @ts-check
+/**
+ * @param {{
+ *   state?: unknown,
+ *   inspectWorkspaceDaemon?: (state: unknown) => unknown,
+ *   ownsPlatformAutostart?: (daemon: unknown) => boolean,
+ *   stopPlatformService?: () => Promise<{ ok?: boolean, active?: boolean } | null>
+ * }} [options]
+ * @returns {Promise<{ owned: boolean, stopped: boolean, daemon: unknown, provider: { ok?: boolean, active?: boolean } | null }>}
+ */
 export async function stopOwnedPlatformService({
   state,
   inspectWorkspaceDaemon,

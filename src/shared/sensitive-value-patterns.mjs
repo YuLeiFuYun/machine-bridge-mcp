@@ -1,4 +1,5 @@
-const SOURCES = Object.freeze({
+// @ts-check
+const SOURCES = /** @type {Record<string, string>} */ (Object.freeze({
   privateKeyHeader: String.raw`-----BEGIN\s+(?:(?:OPENSSH|RSA|EC|DSA)\s+|ENCRYPTED\s+)?PRIVATE\s+KEY-----`,
   awsAccessKey: String.raw`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`,
   githubAccessToken: String.raw`\bgh[pousr]_[A-Za-z0-9_]{30,}(?![A-Za-z0-9_])`,
@@ -12,8 +13,9 @@ const SOURCES = Object.freeze({
   jwtLikeBearerToken: String.raw`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])`,
   credentialUrl: String.raw`https?:\/\/[^\s/@:"'<>]+:[^\s/@"'<>]+@([^\s/"'<>]+)`,
   emailAddress: String.raw`\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b`,
-});
+}));
 
+/** @param {string} name @param {string} [flags] @returns {RegExp} */
 export function sensitiveValuePattern(name, flags = "g") {
   if (typeof name !== "string" || !Object.hasOwn(SOURCES, name)) throw new TypeError("unknown sensitive-value pattern");
   const source = SOURCES[name];

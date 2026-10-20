@@ -33,6 +33,7 @@ export async function loadConsumedRefreshShards(
   let presentCount = 0;
   for (let index = 0; index < keys.length; index += 1) {
     const key = keys[index];
+    if (key === undefined) continue;
     const value = raw.get(key);
     if (value === undefined) continue;
     presentCount += 1;
@@ -62,15 +63,22 @@ export function oauthRefreshPersistenceEntries(
   for (const [tokenHash, marker] of Object.entries(store.consumed)) {
     if (!TOKEN_HASH_PATTERN.test(tokenHash)) throw new Error("OAuth refresh consumed-token key is invalid");
     const index = consumedShardIndex(tokenHash);
-    counts[index] += 1;
-    if (counts[index] > MAX_CONSUMED_PER_SHARD) throw new Error("OAuth refresh consumed-token shard capacity exceeded");
-    shards[index].records[tokenHash] = marker;
+    const shard = shards[index];
+    if (shard === undefined) throw new Error("OAuth refresh consumed-token shard index is out of range");
+    const count = (counts[index] ?? 0) + 1;
+    if (count > MAX_CONSUMED_PER_SHARD) throw new Error("OAuth refresh consumed-token shard capacity exceeded");
+    counts[index] = count;
+    shard.records[tokenHash] = marker;
   }
   const entries: Record<string, unknown> = {
     [OAUTH_REFRESH_STORE_KEY]: { ...store, consumed: {} },
   };
   const keys = consumedShardKeys();
-  for (let index = 0; index < keys.length; index += 1) entries[keys[index]] = shards[index];
+  for (const [index, key] of keys.entries()) {
+    const shard = shards[index];
+    if (shard === undefined) throw new Error("OAuth refresh consumed-token shard index is out of range");
+    entries[key] = shard;
+  }
   return entries;
 }
 

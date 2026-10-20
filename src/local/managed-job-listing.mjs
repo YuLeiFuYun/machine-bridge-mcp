@@ -4,7 +4,7 @@ import { managedJobRecentActivity } from "./managed-job-activity.mjs";
 import { managedJobRecoveryPriority, recentProcessRecoveryJobs } from "./managed-job-recovery-listing.mjs";
 import { readManagedJobListingRecords } from "./managed-job-listing-records.mjs";
 import { isTerminalManagedJobStatus } from "./managed-job-terminal.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 export function listManagedJobs({ jobRoot, args, context, logger, reconcileStatus, assertKnownStatus, maximumLimit = MAX_LISTED_JOBS }) {
   const limit = clampInteger(args.limit, 20, 1, Math.min(MAX_JOBS, maximumLimit));
   const { records, maintenanceRequired } = readManagedJobListingRecords({ jobRoot, context, logger, reconcileStatus, assertKnownStatus });

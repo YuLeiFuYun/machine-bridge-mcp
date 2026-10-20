@@ -2,6 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { BridgeError } from "./errors.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 import { assertCallCapacity, callCapacityConfig, callCapacitySnapshot } from "./call-capacity.mjs";
 import { bindCallPrincipal, callIdsForAuthority } from "./call-authority.mjs";
 import { assertCallRegistryOpen, cancelAllCallsAndWait, notifyCallRegistryChanged } from "./call-registry-drain.mjs";
@@ -179,10 +180,4 @@ export class CallRegistry {
       oldest_ms: oldestMs,
     };
   }
-}
-
-/** @param {unknown} value @param {number} fallback */
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }

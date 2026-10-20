@@ -9,6 +9,7 @@ import { classifyRelayTransportErrorReason } from "./relay-transport-error-state
 import { postDaemonHttpRelay } from "./daemon-http-relay-request.mjs";
 import { boundedRelayRetryAfterMs, relayFailureBackoffMs } from "./daemon-http-retry-policy.mjs";
 import { RelayInboundSequence, RelayOutboundSequence } from "./daemon-http-relay-sequence.mjs";
+import { positiveInteger } from "../shared/numbers.mjs";
 
 const HTTP_SESSION_ID = /^relay_http_[A-Za-z0-9_-]{43}$/;
 const ACTIVATION_TOKEN = /^activate_[A-Za-z0-9_-]{43}$/;
@@ -389,11 +390,6 @@ function validResponse(body) {
   if (body.phase !== "standby" && (typeof body.activation_token !== "string" || !ACTIVATION_TOKEN.test(body.activation_token))) return false;
   return body.messages.every((message) => message && typeof message === "object" && !Array.isArray(message)
     && Number.isSafeInteger(message.seq) && message.seq > 0 && message.payload && typeof message.payload === "object" && !Array.isArray(message.payload));
-}
-
-function positiveInteger(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
 function classifyHttpRelayFailure(error) {

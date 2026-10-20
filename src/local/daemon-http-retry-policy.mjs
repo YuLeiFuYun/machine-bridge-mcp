@@ -1,6 +1,8 @@
+// @ts-check
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 
 // Convert the bounded public header to a duration once; scheduling uses monotonic time.
+/** @param {number} statusCode @param {unknown} value @param {number} [now] @returns {number} */
 export function relayRetryAfterMs(statusCode, value, now = Date.now()) {
   if (![429, 503].includes(statusCode) || typeof value !== "string" || value.length > 128) return 0;
   const text = value.trim();
@@ -12,11 +14,13 @@ export function relayRetryAfterMs(statusCode, value, now = Date.now()) {
   return boundedRelayRetryAfterMs(delay);
 }
 
+/** @param {unknown} value @returns {number} */
 export function boundedRelayRetryAfterMs(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.min(Math.ceil(value), relayContract.httpFallbackMaximumRetryAfterMs) : 0;
 }
 
+/** @param {number} failures @param {number} base @param {number} maximum @returns {number} */
 export function relayFailureBackoffMs(failures, base, maximum) {
   const exponent = Math.min(Math.max(0, failures - 1), 16);
   return Math.min(base * (2 ** exponent), Math.max(base, maximum));

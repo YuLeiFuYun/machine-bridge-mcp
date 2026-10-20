@@ -1,3 +1,9 @@
+// @ts-check
+/**
+ * @param {string} task
+ * @param {{ name?: string, id?: string }} [application]
+ * @returns {number}
+ */
 export function applicationMatchScore(task, application) {
   const text = String(task || "").toLowerCase();
   const name = String(application?.name || "").toLowerCase();
@@ -10,6 +16,10 @@ export function applicationMatchScore(task, application) {
   return words.reduce((score, word) => score + (taskTokens.has(word) ? 2 : 0), id && text.includes(id) ? 5 : 0);
 }
 
+/**
+ * @param {string} task
+ * @returns {boolean}
+ */
 export function applicationOperationIntent(task) {
   return /\b(?:open|launch|click|focus|activate|application|app|window|menu)\b|打开|启动|检查应用|操作应用|应用|软件|窗口|菜单/i.test(String(task || ""));
 }

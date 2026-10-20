@@ -224,7 +224,7 @@ export class OAuthController {
       const now = Math.floor(Date.now() / 1000);
       const identity = await authorizationIdentity(request, this.identityKey());
       const failure = store.auth_failures[identity];
-      if (failure?.blocked_until > now) {
+      if ((failure?.blocked_until ?? 0) > now) {
         return authorizationPage({ request, base, serverName: this.serverName, error: "Too many failed attempts. Try again later.", submitted: body, status: 429, authorization: validation.value });
       }
 
@@ -234,7 +234,7 @@ export class OAuthController {
         recordAuthorizationFailure(store, identity, now);
         pruneAuthFailures(store, MAX_AUTH_FAILURE_IDENTITIES);
         await this.ctx.storage.put("oauth", store);
-        const status = store.auth_failures[identity]?.blocked_until > now ? 429 : 401;
+        const status = (store.auth_failures[identity]?.blocked_until ?? 0) > now ? 429 : 401;
         return authorizationPage({ request, base, serverName: this.serverName, error: "Invalid account credentials.", submitted: body, status, authorization: validation.value });
       }
       if (client.trusted_account_id && client.trusted_account_id !== account.account_id) {

@@ -50,7 +50,7 @@ The complete component and trust-boundary diagram is in [docs/OVERVIEW.md](docs/
 
 ## MCP protocol model
 
-Machine Bridge uses MCP `2026-07-28` for both stdio and remote HTTP under one current request-scoped protocol contract. The default stdio path and remote HTTP require current request-scoped metadata. The opt-in stdio `--compat` shim answers only the legacy initialization handshake and fills metadata fields only when absent; explicit retired, future, or malformed versions remain rejected. It does not restore sessions or replay behavior.
+Machine Bridge uses MCP `2026-07-28` for both stdio and remote HTTP under one request-scoped protocol contract. Both transports require current request-scoped metadata and reject the removed initialization/session/replay behavior. Stdio has no compatibility shim, and neither a CLI flag nor an environment variable can fill missing request metadata.
 Removed protocol requests fail closed with bounded upgrade guidance; hosted clients must reconnect with MCP `2026-07-28` and use `server/discover` rather than initialization.
 - **HTTP streams are request-scoped and non-resumable.** Closing the response stream cancels that request. There is no recovery GET, SSE event-ID replay, or session-bound delivery store.
 - **Removed session/replay semantics never execute.** Unsupported protocol dates and requests for the retired session/recovery model receive bounded rejection or upgrade guidance rather than legacy state or replay behavior.

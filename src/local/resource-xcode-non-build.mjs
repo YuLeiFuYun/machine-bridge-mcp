@@ -1,3 +1,4 @@
+// @ts-check
 const GIB = 1024 ** 3;
 const PACKAGE = new Set(["-resolvePackageDependencies"]);
 const ARTIFACT = new Set(["-exportArchive", "-exportNotarizedApp", "-exportLocalizations", "-importLocalizations", "-create-xcframework"]);
@@ -5,6 +6,7 @@ const MAINTENANCE = new Set(["-runFirstLaunch", "-downloadAllPlatforms", "-prepa
 const DELETE = new Set(["-deleteComponent"]);
 const QUERY = new Set(["-showComponent", "-showdestinations", "-showTestPlans", "-showBuildSettings", "-showBuildSettingsForIndex", "-find-executable", "-find-library"]);
 
+/** @param {readonly unknown[]} args */
 export function xcodeNonBuildResourcePlan(args) {
   const flags = new Set(args.map(String));
   if ([...MAINTENANCE].some((flag) => flags.has(flag))) return plan("xcode-maintenance", "unbounded", 6, 0.95, 2048, 8 * GIB, true, false);
@@ -14,6 +16,7 @@ export function xcodeNonBuildResourcePlan(args) {
   if ([...QUERY].some((flag) => flags.has(flag))) return plan("xcode-query", "adaptive", 0.75, 0.2, 768, 0, false, false);
   return null;
 }
+/** @param {any} family @param {any} resourceClass @param {any} cpu @param {any} io @param {any} memoryMb @param {any} diskBytes @param {any} unbounded @param {any} serializeProject */
 function plan(family, resourceClass, cpu, io, memoryMb, diskBytes, unbounded, serializeProject) {
   return { family, resourceClass, cpu, io, memoryMb, diskBytes, unbounded, serializeProject };
 }

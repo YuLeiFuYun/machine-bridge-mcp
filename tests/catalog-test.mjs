@@ -18,6 +18,13 @@ assert(metadata.instructions.some((line) => line.includes("never use a hosted Gi
 assert(metadata.instructions.some((line) => line.includes("Straightforward file, Git, and shell work") && line.includes("instead of adding a resolver call")), "shared instructions still require an unnecessary capability-resolution round trip for direct work");
 assert(metadata.instructions.some((line) => line.includes("child exit code") && line.includes("forced-command refusal") && line.includes("downstream target evidence")), "shared instructions do not distinguish a spawned nested-command refusal from Machine Bridge policy denial");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
+// `instructions` is re-sent at the start of every session, so its size is a per-session context
+// cost rather than a documentation detail. The ceiling keeps growth deliberate: at the time it
+// was set, only ~545 of these characters also appeared in a tool description, so most of this
+// text is unique operating contract that cannot be trimmed without deciding which rule to drop.
+const instructionCharacters = MCP_INSTRUCTIONS.length;
+assert(instructionCharacters <= 32_000,
+  `shared server instructions grew to ${instructionCharacters} characters; the per-session budget is 32,000`);
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
 const workerCatalogSource = await readFile(new URL("../src/worker/tool-catalog.ts", import.meta.url), "utf8");
 const workerMcpConfigSource = await readFile(new URL("../src/worker/worker-mcp-config.ts", import.meta.url), "utf8");

@@ -10,6 +10,9 @@ import {
   requestProtocolVersion,
   serverImplementation,
   subscriptionAcknowledgement,
+  emptySubscriptionAcknowledgement,
+  subscriptionCompleteResult,
+  progressNotification,
   toolsListChangedNotification,
   validateSubscriptionRequest,
   validateRequestMetadata,
@@ -36,6 +39,20 @@ const requestMeta = {
 const currentList = request("tools/list", { _meta: requestMeta });
 assert.equal(requestProtocolVersion(currentList), MCP_PROTOCOL_VERSION);
 assert.deepEqual(validateRequestMetadata(currentList).clientCapabilities, {});
+
+const progNotif = progressNotification({ progressToken: "tok-test", progress: 1234, total: 5000, message: "running" });
+assert.equal(progNotif.method, "notifications/progress");
+assert.equal(progNotif.params.progressToken, "tok-test");
+assert.equal(progNotif.params.progress, 1234);
+assert.equal(progNotif.params.total, 5000);
+assert.equal(progNotif.params.message, "running");
+
+const emptyAck = emptySubscriptionAcknowledgement("sub-req-1");
+assert.equal(emptyAck.method, "notifications/subscriptions/acknowledged");
+assert.equal(emptyAck.params._meta["io.modelcontextprotocol/subscriptionId"], "sub-req-1");
+
+const subComplete = subscriptionCompleteResult("sub-req-2", serverInfo);
+assert.equal(subComplete._meta["io.modelcontextprotocol/subscriptionId"], "sub-req-2");
 assert.equal(validateRequestMetadata(request("tools/list", { _meta: {
   ...requestMeta,
   "io.modelcontextprotocol/clientInfo": {

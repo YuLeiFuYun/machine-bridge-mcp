@@ -1,5 +1,5 @@
 import { BridgeError } from "./errors.mjs";
-import { clampInteger } from "./numbers.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 import { filterSensitiveGitPaths } from "./git-sensitive-path-filter.mjs";
 
 export function gitCommandPrefix(git) {

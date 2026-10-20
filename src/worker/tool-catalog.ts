@@ -42,7 +42,7 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
     definition.description = `${String(definition.description)} For hosted use, reserve process sessions for interactive stdin or incremental-output work. Prefer run_process for non-interactive work. Bounded same-response read_process follow-up is allowed when the current task needs more output or terminal state; do not busy-loop, and respect the remote blocking-poll cooldown. ${HOSTED_CONTINUATION_RULE}`;
   }
   if (definition.name === "read_process") {
-    const wait = schema.properties.wait_ms;
+    const wait = schemaProperty(schema, "wait_ms");
     wait.maximum = relayContract.maximumProcessReadWaitMs;
     wait.default = relayContract.maximumProcessReadWaitMs;
     definition.description = `${String(definition.description)} Hosted reads support paced follow-up. Omitted wait_ms defaults to ${relayContract.maximumProcessReadWaitMs} ms; set wait_ms=0 only for an intentional immediate checkpoint. Remote blocking waits last at most ${relayContract.maximumProcessReadWaitMs} ms. If another would-block read arrives inside the ${relayContract.remoteProcessBlockingPollCooldownMs / 1000}-second cooldown, the daemon paces that same MCP call until output/exit or the cooldown boundary instead of returning a rapid running checkpoint. A caller may read a live session again in the same assistant response when the task needs more output or terminal state, but must not busy-loop and should respect next_blocking_poll_after_ms. Use run_process/read_job for non-interactive durable work. ${HOSTED_CONTINUATION_RULE}`;
@@ -51,7 +51,7 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   applyHostedBrowserTargetContract(definition, schema);
   applyHostedResultBudgetContract(definition, schema, relayContract);
   if (isRemoteDurableProcessTool(definition.name)) {
-    const timeout = schema.properties.timeout_seconds;
+    const timeout = schemaProperty(schema, "timeout_seconds");
     timeout.maximum = REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS;
     timeout.default = REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS;
     schema.required = [...new Set([...schema.required!, "idempotency_key"])];
@@ -60,7 +60,7 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   }
   if (!isConfigurableForegroundTool(definition.name)) return definition;
 
-  const timeout = schema.properties.timeout_seconds;
+  const timeout = schemaProperty(schema, "timeout_seconds");
   const maximumSeconds = remoteForegroundMaximumSeconds(definition.name);
   timeout.maximum = maximumSeconds;
   timeout.default = remoteForegroundDefaultSeconds(definition.name);
@@ -72,7 +72,7 @@ function publicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   const { availability: _availability, ...definition } = tool;
   return structuredClone(definition) as WorkerToolDefinition;
 }
-
+function schemaProperty(schema: JsonSchema, name: string): Record<string, unknown> { const property = schema.properties[name]; if (property === undefined) throw new Error(`hosted tool schema is missing the ${name} property`); return property; }
 function schemaTaggedTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   tool.description = `${tool.description} Tool schema generation ${workerToolSchemaGeneration}.`;
   return tool;
