@@ -2,3 +2,4 @@
 .github/workflows/*.yml text eol=lf
 .github/workflows/*.yaml text eol=lf
 toolchain/worker-runtime-types-seed.b64 text eol=lf
+*.md text eol=lf

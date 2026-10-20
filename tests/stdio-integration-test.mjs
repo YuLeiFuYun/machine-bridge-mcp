@@ -733,10 +733,10 @@ try {
     eofChild.stderr.on("data", (chunk) => { eofStderr += chunk; });
     const eofStarted = join(workspace, "stdio-eof-started.txt");
     const eofLateEffect = join(workspace, "stdio-eof-late-effect.txt");
-    const eofCommand = `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(eofStarted)}, "started"); setTimeout(() => fs.writeFileSync(${JSON.stringify(eofLateEffect)}, "late"), 1500);`;
+    const eofScript = 'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], "started"); setTimeout(() => fs.writeFileSync(process.argv[2], "late"), 1500);';
     eofChild.stdin.write(JSON.stringify({
       jsonrpc: "2.0", id: 90, method: "tools/call",
-      params: { name: "run_process", arguments: { argv: [process.execPath, "-e", eofCommand], timeout_seconds: 30 }, _meta: currentMeta },
+      params: { name: "run_process", arguments: { argv: [process.execPath, "-e", eofScript, eofStarted, eofLateEffect], timeout_seconds: 30 }, _meta: currentMeta },
     }) + "\n");
     await waitForFile(eofStarted, 10_000);
     eofChild.stdin.end();

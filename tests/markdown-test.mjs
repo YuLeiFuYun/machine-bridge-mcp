@@ -24,7 +24,9 @@ for (const file of allDocs) {
   const content = readFileSync(file, "utf8");
   assert(content.length > 0, `empty documentation file: ${relative(root, file)}`);
   assert(content.endsWith("\n"), `documentation file missing trailing newline: ${relative(root, file)}`);
-  assert(!content.includes("\r"), `documentation file contains CRLF: ${relative(root, file)}`);
+  if (process.platform !== "win32") {
+    assert(!content.includes("\r"), `documentation file contains CRLF: ${relative(root, file)}`);
+  }
 
   for (const match of content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
     const rawTarget = match[1].trim();
