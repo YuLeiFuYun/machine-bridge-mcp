@@ -24,6 +24,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "object"
+        },
+        "authority": {
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -51,6 +71,23 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "overview": {
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -72,6 +109,26 @@
           "type": "string",
           "default": ".",
           "maxLength": 32768
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }
@@ -116,11 +173,45 @@
           "pattern": "^[a-f0-9]{64}$",
           "maxLength": 64,
           "description": "Previous refresh fingerprint. When it still matches, unchanged static instructions are omitted while task-specific ranking is recomputed."
+        },
+        "activate_tool_groups": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "browser",
+              "app",
+              "jobs",
+              "git",
+              "process",
+              "diagnostics",
+              "skills",
+              "files"
+            ]
+          },
+          "description": "Explicit progressive stdio groups to expose: browser, app, jobs, git, process, diagnostics, skills, files. This does not expand policy authority."
         }
       },
       "required": [
         "task"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "execution_routing": {
+          "type": "object"
+        },
+        "ranked_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selected_skill": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -148,6 +239,17 @@
           "minimum": 1,
           "maximum": 1000,
           "default": 200
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "applications": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       }
     }
@@ -190,6 +292,20 @@
       "required": [
         "application"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "application": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -243,6 +359,23 @@
       "required": [
         "application"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "application": {
+          "type": "string"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "tree": {
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -350,6 +483,20 @@
         "application",
         "action"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -467,6 +614,20 @@
       "required": [
         "surface"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "screenshot": {
+          "type": "string"
+        },
+        "dimensions": {
+          "type": "object"
+        },
+        "active_window": {
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -825,6 +986,20 @@
         "snapshot_id",
         "action"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "post_screenshot": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -841,6 +1016,23 @@
     "inputSchema": {
       "type": "object",
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "paired": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "browser": {
+          "type": "string"
+        },
+        "tabs_count": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -861,6 +1053,20 @@
         "open": {
           "type": "boolean",
           "default": true
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "paired": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
         }
       }
     }
@@ -893,6 +1099,17 @@
           "minimum": 1,
           "maximum": 60,
           "default": 30
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "tabs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       }
     }
@@ -944,6 +1161,20 @@
       "required": [
         "action"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "tab_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -984,6 +1215,20 @@
         "all_frames": {
           "type": "boolean",
           "default": false
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
         }
       }
     }
@@ -1030,6 +1275,20 @@
         "all_frames": {
           "type": "boolean",
           "default": true
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "accessibility_tree": {
+          "type": "object"
         }
       }
     }
@@ -1135,6 +1394,20 @@
           "minimum": 1,
           "maximum": 60,
           "default": 30
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "condition_met": {
+          "type": "boolean"
         }
       }
     }
@@ -1278,6 +1551,17 @@
       "required": [
         "action"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -1457,6 +1741,17 @@
       "required": [
         "fields"
       ]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "fields_filled": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -1502,6 +1797,17 @@
           "type": "boolean",
           "default": true,
           "description": "When false, an inactive target tab fails before capture instead of being activated temporarily; the active tab is never changed."
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "screenshot": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
         }
       }
     }
@@ -1615,12 +1921,26 @@
         "resources"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "uploaded_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   {
     "name": "agent_context",
     "title": "Load agent context",
-    "description": "Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.",
+    "description": "Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Set include_symbol_outline=true or symbol_path to include a lightweight Repo Map symbol outline. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -1644,6 +1964,25 @@
           "type": "boolean",
           "default": false
         },
+        "include_symbol_outline": {
+          "type": "boolean",
+          "default": false
+        },
+        "symbol_path": {
+          "type": "string"
+        },
+        "max_symbol_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 30
+        },
+        "max_symbol_lines": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 1000,
+          "default": 300
+        },
         "max_skills": {
           "type": "integer",
           "minimum": 1,
@@ -1652,6 +1991,29 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "effective_instructions": {
+          "type": "string"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "symbol_outline": {
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -1686,6 +2048,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -1723,6 +2096,23 @@
         "skill"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "skill": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   {
@@ -1746,6 +2136,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -1796,6 +2197,23 @@
         "name"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": "integer"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "number"
+        }
+      }
     }
   },
   {
@@ -1812,6 +2230,17 @@
     "inputSchema": {
       "type": "object",
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "roots": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -1834,6 +2263,20 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -1866,12 +2309,29 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
     "name": "read_file",
     "title": "Read text file",
-    "description": "Read a UTF-8 regular file or an inclusive 1-based line range. Delegated remote roles are denied known credential-sensitive paths and protected control-plane roots; local/owner access follows its authority and operating-system permissions. Filename rules cannot detect secrets stored under arbitrary ordinary names.",
+    "description": "Read a UTF-8 regular file or an inclusive 1-based line range. Files exceeding 300 lines return pagination_guidance suggesting windowed reading to prevent context flooding. Delegated remote roles are denied known credential-sensitive paths and protected control-plane roots; local/owner access follows its authority and operating-system permissions. Filename rules cannot detect secrets stored under arbitrary ordinary names.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -1904,6 +2364,26 @@
         "path"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "encoding": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -1928,6 +2408,23 @@
         "path"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "base64": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -1964,12 +2461,26 @@
         "content"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "bytes_written": {
+          "type": "integer"
+        },
+        "created": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
     "name": "edit_file",
     "title": "Edit text file",
-    "description": "Atomically replace an exact text fragment in one UTF-8 file while keeping the destination path visible through replacement. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts.",
+    "description": "Atomically replace a text fragment in one UTF-8 file while keeping the destination path visible through replacement. Matching is exact, including indentation and line endings. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -2005,12 +2516,26 @@
         "new_text"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "replacements": {
+          "type": "integer"
+        },
+        "bytes_written": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
     "name": "apply_patch",
     "title": "Apply structured patch",
-    "description": "Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.",
+    "description": "Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Hunk context must match exactly, including indentation. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -2031,6 +2556,20 @@
         "patch"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "patched": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
@@ -2092,6 +2631,23 @@
         "query"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "total_matches": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
@@ -2115,6 +2671,35 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "clean": {
+          "type": "boolean"
+        },
+        "staged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unstaged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "untracked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   {
@@ -2148,6 +2733,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "diff": {
+          "type": "string"
+        },
+        "staged": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
@@ -2181,6 +2777,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -2215,6 +2822,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "object"
+        },
+        "diff": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -2246,6 +2864,23 @@
         "message"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "files_changed": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -2289,6 +2924,23 @@
         "argv"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": "integer"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "number"
+        }
+      }
     }
   },
   {
@@ -2322,6 +2974,20 @@
         "argv"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -2372,6 +3038,26 @@
         "session_id"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -2404,6 +3090,17 @@
         "session_id"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "bytes_written": {
+          "type": "integer"
+        }
+      }
     }
   },
   {
@@ -2432,6 +3129,20 @@
         "session_id"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "killed": {
+          "type": "boolean"
+        },
+        "signal": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -2448,6 +3159,23 @@
     "inputSchema": {
       "type": "object",
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -2464,6 +3192,17 @@
     "inputSchema": {
       "type": "object",
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -2501,6 +3240,20 @@
         "name"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "public_key": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -2705,6 +3458,17 @@
         "steps"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -2920,6 +3684,23 @@
         "steps"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "recovery_key": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "follow_up_read_required": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
@@ -2944,6 +3725,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
     }
   },
   {
@@ -2976,6 +3768,26 @@
         "job_id"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -3001,6 +3813,17 @@
         "job_id"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "cancelled": {
+          "type": "boolean"
+        }
+      }
     }
   },
   {
@@ -3037,6 +3860,23 @@
         "command"
       ],
       "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": "integer"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "number"
+        }
+      }
     }
   }
 ]

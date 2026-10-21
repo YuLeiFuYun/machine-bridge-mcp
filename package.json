@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.206",
+  "version": "3.0.0-beta.207",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -59,9 +59,10 @@
     "scripts/sbom-check.mjs",
     "scripts/source-dependency-tree.mjs",
     "scripts/start-release-candidate.mjs",
+    "scripts/symbol-outline.mjs",
     "scripts/sync-worker-version.mjs",
     "scripts/verification-state.mjs",
-    "native",
+    "native/macos/MachineBridgeBackgroundInput.swift",
     "wrangler.jsonc",
     "tsconfig.json",
     "tsconfig.local.json",
@@ -161,6 +162,7 @@
     "computer-use-application-observation:test": "node tests/computer-use-application-observation-test.mjs",
     "computer-use-result-budget:test": "node tests/computer-use-result-budget-test.mjs",
     "computer-use:test": "node tests/computer-use-test.mjs",
+    "symbol-outline:test": "node tests/symbol-outline-test.mjs",
     "browser-devtools-input:test": "node tests/browser-devtools-input-test.mjs",
     "browser-devtools-observation:test": "node tests/browser-devtools-observation-test.mjs",
     "browser-computer-observation:test": "node tests/browser-computer-observation-test.mjs",
@@ -282,7 +284,11 @@
     "resource-admission:test": "node tests/resource-admission-test.mjs",
     "resource-build-root:test": "node tests/resource-build-root-test.mjs",
     "cf-network:test": "node tests/cf-network-integrity-test.mjs",
-    "output-buffer:test": "node tests/output-buffer-test.mjs"
+    "output-buffer:test": "node tests/output-buffer-test.mjs",
+    "check:changed": "node scripts/check-changed.mjs",
+    "affected-checks:test": "node tests/affected-checks-test.mjs",
+    "agent-workflows:test": "node tests/agent-workflows-test.mjs",
+    "agent-audit:test": "node tests/fixtures/agent-audit/regression.mjs && node tests/fixtures/agent-audit/guidance.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
@@ -297,7 +303,7 @@
     "fast-check": "4.10.2",
     "globals": "17.13.0",
     "typescript": "7.0.2",
-    "wrangler": "4.151.1"
+    "wrangler": "4.151.3"
   },
   "keywords": [
     "mcp",
@@ -329,7 +335,8 @@
     "esbuild@0.28.2": true,
     "fsevents": false,
     "sharp@0.35.5": true,
-    "workerd@1.20261012.1": true
+    "workerd@1.20261012.1": true,
+    "workerd@1.20261019.1": true
   },
   "packageManager": "npm@12.0.2",
   "devEngines": {

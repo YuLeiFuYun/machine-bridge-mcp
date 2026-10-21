@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { PROGRESS_BACKOFF_MS, createProgressReporter, formatElapsed } from "../src/shared/progress-reporter.mjs";
-import * as localProgressReporter from "../src/local/progress-reporter.mjs";
 import { progressNotification } from "../src/shared/mcp-protocol.mjs";
-
-assert.equal(localProgressReporter.createProgressReporter, createProgressReporter,
-  "local compatibility module must re-export the shared production reporter");
 
 let clock = 0;
 let scheduled = [];

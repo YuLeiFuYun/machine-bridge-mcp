@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { PassThrough, Writable } from "node:stream";
 import { tmpdir } from "node:os";
@@ -618,6 +618,28 @@ try {
     assert(response.error?.code === -32601, `local stdio unexpectedly advertised or handled the unnegotiated task extension method ${method}`);
   }
 
+  // When tasks extension is negotiated via clientCapabilities in _meta:
+  send({
+    jsonrpc: "2.0", id: 6944, method: "tasks/list",
+    params: {
+      _meta: {
+        ...currentMeta,
+        "io.modelcontextprotocol/clientCapabilities": {
+          extensions: { "io.modelcontextprotocol/tasks": {} },
+        },
+      },
+    },
+  });
+  const negotiatedTasks = await responseFor(6944);
+  assert(Array.isArray(negotiatedTasks.result?.tasks), "negotiated tasks/list did not return tasks array");
+
+  await writeFile(join(workspace, "AGENTS.md"), "Project prompt sentinel: preserve semantic indentation.\n", "utf8");
+  await writeFile(join(workspace, "review.txt"), "baseline\n", "utf8");
+  for (const argv of [["init", "--quiet"], ["add", "review.txt"]]) {
+    const git = spawnSync("git", argv, { cwd: workspace, encoding: "utf8", env: { ...childEnvironment, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" } });
+    assert(git.status === 0, "could not prepare real Git diff fixture");
+  }
+  await writeFile(join(workspace, "review.txt"), "baseline\nreview-diff-sentinel\n", "utf8");
   send({ jsonrpc: "2.0", id: 695, method: "prompts/list", params: {} });
   const promptsListed = await responseFor(695);
   assert(Array.isArray(promptsListed.result?.prompts) && promptsListed.result?.prompts.some((p) => p.name === "agent_instructions"), "prompts/list did not return prompts");
@@ -625,14 +647,29 @@ try {
   send({ jsonrpc: "2.0", id: 696, method: "prompts/get", params: { name: "agent_instructions" } });
   const promptGet = await responseFor(696);
   assert(Array.isArray(promptGet.result?.messages), "prompts/get did not return messages array");
+  assert(promptGet.result.messages[0].content.text.includes("Project prompt sentinel"), "agent_instructions discarded real project guidance");
+  for (const [id, method, params] of [
+    [6961, "prompts/get", { name: "code_review" }],
+    [6962, "resources/read", { uri: "diff://workspace/unstaged" }],
+  ]) {
+    send({ jsonrpc: "2.0", id, method, params });
+    const response = await responseFor(id);
+    const text = response.result?.messages?.[0]?.content?.text || response.result?.contents?.[0]?.text || "";
+    assert(text.includes("+review-diff-sentinel"), "prompt/resource discarded actual Git stdout");
+  }
 
   send({ jsonrpc: "2.0", id: 697, method: "resources/list", params: {} });
   const resourcesListed = await responseFor(697);
   assert(Array.isArray(resourcesListed.result?.resources) && resourcesListed.result?.resources.some((r) => r.uri === "diag://runtime/status"), "resources/list did not return resources");
+  assert(resourcesListed.result?.resources.some((r) => r.uri === "machine-bridge://help/managed-jobs"), "resources/list omitted help resources");
 
   send({ jsonrpc: "2.0", id: 698, method: "resources/read", params: { uri: "diag://runtime/status" } });
   const resourceRead = await responseFor(698);
   assert(resourceRead.result?.contents?.[0]?.mimeType === "application/json", "resources/read did not return resource contents");
+
+  send({ jsonrpc: "2.0", id: 699, method: "resources/read", params: { uri: "machine-bridge://help/managed-jobs" } });
+  const helpRead = await responseFor(699);
+  assert(helpRead.result?.contents?.[0]?.mimeType === "text/markdown" && helpRead.result?.contents?.[0]?.text?.length > 100, "resources/read did not return help resource contents");
 
   const detachedMarker = join(workspace, "detached-job-marker.txt");
   const detachedCleanup = join(workspace, "detached-job-cleanup.txt");
@@ -745,6 +782,95 @@ try {
     let eofLateEffectExists = true;
     try { await readFile(eofLateEffect); } catch { eofLateEffectExists = false; }
     assert(!eofLateEffectExists, `stdio EOF did not cancel an already-running tool process; stderr=${eofStderr}`);
+  }
+
+  {
+    let progressiveStderr = "";
+    const progressiveChild = spawn(process.execPath, [
+      join(root, "bin", "machine-mcp.mjs"),
+      "stdio",
+      "--workspace", workspace,
+      "--state-dir", stateDir,
+    ], {
+      cwd: root,
+      env: { ...childEnvironment, MBM_PROGRESSIVE_TOOLS: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    progressiveChild.stderr.on("data", (chunk) => { progressiveStderr = appendBounded(progressiveStderr, chunk); });
+    try {
+      const progRl = readline.createInterface({ input: progressiveChild.stdout, crlfDelay: Infinity });
+      const progResponses = [];
+      const notifications = [];
+      progRl.on("line", (line) => {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.id) progResponses.push(parsed);
+          else if (parsed.method) notifications.push(parsed);
+        } catch { /* best-effort parse */ }
+      });
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 201, method: "tools/list", params: { _meta: modernMeta } }) + "\n");
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !progResponses.some((r) => r.id === 201)) {
+        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+      }
+      const toolsResp = progResponses.find((r) => r.id === 201);
+      assert(toolsResp?.result?.tools?.length === 9, `progressive tools/list did not return 9 cornerstone tools: got ${toolsResp?.result?.tools?.length}; stderr=${progressiveStderr}`);
+
+      assert(toolsResp.result.tools.some((tool) => tool.name === "resolve_task_capabilities"), "progressive catalog omitted its discovery entry point");
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 200, method: "server/discover", params: { _meta: modernMeta } }) + "\n");
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2001, method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: modernMeta } }) + "\n");
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 202, method: "tools/call", params: { name: "resolve_task_capabilities", arguments: { task: "review git changes", activate_tool_groups: ["git"] }, _meta: modernMeta } }) + "\n");
+      const deadline2 = Date.now() + 5000;
+      while (Date.now() < deadline2 && !progResponses.some((r) => r.id === 202)) {
+        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+      }
+      assert(progResponses.find((r) => r.id === 200)?.result?.capabilities?.tools?.listChanged === true, "progressive discovery did not advertise list changes");
+      assert(notifications.some((n) => n.method === "notifications/tools/list_changed" && n.params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 2001), "progressive update lacked its accepted subscription id");
+      assert(!progResponses.some((r) => r.id === 2001), "active subscription completed before its updates");
+
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 203, method: "tools/list", params: { _meta: modernMeta } }) + "\n");
+      const deadline3 = Date.now() + 5000;
+      while (Date.now() < deadline3 && !progResponses.some((r) => r.id === 203)) {
+        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+      }
+      const expandedResp = progResponses.find((r) => r.id === 203);
+      assert(expandedResp?.result?.tools?.some((tool) => tool.name === "git_diff"), `progressive tools/list after JIT did not expose git_diff through the listed resolver: got ${expandedResp?.result?.tools?.length}`);
+
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 2001 } }) + "\n");
+      const cancelDeadline = Date.now() + 5000;
+      while (Date.now() < cancelDeadline && !progResponses.some((r) => r.id === 2001)) {
+        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+      }
+      assert(progResponses.find((r) => r.id === 2001)?.result?.resultType === "complete", "cancelled catalog subscription did not complete");
+      const updatesBeforeCancel = notifications.filter((n) => n.method === "notifications/tools/list_changed").length;
+      const oversizedSubscriptionId = "s".repeat(1025);
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: oversizedSubscriptionId, method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: modernMeta } }) + "\n");
+
+      // Test explicit activate_tool_groups in resolve_task_capabilities
+      progressiveChild.stdin.write(JSON.stringify({
+        jsonrpc: "2.0", id: 204, method: "tools/call",
+        params: { name: "resolve_task_capabilities", arguments: { task: "browser automation", activate_tool_groups: ["browser"] }, _meta: modernMeta },
+      }) + "\n");
+      const deadline4 = Date.now() + 5000;
+      while (Date.now() < deadline4 && !progResponses.some((r) => r.id === 204)) {
+        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+      }
+      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 205, method: "tools/list", params: { _meta: modernMeta } }) + "\n");
+      const deadline5 = Date.now() + 5000;
+      while (Date.now() < deadline5 && !progResponses.some((r) => r.id === 205)) {
+        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
+      }
+      const browserExpandedResp = progResponses.find((r) => r.id === 205);
+      assert(browserExpandedResp?.result?.tools?.some((t) => t.name === "browser_action"), "browser tools were not dynamically activated");
+      assert(progResponses.find((r) => r.id === oversizedSubscriptionId)?.error?.code === -31900, "unbounded subscription request id was retained");
+      assert(notifications.filter((n) => n.method === "notifications/tools/list_changed").length === updatesBeforeCancel, "catalog emitted an update without an active subscription");
+
+      progRl.close();
+      progressiveChild.stdin.end();
+      await waitForExit(progressiveChild, 5000);
+    } finally {
+      if (progressiveChild.exitCode === null) progressiveChild.kill("SIGKILL");
+    }
   }
 
   console.log("stdio MCP integration test ok");

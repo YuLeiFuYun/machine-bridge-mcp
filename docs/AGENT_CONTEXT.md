@@ -7,7 +7,7 @@ This approximates a local coding agent without pretending that the MCP server ow
 ## MCP tools
 
 - `session_bootstrap` returns built-in working agreements, bounded automatic project facts, explicit instruction text, and a refresh fingerprint.
-- `agent_context` returns the complete target-specific instruction chain, skill summaries, and command registry.
+- `agent_context` returns the bounded target-specific instruction chain, skill summaries, and command registry.
 - `resolve_task_capabilities` rescans default/project context, ranks skills/commands and effective-policy-visible tools, returns bounded set-level execution routes with ambiguity/fallback metadata, and optionally loads the best skill. Direct Bash remains available whenever the effective policy permits it.
 - `list_local_skills` searches discovered `SKILL.md` bundles.
 - `load_local_skill` returns one skill entrypoint and bounded file inventory without execution.
@@ -50,7 +50,34 @@ These are behavioral defaults, not hard enforcement. Machine Bridge policy profi
 
 The scanner does not execute commands, inspect dependency values, read package script bodies, summarize source files, or claim that declared commands work. Oversized, invalid-UTF-8, symbolic-link, or unsupported metadata is skipped or described conservatively. The generated block is capped independently at 16 KiB.
 
-This approach follows common guidance across coding agents: keep always-loaded instructions concise, specific, structured, and verifiable; put build/test commands and architecture entrypoints where the agent can find them; use nested files for narrower rules; and keep hard prohibitions in permission or hook mechanisms rather than relying only on prose. Relevant references include the [OpenAI Codex AGENTS.md guide](https://learn.chatgpt.com/docs/agent-configuration/agents-md), [GitHub Copilot repository instructions](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions), [Claude Code project memory guidance](https://code.claude.com/docs/en/memory), and the [AGENTS.md open format](https://agents.md/).
+### Cross-session persistent agent memory
+
+`agent_context` reads `.project-local/agent-memory.json` on demand. Automatic project facts may announce that the file exists; `session_bootstrap` and `resolve_task_capabilities` do not load its body. Memory is outside their static refresh fingerprint. It is untrusted project context and never expands execution authority.
+
+Version 1 accepts four optional arrays: `project_insights`, `ci_guidelines`, `user_preferences`, and `notes`. Entries are non-empty strings or objects with `text`, optional finite `importance` from 1 to 10, parseable `updated_at` / `expires_at`, and an optional bounded `source`. An explicit finite millisecond `timestamp` can supply `updated_at`. Prefer ISO timestamps:
+
+```json
+{
+  "version": 1,
+  "project_insights": [{
+    "text": "Preserve Python indentation when editing.",
+    "updated_at": "2026-10-21T00:00:00.000Z",
+    "source": "verified regression"
+  }]
+}
+```
+
+The result contains one canonical object-entry view in source order. Plain strings acquire no invented timestamp or freshness score. Expired entries and duplicate text within a category are omitted. No `scored_memories` copy or research-derived ranking is applied.
+
+Protected, regular-file reads reject symbolic links, multiple hard links, changing identities and canonical parent escapes, and apply the request's path authority. The 64 KiB input ceiling is enforced before allocation or JSON parsing. Each text is at most 2 KiB, each category returns at most 10 entries, and all returned entries share a 16 KiB serialized budget. `truncated` describes output selection. Oversized files return `too_large` without a body; malformed version/metadata returns `invalid`; unsafe or inaccessible paths return `unavailable`. Cancellation propagates. The reader never modifies the file. Keep memory local and review its content before sharing context.
+
+### Lexical Symbol Outline (Repo Map)
+
+`agent_context` can return a bounded lexical overview with `include_symbol_outline: true` or a specific `symbol_path`. `max_symbol_files` defaults to 30 (maximum 100); `max_symbol_lines` defaults to 300 (maximum 1000), including headers, separators and truncation notices. Parameter values are omitted rather than copied into the outline. A lexical match is navigation assistance, not an AST-backed semantic guarantee.
+
+Filesystem I/O is asynchronous. Default traversal visits at most 2048 entries and eight directory levels, reads at most 256 KiB per file and 2 MiB in total, and checks cancellation and per-file policy. Protected reads reject nonregular, linked or changing files. Paths use the same display projection as other context. Hitting a budget or omitting a source makes the result explicitly incomplete. The development CLI `node scripts/symbol-outline.mjs <directory> --json` exposes scan counts, bytes and warnings.
+
+Keep always-loaded instructions short and verifiable; use nested rules and linked topic documents for detail. Prose is guidance, while policy, OS permissions and operation gates enforce authority.
 
 ### Disable either automatic layer
 
@@ -100,6 +127,8 @@ Changes are discovered on the next `session_bootstrap`, `agent_context`, or `res
 In remote mode, selected instruction text and enabled automatic project facts necessarily traverse the user's Cloudflare Worker and authorized MCP host when an explicit context/bootstrap call returns them. Do not put credentials or private records in instructions.
 
 ## Instruction precedence
+
+Explicit files retain global-to-nearest precedence in the result. When the shared byte budget is exceeded, nearer project guidance takes priority over earlier global/root files; omitted paths and budget reasons appear in `instruction_warnings`. An individually oversized file is omitted with a warning. Inspect these warnings before assuming the inventory is complete.
 
 For a target path, Machine Bridge chooses the nearest Git ancestor as scope root, falling back to the configured workspace or target directory. The default candidate priority in each directory is:
 
@@ -189,6 +218,8 @@ The entrypoint requires non-empty `name` and `description`. Invalid bundles are 
 No persistent skill or project-context index is trusted as authoritative. `session_bootstrap`, `agent_context`, and `resolve_task_capabilities` rebuild the relevant context; skill-list/load calls rescan effective roots. The refresh fingerprint binds the target/scope, configuration paths, instruction source/precedence/content identity, skill source identity, and complete registered-command definition including cwd, foreground timeout, execution mode, and managed-job timeout. A matching `known_refresh_fingerprint` permits response compaction only; task ranking, effective-policy filtering, installed-application matching, and route scoring still run. Newly created or edited files are visible without restarting the daemon or changing the MCP tool catalog.
 
 ## Progressive disclosure and task selection
+
+The default tool catalog remains full. Opt-in stdio mode `MBM_PROGRESSIVE_TOOLS=1` starts with nine tools, including the discoverable `resolve_task_capabilities` entry point. Call that listed tool to request `activate_tool_groups`: `browser`, `app`, `jobs`, `git`, `process`, `diagnostics`, `skills`, or `files`. Only policy-visible tools activate. Hidden names are not a discovery shortcut. Progressive mode advertises `tools.listChanged=true`; notifications are delivered only to an accepted `subscriptions/listen` request with `toolsListChanged=true`, carrying that subscription's ID. Full mode remains static. Mode is selected at process startup, not by an ad hoc `tools/list` parameter.
 
 `agent_context` returns bounded skill metadata. `load_local_skill` returns full instructions only for one selected bundle. `resolve_task_capabilities` tokenizes the current task, ranks skill names/descriptions, command names/descriptions/argv, and public tool definitions, then scores compatible execution surfaces as sets. It returns a schema-versioned envelope with the primary route, alternatives, ambiguity, fallback routes, ranked tools, and failure-aware guidance. Scores are relative within the current response, not probabilities or values to compare across package versions. Registered commands, direct Bash/argv, interactive sessions, durable jobs, files/Git, browser, applications, protected resources, and diagnostics remain separate choices; the advice does not hide or disable any effective-policy-visible tool.
 

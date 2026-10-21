@@ -150,7 +150,13 @@ export class WorkspaceFileService {
     const selected = content.slice(selectedStartOffset, selectedEndOffset);
     const selectedBytes = Buffer.byteLength(selected);
     if (selectedBytes > maxBytes) throw new BridgeError("limit_exceeded", `selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`, { details: { reason: "read_limit", selected_bytes: selectedBytes, maximum_bytes: maxBytes } });
-    return { ...base, content: selected, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines };
+    const result = { ...base, content: selected, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines };
+    if (totalLines > 300 && (selectedEnd < totalLines || args.end_line === undefined)) {
+      result.pagination_guidance = selectedEnd < totalLines
+        ? `File has ${totalLines} lines. To read subsequent lines, specify start_line=${selectedEnd + 1} and end_line=${Math.min(selectedEnd + 300, totalLines)}.`
+        : `Large file (${totalLines} lines). For better token efficiency and focus, use start_line and end_line to inspect specific windows.`;
+    }
+    return result;
   }
 
   async viewImage(args, context = {}) {
@@ -229,13 +235,15 @@ export class WorkspaceFileService {
         expectedHash: sha256(current),
         readText: readUtf8File,
       });
+      const warnings = commit.warnings.slice();
       return {
         ok: true,
         path: this.displayPath(full, context),
         replacements: args.replace_all ? occurrences : 1,
         sha256: sha256(updated),
         bytes,
-        ...(commit.warnings.length ? { warnings: commit.warnings } : {}),
+        matched: "exact",
+        ...(warnings.length ? { warnings } : {}),
       };
     });
   }

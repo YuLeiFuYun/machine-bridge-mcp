@@ -1,5 +1,5 @@
 import { executionGuardrailsSnapshot } from "./execution-limits.mjs";
-import { relayRecoveryRuntimeSnapshot } from "./relay-recovery-diagnostics.mjs";
+import { relayRecoveryRuntimeSnapshot } from "./relay-recovery.mjs";
 
 export function runtimeControlPlaneSnapshot(runtime) {
   return {

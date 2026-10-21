@@ -1,5 +1,8 @@
 # Testing strategy
 
+> [!NOTE]
+> Node.js `>=26.0.0` is required for executing the full test suite and verification gates (`check:fast`, `check:full`). Ensure Node 26 is active or prepended to your PATH (`export PATH="/opt/homebrew/opt/node@26/bin:$PATH"` or `.node-version`).
+
 The project treats transport, authorization, local authority, and state removal as separate failure domains.
 
 ## Independent privacy and deployment boundaries
@@ -537,6 +540,14 @@ Those API-operation counts are regression evidence, not exact Cloudflare billed 
 The separate request/nonce-only reconnect model does not count alarms.
 Retry tests cover 429/503 duration/date headers, bounded invalid inputs, queue and lifecycle acceleration, wall-clock changes, and success reset.
 Authentication tests cover TTL minus one, exact TTL, TTL plus one, and expiry between preflight verification and nonce consumption, with no expired-request writes.
+
+## Development impact checks and agent workflows
+
+`npm run check:changed -- --plan` reports selected and unselected fast checks using transitive static imports, literal require calls and file URLs. Omitting `--plan` runs that advisory selection. Configuration changes, parsing failures and source changes with no reachable test entry point fall back to the full fast plan. Dynamic paths remain outside its proof; it never writes a full-verification receipt or replaces platform, packaging, deployed-edge or release checks.
+
+`affected-checks:test` covers transitive and deleted dependencies, unrelated tests, documentation selection and conservative fallback. `agent-audit:test` covers nearest-rule budgeting, memory/link/read limits, cancellation, lexical bounds and exact indentation. `agent-workflows:test` follows the real runtime through context discovery, a hash-guarded edit and stale-write rejection, then replaces the caller of an accepted durable job and verifies one final side effect. It also checks recovery ordering and unknown effect evidence. These deterministic trajectories complement the small `agent-evals:test` contract suite; none measures general model reasoning or reproduces an upstream agent benchmark.
+
+The shared development parser in `scripts/source-syntax.mjs` feeds both semantic architecture inspection and dependency analysis. Tool catalog identity is hash-bound and must advance generation when changed from either HEAD or the previous reachable release tag. A real temporary Git repository covers committed changes, excludes the candidate tag, and rejects missing release history. Real stdio fixtures verify project instructions, Git stdout, a listed progressive resolver and subscription-bound changes, rather than mocks with incompatible result fields.
 
 ## Comparative-maintenance regressions
 

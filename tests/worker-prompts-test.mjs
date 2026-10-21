@@ -14,10 +14,10 @@ const calls = [];
 const mockInvoker = async ({ name, args }) => {
   calls.push({ name, args });
   if (name === "agent_context") {
-    return { instructions: "Follow strict coding guidelines." };
+    return { effective_instructions: "Follow strict coding guidelines." };
   }
   if (name === "git_diff") {
-    return { diff: "+ new code\n- old code" };
+    return { code: 0, stdout: "+ new code\n- old code" };
   }
   if (name === "load_local_skill") {
     assert.equal(args.skill, "test_skill");
@@ -117,3 +117,23 @@ const mockInvoker = async ({ name, args }) => {
 }
 
 console.log("Worker prompts test ok");
+
+// Actual daemon result fields and incomplete/failing output must survive projection.
+{
+  const req = { jsonrpc: "2.0", id: "p-real-fields", method: "prompts/get", params: { name: "code_review" } };
+  const incomplete = await dispatchWorkerPromptOperation(req, async () => ({ code: 0, stdout: "", stdout_truncated_bytes: 20, sensitive_files_omitted: 2 }), "http://localhost", dummyToken, new AbortController().signal);
+  const text = incomplete.message.result.messages[0].content.text;
+  assert(text.includes("incomplete") && text.includes("Sensitive paths were omitted"));
+  assert(!text.includes("No changes found"));
+  const failed = await dispatchWorkerPromptOperation(req, async () => ({ code: 128, stdout: "" }), "http://localhost", dummyToken, new AbortController().signal);
+  assert.equal(failed.message.error.code, -32603);
+}
+
+// A malformed producer contract must not masquerade as an empty configuration.
+{
+  const req = { jsonrpc: "2.0", id: "p-context-contract", method: "prompts/get", params: { name: "agent_instructions" } };
+  const missing = await dispatchWorkerPromptOperation(req, async () => ({ instructions: "obsolete field" }), "http://localhost", dummyToken, new AbortController().signal);
+  assert.equal(missing.message.error.code, -32603);
+  const empty = await dispatchWorkerPromptOperation(req, async () => ({ effective_instructions: "" }), "http://localhost", dummyToken, new AbortController().signal);
+  assert(empty.message.result.messages[0].content.text.includes("No specific instructions configured"));
+}

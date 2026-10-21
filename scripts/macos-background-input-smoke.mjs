@@ -13,7 +13,7 @@ import { packageRoot } from "../src/local/package-identity.mjs";
 const EXPLICIT_FLAG = "--run";
 const BACKEND_ENV = "MBM_MACOS_BACKGROUND_VISUAL_BACKEND";
 const BACKEND_VALUE = "skylight-experimental";
-const FIXTURE_SOURCE = path.join(packageRoot, "native", "macos", "MachineBridgeBackgroundInputSmokeFixture.swift");
+const FIXTURE_SOURCE = path.join(packageRoot, "tests", "fixtures", "native", "MachineBridgeBackgroundInputSmokeFixture.swift");
 
 if (process.platform !== "darwin") throw new Error("macOS background-input smoke requires macOS");
 if (!process.argv.includes(EXPLICIT_FLAG)) {

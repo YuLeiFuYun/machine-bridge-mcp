@@ -87,14 +87,14 @@ try {
     problems: [],
     dependencies: {
       cf: { version: "1.0.0-beta.18" },
-      wrangler: { version: "4.151.1", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
+      wrangler: { version: "4.151.3", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
       undici: { version: "7.29.1" },
       sharp: { version: "0.35.5" },
       esbuild: { version: "0.28.2" },
       workerd: { version: "1.20261012.1" },
     },
   }, {
-    cf: "1.0.0-beta.18", wrangler: "4.151.1", undici: "7.29.1", sharp: "0.35.5",
+    cf: "1.0.0-beta.18", wrangler: "4.151.3", undici: "7.29.1", sharp: "0.35.5",
     esbuild: "0.28.2", workerd: "1.20261012.1",
   }),
   /invalid dependency node/,
@@ -332,7 +332,7 @@ function createFakeNpmRunner(options = {}) {
   const launcherBins = new Set();
   const versions = {
     cf: options.cf || "1.0.0-beta.18",
-    wrangler: options.wrangler || "4.151.1",
+    wrangler: options.wrangler || "4.151.3",
     undici: options.undici || "7.29.1",
     sharp: options.sharp || "0.35.5",
     esbuild: options.esbuild || "0.28.2",

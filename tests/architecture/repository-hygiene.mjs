@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
+assert(Buffer.byteLength(readFileSync(join(root, "AGENTS.md"), "utf8")) <= 12 * 1024,
+  "always-loaded repository instructions exceed their 12 KiB context budget; link topic guidance instead");
+
 const docs = [
   join(root, "README.md"),
   join(root, "SECURITY.md"),

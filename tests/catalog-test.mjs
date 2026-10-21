@@ -1,10 +1,21 @@
-import { readFile } from "node:fs/promises";
+import strictAssert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { toolCatalogDigest, assertToolSchemaContract, readToolSchemaBaselines } from "../scripts/tool-schema-contract.mjs";
+import { CORE_CORNERSTONE_TOOL_NAMES, PROGRESSIVE_TOOL_GROUPS } from "../src/shared/tool-groups.mjs";
+import { readFile, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { allToolNames, MCP_INSTRUCTIONS, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
 import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
+const activationSchema = catalog.find((tool) => tool.name === "resolve_task_capabilities").inputSchema.properties.activate_tool_groups.items;
+assert(JSON.stringify([...activationSchema.enum].sort()) === JSON.stringify(Object.keys(PROGRESSIVE_TOOL_GROUPS).sort()), "progressive group schema drifted from implementation");
+assert(CORE_CORNERSTONE_TOOL_NAMES.has("resolve_task_capabilities"), "progressive discovery entry point is hidden");
+const groupedNames = new Set([...CORE_CORNERSTONE_TOOL_NAMES, ...Object.values(PROGRESSIVE_TOOL_GROUPS).flat()]);
+assert(catalog.every((tool) => groupedNames.has(tool.name)), "a tool cannot be discovered through any progressive group");
 const policyContract = JSON.parse(await readFile(new URL("../src/shared/policy-contract.json", import.meta.url), "utf8"));
 assert(policyContract.defaultProfile === "full", "default policy profile is an explicit full-authority product contract and must not be narrowed incidentally");
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
@@ -47,7 +58,7 @@ assert(operationMayHaveSideEffects("__future_unreviewed_tool") === true,
 const computerActionSchema = catalog.find((tool) => tool.name === "computer_act")?.inputSchema;
 assert(computerActionSchema?.properties?.post_screenshot?.default === "auto"
   && !Object.hasOwn(computerActionSchema.properties, "include_post_screenshot")
-  && metadata.toolSchemaGeneration === 29,
+  && Number.isSafeInteger(metadata.toolSchemaGeneration) && metadata.toolSchemaGeneration > 0,
 "computer_act exposes retired screenshot compatibility or an outdated schema generation");
 
 for (const tool of catalog) {
@@ -60,6 +71,8 @@ for (const tool of catalog) {
   assert(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"].includes(tool.availability), `${tool.name} has invalid availability`);
   assert(tool.inputSchema?.type === "object", `${tool.name} inputSchema must be an object`);
   assert(tool.inputSchema?.additionalProperties === false, `${tool.name} inputSchema must reject unknown fields`);
+  assert(tool.outputSchema?.type === "object", `${tool.name} outputSchema must be an object`);
+  assert(tool.outputSchema?.properties && typeof tool.outputSchema.properties === "object", `${tool.name} outputSchema must declare properties`);
   for (const field of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]) {
     assert(typeof tool.annotations?.[field] === "boolean", `${tool.name} annotation ${field} is missing`);
   }
@@ -110,6 +123,51 @@ for (const value of [["array"], "text", 0, false, null]) {
 assert(workerSource.includes('./tool-catalog'), "Worker entrypoint does not use the catalog boundary");
 assert(workerCatalogSource.includes('../shared/tool-catalog.json'), "Worker catalog boundary does not import the shared tool catalog");
 assert(!workerCatalogSource.includes('const workspaceTools = ['), "Worker contains a second hand-maintained tool catalog");
+
+
+{
+  const fixture = await mkdtemp(join(tmpdir(), "mbm-schema-history-"));
+  const environment = { ...process.env };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) delete environment[key];
+  const hooks = join(fixture, "hooks");
+  const git = (argv) => execFileSync("git", [
+    "-c", "core.hooksPath=" + hooks, "-c", "commit.gpgSign=false",
+    "-c", "user.name=Catalog Test", "-c", "user.email=catalog-test@example.invalid", ...argv,
+  ], { cwd: fixture, env: environment, stdio: "pipe" });
+  const oldCatalog = [{ name: "read_file" }];
+  const newCatalog = [...oldCatalog, { name: "write_file" }];
+  const oldMetadata = { toolSchemaGeneration: 1, toolCatalogSha256: toolCatalogDigest(oldCatalog) };
+  const unchangedGeneration = { toolSchemaGeneration: 1, toolCatalogSha256: toolCatalogDigest(newCatalog) };
+  const advanced = { ...unchangedGeneration, toolSchemaGeneration: 2 };
+  const baseline = [{ ref: "baseline", metadata: oldMetadata, catalog: oldCatalog }];
+  assertToolSchemaContract(oldMetadata, oldCatalog, baseline);
+  assertToolSchemaContract(advanced, newCatalog, baseline);
+  strictAssert.throws(() => assertToolSchemaContract(unchangedGeneration, newCatalog, baseline), /strictly newer/);
+  strictAssert.throws(() => assertToolSchemaContract(oldMetadata, oldCatalog, [{ ref: "newer", metadata: advanced, catalog: oldCatalog }]), /must not decrease/);
+  strictAssert.throws(() => assertToolSchemaContract({ ...advanced, toolCatalogSha256: "invalid" }, newCatalog, baseline), /fingerprint/);
+  strictAssert.throws(() => assertToolSchemaContract(advanced, newCatalog, []), /baseline is required/);
+  try {
+    await mkdir(join(fixture, "src", "shared"), { recursive: true });
+    await mkdir(hooks);
+    const storeContract = async (value, tools) => {
+      await writeFile(join(fixture, "src", "shared", "server-metadata.json"), JSON.stringify(value));
+      await writeFile(join(fixture, "src", "shared", "tool-catalog.json"), JSON.stringify(tools));
+    };
+    git(["init", "-q"]);
+    await storeContract(oldMetadata, oldCatalog);
+    git(["add", "."]); git(["commit", "-qm", "baseline"]); git(["tag", "v3.0.0-beta.206"]);
+    await storeContract(unchangedGeneration, newCatalog);
+    git(["add", "."]); git(["commit", "-qm", "committed catalog change"]); git(["tag", "v3.0.0-beta.207"]);
+    const baselines = readToolSchemaBaselines(fixture, "3.0.0-beta.207");
+    assert(baselines.some((value) => value.ref === "v3.0.0-beta.206"), "candidate tag obscured the previous release");
+    strictAssert.throws(() => assertToolSchemaContract(unchangedGeneration, newCatalog, baselines), /strictly newer/,
+      "a committed catalog change reused the released generation");
+    await storeContract(advanced, newCatalog);
+    assertToolSchemaContract(advanced, newCatalog, readToolSchemaBaselines(fixture, "3.0.0-beta.207"));
+    git(["tag", "-d", "v3.0.0-beta.206"]);
+    strictAssert.throws(() => readToolSchemaBaselines(fixture, "3.0.0-beta.207"), /complete release tags/);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
+}
 
 console.log("shared tool catalog test ok");
 

@@ -1,3 +1,5 @@
+import { settlementGuidance } from "../shared/error-guidance.mjs";
+
 const WORKER_ERROR_CODES = new Set([
   "cancelled", "timeout", "authentication_failed", "authorization_denied", "policy_denied",
   "invalid_request", "not_found", "conflict", "limit_exceeded", "permission_denied",
@@ -25,9 +27,13 @@ export function daemonToolError(value: unknown): WorkerToolError {
   const message = typeof input.message === "string" && input.message
     ? input.message.slice(0, 2000)
     : "daemon tool failed";
+  const details = isRecord(input.details) ? { ...input.details } : {};
+  if (typeof input.actionable_remedy === "string" && !details.actionable_remedy) {
+    details.actionable_remedy = input.actionable_remedy;
+  }
   return new WorkerToolError(
     code, message, input.retryable === true,
-    isRecord(input.details) ? input.details : undefined,
+    Object.keys(details).length ? details : undefined,
   );
 }
 
@@ -98,11 +104,19 @@ export function revokedDaemonAuthorityError(): WorkerToolError {
   });
 }
 
-export function publicWorkerToolError(error: unknown): { code: string; message: string; retryable: boolean; details?: Record<string, unknown> } {
+export function publicWorkerToolError(error: unknown): { code: string; message: string; retryable: boolean; actionable_remedy?: string; details?: Record<string, unknown> } {
   if (error instanceof WorkerToolError) {
+    const remedy = settlementGuidance(error)
+      || (typeof error.details?.actionable_remedy === "string" ? error.details.actionable_remedy : null);
+    let details: Record<string, unknown> | undefined = error.details ? { ...error.details } : undefined;
+    if (details && "actionable_remedy" in details) {
+      delete details.actionable_remedy;
+      if (Object.keys(details).length === 0) details = undefined;
+    }
     return {
       code: error.code, message: error.message, retryable: error.retryable,
-      ...(error.details ? { details: error.details } : {}),
+      ...(remedy ? { actionable_remedy: remedy } : {}),
+      ...(details ? { details } : {}),
     };
   }
   return { code: "execution_failed", message: "tool execution failed", retryable: false };

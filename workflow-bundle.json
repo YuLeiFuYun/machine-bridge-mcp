@@ -14,9 +14,8 @@
       "command": {
         "id": "project-native:npm:cf-network:test",
         "argv": [
-          "npm",
-          "run",
-          "cf-network:test"
+          "node",
+          "tests/cf-network-integrity-test.mjs"
         ],
         "cwd": ".",
         "timeout_seconds": 300,
@@ -37,9 +36,8 @@
       "command": {
         "id": "project-native:npm:wrangler-toolchain:test",
         "argv": [
-          "npm",
-          "run",
-          "wrangler-toolchain:test"
+          "node",
+          "tests/wrangler-toolchain-test.mjs"
         ],
         "cwd": ".",
         "timeout_seconds": 300,
@@ -133,6 +131,52 @@
         ],
         "cwd": ".",
         "timeout_seconds": 1800,
+        "env": {},
+        "sandbox": "disabled"
+      }
+    },
+    {
+      "id": "project-native:npm:test:unit",
+      "phase": "verify",
+      "source": "package.json#scripts.test",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "unit",
+      "independence": "same_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:npm:test:unit",
+        "argv": [
+          "npm",
+          "run",
+          "test"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 300,
+        "env": {},
+        "sandbox": "disabled"
+      }
+    },
+    {
+      "id": "project-native:npm:test:integration",
+      "phase": "verify",
+      "source": "package.json#scripts.test",
+      "required_for": [
+        "local_ready"
+      ],
+      "evidence_class": "integration",
+      "independence": "independent_process",
+      "minimum_provenance": "controller_observed",
+      "command": {
+        "id": "project-native:npm:test:integration",
+        "argv": [
+          "npm",
+          "run",
+          "test"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 600,
         "env": {},
         "sandbox": "disabled"
       }

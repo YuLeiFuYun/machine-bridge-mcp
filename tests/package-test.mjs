@@ -44,6 +44,8 @@ try {
   if (Number(auditEntry?.size || 0) > 32 * 1024) throw new Error("npm package audit summary regained historical bulk");
   for (const repositoryOnly of [
     "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "GOVERNANCE.md",
+    "native/macos/MachineBridgeBackgroundInputSmokeFixture.swift",
+    "tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift",
     "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md",
   ]) {
     if (record.files.some((item) => item.path === repositoryOnly)) throw new Error(`npm package retained repository-only maintenance material ${repositoryOnly}`);
@@ -80,7 +82,7 @@ try {
   for (const tool of ["cf", "wrangler", "undici", "miniflare", "workerd"]) {
     if (Object.hasOwn(packageJson.dependencies || {}, tool)) throw new Error(`Consumer dependencies must exclude the private deployment tool ${tool}`);
   }
-  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.18", wrangler: "4.151.1" })) {
+  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.18", wrangler: "4.151.3" })) {
     if (packageJson.devDependencies?.[tool] !== version || privateManifest.dependencies?.[tool] !== version
         || privateLock.packages?.[""]?.dependencies?.[tool] !== version
         || privateLock.packages?.[`node_modules/${tool}`]?.version !== version) {

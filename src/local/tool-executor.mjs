@@ -8,7 +8,7 @@ import { normalizeToolResult } from "./tool-result-boundary.mjs";
 import { createSecurityAuditFailureReporter } from "./security-audit-warning.mjs";
 import { enqueueSecurityAudit } from "./security-audit-dispatch.mjs";
 import { securityAuditPreDispatchMiddleware } from "./security-audit-gate.mjs";
-import { shortCallId } from "./short-identifiers.mjs";
+import { shortCallId } from "../shared/records.mjs";
 
 const TOOL_ARGUMENTS = compileToolArgumentValidators(catalog);
 

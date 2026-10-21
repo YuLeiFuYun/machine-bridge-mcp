@@ -1,5 +1,6 @@
 import { cacheableResult, McpProtocolError } from "../shared/mcp-protocol.mjs";
 import { rpcError, rpcResult, type JsonRpcRequest } from "./mcp-jsonrpc.ts";
+import { HELP_RESOURCES, readHelpResource } from "../shared/help-resources.mjs";
 
 export const MCP_UI_EXTENSION_ID = "io.modelcontextprotocol/ui";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
@@ -62,16 +63,18 @@ export function managedJobMonitorClientCapabilities(request: JsonRpcRequest): Re
 }
 
 export function managedJobMonitorResources(serverInfo: Record<string, unknown>, templates = false): Record<string, unknown> {
-  return cacheableResult(templates ? { resourceTemplates: [] } : { resources: [RESOURCE] }, { ttlMs: 0, cacheScope: "public", serverInfo });
+  return cacheableResult(templates ? { resourceTemplates: [] } : { resources: [RESOURCE, ...HELP_RESOURCES] }, { ttlMs: 0, cacheScope: "public", serverInfo });
 }
 
 export function managedJobMonitorResource(uri: unknown, serverInfo: Record<string, unknown>): Record<string, unknown> {
+  const helpText = readHelpResource(uri);
+  if (typeof uri === "string" && helpText !== null) {
+    return cacheableResult({ contents: [{ uri, mimeType: "text/markdown", text: helpText }] }, { ttlMs: 0, cacheScope: "public", serverInfo });
+  }
   if (uri !== JOB_MONITOR_RESOURCE_URI) throw new McpProtocolError(-32602, "Resource not found");
   return cacheableResult({
     contents: [{
-      uri: JOB_MONITOR_RESOURCE_URI,
-      mimeType: MCP_APP_MIME_TYPE,
-      text: WIDGET_HTML,
+      uri: JOB_MONITOR_RESOURCE_URI, mimeType: MCP_APP_MIME_TYPE, text: WIDGET_HTML,
       _meta: {
         ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } },
         "openai/widgetDescription": "Shows live status and a terminal status summary for one durable Machine Bridge managed job.",
@@ -91,14 +94,9 @@ export function dispatchManagedJobMonitorResource(
   }
   if (request.method !== "resources/read") return null;
   try {
-    return {
-      status: 200,
-      message: rpcResult(request.id, managedJobMonitorResource(objectValue(request.params).uri, serverInfo))!,
-    };
+    return { status: 200, message: rpcResult(request.id, managedJobMonitorResource(objectValue(request.params).uri, serverInfo))! };
   } catch (error) {
-    if (error instanceof McpProtocolError) {
-      return { status: 400, message: rpcError(request.id, error.code, error.message, error.data) };
-    }
+    if (error instanceof McpProtocolError) return { status: 400, message: rpcError(request.id, error.code, error.message, error.data) };
     throw error;
   }
 }

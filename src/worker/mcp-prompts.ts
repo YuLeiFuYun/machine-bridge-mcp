@@ -1,3 +1,4 @@
+import { instructionPromptText, diffPromptText, skillPromptText } from "../shared/prompt-projection.mjs";
 import type { AuthorizedToken } from "./access.ts";
 import { publicWorkerToolError } from "./errors.ts";
 import { completeResult } from "../shared/mcp-protocol.mjs";
@@ -62,7 +63,7 @@ export async function dispatchWorkerPromptOperation(
         if (Object.keys(args).length) return { status: 200, message: rpcError(request.id, -32602, "agent_instructions does not accept arguments") };
         const raw = await invoker({ name: "agent_context", args: {}, base, authorized, signal, requestKey });
         const obj = asObj(raw);
-        const text = String(obj.instructions || obj.agent_instructions || "No specific instructions configured.");
+        const text = instructionPromptText(obj);
         return {
           status: 200,
           message: rpcResult(request.id, completeResult({
@@ -78,7 +79,7 @@ export async function dispatchWorkerPromptOperation(
         const staged = args.staged === true;
         const raw = await invoker({ name: "git_diff", args: { staged }, base, authorized, signal, requestKey });
         const obj = asObj(raw);
-        const diffText = String(obj.diff || obj.output || "No changes found.");
+        const diffText = diffPromptText(obj);
         return {
           status: 200,
           message: rpcResult(request.id, completeResult({
@@ -100,7 +101,7 @@ export async function dispatchWorkerPromptOperation(
         }
         const raw = await invoker({ name: "load_local_skill", args: { skill: skillName }, base, authorized, signal, requestKey });
         const obj = asObj(raw);
-        const text = String(obj.content || obj.skill_content || JSON.stringify(obj));
+        const text = skillPromptText(obj);
         return {
           status: 200,
           message: rpcResult(request.id, completeResult({

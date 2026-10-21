@@ -331,7 +331,7 @@ Current MCP `2026-07-28` remote discovery advertises `tools.listChanged=true`.
 `mcp-subscription-contract.ts` sets that lease to two public heartbeat intervals (10 seconds).
 This is deliberately not an attempt to infer client receipt: Wrangler/Workers integration proved that a disconnected public HTTP client can close locally without producing a reliable request-abort, response-cancel, or heartbeat-write failure in the Worker/DO path for more than one heartbeat.
 Tool definitions are immutable within one deployed Worker generation, so the immediate level-trigger is the only freshness edge available in that deployment; a client that needs another edge opens a new subscription.
-Stdio keeps `listChanged=false` and completes validated subscriptions immediately.
+Default full stdio keeps `listChanged=false` and completes validated subscriptions immediately; opt-in progressive stdio retains bounded tools-list subscriptions until cancellation or EOF.
 No persisted subscription registry or replay log is introduced: deployment/connection loss terminates the request-scoped stream and a new subscription receives a fresh level-trigger edge.
 Because rate limiting bounds subscription creation rate but not the number of already-open streams, the controller uses a separate subscription-capacity component: one Durable Object permits at most 32 active subscriptions and one authenticated account at most 8, preventing a lower-privilege account from monopolizing the freshness channel.
 Capacity is reserved before stream creation and returned exactly once on abort/cancel/lease expiry, while over-capacity requests fail before allocating another stream.
@@ -520,7 +520,7 @@ This readiness exchange is below MCP and has no protocol-session identity.
 9.
 `tools/list` is a stable package-and-account-role discovery catalog; a brief relay interruption does not mutate it.
 Current MCP `2026-07-28` discovery declares `listChanged: true` so long-lived hosts can subscribe to a level-trigger tool-list freshness edge and re-fetch the catalog after a package/Worker generation change.
-Stdio retains `listChanged: false`.
+Default full stdio retains `listChanged: false`; progressive mode advertises its actual list-change support.
 `server_info.authorization.effective_tools` is the live daemon/account intersection and is the authority diagnostic.
 10.
 A `tools/call` receives a random relay call ID only after role-visible name and raw arguments pass the shared schema gate.
@@ -1235,6 +1235,26 @@ Machine Bridge therefore does not depend on or delegate authority to Cloudflare 
 The pinned upstream exposes a workspace/runtime/backend library rather than an MCP server/client surface, so any future integration must be a Machine Bridge-owned backend adapter, not protocol chaining.
 A future integration, if adopted, must be a separately named, default-off, non-authoritative scratch workspace/runtime with its own Durable Object namespace and read/write budgets; backend selection must be host-owned, local credentials/state must not be inherited, outbound capabilities must start closed, and the container backend must not be enabled until its authentication and resource-limit contracts are explicit and tested.
 It must never silently mirror or replace the real owner-machine workspace.
+
+### Progressive tool disclosure and dynamic tool groups
+
+Opt-in stdio `MBM_PROGRESSIVE_TOOLS=1` starts with nine listed tools, including `resolve_task_capabilities`. The resolver activates validated policy-visible groups from `src/shared/tool-groups.mjs`: browser, app, jobs, git, process, diagnostics, skills and files. The resolver is reachable without calling a hidden tool. Default full discovery remains unchanged.
+
+Progressive stdio advertises `tools.listChanged=true`. Only an accepted `toolsListChanged` subscription receives a correlated notification, once per effective activation batch; cancellation and EOF complete its request. At most 32 subscriptions are retained. A hidden or unavailable tool is rejected before execution. Startup selects the mode; `tools/list` does not mutate it. [AGENT_CONTEXT](AGENT_CONTEXT.md) owns the client-facing discovery and budgeting contract.
+
+### Bounded lexical outline
+
+The runtime has no native parser dependency. A newline-preserving lexical sanitizer extracts navigation hints; it does not establish semantic correctness. Async protected reads enforce per-file policy, cancellation, entry/depth/read-byte limits and a total output-line ceiling. Parameter values are omitted. Directory and single-file rendering share truthful truncation behavior; see [AGENT_CONTEXT](AGENT_CONTEXT.md) for exact limits.
+
+### Pure effect verification and domain consolidation
+
+`computer-use.mjs` owns observation, preparation, single dispatch and post-observation orchestration. `computer-use-verification.mjs` evaluates explicit evidence without I/O, dispatch or retries; incomplete evidence remains unknown. Existing browser/application trajectory and fault-injection fixtures exercise the same coordinator before and after extraction.
+
+Managed-job listing, activity metrics and bounded recovery priority share one listing module. Output ring-buffer helpers live with their sole buffer owner, and compact relay status lives with runtime-info projection. Canonical terminal/retention, identity, authority and settlement policy remain separate boundaries. An unused duplicate workspace-config module is removed; consumed workspace path helpers remain.
+
+### AST-based semantic architecture verification
+
+To prevent mechanical line-count and substring assertions from impeding domain refactoring, Machine Bridge includes a semantic architecture analyzer (`tests/architecture/semantic-analyzer.mjs`). Powered by Babel parser, it verifies actual AST import/export specifiers, call expressions (such as distinguishing forbidden wall-clock calls from benign comments), and semantic statement complexity.
 
 ## Explicit non-goals
 

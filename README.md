@@ -326,6 +326,7 @@ Detailed release-governance instructions are source-repository maintenance mater
 - [Managed jobs](docs/MANAGED_JOBS.md)
 - [Audit status](docs/AUDIT.md)
 - [Privacy hygiene](docs/PRIVACY.md)
+- [Testing](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/TESTING.md)
 
 Architecture, engineering, testing, project-standard, release-governance, contribution, conduct, and governance documents remain available in the source repository but are not part of the npm consumer payload.
 

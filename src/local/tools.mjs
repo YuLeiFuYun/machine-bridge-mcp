@@ -21,6 +21,9 @@ export {
   toolDefinition,
   toolNamesForPolicy,
   toolsForPolicy,
+  CORE_CORNERSTONE_TOOL_NAMES,
+  PROGRESSIVE_TOOL_GROUPS,
+  findToolGroup,
 } from "./policy.mjs";
 
 export const SERVER_NAME = String(serverMetadata.name);

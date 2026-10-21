@@ -99,6 +99,31 @@ Return live authorization and daemon status. Use detail=summary for routine vers
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "workspace": {
+      "type": "object"
+    },
+    "authority": {
+      "type": "object"
+    }
+  }
+}
+```
+
 ## `project_overview`
 
 **Project overview**
@@ -133,6 +158,28 @@ Summarize the connected workspace, repository root, top-level entries, and proje
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "workspace": {
+      "type": "string"
+    },
+    "instructions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "overview": {
+      "type": "object"
+    }
+  }
+}
+```
+
 ## `session_bootstrap`
 
 **Load session bootstrap**
@@ -158,6 +205,31 @@ Load built-in working agreements, bounded automatic project facts, authority-per
       "type": "string",
       "default": ".",
       "maxLength": 32768
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "workspace": {
+      "type": "string"
+    },
+    "instructions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   }
 }
@@ -209,11 +281,50 @@ Rescan authority-permitted task-relevant instructions, skills, registered comman
       "pattern": "^[a-f0-9]{64}$",
       "maxLength": 64,
       "description": "Previous refresh fingerprint. When it still matches, unchanged static instructions are omitted while task-specific ranking is recomputed."
+    },
+    "activate_tool_groups": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "browser",
+          "app",
+          "jobs",
+          "git",
+          "process",
+          "diagnostics",
+          "skills",
+          "files"
+        ]
+      },
+      "description": "Explicit progressive stdio groups to expose: browser, app, jobs, git, process, diagnostics, skills, files. This does not expand policy authority."
     }
   },
   "required": [
     "task"
   ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "execution_routing": {
+      "type": "object"
+    },
+    "ranked_tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "selected_skill": {
+      "type": "string"
+    }
+  }
 }
 ```
 
@@ -248,6 +359,22 @@ Discover installed local applications and launchers without reading their docume
       "minimum": 1,
       "maximum": 1000,
       "default": 200
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "applications": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
     }
   }
 }
@@ -297,6 +424,25 @@ Open a named local application, optionally with a document or URL target, using 
   "required": [
     "application"
   ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "application": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "integer"
+    }
+  }
 }
 ```
 
@@ -357,6 +503,28 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
   "required": [
     "application"
   ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "application": {
+      "type": "string"
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "tree": {
+      "type": "object"
+    }
+  }
 }
 ```
 
@@ -471,6 +639,25 @@ Perform a structured macOS Accessibility action on a matched UI element. check/u
     "application",
     "action"
   ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "result": {
+      "type": "object"
+    }
+  }
 }
 ```
 
@@ -595,6 +782,25 @@ Create a snapshot-bound browser or desktop observation. Browser mode combines ex
   "required": [
     "surface"
   ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "screenshot": {
+      "type": "string"
+    },
+    "dimensions": {
+      "type": "object"
+    },
+    "active_window": {
+      "type": "object"
+    }
+  }
 }
 ```
 
@@ -963,6 +1169,25 @@ Perform one snapshot-bound browser or desktop action and then observe/verify the
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "post_screenshot": {
+      "type": "string"
+    }
+  }
+}
+```
+
 ## `browser_status`
 
 **Browser bridge status**
@@ -983,6 +1208,28 @@ Start or inspect the loopback bridge for the Chromium profile where the extensio
 {
   "type": "object",
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "paired": {
+      "type": "boolean"
+    },
+    "port": {
+      "type": "integer"
+    },
+    "browser": {
+      "type": "string"
+    },
+    "tabs_count": {
+      "type": "integer"
+    }
+  }
 }
 ```
 
@@ -1010,6 +1257,25 @@ Open the local pairing page and return the packaged unpacked-extension path for 
     "open": {
       "type": "boolean",
       "default": true
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "paired": {
+      "type": "boolean"
+    },
+    "port": {
+      "type": "integer"
+    },
+    "token": {
+      "type": "string"
     }
   }
 }
@@ -1049,6 +1315,22 @@ Read the tab inventory from the paired existing Chromium profile without creatin
       "minimum": 1,
       "maximum": 60,
       "default": 30
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "tabs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
     }
   }
 }
@@ -1110,6 +1392,25 @@ Create, activate, or close tabs in the paired existing Chromium profile. Tab mut
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "tab_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  }
+}
+```
+
 ## `browser_get_source`
 
 **Read browser page source**
@@ -1154,6 +1455,25 @@ Read bounded raw serialized DOM HTML from the active or selected tab only when s
     "all_frames": {
       "type": "boolean",
       "default": false
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
     }
   }
 }
@@ -1207,6 +1527,25 @@ Inspect a bounded semantic/actionability snapshot with reusable element refs for
     "all_frames": {
       "type": "boolean",
       "default": true
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "url": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "accessibility_tree": {
+      "type": "object"
     }
   }
 }
@@ -1319,6 +1658,25 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
       "minimum": 1,
       "maximum": 60,
       "default": 30
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    },
+    "condition_met": {
+      "type": "boolean"
     }
   }
 }
@@ -1469,6 +1827,22 @@ Perform one structured navigation or page action in the user's existing browser 
   "required": [
     "action"
   ]
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    }
+  }
 }
 ```
 
@@ -1658,6 +2032,22 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "fields_filled": {
+      "type": "integer"
+    }
+  }
+}
+```
+
 ## `browser_screenshot`
 
 **Capture browser screenshot**
@@ -1707,6 +2097,22 @@ Capture the visible area of the active or selected tab from the paired existing 
       "type": "boolean",
       "default": true,
       "description": "When false, an inactive target tab fails before capture instead of being activated temporarily; the active tab is never changed."
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "screenshot": {
+      "type": "string"
+    },
+    "mimeType": {
+      "type": "string"
     }
   }
 }
@@ -1830,11 +2236,30 @@ Populate a browser file input from registered local resource files without retur
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "uploaded_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
 ## `agent_context`
 
 **Load agent context**
 
-Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.
+Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Set include_symbol_outline=true or symbol_path to include a lightweight Repo Map symbol outline. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.
 
 | Contract field | Value |
 |---|---|
@@ -1863,6 +2288,25 @@ Discover the instruction, skill, and registered-command inventory for a target p
       "type": "boolean",
       "default": false
     },
+    "include_symbol_outline": {
+      "type": "boolean",
+      "default": false
+    },
+    "symbol_path": {
+      "type": "string"
+    },
+    "max_symbol_files": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 30
+    },
+    "max_symbol_lines": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 1000,
+      "default": 300
+    },
     "max_skills": {
       "type": "integer",
       "minimum": 1,
@@ -1871,6 +2315,34 @@ Discover the instruction, skill, and registered-command inventory for a target p
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "effective_instructions": {
+      "type": "string"
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "symbol_outline": {
+      "type": "object"
+    }
+  }
 }
 ```
 
@@ -1912,6 +2384,22 @@ Search bounded SKILL.md or skill.md bundles from Codex-compatible and explicitly
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -1959,6 +2447,28 @@ Load one discovered local skill entrypoint and a bounded relative file inventory
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "skill": {
+      "type": "string"
+    },
+    "instructions": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
 ## `list_local_commands`
 
 **List registered local commands**
@@ -1986,6 +2496,22 @@ List effective direct-argv commands from project manifests and safe automatic pa
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -2046,6 +2572,28 @@ Prefer this when the repository already defines the desired operation as a regis
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "exit_code": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "number"
+    }
+  }
+}
+```
+
 ## `list_roots`
 
 **List workspace roots**
@@ -2066,6 +2614,22 @@ List filesystem roots exposed by the active local policy. The default full profi
 {
   "type": "object",
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "roots": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -2095,6 +2659,25 @@ List direct children of a workspace directory.
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -2137,11 +2720,33 @@ Recursively list files under a workspace path with bounded traversal and output.
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
 ## `read_file`
 
 **Read text file**
 
-Read a UTF-8 regular file or an inclusive 1-based line range. Delegated remote roles are denied known credential-sensitive paths and protected control-plane roots; local/owner access follows its authority and operating-system permissions. Filename rules cannot detect secrets stored under arbitrary ordinary names.
+Read a UTF-8 regular file or an inclusive 1-based line range. Files exceeding 300 lines return pagination_guidance suggesting windowed reading to prevent context flooding. Delegated remote roles are denied known credential-sensitive paths and protected control-plane roots; local/owner access follows its authority and operating-system permissions. Filename rules cannot detect secrets stored under arbitrary ordinary names.
 
 | Contract field | Value |
 |---|---|
@@ -2182,6 +2787,31 @@ Read a UTF-8 regular file or an inclusive 1-based line range. Delegated remote r
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "size": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "encoding": {
+      "type": "string"
+    }
+  }
+}
+```
+
 ## `view_image`
 
 **View image**
@@ -2210,6 +2840,28 @@ Read a bounded PNG, JPEG, GIF, or WebP image from the workspace and return nativ
     "path"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "mimeType": {
+      "type": "string"
+    },
+    "base64": {
+      "type": "string"
+    },
+    "size": {
+      "type": "integer"
+    }
+  }
 }
 ```
 
@@ -2256,11 +2908,30 @@ Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 pr
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "bytes_written": {
+      "type": "integer"
+    },
+    "created": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
 ## `edit_file`
 
 **Edit text file**
 
-Atomically replace an exact text fragment in one UTF-8 file while keeping the destination path visible through replacement. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts.
+Atomically replace a text fragment in one UTF-8 file while keeping the destination path visible through replacement. Matching is exact, including indentation and line endings. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts.
 
 | Contract field | Value |
 |---|---|
@@ -2304,11 +2975,30 @@ Atomically replace an exact text fragment in one UTF-8 file while keeping the de
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "replacements": {
+      "type": "integer"
+    },
+    "bytes_written": {
+      "type": "integer"
+    }
+  }
+}
+```
+
 ## `apply_patch`
 
 **Apply structured patch**
 
-Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.
+Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Hunk context must match exactly, including indentation. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.
 
 | Contract field | Value |
 |---|---|
@@ -2334,6 +3024,25 @@ Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or 
     "patch"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "patched": {
+      "type": "boolean"
+    }
+  }
 }
 ```
 
@@ -2405,6 +3114,28 @@ Search UTF-8 text files under a workspace path for a literal substring. Supports
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "matches": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "total_matches": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
 ## `git_status`
 
 **Git status**
@@ -2432,6 +3163,40 @@ Return bounded Git porcelain status for the repository containing a workspace pa
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "branch": {
+      "type": "string"
+    },
+    "clean": {
+      "type": "boolean"
+    },
+    "staged": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unstaged": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "untracked": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
 }
 ```
 
@@ -2475,6 +3240,22 @@ Return bounded unified Git diff with external diff, text conversion, and filesys
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "diff": {
+      "type": "string"
+    },
+    "staged": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
 ## `git_log`
 
 **Git log**
@@ -2512,6 +3293,22 @@ Return recent commits in a bounded, machine-readable format. Author email addres
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -2556,6 +3353,22 @@ Return bounded metadata and patch output for one revision without running reposi
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "commit": {
+      "type": "object"
+    },
+    "diff": {
+      "type": "string"
+    }
+  }
+}
+```
+
 ## `git_commit`
 
 **Create Git commit**
@@ -2591,6 +3404,28 @@ Create one local Git commit from the repository's existing staged index. This to
     "message"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "commit": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "files_changed": {
+      "type": "integer"
+    }
+  }
 }
 ```
 
@@ -2644,6 +3479,28 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "exit_code": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "number"
+    }
+  }
+}
+```
+
 ## `start_process`
 
 **Start process session**
@@ -2681,6 +3538,25 @@ Start a direct argv process without a shell and retain bounded stdout, stderr, a
     "argv"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "integer"
+    },
+    "status": {
+      "type": "string"
+    }
+  }
 }
 ```
 
@@ -2741,6 +3617,31 @@ Read bounded stdout and stderr deltas from a running process session or a recent
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "exit_code": {
+      "type": "integer"
+    }
+  }
+}
+```
+
 ## `write_process`
 
 **Write process stdin**
@@ -2780,6 +3681,22 @@ Write bounded UTF-8 data to a live process session and optionally close its stdi
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "bytes_written": {
+      "type": "integer"
+    }
+  }
+}
+```
+
 ## `kill_process`
 
 **Terminate process session**
@@ -2815,6 +3732,25 @@ Terminate a live server-managed process tree with graceful or forced termination
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string"
+    },
+    "killed": {
+      "type": "boolean"
+    },
+    "signal": {
+      "type": "string"
+    }
+  }
+}
+```
+
 ## `diagnose_runtime`
 
 **Diagnose runtime layers**
@@ -2838,6 +3774,28 @@ Run fixed, non-user-controlled local probes and return privacy-safe control-plan
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "healthy": {
+      "type": "boolean"
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}
+```
+
 ## `list_local_resources`
 
 **List local resource aliases**
@@ -2858,6 +3816,22 @@ List names and validation status for locally registered file resources without r
 {
   "type": "object",
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -2902,6 +3876,25 @@ Generate or reuse an Ed25519 SSH key pair on the local machine and register the 
     "name"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "resource": {
+      "type": "string"
+    },
+    "public_key": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    }
+  }
 }
 ```
 
@@ -3113,6 +4106,22 @@ Validate and persist a durable managed-job draft without starting any process. T
     "steps"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "stage": {
+      "type": "string"
+    }
+  }
 }
 ```
 
@@ -3338,6 +4347,28 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "recovery_key": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "follow_up_read_required": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
 ## `list_jobs`
 
 **List managed jobs**
@@ -3366,6 +4397,22 @@ List detached managed-job recovery state without returning step output. The prim
     }
   },
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
 }
 ```
 
@@ -3408,6 +4455,31 @@ Return one managed job status plus bounded, resource-redacted step results. curr
 }
 ```
 
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    }
+  }
+}
+```
+
 ## `cancel_job`
 
 **Cancel managed job**
@@ -3437,6 +4509,22 @@ Request cancellation of a detached managed job. The runner terminates the active
     "job_id"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string"
+    },
+    "cancelled": {
+      "type": "boolean"
+    }
+  }
 }
 ```
 
@@ -3480,6 +4568,28 @@ Run Bash-compatible shell composition in the workspace: pipelines, redirection, 
     "command"
   ],
   "additionalProperties": false
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "exit_code": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "number"
+    }
+  }
 }
 ```
 

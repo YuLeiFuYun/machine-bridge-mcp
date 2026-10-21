@@ -18,6 +18,7 @@ import {
   ACCEPTANCE_SCHEMA_VERSION,
   acceptancePath,
   packProject,
+  readAcceptance,
   verifyAcceptanceRecord,
   verifyCurrentReleaseAcceptance,
   verifyTarball,
@@ -135,6 +136,13 @@ try {
   }
   const portable = verifyPortableAcceptance(root, portablePack);
   assert(portable.digest === record.package_content_sha256, "portable acceptance digest did not match the accepted package content");
+
+  // Archive ledger fallback test
+  const archivePath = join(root, "release-acceptance", "archive-ledger.jsonl");
+  const historicalRecord = { ...record, package_version: "2.0.0-archived" };
+  writeFileSync(archivePath, `${JSON.stringify(historicalRecord)}\n`);
+  const fetchedHistorical = readAcceptance(root, "2.0.0-archived");
+  assert(fetchedHistorical?.package_version === "2.0.0-archived", "failed to read historical release acceptance from archive ledger");
 
   writeFileSync(join(root, "index.js"), "export const value = 2;\n");
   expectThrow(() => verifyCurrentReleaseAcceptance(root), "does not match the current npm package");

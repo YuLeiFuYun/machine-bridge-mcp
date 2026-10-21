@@ -1,3 +1,5 @@
+import { settlementGuidance } from "../shared/error-guidance.mjs";
+
 const ERROR_CODES = new Set([
   "cancelled", "timeout", "authentication_failed", "authorization_denied", "policy_denied",
   "invalid_request", "not_found", "conflict", "limit_exceeded", "permission_denied",
@@ -60,12 +62,14 @@ export function publicError(error, options = {}) {
   // projection also serves remote relay callers.
   const verbose = options.verbose === true;
   const details = normalized.expose || verbose ? publicErrorDetails(normalized.details, verbose ? normalized : null) : undefined;
-  return {
+  const result = {
     code: normalized.code,
     message: publicErrorMessage(normalized.expose || verbose ? normalized.message : defaultMessage(normalized.code)),
     retryable: normalized.retryable,
     ...(details ? { details } : {}),
   };
+  const remedy = settlementGuidance(result);
+  return { ...result, ...(remedy ? { actionable_remedy: remedy } : {}) };
 }
 
 function normalizeErrorCode(value, fallback = "execution_failed") {
@@ -133,17 +137,6 @@ function publicErrorDetails(value, debugNormalized = null) {
   } catch { return undefined; }
 }
 
-const ACTIONABLE_GUIDANCE = Object.freeze({
-  not_found: "Verify target path or resource exists before retrying.",
-  path_boundary: "Ensure path is within the workspace boundary.",
-  permission_denied: "Verify filesystem permissions for the resource.",
-  conflict: "Resource state changed; inspect current state before retrying.",
-  timeout: "Operation timed out; split the task into smaller steps or retry.",
-  limit_exceeded: "Resource limit exceeded; reduce input size or batch items.",
-  invalid_request: "Check input arguments against the tool schema.",
-  policy_denied: "Operation was denied by security policy.",
-});
-
 export function actionableGuidance(error) {
-  return ACTIONABLE_GUIDANCE[errorCode(error)] || null;
+  return settlementGuidance({ code: errorCode(error), retryable: error?.retryable, details: error?.details });
 }

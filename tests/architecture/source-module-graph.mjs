@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parse } from "@babel/parser";
+import { parseAst } from "../../scripts/source-syntax.mjs";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,13 +34,7 @@ function relativeDependencies(file) {
 }
 
 export function moduleSpecifiers(text, file = "module.ts") {
-  const nodes = [parse(String(text || ""), {
-    sourceType: "module",
-    sourceFilename: file,
-    plugins: [["typescript", { dts: /\.d\.[cm]?ts$/u.test(file) }]],
-    createImportExpressions: true,
-    attachComment: false,
-  })];
+  const nodes = [parseAst(String(text || ""), file)];
   const specifiers = [];
   while (nodes.length) {
     const node = nodes.pop();

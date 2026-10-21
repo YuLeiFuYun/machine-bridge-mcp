@@ -1,9 +1,11 @@
+import { assertToolSchemaContract, readToolSchemaBaselines } from "../../scripts/tool-schema-contract.mjs";
 import { COVERAGE_FIXTURE_TESTS } from "../../scripts/check-runner.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../scripts/check-plan.mjs";
+import { hasSemanticImport, getSemanticExports } from "./semantic-analyzer.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const readLfSource = (...segments) => readFileSync(join(root, ...segments), "utf8").replace(/\r\n/g, "\n");
@@ -126,13 +128,16 @@ const lifecycleById = new Map(
   (workflowBundleLifecycle.lifecycle || []).map((stage) => [String(stage.id), stage]),
 );
 const offlineVerificationStages = [
-  ["project-native:npm:cf-network:test", ["npm", "run", "cf-network:test"], "package.json#scripts.cf-network:test"],
-  ["project-native:npm:wrangler-toolchain:test", ["npm", "run", "wrangler-toolchain:test"], "package.json#scripts.wrangler-toolchain:test"],
+  ["project-native:npm:cf-network:test", ["node", "tests/cf-network-integrity-test.mjs"], "package.json#scripts.cf-network:test"],
+  ["project-native:npm:wrangler-toolchain:test", ["node", "tests/wrangler-toolchain-test.mjs"], "package.json#scripts.wrangler-toolchain:test"],
   ["project-native:node:cf-project", ["node", "tests/cf-project-test.mjs"], "tests/cf-project-test.mjs"],
   ["project-native:node:source-module-graph", ["node", "tests/architecture/source-module-graph.mjs"], "tests/architecture/source-module-graph.mjs"],
 ];
 for (const [id, argv, source] of offlineVerificationStages) {
   const stage = lifecycleById.get(id);
+  if (id.startsWith("project-native:npm:") && packageJson.scripts?.[id.slice("project-native:npm:".length)] !== argv.join(" ")) {
+    throw new Error("offline lifecycle entrypoint drifted from its package-script implementation");
+  }
   if (!stage || stage.command?.sandbox !== "required" || stage.command.cwd !== "."
     || JSON.stringify(stage.command.argv) !== JSON.stringify(argv)
     || stage.source !== source || !(stage.required_for || []).includes("local_ready")) {
@@ -198,6 +203,20 @@ for (const requiredFlag of ["nodejs_compat", "enable_request_signal", "request_s
     throw new Error(`Worker compatibility contract is missing ${requiredFlag}`);
   }
 }
+const cloudflareConfigSource = readFileSync(join(root, "cloudflare.config.ts"), "utf8");
+for (const [cfProperty, wranglerProperty] of [
+  ["compatibilityDate: \"2026-07-11\"", "\"compatibility_date\": \"2026-07-11\""],
+  ["entrypoint: \"src/worker/index.ts\"", "\"main\": \"src/worker/index.ts\""],
+  ["workersDev: true", "\"workers_dev\": true"],
+  ["previewUrls: false", "\"preview_urls\": false"],
+  ["BridgeRoom", "\"class_name\": \"BridgeRoom\""],
+  ["4301702", "\"namespace_id\": \"4301702\""],
+  ["4301701", "\"namespace_id\": \"4301701\""],
+]) {
+  if (!cloudflareConfigSource.includes(cfProperty) || !wranglerConfigSource.includes(wranglerProperty)) {
+    throw new Error(`Deployment config parity drift between cloudflare.config.ts and wrangler.jsonc: ${cfProperty} vs ${wranglerProperty}`);
+  }
+}
 for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
   for (const [name, version] of Object.entries(packageJson[field] || {})) {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(String(version))) {
@@ -205,7 +224,7 @@ for (const field of ["dependencies", "devDependencies", "optionalDependencies"])
     }
   }
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.151.1") {
+if (Object.hasOwn(packageJson.dependencies || {}, "wrangler") || packageJson.devDependencies?.wrangler !== "4.151.3") {
   throw new Error("Wrangler must remain outside the published production dependency graph and exact in development");
 }
 if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?.version !== ">=26.0.0"
@@ -214,14 +233,14 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 }
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
-if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.151.1"
+if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.151.3"
     || toolchainManifest.dependencies?.cf !== "1.0.0-beta.18"
     || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
     || Object.hasOwn(packageJson.devDependencies || {}, "undici")
     || toolchainManifest.overrides?.miniflare !== "5.20261012.1-beta"
     || toolchainManifest.overrides?.ws !== "8.22.0"
     || toolchainManifest.overrides?.sharp !== "0.35.5"
-    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.151.1"
+    || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.151.3"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
     || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.18"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.5"
@@ -242,7 +261,10 @@ if (!/^1\.\d{8}\.\d+$/.test(String(resolvedWorkerdVersion || ""))) throw new Err
 const allowedWorkerdScripts = Object.entries(packageJson.allowScripts || {})
   .filter(([name, allowed]) => name.startsWith("workerd@") && allowed === true)
   .map(([name]) => name);
-if (allowedWorkerdScripts.length !== 1 || allowedWorkerdScripts[0] !== `workerd@${resolvedWorkerdVersion}`) {
+const lockedWorkerdScripts = [...new Set(Object.entries(packageLock.packages || {})
+  .filter(([name]) => name.endsWith("/workerd"))
+  .map(([, value]) => `workerd@${value.version}`))].sort();
+if (JSON.stringify(allowedWorkerdScripts.sort()) !== JSON.stringify(lockedWorkerdScripts)) {
   throw new Error("the reviewed workerd lifecycle-script allowlist does not exactly match package-lock");
 }
 if (packageJson.scripts?.["state-root-retirement:test"] !== "node tests/state-root-retirement-test.mjs" || !FAST_CHECK_TASKS.includes("state-root-retirement:test")) throw new Error("state-root generation-removal regression is missing from the fast gate");
@@ -324,8 +346,8 @@ if (!managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS = 6 * 6
     || !managedJobPlanSource.includes("MAX_MANAGED_JOB_STEP_TIMEOUT_SECONDS,")) {
   throw new Error("managed-job plan lost the six-hour single-step timeout needed for 100+ minute durable work");
 }
-if (!managedJobPlanSource.includes('import { MANAGED_JOB_ID } from "./managed-job-directory.mjs"')
-    || managedJobPlanSource.includes("const MANAGED_JOB_ID =")) {
+if (!hasSemanticImport(managedJobPlanSource, "./managed-job-directory.mjs", { requiredSymbols: ["MANAGED_JOB_ID"] })
+    || getSemanticExports(managedJobPlanSource).some((e) => e.name === "MANAGED_JOB_ID")) {
   throw new Error("managed-job plan duplicated the canonical managed-job ID contract instead of importing it");
 }
 const managedJobPlanIntegritySource = readFileSync(join(root, "src", "local", "managed-job-plan-integrity.mjs"), "utf8");
@@ -370,7 +392,8 @@ if (!String(packageJson.scripts?.typecheck || "").includes("npm run typecheck:lo
 if (packageJson.scripts?.["prerelease:oauth-canary"] || packageJson.scripts?.["postrelease:oauth-canary"]) {
   throw new Error("release OAuth canary must not acquire implicit npm pre/post lifecycle work");
 }
-const stateSource = readLfSource("src", "local", "state.mjs");
+const statePathsSource = existsSync(join(root, "src", "local", "workspace-paths.mjs")) ? readLfSource("src", "local", "workspace-paths.mjs") : "";
+const stateSource = readLfSource("src", "local", "state.mjs") + "\n" + statePathsSource;
 const daemonProcessSource = readFileSync(join(root, "src", "local", "daemon-process.mjs"), "utf8");
 const stateInventorySource = readFileSync(join(root, "src", "local", "state-inventory.mjs"), "utf8");
 const stateOwnerLockInventorySource = readFileSync(join(root, "src", "local", "state-owner-lock-inventory.mjs"), "utf8");
@@ -426,7 +449,16 @@ for (const required of ["self-test", "service-platform:test", "full-access:test"
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
-const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs");
+const managedJobsTestSource = readLfSource("tests", "managed-jobs-test.mjs")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"))
+    ? readLfSource("tests", "fixtures", "managed-jobs", "execution-scenarios.mjs")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"))
+    ? readLfSource("tests", "fixtures", "managed-jobs", "policy-scenarios.mjs")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"))
+    ? readLfSource("tests", "fixtures", "managed-jobs", "common.mjs")
+    : "");
 const managedJobDependenciesSource = readLfSource("src", "local", "managed-job-dependencies.mjs");
 const workerTypesGeneratorTestSource = readLfSource("tests", "worker-types-generator-test.mjs");
 const managedJobResourceHookSource = readLfSource("tests", "fixtures", "managed-job-resource-hook.mjs");
@@ -459,7 +491,8 @@ if (!managedJobsTestSource.includes("const isolateFullEnvStepCoverage = options?
 }
 if (!managedJobsTestSource.includes("runnerSpawnProcess: options.runnerSpawnProcess ?? spawnManagedJobTestRunner")
     || !managedJobsTestSource.includes('["--import", runnerResourceHook, ...args]')
-    || !managedJobsTestSource.includes('const runnerResourceHook = new URL("./fixtures/managed-job-resource-hook.mjs", import.meta.url).href;')
+    || (!managedJobsTestSource.includes('const runnerResourceHook = new URL("./fixtures/managed-job-resource-hook.mjs", import.meta.url).href;')
+        && !managedJobsTestSource.includes('const runnerResourceHook = new URL("../managed-job-resource-hook.mjs", import.meta.url).href;'))
     || !managedJobResourceHookSource.includes('specifier === "./resource-admission.mjs" && context.parentURL === runnerUrl')
     || !managedJobResourceFixtureSource.includes("extends ProductionResourceCoordinator")
     || !managedJobResourceFixtureSource.includes("sampleHost: healthyResourceHost")) {
@@ -643,8 +676,8 @@ for (const required of ["packageName", "packageVersion", "packageRoot", "CANARY_
 for (const required of ["nodeExecutable", "allowLifecycleNpmCli", "allowFallbackLocations", "npm-cli.js", "realpathSync", "statSync"]) {
   if (!npmCliSource.includes(required)) throw new Error(`release OAuth canary lost bounded npm CLI resolution: ${required}`);
 }
-if (!releaseControlCanarySource.includes('from "../src/local/npm-cli.mjs"')
-    || !releaseControlCanarySource.includes('from "../src/local/resource-release-control-executable.mjs"')
+if (!hasSemanticImport(releaseControlCanarySource, "../src/local/npm-cli.mjs")
+    || !hasSemanticImport(releaseControlCanarySource, "../src/local/resource-release-control-executable.mjs")
     || !releaseControlCanarySource.includes("releaseControlEnvironmentIsTrusted(process.env)")
     || !releaseControlCanarySource.includes("const canaryArgs = process.argv.slice(2)")
     || !releaseControlCanarySource.includes("canaryArgs.length !== 1")
@@ -740,7 +773,7 @@ if (!runtimeSelfTestSource.includes("const SELF_TEST_RESOURCE_WAIT_MS = 10_000")
     || !localSelfTestSource.includes("local self-test phase completed:")) {
   throw new Error("runtime/local self-test lost deterministic host-pressure isolation, child-exit bounds, or phase observability");
 }
-if (!fullAccessSource.includes('from "./managed-job-terminal.mjs"') || fullAccessSource.includes("TERMINAL_JOB_STATES")) {
+if (!hasSemanticImport(fullAccessSource, "./managed-job-terminal.mjs") || fullAccessSource.includes("TERMINAL_JOB_STATES")) {
   throw new Error("full-access diagnostic regained a divergent managed-job terminal-state enum");
 }
 for (const required of ["SPARSE_PROGRESS_TASKS", "local self-test phase started:", "local self-test phase completed:", "sparseLineForwarder"]) {
@@ -769,7 +802,6 @@ const managedJobRunnerExitRecoverySource = readFileSync(join(root, "src", "local
 const atomicFsSource = readFileSync(join(root, "src", "local", "atomic-fs.mjs"), "utf8");
 const managedJobTerminalMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-terminal-maintenance.mjs"), "utf8");
 const managedJobListingSource = readFileSync(join(root, "src", "local", "managed-job-listing.mjs"), "utf8");
-const managedJobRecoveryListingSource = readFileSync(join(root, "src", "local", "managed-job-recovery-listing.mjs"), "utf8");
 const managedJobTransientRecoverySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery.mjs"), "utf8");
 const managedJobTransientRecoveryCapacitySource = readFileSync(join(root, "src", "local", "managed-job-transient-recovery-capacity.mjs"), "utf8");
 const managedJobModuleBoundariesSource = readFileSync(join(root, "tests", "architecture", "module-boundaries.mjs"), "utf8");
@@ -856,16 +888,9 @@ if (!workerContinuityEvidenceSource.includes('const KEY = "worker-continuity-evi
 if (workerContinuityEvidenceSource.includes("record.schema_version === 1")) {
   throw new Error("retired Worker continuity schema compatibility returned");
 }
-if (!managedJobListingSource.includes("durable_terminal: durableTerminal")
-    || !managedJobListingSource.includes("transient_terminal: transientTerminal")
-    || !managedJobListingSource.includes('from "./managed-job-recovery-listing.mjs"')
-    || !managedJobListingSource.includes("recent_process_recovery: recentProcessRecovery")
-    || !managedJobRecoveryListingSource.includes('return retentionClass === "transient_process" ? 4 : 3')
-    || !managedJobRecoveryListingSource.includes("TRANSIENT_PROCESS_RECOVERY_SLOTS")
-    || !managedJobRecoveryListingSource.includes("transientProcessWithinRecoveryGrace")
-    || !managedJobRecoveryListingSource.includes("Number(right.recoveryPending === true)")
-    || !managedJobRecoveryListingSource.includes("!visibleJobIds.has(record.job.job_id)")) {
-  throw new Error("managed-job bounded recovery inventory lost durable-terminal priority or owner-only retention composition diagnostics");
+if (!hasSemanticImport(managedJobListingSource, "./managed-job-retention-policy.mjs", { requiredSymbols: ["TRANSIENT_PROCESS_RECOVERY_SLOTS", "transientProcessWithinRecoveryGrace"] })
+    || !hasSemanticImport(managedJobListingSource, "./managed-job-terminal.mjs", { requiredSymbols: ["isTerminalManagedJobStatus", "ACTIVE_JOB_STATES"] })) {
+  throw new Error("managed-job listing lost canonical retention or terminal-state policy");
 }
 if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
     || !macosIdleSleepAssertionSource.includes('this.preventIdleSleep ? ["-i"] : []')
@@ -878,7 +903,7 @@ if (!macosIdleSleepAssertionSource.includes('"/usr/bin/caffeinate"')
     || !macosIdleSleepRecoverySource.includes('if (this.desired) this.onRetry?.()')
     || !macosIdleSleepRecoverySource.includes('restart_count: this.restartCount')
     || macosIdleSleepAssertionSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
-    || !remoteActivityIdleSleepGuardSource.includes('from "./remote-idle-sleep-assertions.mjs"')
+    || !hasSemanticImport(remoteActivityIdleSleepGuardSource, "./remote-idle-sleep-assertions.mjs")
     || remoteActivityIdleSleepGuardSource.includes('MBM_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_SECONDS')
     || !remoteActivityIdleSleepGuardSource.includes('DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS = 30 * 60_000')
     || !remoteActivityIdleSleepGuardSource.includes('this.activeActivities += 1;')
@@ -983,7 +1008,7 @@ for (const required of ["readBoundedRegularFileSync", "rejectMultipleLinks: true
 }
 const workerDeploymentSource = readFileSync(join(root, "src", "local", "worker-deployment.mjs"), "utf8");
 const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-deployment-fingerprint.mjs"), "utf8");
-if (!workerDeploymentSource.includes('export { workerDeploymentFingerprint } from "./worker-deployment-fingerprint.mjs"')) {
+if (!hasSemanticImport(workerDeploymentSource, "./worker-deployment-fingerprint.mjs", { requiredSymbols: ["workerDeploymentFingerprint"] })) {
   throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
 }
 const workerAuthProbe = workerDeploymentSource.indexOf("await ensureCfAuthenticated(");
@@ -1429,7 +1454,9 @@ const managedJobRetentionPolicySource = readFileSync(join(root, "src", "local", 
 const managedJobDurableProcessSource = readFileSync(join(root, "src", "local", "managed-job-durable-process.mjs"), "utf8");
 const relayCallRecoverySource = readFileSync(join(root, "src", "local", "relay-call-recovery.mjs"), "utf8");
 const relayResultRetentionSource = readFileSync(join(root, "src", "local", "relay-result-retention.mjs"), "utf8");
-const relayRedeliverySafetySource = readFileSync(join(root, "src", "local", "relay-redelivery-safety.mjs"), "utf8");
+const relayRedeliverySafetySource = (existsSync(join(root, "src", "local", "relay-redelivery-safety.mjs"))
+  ? readFileSync(join(root, "src", "local", "relay-redelivery-safety.mjs"), "utf8")
+  : "") + (existsSync(join(root, "src", "local", "relay-recovery.mjs")) ? "\n" + readFileSync(join(root, "src", "local", "relay-recovery.mjs"), "utf8") : "");
 const managedJobTerminalSource = readFileSync(join(root, "src", "local", "managed-job-terminal.mjs"), "utf8");
 const managedJobClaimSource = readFileSync(join(root, "src", "local", "managed-job-runner-claim.mjs"), "utf8");
 const managedJobCancellationSource = readFileSync(join(root, "src", "local", "managed-job-cancellation.mjs"), "utf8");
@@ -1437,7 +1464,16 @@ const managedJobDirectorySource = readFileSync(join(root, "src", "local", "manag
 const managedJobDirectoryGenerationSource = readFileSync(join(root, "src", "local", "managed-job-directory-generation.mjs"), "utf8");
 const managedJobCapacitySource = readFileSync(join(root, "src", "local", "managed-job-capacity.mjs"), "utf8");
 const managedJobCapacityMaintenanceSource = readFileSync(join(root, "src", "local", "managed-job-capacity-maintenance.mjs"), "utf8");
-const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
+const managedJobsIntegrationSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"), "utf8")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"), "utf8")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"), "utf8")
+    : "");
 if (!managedJobsIntegrationSource.includes("RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500")
     || !managedJobsIntegrationSource.includes("withFixtureResourceTransactionLock(coordinatorRoot")
     || !managedJobsIntegrationSource.includes("}, 30_000);")
@@ -1559,7 +1595,10 @@ if (!relayRedeliverySafetySource.includes("#unsafeCallIds = new Set()")
     || !relayCallRecoverySource.includes("this.redeliverySafety.canProveMissing(callId)")
     || !relayCallRecoverySource.includes("this.redeliverySafety.observeResumedCallIds(resumed)")
     || !relayCallRecoverySource.includes("this.resultRetention.discardAll()")
-    || !readFileSync(join(root, "tests", "runtime-infrastructure-test.mjs"), "utf8").includes("globally disabled unrelated recovery")) {
+    || !(readFileSync(join(root, "tests", "runtime-infrastructure-test.mjs"), "utf8")
+        + (existsSync(join(root, "tests", "fixtures", "runtime-infrastructure", "relay-scenarios.mjs"))
+          ? readFileSync(join(root, "tests", "fixtures", "runtime-infrastructure", "relay-scenarios.mjs"), "utf8")
+          : "")).includes("globally disabled unrelated recovery")) {
   throw new Error("relay acknowledgement loss can again replay an unsafe call or globally disable unrelated missing-call recovery");
 }
 if (!coverageRunnerSource.includes('"src/local/managed-job-terminal-maintenance.mjs"')) {
@@ -1863,7 +1902,7 @@ const shellSource = readFileSync(join(root, "src", "local", "shell.mjs"), "utf8"
 if (shellSource.includes("MBM_PASS_ENV")) {
   throw new Error("minimal execution environment regained an ambient parent-environment bypass");
 }
-if (!processExecutionSource.includes('import { spawn } from "node:child_process";')
+if (!hasSemanticImport(processExecutionSource, "node:child_process", { requiredSymbols: ["spawn"] })
     || !processExecutionSource.includes("function spawnDirectProcess")
     || !processExecutionSource.includes("return spawn(command, args, {")
     || !processExecutionSource.includes("shell: false,")
@@ -1892,9 +1931,9 @@ for (const required of ["createSnapshotBudget", "boundedSnapshotOptions", "proce
 if (packageJson.devDependencies?.["fast-check"] !== "4.10.2" || !readFileSync(join(root, "tests", "security-properties-test.js"), "utf8").includes('from "fast-check"')) {
   throw new Error("recognized JavaScript property-based fuzzing coverage is missing");
 }
-if (!githubReleaseSource.includes('import { waitForSuccessfulWorkflowRun } from "./release-ci.mjs";')
-    || !githubReleaseSource.includes('import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";')
-    || !githubReleaseSource.includes('import { verifyCurrentStableSoak } from "./release-soak.mjs";')
+if (!hasSemanticImport(githubReleaseSource, "./release-ci.mjs", { requiredSymbols: ["waitForSuccessfulWorkflowRun"] })
+    || !hasSemanticImport(githubReleaseSource, "./release-acceptance.mjs", { requiredSymbols: ["verifyCurrentReleaseAcceptance"] })
+    || !hasSemanticImport(githubReleaseSource, "./release-soak.mjs", { requiredSymbols: ["verifyCurrentStableSoak"] })
     || !githubReleaseSource.includes("--publish-prerelease")
     || !githubReleaseSource.includes("--prerelease")
     || !githubReleaseSource.includes("--latest=false")
@@ -2371,7 +2410,6 @@ for (const [file, content, required] of [
   ["src/shared/server-metadata.json", serverMetadata, "Acceptance transfers execution to durable ownership without forcing the current assistant response to end"],
   ["src/shared/server-metadata.json", serverMetadata, "bounded same-response read_job follow-up is allowed"],
   ["src/shared/server-metadata.json", serverMetadata, "do not infer a host/tool deadline from elapsed wall-clock time"],
-  ["src/shared/server-metadata.json", serverMetadata, "\"toolSchemaGeneration\": 29"],
   ["src/shared/server-metadata.json", serverMetadata, "worker.continuity_evidence schema 2 survives Worker isolate replacement"],
   ["src/shared/server-metadata.json", serverMetadata, "ready_socket_disconnects/unplanned_ready_socket_disconnects"],
   ["src/shared/server-metadata.json", serverMetadata, "recovery.mode=read_same_job"],
@@ -2708,4 +2746,10 @@ if (!readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/).includes(".pr
   throw new Error("machine-specific project notes are not ignored");
 }
 
+
+{
+  const current = JSON.parse(serverMetadata);
+  const catalog = JSON.parse(readFileSync(join(root, "src/shared/tool-catalog.json"), "utf8"));
+  assertToolSchemaContract(current, catalog, readToolSchemaBaselines(root, packageJson.version));
+}
 console.log("architecture release/documentation contracts ok");

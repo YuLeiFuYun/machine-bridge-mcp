@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { moduleSpecifiers } from "./source-module-graph.mjs";
+import { hasSemanticImport } from "./semantic-analyzer.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const localRoot = join(root, "src", "local");
@@ -31,6 +32,7 @@ const adapterModules = new Set([
 const boundaryModules = new Set([
   "agent-context.mjs",
   "agent-context-projection.mjs",
+  "agent-memory.mjs",
   "agent-skill-discovery.mjs",
   "agent-text-file.mjs",
   "agent-contract.mjs",
@@ -151,10 +153,7 @@ const boundaryModules = new Set([
   "runtime-tool-handlers.mjs",
   "runtime-paths.mjs",
   "relay-call-recovery.mjs",
-  "relay-recovery-admission.mjs",
-  "relay-recovery-capacity.mjs",
-  "relay-recovery-diagnostics.mjs",
-  "relay-redelivery-safety.mjs",
+  "relay-recovery.mjs",
   "relay-result-retention.mjs",
   "relay-connection-classification.mjs",
   "relay-liveness.mjs",
@@ -177,6 +176,8 @@ const boundaryModules = new Set([
   "managed-job-cancellation.mjs",
   "managed-job-directory.mjs",
   "managed-job-idempotency.mjs",
+  "symbol-outline.mjs",
+  "relay-recovery.mjs",
 ]);
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
@@ -197,6 +198,7 @@ for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "resou
 }
 
 const lineLimits = Object.freeze({
+  "src/local/symbol-outline.mjs": 700,
   "src/local/runtime.mjs": 700,
   "src/local/runtime-application-automation.mjs": 60,
   "src/local/runtime-tool-handlers.mjs": 100,
@@ -206,16 +208,12 @@ const lineLimits = Object.freeze({
   "src/local/relay-call-recovery.mjs": 170,
   "src/worker/daemon-planned-drain.ts": 40,
   "src/worker/worker-continuity-evidence.ts": 130,
-  "src/local/relay-recovery-admission.mjs": 60,
-  "src/local/relay-recovery-capacity.mjs": 40,
-  "src/local/relay-recovery-diagnostics.mjs": 40,
-  "src/local/relay-redelivery-safety.mjs": 50,
+  "src/local/relay-recovery.mjs": 160,
   "src/local/relay-result-retention.mjs": 70,
-  "src/local/short-identifiers.mjs": 10,
   "src/local/runtime-paths.mjs": 120,
   "src/local/runtime-reporting.mjs": 150,
   "src/local/runtime-activity-projection.mjs": 60,
-  "src/local/runtime-info-projection.mjs": 70,
+  "src/local/runtime-info-projection.mjs": 100,
   "src/local/runtime-resource-service.mjs": 100,
   "src/local/resource-operations.mjs": 110,
   "src/local/resource-staging-recovery.mjs": 100,
@@ -245,18 +243,16 @@ const lineLimits = Object.freeze({
   "src/worker/oauth-store-validation.ts": 140,
   "src/worker/oauth-authorization-page.ts": 100,
   "src/worker/oauth-tokens.ts": 260,
-  "src/local/bounded-output.mjs": 80,
-  "src/local/process-execution.mjs": 285,
+  "src/local/bounded-output.mjs": 120,
+  "src/local/process-execution.mjs": 295,
   "src/local/process-nonreplayable-settlement.mjs": 60,
   "src/local/process-foreground-timeout.mjs": 60,
   "src/local/process-output-stream.mjs": 110,
   "src/local/process-result-projection.mjs": 60,
-  "src/local/process-error-message.mjs": 20,
   "src/local/process-session-events.mjs": 60,
   "src/local/managed-job-hosted-status.mjs": 40,
   "src/local/managed-job-read-wait.mjs": 80,
-  "src/local/managed-job-listing.mjs": 60,
-  "src/local/managed-job-recovery-listing.mjs": 30,
+  "src/local/managed-job-listing.mjs": 110,
   "src/local/process-session-read.mjs": 70,
   "src/local/hosted-file-read-budget.mjs": 70,
   "src/local/process-session-remote-poll.mjs": 50,
@@ -380,6 +376,7 @@ const lineLimits = Object.freeze({
   "src/local/cli-local-admin.mjs": 400,
   "src/local/agent-context.mjs": 600,
   "src/local/agent-context-projection.mjs": 200,
+  "src/local/agent-memory.mjs": 220,
   "src/local/agent-skill-discovery.mjs": 300,
   "src/local/agent-text-file.mjs": 70,
   "src/local/agent-contract.mjs": 230,
@@ -438,7 +435,8 @@ const lineLimits = Object.freeze({
   "src/local/browser-pairing-launch.mjs": 80,
   "src/local/browser-broker-server.mjs": 90,
   "src/local/browser-operation-service.mjs": 360,
-  "src/local/computer-use.mjs": 2280,
+  "src/local/computer-use.mjs": 2000,
+  "src/local/computer-use-verification.mjs": 240,
   "src/local/computer-use-deadline.mjs": 80,
   "src/local/computer-use-dispatch-settlement.mjs": 80,
   "src/local/computer-use-arguments.mjs": 310,
@@ -834,7 +832,16 @@ if (!resourceTransactionLockSource.includes("retryTransientMultipleLinksSync")
     || resourceTransactionLockSource.includes('error?.code !== "MBM_MULTIPLE_HARD_LINKS"')) {
   throw new Error("resource transaction lock stopped using the shared fixed four-attempt multiple-link publication retry");
 }
-const managedJobsTestSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
+const managedJobsTestSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"), "utf8")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"), "utf8")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"), "utf8")
+    : "");
 const runnerExitRecoveryWaitMatch = managedJobsTestSource.match(/RUNNER_EXIT_RECOVERY_TEST_WAIT_MS\s*=\s*([0-9_]+)/);
 const runnerExitRecoveryWaitMs = Number(String(runnerExitRecoveryWaitMatch?.[1] || "0").replaceAll("_", ""));
 if (runnerExitRecoveryWaitMs < 90_000
@@ -981,8 +988,9 @@ if (stateInventoryBoundary.includes("existsSync(")) throw new Error("destructive
 for (const forbidden of ["if (existsSync(statePath))", "const recoveryPending = existsSync(recoveryPath)", "if (existsSync(recoveryPath))", "if (!existsSync(file)) return;", "while (!existsSync(existing))"]) {
   if (stateBoundary.includes(forbidden)) throw new Error(`state persistence again treats inspection failure as absence: ${forbidden}`);
 }
+const combinedStateSource = stateBoundary + (existsSync(join(localRoot, "workspace-paths.mjs")) ? readFileSync(join(localRoot, "workspace-paths.mjs"), "utf8") : "");
 for (const required of ['inspectPathIfPresentSync(statePath, "workspace state")', 'inspectPathIfPresentSync(recoveryPath, "state recovery marker")', 'while (!inspectPathIfPresentSync(existing, "path identity"))', 'readProcessLockSnapshot(file)']) {
-  if (!stateBoundary.includes(required)) throw new Error(`state persistence lost fail-closed presence inspection: ${required}`);
+  if (!combinedStateSource.includes(required)) throw new Error(`state persistence lost fail-closed presence inspection: ${required}`);
 }
 const packageIdentitySource = readFileSync(join(localRoot, "package-identity.mjs"), "utf8");
 for (const required of ["server-metadata.json", "package.json", "fileURLToPath", "export const packageRoot", "export const packageName", "export const packageVersion", "export const appName"]) {
@@ -1243,26 +1251,37 @@ for (const required of ["AppAutomationManager", "applicationBackgroundInputConfi
 if (!runtimeBoundarySource.includes("createRuntimeAppAutomationManager")) {
   throw new Error("LocalRuntime stopped delegating application-automation composition to its dedicated boundary");
 }
-const relayRecoveryAdmissionBoundary = readFileSync(join(localRoot, "relay-recovery-admission.mjs"), "utf8");
+const relayRecoveryAdmissionBoundary = (existsSync(join(localRoot, "relay-recovery.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery.mjs"), "utf8") + "\n"
+  : "") + (existsSync(join(localRoot, "relay-recovery-admission.mjs")) ? readFileSync(join(localRoot, "relay-recovery-admission.mjs"), "utf8") : "");
 for (const required of [
   "toolCallAdmission", "RELAY_RECOVERY_CAPACITY", "relayRecoveryCapacityInput",
   "side_effects_started: false", 'capacity_scope: "relay_result_recovery"',
 ]) {
   if (!relayRecoveryAdmissionBoundary.includes(required)) throw new Error(`relay result-recovery admission lost shared bounded-capacity semantics: ${required}`);
 }
-const relayRecoveryCapacityBoundary = readFileSync(join(localRoot, "relay-recovery-capacity.mjs"), "utf8");
+const relayRecoveryCapacityBoundary = existsSync(join(localRoot, "relay-recovery-capacity.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery-capacity.mjs"), "utf8")
+  : "";
+const relayRecoveryDomainBoundary = existsSync(join(localRoot, "relay-recovery.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery.mjs"), "utf8")
+  : "";
+const relayCapacityCombined = relayRecoveryCapacityBoundary + "\n" + relayRecoveryDomainBoundary;
 for (const required of [
   "toolCallCapacityConfig", "MAX_CONCURRENT_TOOL_CALLS", "RESERVED_CONTROL_TOOL_CALLS", "CONTROL_PLANE_TOOL_NAMES",
   "RETAINED_RESULT_TOOL", "relayRecoveryCapacityInput",
 ]) {
-  if (!relayRecoveryCapacityBoundary.includes(required)) throw new Error(`relay result-recovery capacity policy lost shared bounded-capacity semantics: ${required}`);
+  if (!relayCapacityCombined.includes(required)) throw new Error(`relay result-recovery capacity policy lost shared bounded-capacity semantics: ${required}`);
 }
-const relayRecoveryDiagnosticsBoundary = readFileSync(join(localRoot, "relay-recovery-diagnostics.mjs"), "utf8");
+const relayRecoveryDiagnosticsBoundary = existsSync(join(localRoot, "relay-recovery-diagnostics.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery-diagnostics.mjs"), "utf8")
+  : "";
+const relayDiagnosticsCombined = relayRecoveryDiagnosticsBoundary + "\n" + relayRecoveryDomainBoundary;
 for (const required of [
   "relayRecoveryCapacitySnapshot", "relayRecoveryRuntimeSnapshot", "unsafe_call_tombstones", "global_redelivery_disabled",
   "retained_results", "active_ownership", "redeliverySafetySnapshot()",
 ]) {
-  if (!relayRecoveryDiagnosticsBoundary.includes(required)) throw new Error(`relay result-recovery diagnostics lost bounded aggregate projection: ${required}`);
+  if (!relayDiagnosticsCombined.includes(required)) throw new Error(`relay result-recovery diagnostics lost bounded aggregate projection: ${required}`);
 }
 const relayCallRecoveryBoundary = readFileSync(join(localRoot, "relay-call-recovery.mjs"), "utf8");
 if (relayCallRecoveryBoundary.includes("this.pendingResults")) {
@@ -1282,12 +1301,15 @@ for (const required of [
 ]) {
   if (!relayResultRetentionBoundary.includes(required)) throw new Error(`relay completed-result retention lost bounded acknowledgement lifetime/capacity: ${required}`);
 }
-const relayRedeliverySafetyBoundary = readFileSync(join(localRoot, "relay-redelivery-safety.mjs"), "utf8");
+const relayRedeliverySafetyBoundary = existsSync(join(localRoot, "relay-redelivery-safety.mjs"))
+  ? readFileSync(join(localRoot, "relay-redelivery-safety.mjs"), "utf8")
+  : "";
+const relayRedeliveryCombined = relayRedeliverySafetyBoundary + "\n" + relayRecoveryDomainBoundary;
 for (const required of [
   "MAX_UNSAFE_CALL_TOMBSTONES", "#unsafeCallIds", "#globalRedeliveryDisabled", "canProveMissing(callId)",
   "observeResumedCallIds(callIds)", "markUnsafe(callId)", "relay.tool_result.unsafe_tombstone_capacity",
 ]) {
-  if (!relayRedeliverySafetyBoundary.includes(required)) throw new Error(`relay redelivery safety lost bounded per-call non-delivery proof: ${required}`);
+  if (!relayRedeliveryCombined.includes(required)) throw new Error(`relay redelivery safety lost bounded per-call non-delivery proof: ${required}`);
 }
 for (const required of [
   "this.activeRelayCalls = new Map()", "activeCallIds: () => this.activeRelayCalls.keys()",
@@ -1318,8 +1340,8 @@ if (!toolExecutorBoundary.includes("Handler return is the local settlement point
   throw new Error("tool executor lost the explicit late-cancellation settlement contract");
 }
 const managedJobStorageBoundary = readFileSync(join(localRoot, "managed-job-storage.mjs"), "utf8");
-const managedJobActivityBoundary = readFileSync(join(localRoot, "managed-job-activity.mjs"), "utf8");
-if (!managedJobActivityBoundary.includes("isTerminalManagedJobStatus") || managedJobActivityBoundary.includes("function terminalLike")) {
+const managedJobActivityBoundary = readFileSync(join(localRoot, "managed-job-listing.mjs"), "utf8");
+if (!hasSemanticImport(managedJobActivityBoundary, "./managed-job-terminal.mjs", { requiredSymbols: ["isTerminalManagedJobStatus"] })) {
   throw new Error("managed-job recent activity regained a duplicate terminal-state classifier");
 }
 const managedJobJsonReadBoundary = /export function readJson[\s\S]*?export function readRequiredJson/.exec(managedJobStorageBoundary)?.[0] || "";

@@ -18,6 +18,8 @@ import {
   assertContainedPath, isContainedPath, normalizeAgentConfig, requiredString,
   resolveConfiguredPath, resolveInstructionPath, validateStringArray,
 } from "./agent-contract.mjs";
+import { readPersistentMemory } from "./agent-memory.mjs";
+import { extractSymbolOutline } from "./symbol-outline.mjs";
 export { parseSkillMetadata } from "./agent-skill-discovery.mjs";
 
 const CONFIG_RELATIVE_PATH = join(".machine-bridge", "agent.json");
@@ -48,6 +50,11 @@ export class AgentContextManager {
 
   async agentContext(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
+    state.persistentMemory = await readPersistentMemory(state.scopeRoot, () => this.throwIfCancelled(context), async (canonical) => {
+      assertContainedPath(state.scopeRoot, canonical, "project memory path");
+      await this.resolveExistingPath(canonical, context);
+      if (isDelegatedRelayContext(context) && isSensitivePath(canonical)) throw new Error("sensitive project memory path");
+    });
     const includeEffectiveContent = args.include_instruction_content !== false;
     const includeSourceContent = args.include_source_content === true;
     const skillLimit = clampInteger(args.max_skills, 100, 1, MAX_SKILL_RESULTS);
@@ -80,14 +87,37 @@ export class AgentContextManager {
       instruction_warnings: state.instructionWarnings.map((message) => message),
       instructions_truncated: state.instructionsTruncated,
       commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
+      ...(state.persistentMemory ? {
+        persistent_memory: {
+          ...state.persistentMemory,
+          path: this.displayPath(state.persistentMemory.path, context),
+        },
+      } : {}),
       metadata_authority: METADATA_AUTHORITY,
       guidance: [
         "Apply built-in instructions and automatic project context as lower-precedence defaults; explicit global/project instruction files loaded later take precedence.",
         "Treat instruction_files as authoritative workspace guidance in the returned precedence order.",
+        "Maintain cross-session learnings, CI guidelines, and user preferences in .project-local/agent-memory.json for persistent agent memory.",
+        "Specify include_symbol_outline: true or symbol_path in agent_context to obtain a high-level lexical symbol map (Repo Map) without loading whole files.",
         "Load a relevant skill with load_local_skill before following its workflow; SKILL.md is an instruction bundle, not executable code by itself.",
         "Prefer run_local_command for registered repeatable commands. Use run_process or exec_command only when no registered command fits and policy permits it.",
       ],
     };
+    if (args.include_symbol_outline === true || args.symbol_path) {
+      const targetPath = args.symbol_path
+        ? await this.resolveExistingPath(args.symbol_path, context)
+        : state.scopeRoot;
+      result.symbol_outline = await extractSymbolOutline(targetPath, {
+        assertPath: async (path) => {
+          await this.resolveExistingPath(path, context);
+          if (isDelegatedRelayContext(context) && isSensitivePath(path)) throw new Error("sensitive symbol source");
+        },
+        displayPath: (path) => this.displayPath(path, context),
+        throwIfCancelled: () => this.throwIfCancelled(context),
+        maxFiles: clampInteger(args.max_symbol_files, 30, 1, 100),
+        maxLines: clampInteger(args.max_symbol_lines, 300, 10, 1000),
+      });
+    }
     if (includeEffectiveContent) result.effective_instructions = renderEffectiveInstructions(effectiveInstructionItems(state), (value) => this.displayPath(value, context));
     return result;
   }
@@ -322,6 +352,7 @@ export class AgentContextManager {
       instructionBytes: 0,
       instructionsTruncated: false,
       instructionWarnings: [],
+      persistentMemory: null,
     };
 
     const packageMetadata = await readProjectPackageMetadata(scopeRoot, () => this.throwIfCancelled(context));
@@ -361,6 +392,12 @@ export class AgentContextManager {
       if (config) this.applyConfig(state, config, configPath, directory, { global: false, unrestricted: effectivePolicy.unrestrictedPaths === true });
       await this.collectDirectoryInstruction(state, directory, context, "project");
     }
+    while (state.instructionBytes > state.instructionMaxBytes) {
+      const omitted = state.instructions.shift();
+      state.instructionBytes -= omitted.bytes;
+      state.instructionsTruncated = true;
+      state.instructionWarnings.push(`Instruction omitted: ${this.displayPath(omitted.path, context)} exceeds the final ${state.instructionMaxBytes}-byte instruction budget.`);
+    }
     return state;
   }
 
@@ -381,7 +418,7 @@ export class AgentContextManager {
     if (config.instructionFiles) state.instructionFiles = [...config.instructionFiles];
     if (config.instructionMaxBytes !== null) {
       state.instructionMaxBytes = config.instructionMaxBytes;
-      if (state.instructionBytes >= state.instructionMaxBytes) state.instructionsTruncated = true;
+
     }
     if (config.skillRoots) {
       state.skillRoots = config.skillRoots.map((value) => resolveConfiguredPath(value, baseDir, this.home, this.workspace, unrestricted));
@@ -408,17 +445,12 @@ export class AgentContextManager {
   }
 
   async collectDirectoryInstruction(state, directory, context, scope) {
-    if (state.instructionsTruncated) return;
     const directoryInfo = await lstat(directory).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
     if (!directoryInfo) return;
     const canonicalDirectory = await realpath(directory);
     if (!(await stat(canonicalDirectory)).isDirectory()) throw new Error(`instruction scope is not a directory: ${directory}`);
     for (const configuredName of state.instructionFiles) {
       this.throwIfCancelled(context);
-      if (state.instructions.length >= MAX_INSTRUCTION_FILES) {
-        state.instructionsTruncated = true;
-        return;
-      }
       const candidate = resolveInstructionPath(canonicalDirectory, configuredName);
       if (isDelegatedRelayContext(context) && isSensitivePath(candidate)) {
         state.instructionWarnings.push("A sensitive project instruction path was skipped for a delegated account.");
@@ -431,12 +463,12 @@ export class AgentContextManager {
       const canonical = await realpath(candidate);
       assertContainedPath(canonicalDirectory, canonical, "instruction file path");
       if (info.size > MAX_INSTRUCTION_FILE_BYTES) throw new Error(`instruction file exceeds maximum size (${info.size} > ${MAX_INSTRUCTION_FILE_BYTES})`);
-      const remaining = state.instructionMaxBytes - state.instructionBytes;
-      if (info.size > remaining) {
+      if (info.size > state.instructionMaxBytes) {
         state.instructionsTruncated = true;
+        state.instructionWarnings.push(`Instruction omitted: ${this.displayPath(canonical, context)} exceeds the ${state.instructionMaxBytes}-byte instruction budget.`);
         return;
       }
-      const content = await readRegularUtf8(canonical, Math.max(remaining, 1), "instruction file", { canonicalPath: canonical });
+      const content = await readRegularUtf8(canonical, state.instructionMaxBytes, "instruction file", { canonicalPath: canonical });
       if (!content.text.trim()) continue;
       state.instructionBytes += content.bytes;
       state.instructions.push({
@@ -447,6 +479,12 @@ export class AgentContextManager {
         content: content.text,
         precedence: state.instructions.length + 1,
       });
+      while (state.instructionBytes > state.instructionMaxBytes || state.instructions.length > MAX_INSTRUCTION_FILES) {
+        const omitted = state.instructions.shift();
+        state.instructionBytes -= omitted.bytes;
+        state.instructionsTruncated = true;
+        state.instructionWarnings.push(`Instruction omitted: ${this.displayPath(omitted.path, context)}; the ${state.instructionMaxBytes}-byte budget prioritizes nearer project guidance.`);
+      }
       return;
     }
   }

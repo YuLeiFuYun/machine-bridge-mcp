@@ -89,6 +89,8 @@ await verify("public conflict guidance comes from production error handling", ()
   const guidance = actionableGuidance(new BridgeError("conflict", "file changed"));
   assert.equal(typeof guidance, "string");
   assert(guidance.length > 0);
+  const reasonGuidance = actionableGuidance(new BridgeError("conflict", "mismatch", { details: { reason: "text_not_found" } }));
+  assert(reasonGuidance.includes("read_file"), "reason-specific actionable guidance omitted");
 });
 
 await verify("tool result boundary enforces a real byte limit", () => {

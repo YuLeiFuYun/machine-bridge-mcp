@@ -101,6 +101,9 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "execution-routing:test",
   "agent-boundaries:test",
   "agent-evals:test",
+  "agent-workflows:test",
+  "agent-audit:test",
+  "affected-checks:test",
   "browser-identity:test",
   "browser-broker-auth:test",
   "browser-pairing-content:test",
@@ -121,6 +124,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "computer-use-application-observation:test",
   "computer-use-result-budget:test",
   "computer-use:test",
+  "symbol-outline:test",
   "check-plan:test",
 ]);
 
