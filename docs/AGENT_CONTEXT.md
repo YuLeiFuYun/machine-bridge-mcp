@@ -73,7 +73,7 @@ Protected, regular-file reads reject symbolic links, multiple hard links, changi
 
 ### Lexical Symbol Outline (Repo Map)
 
-`agent_context` can return a bounded lexical overview with `include_symbol_outline: true` or a specific `symbol_path`. `max_symbol_files` defaults to 30 (maximum 100); `max_symbol_lines` defaults to 300 (maximum 1000), including headers, separators and truncation notices. Parameter values are omitted rather than copied into the outline. A lexical match is navigation assistance, not an AST-backed semantic guarantee.
+`agent_context` can return a bounded lexical overview with `include_symbol_outline: true` or a specific `symbol_path`. `max_symbol_files` defaults to 30 (maximum 100); `max_symbol_lines` defaults to 300 (maximum 1000), including headers, separators and truncation notices. Rendered text also has a 16 KiB byte ceiling; notices count inside both budgets. Parameter values are omitted rather than copied into the outline. A lexical match is navigation assistance, not an AST-backed semantic guarantee.
 
 Filesystem I/O is asynchronous. Default traversal visits at most 2048 entries and eight directory levels, reads at most 256 KiB per file and 2 MiB in total, and checks cancellation and per-file policy. Protected reads reject nonregular, linked or changing files. Paths use the same display projection as other context. Hitting a budget or omitting a source makes the result explicitly incomplete. The development CLI `node scripts/symbol-outline.mjs <directory> --json` exposes scan counts, bytes and warnings.
 

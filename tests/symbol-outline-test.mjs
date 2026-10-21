@@ -1,10 +1,12 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   extractFileSymbols,
+  extractSymbolOutline,
   extractWorkspaceOutline,
   renderSymbolOutline,
   sanitizeSource,
@@ -180,5 +182,31 @@ const mcpContractCode = readFileSync(join(root, "src", "worker", "mcp-http-contr
 const mcpContractSymbols = extractFileSymbols(mcpContractCode, "mcp-http-contract.ts").symbols.map((s) => s.name);
 assert(mcpContractSymbols.includes("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
 assert(mcpContractSymbols.includes("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
+
+// Rendered bytes, UTF-8 paths and notices share the same budget for files and directories.
+{
+  const temporary = mkdtempSync(join(tmpdir(), "mbm-outline-byte-budget-"));
+  try {
+    const large = join(temporary, "large.mjs");
+    const source = "export function " + "x".repeat(20000) + "() {}";
+    writeFileSync(large, source);
+    const text = await extractSymbolOutline(large);
+    assert(Buffer.byteLength(text) <= 16 * 1024 && text.includes("truncated"), "long identifiers bypassed the default output budget");
+    const directory = await extractWorkspaceOutline(temporary, { maxOutputBytes: 128 });
+    assert(directory.truncated && directory.truncationReasons.includes("output_byte_limit"));
+    assert(directory.outputBytes === Buffer.byteLength(directory.outline) && directory.outputBytes <= 128);
+    const unicode = join(temporary, "多字节.mjs");
+    writeFileSync(unicode, source);
+    const unicodeText = await extractSymbolOutline(unicode, { maxOutputBytes: 128, displayPath: () => "多字节.mjs" });
+    assert(unicodeText.includes("多字节.mjs") && !unicodeText.includes("\uFFFD") && Buffer.byteLength(unicodeText) <= 128);
+    const tiny = await extractSymbolOutline(unicode, { maxLines: 1, maxOutputBytes: 1 });
+    assert.equal(tiny, ".", "tiny budgets must include their truncation marker");
+    const small = join(temporary, "small.mjs");
+    writeFileSync(small, "export function shortName() {}\n");
+    const full = await extractSymbolOutline(small, { displayPath: () => "small.mjs" });
+    const exact = await extractSymbolOutline(small, { maxOutputBytes: Buffer.byteLength(full), displayPath: () => "small.mjs" });
+    assert.equal(exact, full, "an exactly fitting complete outline was marked incomplete");
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
 
 console.log("symbol outline test ok");

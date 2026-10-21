@@ -509,7 +509,7 @@ export function renderSymbolOutline(fileSymbols, options = {}) {
 /**
  * Bounded lexical index, not a semantic parser. Filesystem access is asynchronous and policy checked.
  * @typedef {{maxFiles?: number, maxLines?: number, maxEntries?: number, maxDepth?: number,
- * maxFileBytes?: number, maxTotalBytes?: number, ignoredDirs?: Set<string>,
+ * maxFileBytes?: number, maxTotalBytes?: number, maxOutputBytes?: number, ignoredDirs?: Set<string>,
  * displayPath?: (path: string) => string, assertPath?: (path: string) => void | Promise<void>,
  * throwIfCancelled?: () => void}} OutlineOptions
  */
@@ -517,7 +517,7 @@ export function renderSymbolOutline(fileSymbols, options = {}) {
 /** @param {string} input @param {OutlineOptions} [options] */
 export async function extractWorkspaceOutline(input, options = {}) {
   const maxFiles = outlineLimit(options.maxFiles, 30, 100);
-  const maxLines = outlineLimit(options.maxLines, 300, 1000);
+  const budget = outlineTextBudget(options);
   const maxEntries = outlineLimit(options.maxEntries, 2048, 10000);
   const maxDepth = outlineLimit(options.maxDepth, 8, 32);
   const maxFileBytes = outlineLimit(options.maxFileBytes, 256 * 1024, 1024 * 1024);
@@ -569,11 +569,9 @@ export async function extractWorkspaceOutline(input, options = {}) {
   let bytesRead = 0;
   let filesScanned = 0;
   let totalSymbols = 0;
-  /** @type {string[]} */
-  const lines = [];
   for (const path of files) {
     check();
-    if (lines.length >= maxLines || bytesRead >= maxTotalBytes) { truncated = true; break; }
+    if (budget.full || bytesRead >= maxTotalBytes) { truncated = true; break; }
     try {
       await assertPath(path);
       const canonical = await realpath(path);
@@ -585,21 +583,16 @@ export async function extractWorkspaceOutline(input, options = {}) {
       const symbols = extractFileSymbols(file.text, options.displayPath ? options.displayPath(path) : relative(root, path));
       totalSymbols += symbols.symbols.length;
       if (!symbols.symbols.length) continue;
-      const block = [...(lines.length ? [""] : []), ...renderSymbolOutline(symbols).split("\n")];
-      const remaining = maxLines - lines.length;
-      lines.push(...block.slice(0, remaining));
-      if (block.length > remaining) { truncated = true; break; }
+      const block = [...(budget.hasContent ? [""] : []), ...renderSymbolOutline(symbols).split("\n")];
+      if (!budget.append(block)) { truncated = true; break; }
     } catch {
       check();
       truncated = true;
       if (!warnings.includes("source_unavailable")) warnings.push("source_unavailable");
     }
   }
-  if (truncated) {
-    if (lines.length >= maxLines) lines.pop();
-    lines.push("... [Symbol outline truncated: budget reached or source unavailable]");
-  }
-  return { outline: lines.join("\n"), filesScanned, totalSymbols, truncated, visitedEntries, bytesRead, warnings };
+  const output = budget.finish(truncated, "... [Symbol outline truncated: budget reached or source unavailable]");
+  return { ...output, filesScanned, totalSymbols, visitedEntries, bytesRead, warnings };
 }
 
 /** @param {string} input @param {OutlineOptions} [options] */
@@ -615,13 +608,54 @@ export async function extractSymbolOutline(input, options = {}) {
   const file = await readRegularUtf8(input, outlineLimit(options.maxFileBytes, 256 * 1024, 1024 * 1024), "symbol source", { canonicalPath: canonical });
   check();
   const symbols = extractFileSymbols(file.text, options.displayPath ? options.displayPath(input) : relative(process.cwd(), input));
-  const lines = renderSymbolOutline(symbols).split("\n");
-  const maxLines = outlineLimit(options.maxLines, 300, 1000);
-  if (lines.length > maxLines) return [...lines.slice(0, maxLines - 1), "... [Symbol outline truncated: budget reached]"].join("\n");
-  return lines.join("\n");
+  const budget = outlineTextBudget(options);
+  budget.append(renderSymbolOutline(symbols).split("\n"));
+  return budget.finish(false, "... [Symbol outline truncated: budget reached]").outline;
 }
 
 /** @param {number | undefined} value @param {number} fallback @param {number} maximum */
 function outlineLimit(value, fallback, maximum) {
   return Number.isSafeInteger(value) && Number(value) >= 1 ? Math.min(Number(value), maximum) : fallback;
+}
+
+/** @param {OutlineOptions} options */
+function outlineTextBudget(options) {
+  const maxLines = outlineLimit(options.maxLines, 300, 1000);
+  const maxBytes = outlineLimit(options.maxOutputBytes, 16 * 1024, 64 * 1024);
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {Set<string>} */
+  const reasons = new Set();
+  let bytes = 0;
+  return {
+    get full() { return lines.length >= maxLines || bytes >= maxBytes; },
+    get hasContent() { return lines.length > 0; },
+    /** @param {string[]} block */
+    append(block) {
+      for (const line of block) {
+        if (lines.length >= maxLines) { reasons.add("line_limit"); return false; }
+        const size = Buffer.byteLength(line) + (lines.length ? 1 : 0);
+        if (bytes + size > maxBytes) { reasons.add("output_byte_limit"); return false; }
+        lines.push(line); bytes += size;
+      }
+      return true;
+    },
+    finish(incomplete = false, notice = "... [Symbol outline truncated]") {
+      const truncated = incomplete || reasons.size > 0;
+      if (truncated) {
+        if (lines.length >= maxLines) reasons.add("line_limit");
+        if (bytes >= maxBytes) reasons.add("output_byte_limit");
+        if (!reasons.size) reasons.add("source_incomplete");
+        if (Buffer.byteLength(notice) > maxBytes) notice = ".".repeat(Math.min(3, maxBytes));
+        const noticeBytes = Buffer.byteLength(notice);
+        while (lines.length && (lines.at(-1) === "" || lines.length >= maxLines || bytes + 1 + noticeBytes > maxBytes)) {
+          const removed = /** @type {string} */ (lines.pop());
+          bytes -= Buffer.byteLength(removed) + (lines.length ? 1 : 0);
+        }
+        bytes += (lines.length ? 1 : 0) + noticeBytes;
+        lines.push(notice);
+      }
+      return { outline: lines.join("\n"), truncated, outputBytes: bytes, truncationReasons: [...reasons] };
+    },
+  };
 }
