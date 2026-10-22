@@ -116,6 +116,41 @@ try {
   }, firstDescriptor.versions), error => /pinned version/.test(error.message) && !error.message.includes(privateVersion),
   "unverified npm dependency text leaked through an integrity error");
 
+  const lockedPackages = JSON.parse(firstDescriptor.lockBytes).packages;
+  const mixedPins = {
+    dependencies: Object.fromEntries(Object.entries(firstDescriptor.versions).map(([name, version]) => [name, { version }])),
+  };
+  const nestedWorkerd = lockedPackages["node_modules/wrangler/node_modules/workerd"].version;
+  mixedPins.dependencies.wrangler.dependencies = { workerd: { version: nestedWorkerd } };
+  // cf's logical Wrangler edge is deduplicated to the physical root Wrangler.
+  mixedPins.dependencies.cf.dependencies = {
+    wrangler: { version: firstDescriptor.versions.wrangler, dependencies: { workerd: { version: nestedWorkerd } } },
+  };
+  assert.doesNotThrow(() => validateInstalledWranglerToolchainTree(mixedPins, firstDescriptor.versions, lockedPackages),
+    "legitimate root, nested and deduplicated lock pins were rejected");
+  const wrongNestedPin = structuredClone(mixedPins);
+  wrongNestedPin.dependencies.wrangler.dependencies.workerd.version = firstDescriptor.versions.workerd;
+  assert.throws(() => validateInstalledWranglerToolchainTree(wrongNestedPin, firstDescriptor.versions, lockedPackages),
+    /pinned version/, "a root version substituted for the different locked nested pin");
+  const wrongRootPin = structuredClone(mixedPins);
+  wrongRootPin.dependencies.workerd.version = nestedWorkerd;
+  assert.throws(() => validateInstalledWranglerToolchainTree(wrongRootPin, firstDescriptor.versions, lockedPackages),
+    /pinned version/, "a nested version substituted for the root pin");
+  const missingRootPin = structuredClone(mixedPins);
+  delete missingRootPin.dependencies.workerd;
+  assert.throws(() => validateInstalledWranglerToolchainTree(missingRootPin, firstDescriptor.versions, lockedPackages),
+    /workerd dependency is missing/, "a valid nested pin fulfilled the missing root pin");
+  const wrongDeduplicatedPin = structuredClone(mixedPins);
+  wrongDeduplicatedPin.dependencies.cf.dependencies.workerd = { version: nestedWorkerd };
+  assert.throws(() => validateInstalledWranglerToolchainTree(wrongDeduplicatedPin, firstDescriptor.versions, lockedPackages),
+    /pinned version/, "a version locked elsewhere bypassed the actual ancestor resolution path");
+  assert.throws(() => validateInstalledWranglerToolchainTree({
+    dependencies: { unrecorded: { version: "1.0.0" } },
+  }, firstDescriptor.versions, lockedPackages), /locked resolution path/,
+  "an unrecorded dependency edge bypassed the exact lock");
+  assert.throws(() => validateInstalledWranglerToolchainTree(mixedPins, firstDescriptor.versions, null),
+    /lock package map is invalid/);
+
   const callsBeforeMaintenance = fake.total();
   await withForeignMaintenanceLock(stateRoot, async () => {
     await assert.rejects(ensureWranglerToolchain(options), /state maintenance is active in another process/);
@@ -382,6 +417,7 @@ function createFakeNpmRunner(options = {}) {
             wrangler: {
               version: versions.wrangler,
               dependencies: {
+                workerd: { version: "1.20261019.1" },
                 miniflare: {
                   version: "5.20261012.1-beta",
                   dependencies: {

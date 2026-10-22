@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.207",
+  "version": "3.0.0-beta.208",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -188,6 +188,7 @@
     "commit-message:test": "node tests/commit-message-test.mjs",
     "tool-docs:generate": "node scripts/generate-tool-reference.mjs",
     "tool-docs:check": "node scripts/generate-tool-reference.mjs --check",
+    "tool-output-schemas:check": "node scripts/generate-tool-output-schemas.mjs --check",
     "account:test": "node tests/account-admin-test.mjs",
     "sarif-security:test": "node tests/sarif-security-gate-test.mjs",
     "security-properties:test": "node tests/security-properties-test.js",
@@ -288,7 +289,8 @@
     "check:changed": "node scripts/check-changed.mjs",
     "affected-checks:test": "node tests/affected-checks-test.mjs",
     "agent-workflows:test": "node tests/agent-workflows-test.mjs",
-    "agent-audit:test": "node tests/fixtures/agent-audit/regression.mjs && node tests/fixtures/agent-audit/guidance.mjs"
+    "agent-audit:test": "node tests/fixtures/agent-audit/regression.mjs && node tests/fixtures/agent-audit/guidance.mjs",
+    "cf-build:test": "node tests/cf-build-integration-test.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",

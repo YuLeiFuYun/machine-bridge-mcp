@@ -30,6 +30,9 @@ const REASON_ACTIONABLE_GUIDANCE = Object.freeze({
   precondition_target_missing: "Target file does not exist. Ensure the target file exists before specifying expected_sha256.",
   context_not_found: "Patch hunk context did not match current file contents. Re-read the file with read_file to retrieve current context lines.",
   context_ambiguous: "Patch hunk context matched multiple locations. Include more surrounding lines in the hunk header context.",
+  mbm_multiple_hard_links: "A local state file kept a second hard link, which the secure reader rejects. Run doctor --repair-resource-coordinator to restore the single-link invariant.",
+  mbm_identity_changed: "A local state file was replaced while it was being read. Retry; if it repeats, run doctor and inspect the state directory.",
+  mbm_resource_transaction_busy: "Another local operation holds the resource coordinator transaction lock. Wait for it to finish, or run doctor to reclaim a stale lock.",
 });
 
 /** @param {unknown} value @returns {string | null} */

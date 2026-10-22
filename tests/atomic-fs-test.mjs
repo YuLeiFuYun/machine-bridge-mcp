@@ -536,7 +536,8 @@ try {
   const exact = await warningService.editFile({ path: "exact-indent.py", old_text: "if ready:\n    work()", new_text: "if ready:\n    work_again()" });
   assert(exact.matched === "exact" && await readFile(exactPath, "utf8") === "if ready:\n    work_again()\n", "exact edit lost semantic indentation");
   const patchEnvelope = ["*** Begin Patch", "*** Update File: exact-indent.py", "@@", "-  work_again()", "+  changed()", "*** End Patch"].join("\n");
-  await expectAsyncThrow(() => warningService.applyPatch({ patch: patchEnvelope }), "patch context did not match", "conflict", true, "context_not_found");
+  const patchConflict = await expectAsyncThrow(() => warningService.applyPatch({ patch: patchEnvelope }), "patch context did not match", "conflict", true, "context_not_found");
+  assert(patchConflict.details?.conflict_hint?.candidate_lines?.[0] === 2, "rejected patch omitted candidate_lines conflict_hint");
   assert(await readFile(exactPath, "utf8") === "if ready:\n    work_again()\n", "rejected patch changed the file");
 
   // 3. SWE-agent window pagination guidance in readFile

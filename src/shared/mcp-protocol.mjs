@@ -4,6 +4,10 @@ export const MCP_HEADER_MISMATCH = -32020;
 export const MCP_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022;
 export const MCP_REMOVED_PROTOCOL_MESSAGE = "MCP session protocol was removed; upgrade the client and use request-scoped metadata/server/discover";
+// A progressive session mutates tools/list whenever a tool group activates, so its cache
+// entry is only meaningful together with notifications/tools/list_changed. The static full
+// profile keeps ttlMs=0 and therefore never needs invalidation.
+export const MCP_PROGRESSIVE_TOOL_LIST_TTL_MS = 120_000;
 const MCP_RESULT_COMPLETE = "complete";
 
 const PROTOCOL_VERSION_KEY = "io.modelcontextprotocol/protocolVersion";

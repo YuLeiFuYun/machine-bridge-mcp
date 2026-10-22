@@ -1,6 +1,8 @@
 # Changelog
 
-## 3.0.0-beta.207 - 2026-10-21
+## 3.0.0-beta.208 - 2026-10-22
+
+- Reconcile the audit improvement work on a uniquely versioned worktree before further implementation; preserve the prior beta.207 worktrees unchanged for evidence and comparison.
 
 - Preserve the nearest project instructions when the shared context budget is exhausted, and report omitted guidance with policy-projected paths.
 - Load persistent project memory only on demand. Enforce protected file reads, canonical authorization, strict versioned entries, expiry, and independent input, entry, and result byte budgets. Remove duplicate scoring projections and invented timestamps.
@@ -14,7 +16,9 @@
 - Share strict source parsing and add an advisory dependency-aware development check. Keep the complete frozen-tree, platform, package, and live release gates authoritative.
 - Add deterministic context/editing and job-recovery workflows judged by final state. Retain scenario-oriented Computer Use and runtime-infrastructure fixtures.
 - Shorten the repository automation entry point and correct memory, protocol, concurrency, platform-isolation, and dependency documentation. Record 51 pinned upstream comparisons and seven research references with explicit evidence limits.
-- Move the native development smoke fixture out of the consumer package and correct its testing link. Upgrade the source and private deployment toolchains together to Wrangler 4.151.3; retain the three used production dependencies.
+- Move the native development smoke fixture and tool output-schema contract baseline out of the consumer package, and correct testing links. Upgrade the source and private deployment toolchains together to Wrangler 4.151.3; verify nested and deduplicated dependencies at their exact locked locations and retain required root pins. Retain the three used production dependencies.
+- Include the required boolean `truncated` field in hosted `read_file` budgeted responses, observe both local and Worker `server_info` plus foreground/durable process and `cancel_job` branches when generating `outputSchema`, and project Worker-specific `outputSchema.required` fields.
+- Unify MCP Tasks active/terminal/successful job status sets and task-projection helpers in `src/shared/mcp-task-contract.mjs`, deduplicate resource-request normalization in `src/local/resource-request-contract.mjs`, add TypeScript declarations and `@ts-check` coverage for `src/shared/trusted-origin.mjs`, and include bounded `conflict_hint` line candidates on `apply_patch` context conflicts.
 - Retain the bounded historical release ledger and consolidated relay/process helpers from the development tree.
 
 ## Historical releases

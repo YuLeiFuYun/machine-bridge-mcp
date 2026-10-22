@@ -42,9 +42,9 @@ After authorized npm publication, `npm run prerelease:install -- --allow-worker-
 
 ## ChatGPT host-control-plane UI discipline
 
-Task-relevant supported Apps/Plugins/admin refresh is not a separate conversational authorization boundary. Prefer existing runtime/discovery evidence, then in-place refresh/review. Host-side filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence: load the complete `machine-mcp` tool catalog **without a query filter**. A conflicting filtered result can be a stale host query/search-index cache; a stale filtered-search result alone must not block acceptance or trigger UI repair.
+Task-relevant supported Apps/Plugins/admin refresh is not a separate conversational authorization boundary. Prefer passive existing MCP runtime/discovery evidence and harmless invocation-validator or behavior probes first, then in-place refresh/review of the governed Workspace **Action control** snapshot when product-level publication evidence is required. Host-side filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence; a stale filtered-search result alone must not block acceptance or trigger UI repair.
 
-An external acceptance blocker exists when the unfiltered full catalog is itself stale, partial, or mixed-generation, or actual invocation behavior contradicts it. Preserve existing apps unless replacement is technically necessary, verify each mutation and never replay an unknown-outcome UI mutation blindly. Internal cache inspection is not release evidence.
+An external acceptance blocker exists only when the governed Workspace **Action control** snapshot remains stale, partial, or mixed after the supported refresh/review path, or actual invocation-validator/behavior probe evidence contradicts the activated runtime contract. Preserve existing apps unless replacement is technically necessary, verify settlement after each mutation, and never replay an unknown-outcome UI mutation blindly. Opaque host-internal cache inspection is outside the release workflow and is not release evidence.
 
 ## Incident diagnosis and evidence hard gate
 

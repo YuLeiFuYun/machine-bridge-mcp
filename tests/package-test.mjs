@@ -46,6 +46,7 @@ try {
     "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "GOVERNANCE.md",
     "native/macos/MachineBridgeBackgroundInputSmokeFixture.swift",
     "tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift",
+    "tests/fixtures/tool-output-contract.json", "src/shared/tool-output-contract.json",
     "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md",
   ]) {
     if (record.files.some((item) => item.path === repositoryOnly)) throw new Error(`npm package retained repository-only maintenance material ${repositoryOnly}`);
@@ -142,7 +143,9 @@ try {
   }
   for (const module of [
     "mcp-protocol.mjs", "mcp-protocol.d.mts",
+    "mcp-task-contract.mjs", "mcp-task-contract.d.mts",
     "tool-argument-validation.mjs", "tool-argument-validation.d.mts",
+    "trusted-origin.mjs", "trusted-origin.d.mts",
   ]) {
     if (!record.files.some((item) => item.path === `src/shared/${module}`)) throw new Error(`npm package omitted shared MCP contract ${module}`);
   }
@@ -182,7 +185,7 @@ try {
   }
   for (const repositoryOnlyScript of [
     "check-plan.mjs", "check-runner.mjs", "commit-message-check.mjs", "coverage-check.mjs", "generate-policy-reference.mjs",
-    "generate-tool-reference.mjs", "generate-worker-types.mjs", "macos-background-input-smoke.mjs", "markdown.mjs",
+    "generate-tool-output-schemas.mjs", "generate-tool-reference.mjs", "generate-worker-types.mjs", "macos-background-input-smoke.mjs", "markdown.mjs",
     "official-mcp-conformance.mjs", "prepare-pinned-npm.mjs", "run-checks.mjs", "run-worker-dry-run.mjs", "sarif-security-gate.mjs",
     "syntax-check.mjs", "verification-environment.mjs", "verification-generation-guard.mjs", "verification-idle-sleep-guard.mjs",
     "wrangler-command-lifecycle.mjs",

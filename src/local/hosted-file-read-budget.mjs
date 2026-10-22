@@ -19,7 +19,7 @@ export function hostedFileReadResult({
     const selected = content.slice(startOffset, endOffset);
     const value = {
       ...base, content: selected, start_line: startLine, end_line: endLine, total_lines: totalLines,
-      complete: startLine === 1 && endLine === totalLines,
+      complete: startLine === 1 && endLine === totalLines, truncated: Boolean(continuation),
       ...(continuation ? { next_start_line: endLine + 1 } : {}),
     };
     return { value, contentBytes: Buffer.byteLength(selected), resultBytes: Buffer.byteLength(JSON.stringify(value)) };

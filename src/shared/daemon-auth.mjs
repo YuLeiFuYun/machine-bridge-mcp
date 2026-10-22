@@ -1,3 +1,5 @@
+import { canonicalTrustedOrigin } from "./trusted-origin.mjs";
+
 export const DAEMON_AUTH_SCHEME = "device-signature-v1";
 export const DAEMON_PREFLIGHT_SCHEME = "device-preflight-v1";
 export const DAEMON_HTTP_RELAY_SCHEME = "device-http-relay-v1";
@@ -54,15 +56,7 @@ function requiredText(value, label, minimum, maximum) {
 }
 
 function requiredOrigin(value) {
-  if (typeof value !== "string") throw new Error("daemon authentication Worker origin is invalid");
-  let url;
-  try { url = new URL(value); } catch { throw new Error("daemon authentication Worker origin is invalid"); }
-  const secure = url.protocol === "https:";
-  const loopback = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
-  if ((!secure && !loopback) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-    throw new Error("daemon authentication Worker origin is invalid");
-  }
-  return url.origin;
+  return canonicalTrustedOrigin(value, "daemon authentication Worker origin is invalid");
 }
 
 function requiredInteger(value, label) {

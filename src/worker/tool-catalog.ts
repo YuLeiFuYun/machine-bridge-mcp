@@ -22,7 +22,7 @@ type JsonSchema = Record<string, unknown> & { properties: Record<string, Record<
 const allTools = toolCatalog as WorkerToolDefinition[];
 export const workerToolSchemaGeneration = Number(serverMetadata.toolSchemaGeneration);
 const HOSTED_CONTINUATION_RULE = "Do not infer or preempt a host/tool deadline from elapsed wall-clock time. While tool calls continue to be accepted and the current task still needs the result, bounded same-response follow-up may continue. Hand progress back only after an actual host/tool boundary is observed, external input or authorization is required, or the user explicitly requested a checkpoint. If an actual host/tool boundary ends the response, preserve the durable recovery identifier and resume that same operation later instead of resubmitting its underlying side effect.";
-export const serverInfoTool = schemaTaggedTool(publicTool(allTools.find((tool) => tool.name === "server_info")!));
+export const serverInfoTool = schemaTaggedTool(workerServerInfoTool(publicTool(allTools.find((tool) => tool.name === "server_info")!)));
 export const jobMonitorRenderTool = schemaTaggedTool(managedJobMonitorRenderToolDefinition() as WorkerToolDefinition);
 export const jobMonitorClaimTool = schemaTaggedTool(managedJobMonitorClaimToolDefinition() as WorkerToolDefinition);
 export const jobMonitorReadTool = schemaTaggedTool(managedJobMonitorReadToolDefinition() as WorkerToolDefinition);
@@ -55,6 +55,10 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
     timeout.maximum = REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS;
     timeout.default = REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS;
     schema.required = [...new Set([...schema.required!, "idempotency_key"])];
+    const outputSchema = definition.outputSchema as JsonSchema | undefined;
+    if (outputSchema && typeof outputSchema === "object") {
+      outputSchema.required = ["accepted", "job_id", "name", "status", "execution_mode", "source_tool", "recovery", "cleanup"];
+    }
     definition.description = `${String(definition.description)} Remote calls require an idempotency_key known to the caller before dispatch, then commit as one-step durable jobs before execution; timeout_seconds controls child execution after resource admission rather than the MCP response lifetime. After durable acceptance, the original tool call waits up to ${relayContract.durableProcessInitialSettlementWaitMs} ms for a short helper to settle. A terminal initial response includes the managed-job result with follow_up_read_required=false; an active response keeps the same job_id/recovery envelope with follow_up_read_required=true, including the principal-bound recovery_key and control_key added by the Worker. This coalesces the common helper-plus-read double event without shortening execution or weakening recovery. The managed runner may wait up to ${relayContract.maximumManagedJobResourceAdmissionWaitMs / 60_000} minutes pre-spawn for cooperative resource admission; read_job reports current_phase=resource_admission while no child has started. Reuse the same idempotency key after an ambiguous acceptance response to recover the same accepted job/result. After successful acceptance, bounded same-response read_job follow-up uses the returned job_id plus recovery_key and is allowed only when the job remains active; do not busy-loop. ${HOSTED_CONTINUATION_RULE}`;
     return definition;
   }
@@ -71,6 +75,13 @@ function remotePublicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
 function publicTool(tool: WorkerToolDefinition): WorkerToolDefinition {
   const { availability: _availability, ...definition } = tool;
   return structuredClone(definition) as WorkerToolDefinition;
+}
+function workerServerInfoTool(tool: WorkerToolDefinition): WorkerToolDefinition {
+  const outputSchema = tool.outputSchema as JsonSchema | undefined;
+  if (outputSchema && typeof outputSchema === "object") {
+    outputSchema.required = ["name", "version", "authorization", "daemon", "worker", "tool_delivery"];
+  }
+  return tool;
 }
 function schemaProperty(schema: JsonSchema, name: string): Record<string, unknown> { const property = schema.properties[name]; if (property === undefined) throw new Error(`hosted tool schema is missing the ${name} property`); return property; }
 function schemaTaggedTool(tool: WorkerToolDefinition): WorkerToolDefinition {

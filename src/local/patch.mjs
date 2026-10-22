@@ -96,11 +96,18 @@ export function parsePatchEnvelope(input) {
   return operations;
 }
 
+/**
+ * Apply update hunks without rewriting the file's line endings.
+ *
+ * Hunk text is always LF in the patch envelope, so matching happens on LF-normalized line
+ * text, but every untouched line keeps its exact original terminator. Replacement lines
+ * inherit the terminators of the lines they replace; inserted lines inherit the local
+ * terminator. Mixed CRLF/LF files therefore retain their per-line style instead of falling
+ * back to LF, and a missing final newline remains missing.
+ */
 export function applyUpdateHunks(content, hunks) {
-  const normalized = String(content).replaceAll("\r\n", "\n");
-  const trailingNewline = normalized.endsWith("\n");
-  let lines = normalized.split("\n");
-  if (trailingNewline) lines.pop();
+  const { lines, terminators } = splitLinesWithTerminators(String(content));
+  const defaultEol = preferredLineEnding(terminators);
   let searchFrom = 0;
 
   for (const [hunkIndex, hunk] of hunks.entries()) {
@@ -108,17 +115,95 @@ export function applyUpdateHunks(content, hunks) {
     const newLines = hunk.lines.filter((line) => line.type !== "-").map((line) => line.text);
     const matches = findSequenceMatches(lines, oldLines, searchFrom);
     if (matches.length === 0) {
-      throw new BridgeError("conflict", "patch context did not match current file state", { details: { reason: "context_not_found", hunk: hunkIndex + 1 } });
+      throw new BridgeError("conflict", "patch context did not match current file state", {
+        details: { reason: "context_not_found", hunk: hunkIndex + 1, conflict_hint: buildConflictHint(lines, oldLines, matches) },
+      });
     }
     if (matches.length > 1) {
-      throw new BridgeError("conflict", "patch context matched more than once", { details: { reason: "context_ambiguous", hunk: hunkIndex + 1 } });
+      throw new BridgeError("conflict", "patch context matched more than once", {
+        details: { reason: "context_ambiguous", hunk: hunkIndex + 1, conflict_hint: buildConflictHint(lines, oldLines, matches) },
+      });
     }
     const at = matches[0];
+    const removedTerminators = terminators.slice(at, at + oldLines.length);
+    const replacementTerminators = replacementLineTerminators({
+      removedTerminators, newLineCount: newLines.length, terminators, at, defaultEol,
+    });
     lines.splice(at, oldLines.length, ...newLines);
+    terminators.splice(at, oldLines.length, ...replacementTerminators);
     searchFrom = at + newLines.length;
   }
 
-  return `${lines.join("\n")}${trailingNewline ? "\n" : ""}`;
+  return lines.map((line, index) => `${line}${terminators[index]}`).join("");
+}
+
+function buildConflictHint(lines, oldLines, matches) {
+  const probe = oldLines.find((line) => line.trim().length > 0) ?? oldLines[0] ?? "";
+  const trimmedProbe = probe.trim();
+  const candidateLines = matches.length > 1
+    ? matches.slice(0, 3).map((index) => index + 1)
+    : trimmedProbe
+      ? lines.reduce((acc, line, index) => {
+        if (acc.length < 3 && (line === probe || line.trim() === trimmedProbe)) acc.push(index + 1);
+        return acc;
+      }, [])
+      : [];
+  return {
+    first_expected_line: probe.slice(0, 120),
+    candidate_lines: candidateLines,
+  };
+}
+
+function splitLinesWithTerminators(source) {
+  if (!source) return { lines: [""], terminators: [""] };
+  const lines = [];
+  const terminators = [];
+  let lineStart = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "\n") continue;
+    const crlf = index > lineStart && source[index - 1] === "\r";
+    lines.push(source.slice(lineStart, crlf ? index - 1 : index));
+    terminators.push(crlf ? "\r\n" : "\n");
+    lineStart = index + 1;
+  }
+  if (lineStart < source.length) {
+    lines.push(source.slice(lineStart));
+    terminators.push("");
+  }
+  return { lines, terminators };
+}
+
+function preferredLineEnding(terminators) {
+  const crlf = terminators.filter((value) => value === "\r\n").length;
+  const lf = terminators.filter((value) => value === "\n").length;
+  return crlf > lf ? "\r\n" : "\n";
+}
+
+function replacementLineTerminators({ removedTerminators, newLineCount, terminators, at, defaultEol }) {
+  if (!newLineCount) return [];
+  if (!removedTerminators.length) {
+    const before = at > 0 ? terminators[at - 1] : "";
+    const after = at < terminators.length ? terminators[at] : "";
+    const fill = before || after || defaultEol;
+    if (at > 0 && before === "") terminators[at - 1] = defaultEol;
+    return Array.from({ length: newLineCount }, (_, index) => (
+      at === terminators.length && index === newLineCount - 1 && before === "" ? "" : fill
+    ));
+  }
+
+  const replacement = removedTerminators.slice(0, newLineCount);
+  const fill = removedTerminators.at(-1) || defaultEol;
+  while (replacement.length < newLineCount) replacement.push(fill);
+
+  if (removedTerminators.at(-1) === "") {
+    // The replaced region ended at EOF without a newline. Only the new final line may keep
+    // that state; any lines before it need a real separator.
+    replacement[newLineCount - 1] = "";
+    for (let index = 0; index < newLineCount - 1; index += 1) {
+      if (!replacement[index]) replacement[index] = defaultEol;
+    }
+  }
+  return replacement;
 }
 
 function findSequenceMatches(lines, sequence, start) {

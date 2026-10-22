@@ -1,6 +1,7 @@
 import { BridgeError } from "./errors.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { filterSensitiveGitPaths } from "./git-sensitive-path-filter.mjs";
+import { isDelegatedRelayContext } from "./authority-context.mjs";
 
 export function gitCommandPrefix(git) {
   return [
@@ -65,13 +66,6 @@ export async function structuredGitShow({
     gitExecutable, commandArgs, 60_000, true, maxBytes, context, git.root, null, environment,
   );
   return { ...result, revision, path: displayPath(git.target, context), gitRoot: displayPath(git.root, context), ...(omittedSensitiveFiles ? { sensitive_files_omitted: omittedSensitiveFiles } : {}) };
-}
-
-function isDelegatedRelayContext(context) {
-  const authority = context?.authority;
-  const principal = authority?.principal;
-  return context?.origin === "relay" && principal?.kind === "account"
-    && principal.role !== "owner" && authority.owner !== true;
 }
 
 function validateRevision(value) {

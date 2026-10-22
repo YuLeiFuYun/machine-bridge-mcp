@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../scripts/check-plan.mjs";
 import { hasSemanticImport, getSemanticExports } from "./semantic-analyzer.mjs";
+import { architectureDocumentation } from "./architecture-documentation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const readLfSource = (...segments) => readFileSync(join(root, ...segments), "utf8").replace(/\r\n/g, "\n");
@@ -251,6 +252,23 @@ if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDepend
     || Object.hasOwn(packageJson.scripts || {}, "postinstall")
     || !FAST_CHECK_TASKS.includes("cf-network:test")) {
   throw new Error("cf isolation or its upstream network integrity gate drifted");
+}
+// cf orchestrates a deployment but delegates the actual Worker build to Wrangler when the project
+// has no custom buildCommand. Keep both execution paths pinned: the private toolchain copy is used
+// by cf-project.mjs, while repository typegen and local integration tests invoke the top-level copy.
+const cfProjectSource = readFileSync(join(root, "src", "local", "cf-project.mjs"), "utf8");
+if (!cfProjectSource.includes("const builderVersion = toolchainManifest.dependencies.wrangler")
+    || !cfProjectSource.includes("devDependencies: { wrangler: builderVersion }")
+    || !cfProjectSource.includes('symlinkSync(path.join(toolchainRoot, "node_modules")')) {
+  throw new Error("cf project isolation lost the delegated Wrangler build boundary");
+}
+for (const [file, marker] of [
+  ["scripts/generate-worker-types.mjs", 'resolve(root, "node_modules", "wrangler", "bin", "wrangler.js")'],
+  ["tests/worker-integration-test.mjs", 'path.join(packageRoot, "node_modules", "wrangler", "bin", "wrangler.js")'],
+]) {
+  if (!readFileSync(join(root, file), "utf8").includes(marker)) {
+    throw new Error(`top-level Wrangler execution path is missing from ${file}`);
+  }
 }
 const patchedSharpVersion = "0.35.5";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
@@ -1512,7 +1530,7 @@ if (!managedJobProjectionSource.includes("resource_admission_ms: _resourceAdmiss
     || !managedJobsIntegrationSource.includes("owner managed-job read lost resource admission timing needed for queue diagnosis")) {
   throw new Error("managed-job admission timing lost its owner-only projection or delegated privacy regression");
 }
-if (!managedJobTerminalSource.includes('export const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"])')
+if (!managedJobTerminalSource.includes("export const ACTIVE_JOB_STATES = MCP_TASK_ACTIVE_JOB_STATUSES")
     || !managedJobRunnerSource.includes("ACTIVE_JOB_STATES.has(status.status)")
     || !managedJobRetentionSource.includes("...ACTIVE_JOB_STATES")
     || managedJobRunnerSource.includes("FATAL_RECORDABLE_STATUSES")) {
@@ -2021,7 +2039,7 @@ for (const file of [join(root, "docs", "RELEASING.md")]) {
 }
 if (!cliSource.replace(/\s+/g, " ").includes(`${pinnedInstallCommand} && machine-mcp`)) throw new Error("CLI pinned npm installation guidance drifted from user documentation");
 
-const architecture = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
+const architecture = architectureDocumentation;
 for (const stale of [
   "State schema version 5",
   "does not distinguish independently authorized human principals",
@@ -2708,12 +2726,13 @@ for (const required of [
   "not a separate conversational authorization boundary",
   "in-place refresh/review",
   "filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence",
-  "complete `machine-mcp` tool catalog **without a query filter**",
-  "stale host query/search-index cache",
-  "unfiltered full catalog is itself stale, partial, or mixed-generation",
+  "Workspace **Action control** snapshot",
+  "harmless invocation-validator or behavior probes",
+  "stale, partial, or mixed after the supported refresh/review path",
   "stale filtered-search result alone must not block acceptance",
   "external acceptance blocker",
   "never replay an unknown-outcome UI mutation blindly",
+  "host-internal cache inspection is outside the release workflow",
 ]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted ChatGPT host-control-plane UI boundary: ${required}`);
 }

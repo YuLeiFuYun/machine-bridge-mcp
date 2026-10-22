@@ -83,33 +83,33 @@ export const MAX_RETRY_COUNT = 10;
 `;
 
 const extracted = extractFileSymbols(complexModule, "test-module.ts", { includeInternal: true });
-const symbolNames = extracted.symbols.map((s) => s.name);
+const symbolNames = new Set(extracted.symbols.map((s) => s.name));
 
 // Verify extracted top-level symbols
-assert(symbolNames.includes("DataStore"), "class DataStore not found");
-assert(symbolNames.includes("processData"), "function processData not found");
-assert(symbolNames.includes("computeScore"), "arrow function computeScore not found");
-assert(symbolNames.includes("DataConfig"), "interface DataConfig not found");
-assert(symbolNames.includes("OperationType"), "type OperationType not found");
-assert(symbolNames.includes("TaskState"), "enum TaskState not found");
-assert(symbolNames.includes("MAX_RETRY_COUNT"), "const MAX_RETRY_COUNT not found");
+assert(symbolNames.has("DataStore"), "class DataStore not found");
+assert(symbolNames.has("processData"), "function processData not found");
+assert(symbolNames.has("computeScore"), "arrow function computeScore not found");
+assert(symbolNames.has("DataConfig"), "interface DataConfig not found");
+assert(symbolNames.has("OperationType"), "type OperationType not found");
+assert(symbolNames.has("TaskState"), "enum TaskState not found");
+assert(symbolNames.has("MAX_RETRY_COUNT"), "const MAX_RETRY_COUNT not found");
 
 // Verify no comment or string fakes were captured
-assert(!symbolNames.includes("CommentFake"), "comment fake captured as class");
-assert(!symbolNames.includes("StringFake"), "string fake captured as class");
+assert(!symbolNames.has("CommentFake"), "comment fake captured as class");
+assert(!symbolNames.has("StringFake"), "string fake captured as class");
 
 // Verify inner helper function was excluded
-assert(!symbolNames.includes("innerHelper"), "inner helper was captured as top-level symbol");
+assert(!symbolNames.has("innerHelper"), "inner helper was captured as top-level symbol");
 
 // Verify class methods
 const classSymbol = extracted.symbols.find((s) => s.name === "DataStore");
 assert(classSymbol, "DataStore class symbol missing");
 assert.equal(classSymbol.superClass, "BaseStore");
-const methodNames = classSymbol.methods.map((m) => m.name);
-assert(methodNames.includes("constructor"), "constructor missing");
-assert(methodNames.includes("loadItem"), "loadItem missing");
-assert(methodNames.includes("configure"), "static configure missing");
-assert(methodNames.includes("isReady"), "getter isReady missing");
+const methodNames = new Set(classSymbol.methods.map((m) => m.name));
+assert(methodNames.has("constructor"), "constructor missing");
+assert(methodNames.has("loadItem"), "loadItem missing");
+assert(methodNames.has("configure"), "static configure missing");
+assert(methodNames.has("isReady"), "getter isReady missing");
 
 const staticMethod = classSymbol.methods.find((m) => m.name === "configure");
 assert(staticMethod?.static, "configure should be marked static");
@@ -168,20 +168,20 @@ export class AfterRegexClass {
 }
 `;
 const trickyExtracted = extractFileSymbols(regexTrickyCode, "tricky.js");
-const trickyNames = trickyExtracted.symbols.map((s) => s.name);
-assert(trickyNames.includes("afterRegexFunction"), "afterRegexFunction must be captured despite preceding regex with braces");
-assert(trickyNames.includes("AfterRegexClass"), "AfterRegexClass must be captured despite preceding regex with quotes");
+const trickyNames = new Set(trickyExtracted.symbols.map((s) => s.name));
+assert(trickyNames.has("afterRegexFunction"), "afterRegexFunction must be captured despite preceding regex with braces");
+assert(trickyNames.has("AfterRegexClass"), "AfterRegexClass must be captured despite preceding regex with quotes");
 
 // 7. Regression: Production files log-redaction.mjs and mcp-http-contract.ts
 const logRedactionCode = readFileSync(join(root, "src", "shared", "log-redaction.mjs"), "utf8");
-const logRedactionSymbols = extractFileSymbols(logRedactionCode, "log-redaction.mjs").symbols.map((s) => s.name);
-assert(logRedactionSymbols.includes("isSensitiveLogFieldName"), "isSensitiveLogFieldName must be extracted from log-redaction.mjs");
-assert(logRedactionSymbols.includes("sanitizePortableLogText"), "sanitizePortableLogText must be extracted from log-redaction.mjs");
+const logRedactionSymbols = new Set(extractFileSymbols(logRedactionCode, "log-redaction.mjs").symbols.map((s) => s.name));
+assert(logRedactionSymbols.has("isSensitiveLogFieldName"), "isSensitiveLogFieldName must be extracted from log-redaction.mjs");
+assert(logRedactionSymbols.has("sanitizePortableLogText"), "sanitizePortableLogText must be extracted from log-redaction.mjs");
 
 const mcpContractCode = readFileSync(join(root, "src", "worker", "mcp-http-contract.ts"), "utf8");
-const mcpContractSymbols = extractFileSymbols(mcpContractCode, "mcp-http-contract.ts").symbols.map((s) => s.name);
-assert(mcpContractSymbols.includes("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
-assert(mcpContractSymbols.includes("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
+const mcpContractSymbols = new Set(extractFileSymbols(mcpContractCode, "mcp-http-contract.ts").symbols.map((s) => s.name));
+assert(mcpContractSymbols.has("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
+assert(mcpContractSymbols.has("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
 
 // Rendered bytes, UTF-8 paths and notices share the same budget for files and directories.
 {

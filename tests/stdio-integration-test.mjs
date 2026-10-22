@@ -12,6 +12,7 @@ import { resourceProjectHash } from "../src/local/resource-project-key.mjs";
 import { captureProcessTreeOwnership } from "../src/local/process-tree-ownership.mjs";
 import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
 import { createBoundedStdioWriter } from "../src/local/stdio.mjs";
+import { RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS } from "../src/local/runtime-diagnostics.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -664,7 +665,7 @@ try {
   assert(resourcesListed.result?.resources.some((r) => r.uri === "machine-bridge://help/managed-jobs"), "resources/list omitted help resources");
 
   send({ jsonrpc: "2.0", id: 698, method: "resources/read", params: { uri: "diag://runtime/status" } });
-  const resourceRead = await responseFor(698);
+  const resourceRead = await responseFor(698, RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS);
   assert(resourceRead.result?.contents?.[0]?.mimeType === "application/json", "resources/read did not return resource contents");
 
   send({ jsonrpc: "2.0", id: 699, method: "resources/read", params: { uri: "machine-bridge://help/managed-jobs" } });

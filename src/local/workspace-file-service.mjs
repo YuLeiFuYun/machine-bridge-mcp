@@ -138,19 +138,35 @@ export class WorkspaceFileService {
     const endLine = args.end_line === undefined ? totalLines : clampInteger(args.end_line, totalLines, 1, Number.MAX_SAFE_INTEGER);
     if (endLine < startLine) throw new BridgeError("invalid_request", "end_line must be greater than or equal to start_line", { details: { reason: "invalid_line_range" } });
     if (startLine > totalLines) throw new BridgeError("invalid_request", `start_line exceeds total lines (${startLine} > ${totalLines})`, { details: { reason: "line_out_of_range", total_lines: totalLines } });
-    const selectedEnd = Math.min(endLine, totalLines);
+    const automaticWindow = args.end_line === undefined;
+    let selectedEnd = Math.min(endLine, totalLines);
     const base = { path: this.displayPath(full, context), size: info.size, sha256: sha256(content) };
     const hostedResult = hostedFileReadResult({
       context, base, content, lineStarts, startLine, selectedEnd, totalLines, maxContentBytes: maxBytes,
-      automatic: args.end_line === undefined,
+      automatic: automaticWindow,
     });
     if (hostedResult) return hostedResult;
     const selectedStartOffset = lineStarts[startLine - 1];
+    const bytesThrough = (end) => Buffer.byteLength(content.slice(selectedStartOffset, end < totalLines ? lineStarts[end] : content.length));
+    // An omitted end_line means "show me this file", not "fail if it is large". Shrink to the
+    // largest line boundary that fits and report where to continue; only a single line larger
+    // than the budget is a real limit error.
+    let truncated = false;
+    if (automaticWindow && bytesThrough(selectedEnd) > maxBytes) {
+      let low = startLine;
+      let high = selectedEnd;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (bytesThrough(middle) <= maxBytes) low = middle; else high = middle - 1;
+      }
+      selectedEnd = low;
+      truncated = true;
+    }
     const selectedEndOffset = selectedEnd < totalLines ? lineStarts[selectedEnd] : content.length;
     const selected = content.slice(selectedStartOffset, selectedEndOffset);
     const selectedBytes = Buffer.byteLength(selected);
     if (selectedBytes > maxBytes) throw new BridgeError("limit_exceeded", `selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`, { details: { reason: "read_limit", selected_bytes: selectedBytes, maximum_bytes: maxBytes } });
-    const result = { ...base, content: selected, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines };
+    const result = { ...base, content: selected, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines, truncated, ...(truncated ? { next_start_line: selectedEnd + 1 } : {}) };
     if (totalLines > 300 && (selectedEnd < totalLines || args.end_line === undefined)) {
       result.pagination_guidance = selectedEnd < totalLines
         ? `File has ${totalLines} lines. To read subsequent lines, specify start_line=${selectedEnd + 1} and end_line=${Math.min(selectedEnd + 300, totalLines)}.`
