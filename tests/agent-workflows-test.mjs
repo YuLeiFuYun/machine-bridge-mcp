@@ -7,6 +7,7 @@ import { LocalRuntime } from "../src/local/runtime.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 import { managedJobRecentActivity, managedJobRecoveryPriority, recentProcessRecoveryJobs } from "../src/local/managed-job-listing.mjs";
 import { classifyEffectStatus } from "../src/local/computer-use-verification.mjs";
+import { spawnManagedJobTestRunnerWithoutCoverage } from "./fixtures/managed-jobs/common.mjs";
 
 const root = await realpath(await mkdtemp(join(tmpdir(), "mbm-agent-workflow-")));
 const workspace = join(root, "workspace");
@@ -15,6 +16,7 @@ const options = { workspace, policy: { profile: "full", origin: "explicit", revi
   resourceCoordinatorRoot: join(root, "resource-coordinator"), resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
   agentHome: join(root, "empty-home"), codexHome: join(root, "empty-codex"), recoverJobs: false, processResourceWaitMs: 10000 };
 let runtime = new LocalRuntime(options);
+runtime.managedJobManager.runnerSpawnProcess = spawnManagedJobTestRunnerWithoutCoverage;
 try {
   // Final-state oracle for an agent discovering context, reading, editing and reconciling a conflict.
   await writeFile(join(workspace, "AGENTS.md"), "Preserve Python indentation and inspect conflicts.");
@@ -35,6 +37,7 @@ try {
   const accepted = await runtime.executeTool("start_job", jobArgs);
   assert(accepted.job_id);
   await runtime.stop(); runtime = new LocalRuntime(options);
+  runtime.managedJobManager.runnerSpawnProcess = spawnManagedJobTestRunnerWithoutCoverage;
   const recovered = await runtime.executeTool("start_job", jobArgs);
   assert.equal(recovered.job_id, accepted.job_id);
   const deadline = Date.now() + 15000;

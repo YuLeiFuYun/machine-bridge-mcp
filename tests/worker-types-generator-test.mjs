@@ -14,7 +14,7 @@ const runWranglerFixture = options => runCompletedWranglerCommand({
   completionMarker: WRANGLER_DRY_RUN_COMPLETION_MARKER,
 });
 
-const root = await mkdtemp(join(tmpdir(), "machine-bridge-wrangler-lifecycle-"));
+const root = await realpath(await mkdtemp(join(tmpdir(), "machine-bridge-wrangler-lifecycle-")));
 const fixture = join(root, "wrangler-fixture.mjs");
 const target = join(root, "worker-configuration.d.ts");
 const seed = join(root, "worker-runtime-types-seed.b64");
