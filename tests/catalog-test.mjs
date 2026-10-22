@@ -1,10 +1,23 @@
-import { readFile } from "node:fs/promises";
+import strictAssert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { toolCatalogDigest, assertToolSchemaContract, readToolSchemaBaselines } from "../scripts/tool-schema-contract.mjs";
+import { CORE_CORNERSTONE_TOOL_NAMES, PROGRESSIVE_TOOL_GROUPS } from "../src/shared/tool-groups.mjs";
+import { readFile, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { allToolNames, MCP_INSTRUCTIONS, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
 import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
+const outputContract = JSON.parse(await readFile(new URL("./fixtures/tool-output-contract.json", import.meta.url), "utf8"));
+const JSON_SCHEMA_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
+const activationSchema = catalog.find((tool) => tool.name === "resolve_task_capabilities").inputSchema.properties.activate_tool_groups.items;
+assert(JSON.stringify([...activationSchema.enum].sort()) === JSON.stringify(Object.keys(PROGRESSIVE_TOOL_GROUPS).sort()), "progressive group schema drifted from implementation");
+assert(CORE_CORNERSTONE_TOOL_NAMES.has("resolve_task_capabilities"), "progressive discovery entry point is hidden");
+const groupedNames = new Set([...CORE_CORNERSTONE_TOOL_NAMES, ...Object.values(PROGRESSIVE_TOOL_GROUPS).flat()]);
+assert(catalog.every((tool) => groupedNames.has(tool.name)), "a tool cannot be discovered through any progressive group");
 const policyContract = JSON.parse(await readFile(new URL("../src/shared/policy-contract.json", import.meta.url), "utf8"));
 assert(policyContract.defaultProfile === "full", "default policy profile is an explicit full-authority product contract and must not be narrowed incidentally");
 assert(metadata.name === "machine-bridge-mcp", "shared server name is invalid");
@@ -18,6 +31,18 @@ assert(metadata.instructions.some((line) => line.includes("never use a hosted Gi
 assert(metadata.instructions.some((line) => line.includes("Straightforward file, Git, and shell work") && line.includes("instead of adding a resolver call")), "shared instructions still require an unnecessary capability-resolution round trip for direct work");
 assert(metadata.instructions.some((line) => line.includes("child exit code") && line.includes("forced-command refusal") && line.includes("downstream target evidence")), "shared instructions do not distinguish a spawned nested-command refusal from Machine Bridge policy denial");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
+assert(metadata.instructions.some((line) => [
+  "If continue_same_response=true and the terminal result is still needed",
+  "continue bounded read_job follow-up while calls are accepted",
+].every((fragment) => line.includes(fragment))),
+"shared instructions omitted bounded same-response continuation while the result is needed");
+assert(metadata.instructions.some((line) => [
+  "do not split that work into one-step calls merely because a host deadline is assumed",
+  "Stop or hand off only at an actual host/tool boundary",
+  "external input or authorization is required",
+  "user explicitly requested a checkpoint",
+].every((fragment) => line.includes(fragment))),
+"shared instructions replaced observed continuation boundaries with an assumed deadline");
 // `instructions` is re-sent at the start of every session, so its size is a per-session context
 // cost rather than a documentation detail. The ceiling keeps growth deliberate: at the time it
 // was set, only ~545 of these characters also appeared in a tool description, so most of this
@@ -47,19 +72,57 @@ assert(operationMayHaveSideEffects("__future_unreviewed_tool") === true,
 const computerActionSchema = catalog.find((tool) => tool.name === "computer_act")?.inputSchema;
 assert(computerActionSchema?.properties?.post_screenshot?.default === "auto"
   && !Object.hasOwn(computerActionSchema.properties, "include_post_screenshot")
-  && metadata.toolSchemaGeneration === 29,
+  && Number.isSafeInteger(metadata.toolSchemaGeneration) && metadata.toolSchemaGeneration > 0,
 "computer_act exposes retired screenshot compatibility or an outdated schema generation");
 
+const DURABLE_PROCESS_TOOLS = new Set(["run_process", "run_local_command", "exec_command"]);
+const VALID_AVAILABILITIES = new Set(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"]);
 for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);
   assert(typeof tool.title === "string" && tool.title.length > 0, `${tool.name} is missing title`);
   assert(typeof tool.description === "string" && tool.description.length > 20, `${tool.name} has an insufficient description`);
-  if (["run_process", "run_local_command", "exec_command"].includes(tool.name)) {
+  if (DURABLE_PROCESS_TOOLS.has(tool.name)) {
     assert(Array.isArray(tool.inputSchema?.required), `${tool.name} durable schema must declare its required fields statically`);
   }
-  assert(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"].includes(tool.availability), `${tool.name} has invalid availability`);
+  assert(VALID_AVAILABILITIES.has(tool.availability), `${tool.name} has invalid availability`);
   assert(tool.inputSchema?.type === "object", `${tool.name} inputSchema must be an object`);
   assert(tool.inputSchema?.additionalProperties === false, `${tool.name} inputSchema must reject unknown fields`);
+  assert(tool.outputSchema?.type === "object", `${tool.name} outputSchema must be an object`);
+  assert(tool.outputSchema?.properties && typeof tool.outputSchema.properties === "object", `${tool.name} outputSchema must declare properties`);
+  const observed = outputContract.tools?.[tool.name];
+  assert(observed, `${tool.name} has no entry in the observed output contract`);
+  for (const field of Object.keys(tool.outputSchema.properties)) {
+    assert(Object.hasOwn(observed.properties, field),
+      `${tool.name} outputSchema declares "${field}", which no real invocation returned`);
+  }
+  const requiredOutput = tool.outputSchema.required;
+  assert(requiredOutput === undefined
+    || (Array.isArray(requiredOutput) && requiredOutput.every((field) => Object.hasOwn(tool.outputSchema.properties, field))),
+  `${tool.name} outputSchema requires a field it does not declare`);
+  const conditionalSet = new Set(observed.conditional || []);
+  const injectedSet = new Set(observed.stdio_injected || []);
+  const expectedRequired = (observed.required || []).filter((field) => Object.hasOwn(observed.properties, field)
+    && !conditionalSet.has(field)
+    && !injectedSet.has(field));
+  assert(JSON.stringify(requiredOutput || []) === JSON.stringify(expectedRequired),
+    `${tool.name} outputSchema required fields drifted from the observed contract`);
+  for (const field of requiredOutput || []) {
+    assert(!conditionalSet.has(field),
+      `${tool.name} outputSchema marks conditional field "${field}" as required`);
+  }
+  for (const [field, schema] of Object.entries(tool.outputSchema.properties)) {
+    assert(schema && typeof schema === "object" && !Array.isArray(schema), `${tool.name} outputSchema field "${field}" is not an object schema`);
+    if (schema.type === undefined) {
+      assert(Object.keys(schema).length === 0, `${tool.name} outputSchema field "${field}" has no JSON type and no unconstrained marker`);
+      continue;
+    }
+    assert(JSON_SCHEMA_TYPES.has(schema.type), `${tool.name} outputSchema field "${field}" has no JSON type`);
+    assert(schema.type !== "null", `${tool.name} outputSchema field "${field}" froze a single null observation`);
+  }
+  for (const field of observed.stdio_injected || []) {
+    assert(!Object.hasOwn(tool.outputSchema.properties, field),
+      `${tool.name} outputSchema advertises transport-injected field "${field}" as a tool output`);
+  }
   for (const field of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]) {
     assert(typeof tool.annotations?.[field] === "boolean", `${tool.name} annotation ${field} is missing`);
   }
@@ -110,6 +173,51 @@ for (const value of [["array"], "text", 0, false, null]) {
 assert(workerSource.includes('./tool-catalog'), "Worker entrypoint does not use the catalog boundary");
 assert(workerCatalogSource.includes('../shared/tool-catalog.json'), "Worker catalog boundary does not import the shared tool catalog");
 assert(!workerCatalogSource.includes('const workspaceTools = ['), "Worker contains a second hand-maintained tool catalog");
+
+
+{
+  const fixture = await mkdtemp(join(tmpdir(), "mbm-schema-history-"));
+  const environment = { ...process.env };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) delete environment[key];
+  const hooks = join(fixture, "hooks");
+  const git = (argv) => execFileSync("git", [
+    "-c", "core.hooksPath=" + hooks, "-c", "commit.gpgSign=false",
+    "-c", "user.name=Catalog Test", "-c", "user.email=catalog-test@example.invalid", ...argv,
+  ], { cwd: fixture, env: environment, stdio: "pipe" });
+  const oldCatalog = [{ name: "read_file" }];
+  const newCatalog = [...oldCatalog, { name: "write_file" }];
+  const oldMetadata = { toolSchemaGeneration: 1, toolCatalogSha256: toolCatalogDigest(oldCatalog) };
+  const unchangedGeneration = { toolSchemaGeneration: 1, toolCatalogSha256: toolCatalogDigest(newCatalog) };
+  const advanced = { ...unchangedGeneration, toolSchemaGeneration: 2 };
+  const baseline = [{ ref: "baseline", metadata: oldMetadata, catalog: oldCatalog }];
+  assertToolSchemaContract(oldMetadata, oldCatalog, baseline);
+  assertToolSchemaContract(advanced, newCatalog, baseline);
+  strictAssert.throws(() => assertToolSchemaContract(unchangedGeneration, newCatalog, baseline), /strictly newer/);
+  strictAssert.throws(() => assertToolSchemaContract(oldMetadata, oldCatalog, [{ ref: "newer", metadata: advanced, catalog: oldCatalog }]), /must not decrease/);
+  strictAssert.throws(() => assertToolSchemaContract({ ...advanced, toolCatalogSha256: "invalid" }, newCatalog, baseline), /fingerprint/);
+  strictAssert.throws(() => assertToolSchemaContract(advanced, newCatalog, []), /baseline is required/);
+  try {
+    await mkdir(join(fixture, "src", "shared"), { recursive: true });
+    await mkdir(hooks);
+    const storeContract = async (value, tools) => {
+      await writeFile(join(fixture, "src", "shared", "server-metadata.json"), JSON.stringify(value));
+      await writeFile(join(fixture, "src", "shared", "tool-catalog.json"), JSON.stringify(tools));
+    };
+    git(["init", "-q"]);
+    await storeContract(oldMetadata, oldCatalog);
+    git(["add", "."]); git(["commit", "-qm", "baseline"]); git(["tag", "v3.0.0-beta.206"]);
+    await storeContract(unchangedGeneration, newCatalog);
+    git(["add", "."]); git(["commit", "-qm", "committed catalog change"]); git(["tag", "v3.0.0-beta.207"]);
+    const baselines = readToolSchemaBaselines(fixture, "3.0.0-beta.207");
+    assert(baselines.some((value) => value.ref === "v3.0.0-beta.206"), "candidate tag obscured the previous release");
+    strictAssert.throws(() => assertToolSchemaContract(unchangedGeneration, newCatalog, baselines), /strictly newer/,
+      "a committed catalog change reused the released generation");
+    await storeContract(advanced, newCatalog);
+    assertToolSchemaContract(advanced, newCatalog, readToolSchemaBaselines(fixture, "3.0.0-beta.207"));
+    git(["tag", "-d", "v3.0.0-beta.206"]);
+    strictAssert.throws(() => readToolSchemaBaselines(fixture, "3.0.0-beta.207"), /complete release tags/);
+  } finally { await rm(fixture, { recursive: true, force: true }); }
+}
 
 console.log("shared tool catalog test ok");
 

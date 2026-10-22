@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { moduleSpecifiers } from "./source-module-graph.mjs";
+import { hasSemanticImport } from "./semantic-analyzer.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const localRoot = join(root, "src", "local");
@@ -31,6 +32,7 @@ const adapterModules = new Set([
 const boundaryModules = new Set([
   "agent-context.mjs",
   "agent-context-projection.mjs",
+  "agent-memory.mjs",
   "agent-skill-discovery.mjs",
   "agent-text-file.mjs",
   "agent-contract.mjs",
@@ -151,10 +153,7 @@ const boundaryModules = new Set([
   "runtime-tool-handlers.mjs",
   "runtime-paths.mjs",
   "relay-call-recovery.mjs",
-  "relay-recovery-admission.mjs",
-  "relay-recovery-capacity.mjs",
-  "relay-recovery-diagnostics.mjs",
-  "relay-redelivery-safety.mjs",
+  "relay-recovery.mjs",
   "relay-result-retention.mjs",
   "relay-connection-classification.mjs",
   "relay-liveness.mjs",
@@ -177,7 +176,232 @@ const boundaryModules = new Set([
   "managed-job-cancellation.mjs",
   "managed-job-directory.mjs",
   "managed-job-idempotency.mjs",
+  "symbol-outline.mjs",
 ]);
+const internalModules = new Set([
+  "account-access.mjs",
+  "account-admin-response.mjs",
+  "account-admin.mjs",
+  "app-automation-macos-jxa.mjs",
+  "application-capability-match.mjs",
+  "atomic-fs.mjs",
+  "authority-context.mjs",
+  "autostart-log-maintenance.mjs",
+  "browser-bridge.mjs",
+  "browser-extension-path.mjs",
+  "browser-resource-input.mjs",
+  "browser-trusted-input-health.mjs",
+  "call-authority.mjs",
+  "call-capacity.mjs",
+  "call-registry-drain.mjs",
+  "cf-authentication.mjs",
+  "cf-network-integrity.mjs",
+  "cf-project.mjs",
+  "cli-account-admin.mjs",
+  "cli-activate.mjs",
+  "cli-idle-sleep.mjs",
+  "cli-ready-output.mjs",
+  "computer-use-arguments.mjs",
+  "computer-use-verification.mjs",
+  "daemon-http-relay-auth.mjs",
+  "daemon-http-relay-connection.mjs",
+  "daemon-http-relay-request.mjs",
+  "daemon-http-relay-sequence.mjs",
+  "daemon-http-retry-policy.mjs",
+  "delegated-process-sandbox.mjs",
+  "device-identity.mjs",
+  "device-root-provider.mjs",
+  "doctor-reporting.mjs",
+  "durable-process-initial-settlement.mjs",
+  "durable-process-spec.mjs",
+  "exclusive-publication-recovery.mjs",
+  "exclusive-publication-repair.mjs",
+  "execution-routing-intent.mjs",
+  "execution-surface.mjs",
+  "full-access-test.mjs",
+  "git-content-service.mjs",
+  "git-sensitive-path-filter.mjs",
+  "git-version.mjs",
+  "hardened-npm-download-timeout.mjs",
+  "hardened-npm-launcher.mjs",
+  "hosted-file-read-budget.mjs",
+  "idle-sleep-mode.mjs",
+  "job-runner.mjs",
+  "log.mjs",
+  "macos-idle-sleep-recovery.mjs",
+  "macos-trust-broker.mjs",
+  "managed-job-acceptance.mjs",
+  "managed-job-active-child.mjs",
+  "managed-job-capacity-maintenance.mjs",
+  "managed-job-capacity.mjs",
+  "managed-job-dependencies.mjs",
+  "managed-job-dependency-admission.mjs",
+  "managed-job-dependency-metadata.mjs",
+  "managed-job-dependency-retention.mjs",
+  "managed-job-directory-generation.mjs",
+  "managed-job-durable-process.mjs",
+  "managed-job-hosted-status.mjs",
+  "managed-job-listing-records.mjs",
+  "managed-job-listing.mjs",
+  "managed-job-output-redaction.mjs",
+  "managed-job-plan-integrity.mjs",
+  "managed-job-read-policy.mjs",
+  "managed-job-read-wait.mjs",
+  "managed-job-recovery-history.mjs",
+  "managed-job-relaunch.mjs",
+  "managed-job-resource-context.mjs",
+  "managed-job-retention-policy.mjs",
+  "managed-job-retention.mjs",
+  "managed-job-runner-claim.mjs",
+  "managed-job-runner-exit-recovery.mjs",
+  "managed-job-state-validation.mjs",
+  "managed-job-terminal-evidence-helpers.mjs",
+  "managed-job-terminal-evidence.mjs",
+  "managed-job-terminal-maintenance.mjs",
+  "managed-job-terminal.mjs",
+  "managed-job-transient-recovery-capacity.mjs",
+  "managed-job-transient-recovery.mjs",
+  "managed-jobs.mjs",
+  "npm-audit-report.mjs",
+  "npm-environment.mjs",
+  "operation-authorization.mjs",
+  "operation-risk.mjs",
+  "patch.mjs",
+  "path-inspection.mjs",
+  "process-fatal.mjs",
+  "process-foreground-timeout.mjs",
+  "process-identity.mjs",
+  "process-lock-read-retry.mjs",
+  "process-session-events.mjs",
+  "process-session-read.mjs",
+  "process-session-remote-poll.mjs",
+  "process-session-termination.mjs",
+  "process-tree-force-settlement.mjs",
+  "process-tree-signal.mjs",
+  "process-tree-snapshot.mjs",
+  "process-tree-supervisor.mjs",
+  "relay-connect-timing.mjs",
+  "relay-connection-support.mjs",
+  "relay-diagnostics.mjs",
+  "relay-heartbeat-options.mjs",
+  "relay-heartbeat-stall.mjs",
+  "relay-heartbeat-transport-state.mjs",
+  "relay-heartbeat.mjs",
+  "relay-inbound-state.mjs",
+  "relay-liveness-actions.mjs",
+  "relay-peer-diagnostics.mjs",
+  "relay-probe-deadline.mjs",
+  "relay-probe-dispatch-metrics.mjs",
+  "relay-probe-dispatch.mjs",
+  "relay-reconnect.mjs",
+  "relay-tool-schema-extension.mjs",
+  "relay-transport-confirmation.mjs",
+  "relay-transport-error-state.mjs",
+  "relay-transport-probe-send.mjs",
+  "relay-transport-probe.mjs",
+  "remote-activity-idle-sleep-timeline.mjs",
+  "remote-configuration.mjs",
+  "remote-idle-sleep-assertions.mjs",
+  "resilient-relay-connection.mjs",
+  "resource-admission-diagnostic-error.mjs",
+  "resource-cargo-concurrency.mjs",
+  "resource-cmake-concurrency.mjs",
+  "resource-command-concurrency.mjs",
+  "resource-coordinator-health.mjs",
+  "resource-cpu-window.mjs",
+  "resource-disk-headroom.mjs",
+  "resource-elastic-memory.mjs",
+  "resource-elastic-request.mjs",
+  "resource-foreground-wait.mjs",
+  "resource-go-concurrency.mjs",
+  "resource-gradle-concurrency.mjs",
+  "resource-host-cache.mjs",
+  "resource-host-darwin.mjs",
+  "resource-host-sample-file.mjs",
+  "resource-make-concurrency.mjs",
+  "resource-maven-concurrency.mjs",
+  "resource-ninja-command-concurrency.mjs",
+  "resource-ninja-concurrency.mjs",
+  "resource-operations.mjs",
+  "resource-pressure.mjs",
+  "resource-probe-command.mjs",
+  "resource-process-ancestry-cache.mjs",
+  "resource-process-priority.mjs",
+  "resource-pytest-concurrency.mjs",
+  "resource-state-file.mjs",
+  "resource-swift-concurrency.mjs",
+  "resource-transaction-lock.mjs",
+  "resource-waiter-diagnostics.mjs",
+  "resource-xcode-command.mjs",
+  "resource-xcode-concurrency.mjs",
+  "resource-xcode-non-build.mjs",
+  "runtime-activation.mjs",
+  "runtime-activity-projection.mjs",
+  "runtime-application-automation.mjs",
+  "runtime-device-session.mjs",
+  "runtime-diagnostic-projection.mjs",
+  "runtime-diagnostic-state.mjs",
+  "runtime-node-executable.mjs",
+  "runtime-package-identity.mjs",
+  "runtime-process-routing.mjs",
+  "runtime-relay-acknowledgements.mjs",
+  "runtime-relay-connection-options.mjs",
+  "runtime-relay-control.mjs",
+  "runtime-relay-shutdown-drain.mjs",
+  "runtime.mjs",
+  "secure-file.mjs",
+  "security-audit-activity.mjs",
+  "security-audit-beta198-migration.mjs",
+  "security-audit-dispatch.mjs",
+  "security-audit-gate.mjs",
+  "security-audit-log.mjs",
+  "security-audit-state.mjs",
+  "security-audit-storage.mjs",
+  "security-audit-warning.mjs",
+  "security-audit-worker.mjs",
+  "service-convergence.mjs",
+  "service-lifecycle.mjs",
+  "service-owner.mjs",
+  "service-restartability.mjs",
+  "service-runtime-convergence.mjs",
+  "service-runtime.mjs",
+  "shell.mjs",
+  "ssh-key.mjs",
+  "state-root-retirement.mjs",
+  "state.mjs",
+  "stdio-task-projection.mjs",
+  "system-sleep-diagnostics.mjs",
+  "tool-result-boundary.mjs",
+  "toolchain-operation-lock.mjs",
+  "tools.mjs",
+  "trusted-executable.mjs",
+  "trusted-git-executable.mjs",
+  "trusted-github-cli.mjs",
+  "worker-deployment-fingerprint.mjs",
+  "worker-identity-contract.mjs",
+  "workspace-file-rename-retry.mjs",
+  "workspace-paths.mjs",
+  "workspace-profile-migration.mjs",
+  "workspace-search-service.mjs",
+  "wrangler-toolchain-installed-tree.mjs",
+]);
+
+// Default-deny classification: every local module is adapter, boundary, or internal. A new
+// module cannot be added without an explicit ownership decision, and a module cannot be
+// silently reclassified into two categories.
+const moduleClassification = new Map();
+for (const [category, names] of [["adapter", adapterModules], ["boundary", boundaryModules], ["internal", internalModules]]) {
+  for (const name of names) {
+    if (moduleClassification.has(name)) throw new Error(`local module ${name} is classified as both ${moduleClassification.get(name)} and ${category}`);
+    moduleClassification.set(name, category);
+  }
+}
+for (const name of modules) {
+  if (!moduleClassification.has(name)) throw new Error(`local module ${name} has no explicit architecture classification`);
+}
+for (const [name, category] of moduleClassification) {
+  if (!modules.includes(name)) throw new Error(`local module classification references missing ${category} module ${name}`);
+}
 for (const name of boundaryModules) {
   const file = join(localRoot, name);
   if (!graph.has(file)) throw new Error(`architecture boundary module is missing: ${name}`);
@@ -196,365 +420,68 @@ for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "resou
   }
 }
 
-const lineLimits = Object.freeze({
-  "src/local/runtime.mjs": 700,
-  "src/local/runtime-application-automation.mjs": 60,
-  "src/local/runtime-tool-handlers.mjs": 100,
-  "src/local/runtime-relay.mjs": 100,
-  "src/local/runtime-relay-shutdown-drain.mjs": 60,
-  "src/local/runtime-relay-acknowledgements.mjs": 40,
-  "src/local/relay-call-recovery.mjs": 170,
-  "src/worker/daemon-planned-drain.ts": 40,
-  "src/worker/worker-continuity-evidence.ts": 130,
-  "src/local/relay-recovery-admission.mjs": 60,
-  "src/local/relay-recovery-capacity.mjs": 40,
-  "src/local/relay-recovery-diagnostics.mjs": 40,
-  "src/local/relay-redelivery-safety.mjs": 50,
-  "src/local/relay-result-retention.mjs": 70,
-  "src/local/short-identifiers.mjs": 10,
-  "src/local/runtime-paths.mjs": 120,
-  "src/local/runtime-reporting.mjs": 150,
-  "src/local/runtime-activity-projection.mjs": 60,
-  "src/local/runtime-info-projection.mjs": 70,
-  "src/local/runtime-resource-service.mjs": 100,
-  "src/local/resource-operations.mjs": 110,
-  "src/local/resource-staging-recovery.mjs": 100,
-  "src/local/resource-wait.mjs": 50,
-  "src/local/secure-file.mjs": 180,
-  "src/local/ssh-key.mjs": 290,
-  "src/local/service-definition.mjs": 40,
-  "src/local/cli-activate.mjs": 180,
-  "src/local/account-admin.mjs": 240,
-  "src/local/account-admin-response.mjs": 120,
-  "src/local/runtime-diagnostics.mjs": 120,
-  "src/local/runtime-diagnostic-state.mjs": 40,
-  "src/local/system-network-route.mjs": 80,
-  "src/local/systemd-removal.mjs": 40,
-  "src/local/runtime-capabilities.mjs": 100,
-  "src/local/application-capability-projection.mjs": 50,
-  "src/local/cli.mjs": 900,
-  "src/local/state.mjs": 980,
-  "src/local/service.mjs": 750,
-  "src/local/cli-ready-output.mjs": 80,
-  "src/local/cli-service.mjs": 220,
-  "src/worker/index.ts": 830,
-  "src/worker/worker-tool-authority.ts": 80,
-  "src/worker/oauth-controller.ts": 360,
-  "src/worker/oauth-record-contract.ts": 20,
-  "src/worker/oauth-field-contract.ts": 40,
-  "src/worker/oauth-store-validation.ts": 140,
-  "src/worker/oauth-authorization-page.ts": 100,
-  "src/worker/oauth-tokens.ts": 260,
-  "src/local/bounded-output.mjs": 80,
-  "src/local/process-execution.mjs": 285,
-  "src/local/process-nonreplayable-settlement.mjs": 60,
-  "src/local/process-foreground-timeout.mjs": 60,
-  "src/local/process-output-stream.mjs": 110,
-  "src/local/process-result-projection.mjs": 60,
-  "src/local/process-error-message.mjs": 20,
-  "src/local/process-session-events.mjs": 60,
-  "src/local/managed-job-hosted-status.mjs": 40,
-  "src/local/managed-job-read-wait.mjs": 80,
-  "src/local/managed-job-listing.mjs": 60,
-  "src/local/managed-job-recovery-listing.mjs": 30,
-  "src/local/process-session-read.mjs": 70,
-  "src/local/hosted-file-read-budget.mjs": 70,
-  "src/local/process-session-remote-poll.mjs": 50,
-  "src/local/resource-admission-diagnostic-error.mjs": 35,
-  "src/local/process-sessions.mjs": 340,
-  "src/local/process-session-remote-activity.mjs": 20,
-  "src/local/relay-connection.mjs": 680,
-  "src/local/relay-reconnect.mjs": 70,
-  "src/local/relay-connect-timing.mjs": 70,
-  "src/local/relay-connection-classification.mjs": 160,
-  "src/local/relay-liveness.mjs": 110,
-  "src/local/relay-inbound-state.mjs": 50,
-  "src/local/relay-liveness-actions.mjs": 70,
-  "src/local/relay-transport-probe.mjs": 40,
-  "src/local/relay-transport-probe-send.mjs": 40,
-  "src/local/relay-transport-confirmation.mjs": 85,
-  "src/local/relay-transport-error-state.mjs": 60,
-  "src/local/relay-heartbeat.mjs": 130,
-  "src/local/relay-heartbeat-transport-state.mjs": 40,
-  "src/local/relay-heartbeat-options.mjs": 40,
-  "src/local/relay-heartbeat-stall.mjs": 60,
-  "src/local/relay-probe-deadline.mjs": 50,
-  "src/local/relay-probe-dispatch.mjs": 60,
-  "src/local/relay-probe-dispatch-metrics.mjs": 35,
-  "src/local/process-contract.mjs": 40,
-  "src/local/process-tree.mjs": 70,
-  "src/local/process-tree-signal.mjs": 50,
-  "src/local/process-tree-force-settlement.mjs": 60,
-  "src/local/process-tree-supervisor.mjs": 70,
-  "src/local/process-tree-snapshot.mjs": 100,
-  "src/local/process-tree-ownership.mjs": 80,
-  "src/local/execution-limits.mjs": 55,
-  "src/local/resource-admission.mjs": 340,
-  "src/local/resource-admission-policy.mjs": 150,
-  "src/local/resource-pressure.mjs": 90,
-  "src/local/resource-disk-headroom.mjs": 30,
-  "src/local/resource-admission-diagnostics.mjs": 60,
-  "src/local/resource-build-root.mjs": 90,
-  "src/local/resource-cargo-concurrency.mjs": 45,
-  "src/local/resource-cmake-concurrency.mjs": 45,
-  "src/local/resource-go-concurrency.mjs": 45,
-  "src/local/resource-gradle-concurrency.mjs": 60,
-  "src/local/resource-swift-concurrency.mjs": 35,
-  "src/local/resource-xcode-concurrency.mjs": 35,
-  "src/local/resource-xcode-command.mjs": 30,
-  "src/local/resource-xcode-non-build.mjs": 30,
-  "src/local/resource-make-concurrency.mjs": 60,
-  "src/local/resource-ninja-command-concurrency.mjs": 30,
-  "src/local/resource-ninja-concurrency.mjs": 35,
-  "src/local/resource-command-profile.mjs": 180,
-  "src/local/resource-command-concurrency.mjs": 70,
-  "src/local/resource-maven-concurrency.mjs": 40,
-  "src/local/resource-pytest-concurrency.mjs": 45,
-  "src/local/resource-elastic-memory.mjs": 30,
-  "src/local/resource-elastic-request.mjs": 40,
-  "src/local/resource-host-cache.mjs": 50,
-  "src/local/resource-host-sample-file.mjs": 40,
-  "src/local/resource-state-file.mjs": 40,
-  "src/local/resource-host-darwin.mjs": 80,
-  "src/local/resource-host-linux.mjs": 80,
-  "src/local/resource-host-snapshot.mjs": 100,
-  "src/local/resource-lease-liveness.mjs": 50,
-  "src/local/resource-lease-accounting.mjs": 130,
-  "src/local/resource-cpu-window.mjs": 40,
-  "src/local/resource-coordinator-accounting.mjs": 30,
-  "src/local/resource-probe-command.mjs": 60,
-  "src/local/resource-process-ancestry.mjs": 45,
-  "src/local/resource-process-ancestry-cache.mjs": 60,
-  "src/local/resource-project-key.mjs": 55,
-  "src/local/resource-process-admission.mjs": 60,
-  "src/local/resource-process-priority.mjs": 40,
-  "src/local/resource-transaction-lock.mjs": 190,
-  "src/local/resource-request-contract.mjs": 50,
-  "src/local/npm-cli.mjs": 55,
-  "src/local/resource-light-command.mjs": 20,
-  "src/local/resource-release-control-classification.mjs": 35,
-  "src/local/resource-release-control-executable.mjs": 80,
-  "src/local/resource-release-control-workspace.mjs": 45,
-  "src/local/resource-script-classification.mjs": 45,
-  "src/local/resource-shell-analysis.mjs": 80,
-  "src/local/resource-waiters.mjs": 140,
-  "src/shared/tool-call-capacity.mjs": 80,
-  "src/shared/project-overview-projection.mjs": 110,
-  "src/shared/activation-recovery.mjs": 70,
-  "src/shared/sensitive-value-patterns.mjs": 50,
-  "src/local/call-capacity.mjs": 70,
-  "src/local/git-service.mjs": 220,
-  "src/local/git-config-safety.mjs": 65,
-  "src/local/git-metadata-boundary.mjs": 85,
-  "src/local/git-metadata-tree-safety.mjs": 60,
-  "src/local/git-operation-state.mjs": 30,
-  "src/local/git-commit.mjs": 80,
-  "src/local/git-log-parser.mjs": 50,
-  "src/local/fixed-process-environment.mjs": 25,
-  "src/local/support-state-projection.mjs": 35,
-  "src/local/file-mutation-coordinator.mjs": 80,
-  "src/local/file-snapshot-preservation.mjs": 40,
-  "src/local/directory-metadata.mjs": 60,
-  "src/local/filesystem-identity.mjs": 55,
-  "src/local/workspace-file-transaction.mjs": 190,
-  "src/local/workspace-file-transaction-helpers.mjs": 80,
-  "src/local/workspace-search.mjs": 80,
-  "src/local/workspace-file-service.mjs": 430,
-  "src/local/tool-executor.mjs": 180,
-  "src/local/macos-idle-sleep-assertion.mjs": 80,
-  "src/local/remote-activity-idle-sleep-guard.mjs": 80,
-  "src/local/security-audit-log.mjs": 220,
-  "src/local/security-audit-gate.mjs": 40,
-  "src/local/security-audit-storage.mjs": 230,
-  "src/local/security-audit-state.mjs": 180,
-  "src/local/security-audit-beta198-migration.mjs": 55,
-  "src/local/security-audit-worker.mjs": 110,
-  "src/local/security-audit-dispatch.mjs": 60,
-  "src/local/security-audit-warning.mjs": 60,
-  "src/local/call-registry.mjs": 190,
-  "src/local/owner-state-lock.mjs": 130,
-  "src/local/release-runtime-lock.mjs": 40,
-  "src/local/exclusive-file.mjs": 160,
-  "src/local/lifecycle.mjs": 130,
-  "src/local/loopback-health.mjs": 80,
-  "src/local/cli-local-admin.mjs": 400,
-  "src/local/agent-context.mjs": 600,
-  "src/local/agent-context-projection.mjs": 200,
-  "src/local/agent-skill-discovery.mjs": 300,
-  "src/local/agent-text-file.mjs": 70,
-  "src/local/agent-contract.mjs": 230,
-  "src/local/default-instructions.mjs": 280,
-  "src/local/project-package.mjs": 240,
-  "src/local/capability-ranking.mjs": 150,
-  "src/local/execution-routing.mjs": 300,
-  "src/local/managed-jobs.mjs": 700,
-  "src/local/managed-job-transient-recovery-capacity.mjs": 180,
-  "src/local/job-runner.mjs": 710,
-  "src/local/managed-job-idempotency.mjs": 50,
-  "src/local/managed-job-state-validation.mjs": 40,
-  "src/local/managed-job-recovery-history.mjs": 60,
-  "src/local/worker-identity-contract.mjs": 20,
-  "src/local/managed-job-lock.mjs": 140,
-  "src/local/managed-job-capacity.mjs": 50,
-  "src/local/managed-job-retention.mjs": 130,
-  "src/local/managed-job-transient-recovery.mjs": 60,
-  "src/local/managed-job-terminal-maintenance.mjs": 80,
-  "src/local/managed-job-projection.mjs": 100,
-  "src/local/managed-job-storage.mjs": 130,
-  "src/local/managed-job-runner.mjs": 100,
-  "src/local/managed-job-runner-liveness.mjs": 60,
-  "src/local/managed-job-hosted-reconcile.mjs": 40,
-  "src/local/managed-job-cancellation.mjs": 80,
-  "src/local/managed-job-directory.mjs": 80,
-  "src/local/managed-job-directory-generation.mjs": 70,
-  "src/local/managed-job-plan.mjs": 300,
-  "src/local/package-identity.mjs": 20,
-  "src/local/project-metadata.mjs": 80,
-  "src/local/state-inventory.mjs": 170,
-  "src/local/state-owner-lock-inventory.mjs": 60,
-  "src/local/state-root-owned-namespaces.mjs": 90,
-  "src/local/state-root-retirement.mjs": 90,
-  "src/local/worker-health.mjs": 280,
-  "src/local/worker-deployment.mjs": 220,
-  "src/local/hardened-npm.mjs": 230,
-  "src/local/hardened-npm-download.mjs": 110,
-  "src/local/hardened-npm-download-timeout.mjs": 60,
-  "src/local/hardened-npm-extract.mjs": 50,
-  "src/local/hardened-npm-verification.mjs": 110,
-  "src/local/hardened-npm-launcher.mjs": 60,
-  "src/local/npm-environment.mjs": 40,
-  "src/local/npm-audit-report.mjs": 40,
-  "src/local/private-toolchain-integrity.mjs": 70,
-  "src/local/wrangler-toolchain.mjs": 230,
-  "src/local/wrangler-toolchain-verification.mjs": 140,
-  "src/local/browser-bridge.mjs": 560,
-  "src/local/browser-request-registry.mjs": 100,
-  "src/local/browser-request-settlement.mjs": 80,
-  "src/local/browser-bridge-http.mjs": 80,
-  "src/local/browser-broker-routes.mjs": 180,
-  "src/local/browser-broker-auth.mjs": 100,
-  "src/local/browser-broker-auth-http.mjs": 90,
-  "src/local/browser-pairing-grant.mjs": 110,
-  "src/local/browser-pairing-launch.mjs": 80,
-  "src/local/browser-broker-server.mjs": 90,
-  "src/local/browser-operation-service.mjs": 360,
-  "src/local/computer-use.mjs": 2280,
-  "src/local/computer-use-deadline.mjs": 80,
-  "src/local/computer-use-dispatch-settlement.mjs": 80,
-  "src/local/computer-use-arguments.mjs": 310,
-  "src/local/computer-use-expectation.mjs": 210,
-  "src/local/computer-use-observation.mjs": 780,
-  "src/local/computer-use-observation-contract.mjs": 130,
-  "src/local/computer-use-application-observation.mjs": 240,
-  "src/local/computer-use-recovery.mjs": 90,
-  "src/local/computer-use-snapshot-store.mjs": 70,
-  "src/local/computer-use-result-budget.mjs": 150,
-  "src/local/browser-computer-observation-service.mjs": 280,
-  "src/local/macos-background-input.mjs": 410,
-  "src/local/app-automation.mjs": 1180,
-  "src/local/app-automation-macos-jxa.mjs": 380,
-  "src/local/browser-extension-protocol.mjs": 130,
-  "src/local/browser-pairing-store.mjs": 120,
-  "src/local/browser-pairing-http.mjs": 80,
-  "src/local/worker-secret-file.mjs": 165,
-  "src/local/service-environment.mjs": 140,
-  "src/local/service-owner.mjs": 150,
-  "src/local/service-runtime.mjs": 150,
-  "src/local/service-runtime-convergence.mjs": 80,
-  "src/local/windows-service.mjs": 220,
-  "src/local/windows-service-convergence.mjs": 60,
-  "src/local/windows-launcher.mjs": 90,
-  "src/local/monotonic-deadline.mjs": 60,
-  "src/local/path-inspection.mjs": 50,
-  "src/worker/mcp-access.ts": 80,
-  "src/worker/mcp-stream-proxy-contract.ts": 100,
-  "src/worker/mcp-http-accept.ts": 40,
-  "src/worker/mcp-response-cancel.ts": 50,
-  "src/worker/mcp-response-proxy.ts": 140,
-  "src/worker/mcp-response-stream.ts": 90,
-  "src/worker/mcp-request-cancellation.ts": 130,
-  "src/worker/mcp-streamed-tool-response.ts": 50,
-  "src/worker/mcp-subscription-stream.ts": 90,
-  "src/worker/mcp-subscription-contract.ts": 20,
-  "src/worker/mcp-subscription-capacity.ts": 60,
-  "src/worker/mcp-subscription-registry.ts": 130,
-  "src/worker/mcp-controller.ts": 220,
-  "src/worker/mcp-tasks.ts": 80,
-  "src/worker/mcp-prompts.ts": 120,
-  "src/worker/mcp-job-monitor-ui.ts": 130,
-  "src/worker/mcp-job-monitor-claims.ts": 130,
-  "src/worker/mcp-job-monitor-store.ts": 150,
-  "src/worker/mcp-job-monitor-status.ts": 60,
-  "src/worker/mcp-job-monitor-tools.ts": 90,
-  "src/worker/mcp-removed-protocol.ts": 40,
-  "src/worker/worker-static-routes.ts": 90,
-  "src/worker/worker-metadata.ts": 80,
-  "src/worker/worker-edge-guard.ts": 100,
-  "src/worker/worker-rate-limit-key.ts": 50,
-  "src/worker/worker-edge-log.ts": 80,
-  "src/worker/managed-job-read-timeout.ts": 40,
-  "src/worker/managed-job-capability.ts": 80,
-  "src/worker/managed-job-hosted-authority.ts": 130,
-  "src/worker/managed-job-hosted-schema.ts": 90,
-  "src/worker/hosted-browser-target-schema.ts": 50,
-  "src/worker/tool-call-recovery.ts": 40,
-  "src/worker/oauth-token-issuance.ts": 120,
-  "src/worker/oauth-token-derivation.ts": 70,
-  "src/worker/oauth-refresh-exchange.ts": 180,
-  "src/worker/oauth-refresh-authority.ts": 40,
-  "src/worker/server-info.ts": 170,
-  "src/worker/server-info-activity.ts": 40,
-  "src/worker/daemon-status.ts": 60,
-  "src/worker/worker-entry.ts": 80,
-  "src/worker/tool-timeout.ts": 80,
-  "src/worker/tool-catalog.ts": 80,
-  "src/worker/hosted-result-budget.ts": 50,
-  "src/worker/daemon-liveness.ts": 80,
-  "src/worker/daemon-sockets.ts": 140,
-  "src/worker/daemon-channel.ts": 50,
-  "src/worker/daemon-registry.ts": 70,
-  "src/worker/daemon-http-auth.ts": 90,
-  "src/worker/daemon-http-channel.ts": 130,
-  "src/worker/daemon-http-controller.ts": 190,
-  "src/worker/daemon-http-protocol.ts": 80,
-  "src/worker/daemon-http-registry.ts": 100,
-  "src/worker/daemon-ready-messages.ts": 80,
-  "src/worker/daemon-ready-waiters.ts": 80,
-  "src/worker/daemon-ready-waiter-policy.ts": 80,
-  "src/worker/daemon-ready-waiter-state.ts": 80,
-  "src/worker/daemon-ready-dispatch.ts": 30,
-  "src/worker/daemon-recovery-budget.ts": 30,
-  "src/worker/daemon-socket-attachment.ts": 80,
-  "src/worker/runtime-alarm.ts": 140,
-  "src/worker/runtime-alarm-storage.ts": 60,
-  "src/worker/observability.ts": 180,
-  "src/worker/pending-calls.ts": 180,
-  "src/worker/pending-call-capacity.ts": 150,
-  "src/worker/pending-call-registration.ts": 80,
-  "src/worker/pending-call-deadlines.ts": 80,
-  "src/worker/mcp-jsonrpc.ts": 130,
-  "src/worker/mcp-task-store.ts": 310,
-  "src/worker/mcp-task-result-codec.ts": 60,
-  "src/worker/mcp-task-dispatch.ts": 130,
-  "src/worker/mcp-task-projection.ts": 70,
-  "src/worker/mcp-task-seed.ts": 60,
-  "src/worker/mcp-streamed-tool-dispatch.ts": 60,
-  "src/worker/mcp-tool-call-dispatch.ts": 100,
-  "src/worker/websocket-protocol.ts": 60,
-  "browser-extension/browser-operation-contract.js": 110,
-  "browser-extension/browser-operations.js": 1810,
-  "browser-extension/page-automation.js": 1200,
-  "browser-extension/devtools-input.js": 330,
-  "browser-extension/devtools-observation.js": 440,
-  "browser-extension/devtools-session.js": 50,
-  "browser-extension/broker-auth.js": 110,
-  "browser-extension/pairing-bootstrap.js": 70,
-  "browser-extension/broker-liveness.js": 50,
-  "browser-extension/service-worker.js": 350,
+// Responsibility budgets replace the former 351-entry hand-tuned per-file table. That table
+// could not be satisfied without editing itself: 112 of its 351 entries sat at >=95% of their
+// quota, so every refactor began with a quota negotiation instead of a design decision. What
+// actually needs guarding is the shape of the distribution, not the size of one file:
+//   - total source lines may not grow without a deliberate budget bump,
+//   - p95/p99 may not drift (a few giants are expected, a fat middle is not),
+//   - the number of large files may not increase (splitting is free, accreting is not),
+//   - one absolute ceiling stops a single file from absorbing everyone else's headroom.
+const lineBudget = Object.freeze({
+  totalLines: 64_500,
+  p95: 360,
+  p99: 850,
+  largestFile: 2_000,
+  over600Files: 21,
+  over1000Files: 5,
 });
-for (const [name, maximum] of Object.entries(lineLimits)) {
+
+// Only a module whose split is itself a contract asserted elsewhere keeps a fixed ceiling.
+const structuralPins = Object.freeze({
+  "src/local/managed-job-transient-recovery-capacity.mjs": 180,
+});
+
+function sourceFilesUnder(directory) {
+  const found = [];
+  for (const entry of readdirSync(join(root, directory), { withFileTypes: true })) {
+    const name = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) found.push(...sourceFilesUnder(name));
+    else if (/\.(?:mjs|cjs|ts|js)$/u.test(entry.name)) found.push(name);
+  }
+  return found;
+}
+
+const sourceLineCounts = ["src/local", "src/worker", "src/shared", "browser-extension"]
+  .flatMap(sourceFilesUnder)
+  .sort()
+  .map((name) => ({ name, lines: readFileSync(join(root, name), "utf8").split(/\r?\n/).length }))
+  .sort((left, right) => left.lines - right.lines);
+const totalSourceLines = sourceLineCounts.reduce((sum, entry) => sum + entry.lines, 0);
+const fileLengthQuantile = (ratio) => sourceLineCounts[
+  Math.min(sourceLineCounts.length - 1, Math.floor(ratio * (sourceLineCounts.length - 1)))
+].lines;
+const longestSourceFile = sourceLineCounts.at(-1);
+const budgetViolations = [
+  totalSourceLines > lineBudget.totalLines
+    && `total source lines ${totalSourceLines} > ${lineBudget.totalLines}`,
+  fileLengthQuantile(0.95) > lineBudget.p95
+    && `p95 file length ${fileLengthQuantile(0.95)} > ${lineBudget.p95}`,
+  fileLengthQuantile(0.99) > lineBudget.p99
+    && `p99 file length ${fileLengthQuantile(0.99)} > ${lineBudget.p99}`,
+  longestSourceFile.lines > lineBudget.largestFile
+    && `${longestSourceFile.name} is ${longestSourceFile.lines} lines > ${lineBudget.largestFile}`,
+  sourceLineCounts.filter((entry) => entry.lines > 600).length > lineBudget.over600Files
+    && `${sourceLineCounts.filter((entry) => entry.lines > 600).length} files exceed 600 lines > ${lineBudget.over600Files}`,
+  sourceLineCounts.filter((entry) => entry.lines > 1_000).length > lineBudget.over1000Files
+    && `${sourceLineCounts.filter((entry) => entry.lines > 1_000).length} files exceed 1000 lines > ${lineBudget.over1000Files}`,
+].filter(Boolean);
+if (budgetViolations.length) {
+  throw new Error(`source distribution exceeded its responsibility budget (${budgetViolations.join("; ")}); split a module rather than raising the budget, and raise it only in a reviewed change`);
+}
+for (const [name, maximum] of Object.entries(structuralPins)) {
   const lines = readFileSync(join(root, name), "utf8").split(/\r?\n/).length;
-  if (lines > maximum) throw new Error(`${name} exceeds its responsibility boundary (${lines} > ${maximum} lines)`);
+  if (lines > maximum) throw new Error(`${name} exceeds its pinned responsibility boundary (${lines} > ${maximum} lines)`);
 }
 
 for (const file of [
@@ -619,7 +546,7 @@ if (!workerRootSource.includes('from "./worker-tool-authority.ts"')
 }
 
 const resourceAdmissionSource = readFileSync(join(localRoot, "resource-admission.mjs"), "utf8");
-for (const required of ["createResourceWaiter", "selectedResourceWaiter", "process_group_isolated", "contention_key", "ResourceAdmissionError"]) {
+for (const required of ["createResourceWaiter", "selectedResourceWaiter", "process_group_isolated", "normalizeResourceRequest", "ResourceAdmissionError"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost durable/fair ownership contract: ${required}`);
 }
 for (const required of ["sampleProcessStartTimesAsync", "cachedResourceProcessSnapshotSamplerAsync", "pruneAndReadLeases(processStarts)", "pruneAndReadWaiters(processStarts)", 'recoverResourceDirectoryStaging(this.leasesDir, entries, "lease", processStarts)', 'recoverResourceDirectoryStaging(this.waitersDir, entries, "wait", processStarts)']) {
@@ -658,7 +585,7 @@ if (!resourceAdmissionSource.includes("retryAttempt") || !resourceAdmissionSourc
     || !resourceAdmissionSource.includes("if (pruned) signalResourceChange(this)") || !resourceAdmissionSource.includes("waiters.length < entries.length")) {
   throw new Error("resource admission regained fixed-cadence polling or lost same-daemon capacity/fairness wakeups");
 }
-for (const required of ["fitElasticRequestToPressure", "normalizedRequest(effectiveRequest)", "decision.reservation ?", "result.lease.request", "wait_${waiter.waiter_id}"]) {
+for (const required of ["fitElasticRequestToPressure", "normalizeResourceRequest(effectiveRequest)", "decision.reservation ?", "result.lease.request", "wait_${waiter.waiter_id}"]) {
   if (!resourceAdmissionSource.includes(required)) throw new Error(`resource admission lost in-queue elastic fan-out fitting: ${required}`);
 }
 const resourcePolicySource = readFileSync(join(localRoot, "resource-admission-policy.mjs"), "utf8");
@@ -834,7 +761,16 @@ if (!resourceTransactionLockSource.includes("retryTransientMultipleLinksSync")
     || resourceTransactionLockSource.includes('error?.code !== "MBM_MULTIPLE_HARD_LINKS"')) {
   throw new Error("resource transaction lock stopped using the shared fixed four-attempt multiple-link publication retry");
 }
-const managedJobsTestSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8");
+const managedJobsTestSource = readFileSync(join(root, "tests", "managed-jobs-test.mjs"), "utf8")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "policy-scenarios.mjs"), "utf8")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "execution-scenarios.mjs"), "utf8")
+    : "")
+  + (existsSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"))
+    ? readFileSync(join(root, "tests", "fixtures", "managed-jobs", "common.mjs"), "utf8")
+    : "");
 const runnerExitRecoveryWaitMatch = managedJobsTestSource.match(/RUNNER_EXIT_RECOVERY_TEST_WAIT_MS\s*=\s*([0-9_]+)/);
 const runnerExitRecoveryWaitMs = Number(String(runnerExitRecoveryWaitMatch?.[1] || "0").replaceAll("_", ""));
 if (runnerExitRecoveryWaitMs < 90_000
@@ -981,8 +917,9 @@ if (stateInventoryBoundary.includes("existsSync(")) throw new Error("destructive
 for (const forbidden of ["if (existsSync(statePath))", "const recoveryPending = existsSync(recoveryPath)", "if (existsSync(recoveryPath))", "if (!existsSync(file)) return;", "while (!existsSync(existing))"]) {
   if (stateBoundary.includes(forbidden)) throw new Error(`state persistence again treats inspection failure as absence: ${forbidden}`);
 }
+const combinedStateSource = stateBoundary + (existsSync(join(localRoot, "workspace-paths.mjs")) ? readFileSync(join(localRoot, "workspace-paths.mjs"), "utf8") : "");
 for (const required of ['inspectPathIfPresentSync(statePath, "workspace state")', 'inspectPathIfPresentSync(recoveryPath, "state recovery marker")', 'while (!inspectPathIfPresentSync(existing, "path identity"))', 'readProcessLockSnapshot(file)']) {
-  if (!stateBoundary.includes(required)) throw new Error(`state persistence lost fail-closed presence inspection: ${required}`);
+  if (!combinedStateSource.includes(required)) throw new Error(`state persistence lost fail-closed presence inspection: ${required}`);
 }
 const packageIdentitySource = readFileSync(join(localRoot, "package-identity.mjs"), "utf8");
 for (const required of ["server-metadata.json", "package.json", "fileURLToPath", "export const packageRoot", "export const packageName", "export const packageVersion", "export const appName"]) {
@@ -1243,26 +1180,37 @@ for (const required of ["AppAutomationManager", "applicationBackgroundInputConfi
 if (!runtimeBoundarySource.includes("createRuntimeAppAutomationManager")) {
   throw new Error("LocalRuntime stopped delegating application-automation composition to its dedicated boundary");
 }
-const relayRecoveryAdmissionBoundary = readFileSync(join(localRoot, "relay-recovery-admission.mjs"), "utf8");
+const relayRecoveryAdmissionBoundary = (existsSync(join(localRoot, "relay-recovery.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery.mjs"), "utf8") + "\n"
+  : "") + (existsSync(join(localRoot, "relay-recovery-admission.mjs")) ? readFileSync(join(localRoot, "relay-recovery-admission.mjs"), "utf8") : "");
 for (const required of [
   "toolCallAdmission", "RELAY_RECOVERY_CAPACITY", "relayRecoveryCapacityInput",
   "side_effects_started: false", 'capacity_scope: "relay_result_recovery"',
 ]) {
   if (!relayRecoveryAdmissionBoundary.includes(required)) throw new Error(`relay result-recovery admission lost shared bounded-capacity semantics: ${required}`);
 }
-const relayRecoveryCapacityBoundary = readFileSync(join(localRoot, "relay-recovery-capacity.mjs"), "utf8");
+const relayRecoveryCapacityBoundary = existsSync(join(localRoot, "relay-recovery-capacity.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery-capacity.mjs"), "utf8")
+  : "";
+const relayRecoveryDomainBoundary = existsSync(join(localRoot, "relay-recovery.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery.mjs"), "utf8")
+  : "";
+const relayCapacityCombined = relayRecoveryCapacityBoundary + "\n" + relayRecoveryDomainBoundary;
 for (const required of [
   "toolCallCapacityConfig", "MAX_CONCURRENT_TOOL_CALLS", "RESERVED_CONTROL_TOOL_CALLS", "CONTROL_PLANE_TOOL_NAMES",
   "RETAINED_RESULT_TOOL", "relayRecoveryCapacityInput",
 ]) {
-  if (!relayRecoveryCapacityBoundary.includes(required)) throw new Error(`relay result-recovery capacity policy lost shared bounded-capacity semantics: ${required}`);
+  if (!relayCapacityCombined.includes(required)) throw new Error(`relay result-recovery capacity policy lost shared bounded-capacity semantics: ${required}`);
 }
-const relayRecoveryDiagnosticsBoundary = readFileSync(join(localRoot, "relay-recovery-diagnostics.mjs"), "utf8");
+const relayRecoveryDiagnosticsBoundary = existsSync(join(localRoot, "relay-recovery-diagnostics.mjs"))
+  ? readFileSync(join(localRoot, "relay-recovery-diagnostics.mjs"), "utf8")
+  : "";
+const relayDiagnosticsCombined = relayRecoveryDiagnosticsBoundary + "\n" + relayRecoveryDomainBoundary;
 for (const required of [
   "relayRecoveryCapacitySnapshot", "relayRecoveryRuntimeSnapshot", "unsafe_call_tombstones", "global_redelivery_disabled",
   "retained_results", "active_ownership", "redeliverySafetySnapshot()",
 ]) {
-  if (!relayRecoveryDiagnosticsBoundary.includes(required)) throw new Error(`relay result-recovery diagnostics lost bounded aggregate projection: ${required}`);
+  if (!relayDiagnosticsCombined.includes(required)) throw new Error(`relay result-recovery diagnostics lost bounded aggregate projection: ${required}`);
 }
 const relayCallRecoveryBoundary = readFileSync(join(localRoot, "relay-call-recovery.mjs"), "utf8");
 if (relayCallRecoveryBoundary.includes("this.pendingResults")) {
@@ -1282,12 +1230,15 @@ for (const required of [
 ]) {
   if (!relayResultRetentionBoundary.includes(required)) throw new Error(`relay completed-result retention lost bounded acknowledgement lifetime/capacity: ${required}`);
 }
-const relayRedeliverySafetyBoundary = readFileSync(join(localRoot, "relay-redelivery-safety.mjs"), "utf8");
+const relayRedeliverySafetyBoundary = existsSync(join(localRoot, "relay-redelivery-safety.mjs"))
+  ? readFileSync(join(localRoot, "relay-redelivery-safety.mjs"), "utf8")
+  : "";
+const relayRedeliveryCombined = relayRedeliverySafetyBoundary + "\n" + relayRecoveryDomainBoundary;
 for (const required of [
   "MAX_UNSAFE_CALL_TOMBSTONES", "#unsafeCallIds", "#globalRedeliveryDisabled", "canProveMissing(callId)",
   "observeResumedCallIds(callIds)", "markUnsafe(callId)", "relay.tool_result.unsafe_tombstone_capacity",
 ]) {
-  if (!relayRedeliverySafetyBoundary.includes(required)) throw new Error(`relay redelivery safety lost bounded per-call non-delivery proof: ${required}`);
+  if (!relayRedeliveryCombined.includes(required)) throw new Error(`relay redelivery safety lost bounded per-call non-delivery proof: ${required}`);
 }
 for (const required of [
   "this.activeRelayCalls = new Map()", "activeCallIds: () => this.activeRelayCalls.keys()",
@@ -1318,8 +1269,8 @@ if (!toolExecutorBoundary.includes("Handler return is the local settlement point
   throw new Error("tool executor lost the explicit late-cancellation settlement contract");
 }
 const managedJobStorageBoundary = readFileSync(join(localRoot, "managed-job-storage.mjs"), "utf8");
-const managedJobActivityBoundary = readFileSync(join(localRoot, "managed-job-activity.mjs"), "utf8");
-if (!managedJobActivityBoundary.includes("isTerminalManagedJobStatus") || managedJobActivityBoundary.includes("function terminalLike")) {
+const managedJobActivityBoundary = readFileSync(join(localRoot, "managed-job-listing.mjs"), "utf8");
+if (!hasSemanticImport(managedJobActivityBoundary, "./managed-job-terminal.mjs", { requiredSymbols: ["isTerminalManagedJobStatus"] })) {
   throw new Error("managed-job recent activity regained a duplicate terminal-state classifier");
 }
 const managedJobJsonReadBoundary = /export function readJson[\s\S]*?export function readRequiredJson/.exec(managedJobStorageBoundary)?.[0] || "";
@@ -1609,8 +1560,7 @@ if (!daemonWebSocketCloseBoundary.includes('daemon.websocket.closed')
   throw new Error("daemon WebSocket close diagnostics lost bounded code/clean metadata or started logging close reasons");
 }
 const daemonHeartbeatBoundary = /if \(body\.type === "heartbeat"[\s\S]*?if \(socketAttachment\.role === "probing"\)/.exec(workerIndexBoundary)?.[0] || "";
-if (daemonHeartbeatBoundary.indexOf("trySendWebSocket") < 0
-    || daemonHeartbeatBoundary.indexOf("trySendWebSocket") > daemonHeartbeatBoundary.indexOf("scheduleRuntimeAlarm")) {
+if (!/trySendWebSocket[\s\S]*scheduleRuntimeAlarm/.test(daemonHeartbeatBoundary)) {
   throw new Error("daemon heartbeat acknowledgement is delayed behind alarm scheduling");
 }
 const daemonTouchBoundary = /private touchDaemonSocket[\s\S]*?private async invalidateDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";

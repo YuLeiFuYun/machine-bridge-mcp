@@ -9,7 +9,12 @@ import { terminateProcessTreeWithEscalation } from "./process-tree.mjs";
 import { BridgeError } from "./errors.mjs";
 import { delegatedProcessCommand, delegatedProcessRuntimeDir } from "./delegated-process-sandbox.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
-import { boundedProcessErrorMessage } from "./process-error-message.mjs";
+export function boundedProcessErrorMessage(error, fallback = "process failed") {
+  let message = "";
+  try { message = error instanceof Error ? error.message : String(error); }
+  catch { return fallback; }
+  return message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").slice(0, 4096) || fallback;
+}
 import { processForegroundTimeoutSeconds, registeredCommandTimeoutSeconds } from "./process-foreground-timeout.mjs";
 import { processFailureMessage, publicProcessToolResult } from "./process-result-projection.mjs";
 import { processCancellationFailure, processChildErrorFailure, processPostSpawnFailure, processPreSpawnFailure, processTimeoutFailure } from "./process-nonreplayable-settlement.mjs";

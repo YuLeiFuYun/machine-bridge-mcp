@@ -1,9 +1,9 @@
-export const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"]);
-const TERMINAL_JOB_STATUSES = new Set([
-  "succeeded", "failed", "cancelled", "succeeded_cleanup_failed", "failed_cleanup_failed",
-  "cancelled_cleanup_failed", "recovered", "recovery_failed", "runner_failed",
-  "runner_launch_failed", "recovery_exhausted", "cancelled_before_start", "expired_before_start",
-]);
+import {
+  MCP_TASK_ACTIVE_JOB_STATUSES, MCP_TASK_TERMINAL_JOB_STATUSES,
+} from "../shared/mcp-task-contract.mjs";
+
+export const ACTIVE_JOB_STATES = MCP_TASK_ACTIVE_JOB_STATUSES;
+const TERMINAL_JOB_STATUSES = MCP_TASK_TERMINAL_JOB_STATUSES;
 
 export function managedJobFinalStatus({ recover, cancelled, mainError, cleanupError }) {
   if (recover) return mainError || cleanupError ? "recovery_failed" : "recovered";

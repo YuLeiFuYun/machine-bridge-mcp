@@ -97,6 +97,13 @@ for (const input of [
   { origin, method: ["GET"], pathname: "/admin/accounts", bodyHash: "a".repeat(64), keyId: sessionIdentity.keyId, issuedAt: 1_800_000_000, nonce: "n".repeat(32) },
   { origin, method: "GET", pathname: "/admin/accounts", bodyHash: "a".repeat(64), keyId: sessionIdentity.keyId, issuedAt: "1800000000", nonce: "n".repeat(32) },
 ]) assertThrows(() => adminAuthTranscript(input), "coercible account admin transcript input was accepted");
+for (const loopbackOrigin of ["http://127.0.0.1", "http://localhost", "http://[::1]"]) {
+  const transcript = adminAuthTranscript({
+    origin: loopbackOrigin, method: "GET", pathname: "/admin/accounts", bodyHash: "a".repeat(64),
+    keyId: sessionIdentity.keyId, issuedAt: 1_800_000_000, nonce: "n".repeat(32),
+  });
+  assert(transcript.split("\0")[1] === loopbackOrigin, "loopback HTTP admin origin was rejected: " + loopbackOrigin);
+}
 assertThrows(() => accountAdminRequestHeaders({
   sessionIdentity, origin, method: "POST", pathname: "/admin/accounts", body: ["{}"], now,
 }), "coercible account admin body was accepted");

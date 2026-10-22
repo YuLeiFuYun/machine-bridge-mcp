@@ -7,11 +7,21 @@ const STAGING = /^\.(?<target>(?<kind>lease|wait)_[a-f0-9]{32}\.json)\.(?<pid>[1
 const FINAL = Object.freeze({ lease: /^lease_[a-f0-9]{32}\.json$/, wait: /^wait_[a-f0-9]{32}\.json$/ });
 export const RESOURCE_STAGING_BUSY_CODE = "MBM_RESOURCE_STAGING_BUSY";
 
+/**
+ * Desktop indexers and file browsers may place metadata in an owner-only state directory.
+ * These names carry no runtime authority and must not turn every coordinator operation into
+ * a permanent failure. Unknown names still fail closed in the enumeration paths below.
+ */
+export function isIgnorableCoordinatorMetadata(name) {
+  return name === ".DS_Store" || name === "Icon\r" || name === "Thumbs.db" || name === "desktop.ini";
+}
+
 export function recoverResourceDirectoryStaging(dir, entries, kind, processStarts = null) {
   const expected = FINAL[kind];
   if (!expected) throw new Error("resource staging kind is invalid");
   let recovered = false;
   for (const entry of entries) {
+    if (entry.isFile() && isIgnorableCoordinatorMetadata(entry.name)) continue;
     if (entry.isFile() && expected.test(entry.name)) continue;
     const match = entry.isFile() ? STAGING.exec(entry.name) : null;
     if (match?.groups?.kind === kind) {

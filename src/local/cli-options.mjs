@@ -3,7 +3,7 @@ import { normalizeLogLevel } from "./log.mjs";
 const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker", "allowInsecurePermissions", "showPaths",
+  "yes", "keepWorker", "allowInsecurePermissions", "showPaths", "repairResourceCoordinator",
 ]);
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel", "logFormat",
@@ -24,7 +24,7 @@ const COMMAND_OPTIONS = new Map(Object.entries({
   stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat"]),
   "client-config": new Set(["workspace", "stateDir", "profile", "client", "json"]),
   status: new Set(["workspace", "stateDir"]),
-  doctor: new Set(["workspace", "stateDir"]),
+  doctor: new Set(["workspace", "stateDir", "repairResourceCoordinator"]),
   "full-test": new Set(["workspace", "stateDir", "json"]),
   "rotate-secrets": new Set(["workspace", "stateDir", "quiet"]),
   workspace: new Set(["workspace", "stateDir"]),

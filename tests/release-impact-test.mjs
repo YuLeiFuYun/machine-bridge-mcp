@@ -16,7 +16,7 @@ try {
   for (const name of ["trusted-git-executable.mjs", "trusted-executable.mjs", "errors.mjs"]) {
     cpSync(join(root, "src", "local", name), join(temp, "src", "local", name));
   }
-  for (const name of ["log-redaction.mjs", "sensitive-value-patterns.mjs"]) {
+  for (const name of ["log-redaction.mjs", "sensitive-value-patterns.mjs", "error-guidance.mjs"]) {
     cpSync(join(root, "src", "shared", name), join(temp, "src", "shared", name));
   }
   writeJson(join(temp, "package.json"), { name: "release-impact-fixture", version: "1.0.0", files: ["README.md", "scripts"] });

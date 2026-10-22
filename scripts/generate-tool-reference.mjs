@@ -65,6 +65,12 @@ function renderToolReference(tools) {
       "```json",
       JSON.stringify(tool.inputSchema || { type: "object", additionalProperties: false }, null, 2),
       "```",
+      "",
+      "### Output schema",
+      "",
+      "```json",
+      JSON.stringify(tool.outputSchema || { type: "object" }, null, 2),
+      "```",
     );
   }
 

@@ -13,6 +13,7 @@ import { basename, dirname, join } from "node:path";
 import { replaceFileSync } from "./atomic-fs.mjs";
 import { readBoundedRegularFileWithInfoSync } from "./secure-file.mjs";
 import { filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity.mjs";
+import { repairExclusivePublicationLinksSync, retryStagingCleanupSync } from "./exclusive-publication-repair.mjs";
 
 export function createExclusiveFileSync(target, content, options = {}) {
   const mode = Number.isInteger(options.mode) ? options.mode : 0o600;
@@ -35,7 +36,7 @@ export function createExclusiveFileSync(target, content, options = {}) {
     createLink(temporary, target);
     linked = true;
   } catch (error) {
-    primaryError = error;
+    primaryError = normalizeExclusiveConflict(error, target);
   }
 
   if (fd !== undefined) {
@@ -43,29 +44,28 @@ export function createExclusiveFileSync(target, content, options = {}) {
   }
   let stagingCleanupError = null;
   if (ownsTemporary) {
-    try { remove(temporary); } catch (error) {
-      if (error?.code !== "ENOENT") {
-        stagingCleanupError = error;
-        cleanupErrors.push(error);
-      }
+    try { retryStagingCleanupSync(remove, temporary); } catch (error) {
+      if (error?.code !== "ENOENT") { stagingCleanupError = error; cleanupErrors.push(error); }
     }
   }
 
   if (primaryError) {
-    if (cleanupErrors.length) {
-      throw new AggregateError([primaryError, ...cleanupErrors], "exclusive file creation failed and cleanup was incomplete");
-    }
-    throw primaryError;
+    throw cleanupErrors.length
+      ? new AggregateError([primaryError, ...cleanupErrors], "exclusive file creation failed and cleanup was incomplete")
+      : primaryError;
   }
   if (!linked) throw new Error("exclusive file creation did not settle");
-  const result = { created: true, path: target, warnings: [] };
+  const result = { created: true, path: target, publicationComplete: true, warnings: [] };
   if (stagingCleanupError) {
-    result.warnings.push("Exclusive file committed, but its internal staging file could not be removed.");
+    result.warnings.push("Exclusive file committed, but its internal staging file could not be removed; the published name keeps a second link until it is repaired.");
     Object.defineProperties(result, {
       cleanupError: { value: stagingCleanupError, enumerable: false },
       cleanupArtifact: { value: temporary, enumerable: false },
     });
+  } else if (linkCountOf(target) > 1) {
+    result.warnings.push("Published name kept a second hard link after commit; inspect the owning state directory and, for resource coordinator state, run doctor --repair-resource-coordinator to restore it.");
   }
+  result.publicationComplete = result.warnings.length === 0;
   return result;
 }
 
@@ -106,7 +106,15 @@ export function replaceFileAtomicallySync(target, content, options = {}) {
 export function removeOwnedJsonFileSync(target, expected = {}, options = {}) {
   const maxBytes = Number.isInteger(options.maxBytes) ? options.maxBytes : 4096;
   const allowedMultipleLinkIdentity = options.allowedMultipleLinkIdentity || null;
-  const snapshot = ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity);
+  let snapshot;
+  try {
+    snapshot = ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity);
+  } catch (error) {
+    if (error?.code !== "MBM_MULTIPLE_HARD_LINKS" || options.repairLinks === false) throw error;
+    const repair = repairExclusivePublicationLinksSync(target, { allowUnattributable: options.allowUnattributableLinks === true, ...(options.repairOptions || {}) });
+    if (!repair.repaired) throw error;
+    snapshot = ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity);
+  }
   if (!snapshot || !matchesExpected(snapshot.value, expected)) return false;
   let current;
   try { current = lstatSync(target, { bigint: true }); } catch (error) { return error?.code === "ENOENT"; }
@@ -138,8 +146,25 @@ function ownedJsonSnapshot(target, maxBytes, allowedMultipleLinkIdentity = null)
   } catch { return null; }
 }
 
+function linkCountOf(target) { try { return Number(lstatSync(target, { bigint: true }).nlink); } catch { return 0; } }
+
 function matchesExpected(value, expected) {
   return Object.entries(expected).every(([key, expectedValue]) => value?.[key] === expectedValue);
+}
+
+/**
+ * Report contention even when the failing link is surfaced through an interposed filesystem
+ * layer that replaces the errno code. A hard link can only fail because the target name is
+ * taken, so an existing target is proof of conflict regardless of the reported code.
+ */
+function normalizeExclusiveConflict(error, target) {
+  if (error?.code === "EEXIST") return error;
+  try {
+    lstatSync(target);
+  } catch {
+    return error;
+  }
+  return Object.assign(new Error("exclusive target already exists", { cause: error }), { code: "EEXIST" });
 }
 
 function sameIdentity(left, right) {

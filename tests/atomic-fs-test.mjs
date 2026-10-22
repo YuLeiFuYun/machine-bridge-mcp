@@ -519,6 +519,38 @@ try {
   assert(injectedAtomicRace && await readFile(atomicRaceTarget, "utf8") === "concurrent-generation",
     "expected-hash atomic write failed to detect a source generation that changed before the final precondition check");
 
+  // Exact edits must preserve semantic indentation, line endings and string contents.
+  for (const [name, initial, oldText] of [
+    ["python-indent.py", "if ready:\n    if nested:\n        work()\n", "if ready:\nif nested:\nwork()"],
+    ["tab-indent.js", "\tfunction compute() {\n\t\treturn 1;\n\t}\n", "  function compute() {\n    return 1;\n  }"],
+    ["string-literal.js", 'const msg = "hello  world";\n', 'const msg = "hello world";'],
+    ["crlf-file.js", "const a = 1;\r\nconst b = 2;\r\n", "const a = 1;\nconst b = 2;"],
+  ]) {
+    const path = join(root, name);
+    await writeFile(path, initial, { encoding: "utf8", mode: 0o600 });
+    await expectAsyncThrow(() => warningService.editFile({ path: name, old_text: oldText, new_text: "changed" }), "old_text was not found", "not_found", true, "text_not_found");
+    assert(await readFile(path, "utf8") === initial, "rejected edit changed the file");
+  }
+  const exactPath = join(root, "exact-indent.py");
+  await writeFile(exactPath, "if ready:\n    work()\n", { encoding: "utf8", mode: 0o600 });
+  const exact = await warningService.editFile({ path: "exact-indent.py", old_text: "if ready:\n    work()", new_text: "if ready:\n    work_again()" });
+  assert(exact.matched === "exact" && await readFile(exactPath, "utf8") === "if ready:\n    work_again()\n", "exact edit lost semantic indentation");
+  const patchEnvelope = ["*** Begin Patch", "*** Update File: exact-indent.py", "@@", "-  work_again()", "+  changed()", "*** End Patch"].join("\n");
+  const patchConflict = await expectAsyncThrow(() => warningService.applyPatch({ patch: patchEnvelope }), "patch context did not match", "conflict", true, "context_not_found");
+  assert(patchConflict.details?.conflict_hint?.candidate_lines?.[0] === 2, "rejected patch omitted candidate_lines conflict_hint");
+  assert(await readFile(exactPath, "utf8") === "if ready:\n    work_again()\n", "rejected patch changed the file");
+
+  // 3. SWE-agent window pagination guidance in readFile
+  const largeFilePath = join(root, "large-file.txt");
+  const largeContent = Array.from({ length: 350 }, (_, i) => `line ${i + 1}`).join("\n");
+  await writeFile(largeFilePath, largeContent, { encoding: "utf8", mode: 0o600 });
+  const readFull = await warningService.readFile({ path: "large-file.txt" });
+  assert(readFull.total_lines === 350, "total_lines mismatch");
+  assert(typeof readFull.pagination_guidance === "string" && readFull.pagination_guidance.includes("350 lines"), "large file omitted pagination_guidance");
+  const readWindow = await warningService.readFile({ path: "large-file.txt", start_line: 1, end_line: 50 });
+  assert(readWindow.start_line === 1 && readWindow.end_line === 50, "window boundaries mismatch");
+  assert(typeof readWindow.pagination_guidance === "string" && readWindow.pagination_guidance.includes("start_line=51"), "window reading omitted subsequent pagination_guidance");
+
   console.log("atomic file replacement and patch recovery test ok");
 } finally {
   await rm(root, { recursive: true, force: true });

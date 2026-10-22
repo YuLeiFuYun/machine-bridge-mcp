@@ -21,6 +21,35 @@ export function acceptancePath(root, version) {
   return join(root, "release-acceptance", `v${version}.json`);
 }
 
+export function archiveLedgerPath(root) {
+  return join(root, "release-acceptance", "archive-ledger.jsonl");
+}
+
+export function readFromArchiveLedger(root, version) {
+  const ledger = archiveLedgerPath(root);
+  let bytes;
+  try {
+    bytes = readBoundedRegularFileSync(
+      ledger, 4 * 1024 * 1024, "release acceptance archive ledger",
+      { verifyPathIdentity: true, rejectMultipleLinks: true },
+    );
+  } catch {
+    return null;
+  }
+  const lines = bytes.toString("utf8").split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    try {
+      const record = JSON.parse(trimmed);
+      if (record?.package_version === version) return record;
+    } catch {
+      // ignore malformed line
+    }
+  }
+  return null;
+}
+
 export function packProject(root, destination, options = {}) {
   const npmCli = options.npmCli || process.env.npm_execpath;
   if (!npmCli) {
@@ -82,6 +111,10 @@ export function readAcceptance(root, version) {
     );
   } catch (error) {
     const message = String(error?.message || error);
+    if (message.includes("ENOENT") || message.includes("no such file")) {
+      const archived = readFromArchiveLedger(root, version);
+      if (archived) return archived;
+    }
     if (message.includes("exceeds")) throw new Error(`release acceptance record exceeds ${MAX_ACCEPTANCE_BYTES} bytes`);
     if (message.includes("regular file") || message.includes("symbolic link") || message.includes("multiple links") || message.includes("identity changed")) {
       throw new Error(`release acceptance record must be a regular file: ${path}`);

@@ -45,7 +45,7 @@ export async function verifyWranglerToolchain(descriptor, execute, required = fa
     catch {
       throw new Error("Wrangler toolchain npm ls returned invalid JSON; inspect the private install separately");
     }
-    validateInstalledWranglerToolchainTree(tree, descriptor.versions);
+    validateInstalledWranglerToolchainTree(tree, descriptor.versions, JSON.parse(descriptor.lockBytes).packages);
     if (treeResult.code !== 0) throw new Error(`Wrangler toolchain npm ls exited ${treeResult.code} without dependency problems`);
     return true;
   } catch (error) {

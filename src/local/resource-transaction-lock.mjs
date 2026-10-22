@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publication-recovery.mjs";
+import { readWithPublicationRepairSync } from "./exclusive-publication-repair.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstanceAsync } from "./process-identity.mjs";
 import { readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
@@ -100,16 +101,18 @@ function validFileOwner(owner) {
 
 function readJson(file, maxBytes, label) {
   let residueIdentity = null;
-  const text = retryTransientMultipleLinksSync((verifiedResidueIdentity) => {
+  const read = (verifiedResidueIdentity) => {
     residueIdentity = verifiedResidueIdentity;
     return readBoundedRegularFileSync(file, maxBytes, label, {
       verifyPathIdentity: true,
       rejectMultipleLinks: true,
       allowedMultipleLinkIdentity: verifiedResidueIdentity,
     });
-  }, { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(file) }).toString("utf8");
+  };
+  const attempt = () => retryTransientMultipleLinksSync(read, { verifyResidue: () => verifyExclusiveFilePublicationResidueSync(file) });
+  const bytes = readWithPublicationRepairSync(attempt, file);
   let value;
-  try { value = JSON.parse(text); } catch { throw new Error(`${label} is not valid JSON`); }
+  try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new Error(`${label} is not valid JSON`); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must contain a JSON object`);
   return { value, residueIdentity };
 }

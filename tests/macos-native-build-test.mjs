@@ -15,7 +15,7 @@ const temp = mkdtempSync(path.join(tmpdir(), "mbm-macos-native-build-"));
 try {
   for (const [source, binary] of [
     ["native/macos/MachineBridgeBackgroundInput.swift", "background-input"],
-    ["native/macos/MachineBridgeBackgroundInputSmokeFixture.swift", "smoke-fixture"],
+    ["tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift", "smoke-fixture"],
   ]) {
     const result = spawnSync("/usr/bin/xcrun", [
       "swiftc", "-O", path.join(root, source), "-o", path.join(temp, binary),

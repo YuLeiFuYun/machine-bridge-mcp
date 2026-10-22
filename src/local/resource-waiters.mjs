@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
-import { validateResourceRequest } from "./resource-request-contract.mjs";
+import { isPublicationStagingArtifactName, readWithPublicationRepairSync, sweepPublicationStagingArtifactsSync } from "./exclusive-publication-repair.mjs";
+import { isIgnorableCoordinatorMetadata } from "./resource-staging-recovery.mjs";
+import { normalizeResourceRequest, validateResourceRequest } from "./resource-request-contract.mjs";
 const SCHEMA = 1;
 const WAITER_FILE = /^wait_[a-f0-9]{32}\.json$/;
 const MAX_WAITER_BYTES = 16 * 1024;
@@ -21,7 +23,7 @@ export function createResourceWaiter(waitersDir, request, waitMs, now = Date.now
     enqueued_at: new Date(now).toISOString(),
     expires_at: new Date(expiresAt).toISOString(),
     owner: { pid: process.pid, process_started_at: new Date(currentProcessStartTimeMs()).toISOString() },
-    request: normalizeWaiterRequest(request),
+    request: normalizeResourceRequest(request),
   };
   createExclusiveFileSync(waiterPath(waitersDir, waiterId), `${JSON.stringify(waiter)}\n`, { mode: 0o600 });
   return waiter;
@@ -33,8 +35,11 @@ export function removeResourceWaiter(waitersDir, waiter) {
   }, { maxBytes: MAX_WAITER_BYTES });
 }
 export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now(), processStarts = null) {
+  sweepPublicationStagingArtifactsSync(waitersDir, { minAgeMs: 60_000 });
   const waiters = [];
   for (const entry of entries) {
+    if (entry.isFile() && isIgnorableCoordinatorMetadata(entry.name)) continue;
+    if (entry.isFile() && isPublicationStagingArtifactName(entry.name)) continue;
     if (!entry.isFile() || !WAITER_FILE.test(entry.name)) throw new Error("resource coordinator waiter directory contains an unexpected entry");
     const file = join(waitersDir, entry.name);
     let waiter;
@@ -121,18 +126,12 @@ function validateWaiter(waiter) {
   validateResourceRequest(waiter.request);
 }
 function readWaiter(file) {
-  const text = readBoundedRegularFileSync(file, MAX_WAITER_BYTES, "resource waiter", {
-    verifyPathIdentity: true, rejectMultipleLinks: true,
-  }).toString("utf8");
-  const value = JSON.parse(text);
+  const read = () => readBoundedRegularFileSync(file, MAX_WAITER_BYTES, "resource waiter", { verifyPathIdentity: true, rejectMultipleLinks: true });
+  const value = JSON.parse(readWithPublicationRepairSync(read, file).toString("utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("resource coordinator waiter is invalid");
   return value;
 }
 function waiterPath(waitersDir, id) {
   if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) throw new Error("invalid resource waiter id");
   return join(waitersDir, `wait_${id}.json`);
-}
-function normalizeWaiterRequest(request = {}) {
-  const keys = ["family", "resource_class", "priority", "cpu", "io", "memory_mb", "disk_reserve_bytes", "heavy", "compiler_jobs", "unbounded", "serialize_project", "contention_key"];
-  return Object.fromEntries(keys.map((key) => [key, request[key] ?? null]));
 }

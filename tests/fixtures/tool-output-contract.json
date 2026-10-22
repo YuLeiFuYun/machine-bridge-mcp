@@ -1,0 +1,1355 @@
+{
+  "generation": 1,
+  "note": "Top-level output fields observed from real tool invocations. Tools marked verified=false could not be executed in the offline audit harness, so their outputSchema deliberately claims no fields. Fields listed in conditional appear only in that case; fields listed in stdio_injected are added by the progressive stdio transport, not by the tool itself. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
+  "verified": 40,
+  "total": 54,
+  "tools": {
+    "agent_context": {
+      "verified": true,
+      "properties": {
+        "target": "string",
+        "scope_root": "string",
+        "precedence": "string",
+        "config_files": "array",
+        "builtin_instructions": "object",
+        "automatic_project_context": "null",
+        "model_instructions_file": "null",
+        "instruction_files": "array",
+        "skills": "array",
+        "skills_truncated": "boolean",
+        "skill_warnings": "array",
+        "instruction_warnings": "array",
+        "instructions_truncated": "boolean",
+        "commands": "array",
+        "metadata_authority": "object",
+        "guidance": "array",
+        "effective_instructions": "string"
+      },
+      "conditional": [
+        "effective_instructions"
+      ],
+      "required": [
+        "target",
+        "scope_root",
+        "precedence",
+        "config_files",
+        "builtin_instructions",
+        "automatic_project_context",
+        "model_instructions_file",
+        "instruction_files",
+        "skills",
+        "skills_truncated",
+        "skill_warnings",
+        "instruction_warnings",
+        "instructions_truncated",
+        "commands",
+        "metadata_authority",
+        "guidance"
+      ]
+    },
+    "apply_patch": {
+      "verified": true,
+      "properties": {
+        "ok": "boolean",
+        "files": "array"
+      },
+      "conditional": [],
+      "required": [
+        "ok",
+        "files"
+      ]
+    },
+    "browser_action": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_fill_form": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_get_source": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_inspect_page": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_list_tabs": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_manage_tabs": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_screenshot": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_status": {
+      "verified": true,
+      "properties": {
+        "available": "boolean",
+        "connected": "boolean",
+        "broker_role": "string",
+        "runtime_clients": "integer",
+        "routed_requests": "integer",
+        "endpoint": "string",
+        "pairing_url": "string",
+        "extension_path": "string",
+        "expected_extension_version": "string",
+        "expected_extension_id": "string",
+        "extension_id": "string",
+        "extension_protocol": "null",
+        "extension_version": "string",
+        "extension_capabilities": "array",
+        "extension_reload_required": "boolean",
+        "supported_browsers": "array",
+        "controls_existing_profile": "boolean",
+        "controls_extension_profile": "boolean",
+        "launches_browser_process": "boolean",
+        "launches_separate_automation_profile": "boolean",
+        "profile_identity_verifiable": "boolean",
+        "uses_existing_tabs_and_login_state": "boolean",
+        "source_access": "boolean",
+        "semantic_snapshot_refs": "boolean",
+        "actionability_waits": "boolean",
+        "trusted_input": "boolean",
+        "trusted_input_quarantined": "boolean",
+        "trusted_input_health": "string",
+        "input_modes": "array",
+        "complex_form_fill": "boolean",
+        "tab_management": "boolean",
+        "explicit_waits": "boolean",
+        "screenshots": "boolean",
+        "computer_observation_v1": "boolean",
+        "cdp_accessibility_snapshot": "boolean",
+        "cdp_surface_screenshot": "boolean",
+        "backend_node_trusted_input": "boolean",
+        "restricted_pages": "array",
+        "security": "object"
+      },
+      "conditional": [],
+      "required": [
+        "available",
+        "connected",
+        "broker_role",
+        "runtime_clients",
+        "routed_requests",
+        "endpoint",
+        "pairing_url",
+        "extension_path",
+        "expected_extension_version",
+        "expected_extension_id",
+        "extension_id",
+        "extension_protocol",
+        "extension_version",
+        "extension_capabilities",
+        "extension_reload_required",
+        "supported_browsers",
+        "controls_existing_profile",
+        "controls_extension_profile",
+        "launches_browser_process",
+        "launches_separate_automation_profile",
+        "profile_identity_verifiable",
+        "uses_existing_tabs_and_login_state",
+        "source_access",
+        "semantic_snapshot_refs",
+        "actionability_waits",
+        "trusted_input",
+        "trusted_input_quarantined",
+        "trusted_input_health",
+        "input_modes",
+        "complex_form_fill",
+        "tab_management",
+        "explicit_waits",
+        "screenshots",
+        "computer_observation_v1",
+        "cdp_accessibility_snapshot",
+        "cdp_surface_screenshot",
+        "backend_node_trusted_input",
+        "restricted_pages",
+        "security"
+      ]
+    },
+    "browser_upload_files": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_wait": {
+      "verified": false,
+      "properties": {}
+    },
+    "cancel_job": {
+      "verified": true,
+      "properties": {
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "created_at": "string",
+        "started_at": "null",
+        "finished_at": "unknown",
+        "current_phase": "null",
+        "current_step": "null",
+        "approval": "string",
+        "plan_sha256": "string",
+        "cleanup_guarantee": "string",
+        "error_class": "unknown",
+        "cleanup_error_class": "null",
+        "recovery_attempts": "integer",
+        "recovery_history": "array",
+        "recovery_history_complete": "boolean",
+        "result_persisted": "unknown",
+        "terminal_record_error_class": "null",
+        "artifact_cleanup_pending": "boolean",
+        "artifact_cleanup_error_class": "null",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "cancellation_requested": "boolean",
+        "cleanup_will_run": "boolean",
+        "execution_started": "boolean",
+        "already_finished": "boolean",
+        "cancellation_delivery": "string"
+      },
+      "conditional": [
+        "cleanup_will_run",
+        "execution_started",
+        "already_finished",
+        "cancellation_delivery"
+      ],
+      "required": [
+        "job_id",
+        "name",
+        "status",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "current_phase",
+        "current_step",
+        "approval",
+        "plan_sha256",
+        "cleanup_guarantee",
+        "error_class",
+        "cleanup_error_class",
+        "recovery_attempts",
+        "recovery_history",
+        "recovery_history_complete",
+        "result_persisted",
+        "terminal_record_error_class",
+        "artifact_cleanup_pending",
+        "artifact_cleanup_error_class",
+        "dependency_total",
+        "dependency_pending_count",
+        "cancellation_requested"
+      ]
+    },
+    "computer_act": {
+      "verified": false,
+      "properties": {}
+    },
+    "computer_observe": {
+      "verified": false,
+      "properties": {}
+    },
+    "diagnose_runtime": {
+      "verified": true,
+      "properties": {
+        "request_reached_local_runtime": "boolean",
+        "interpretation": "object",
+        "policy": "object",
+        "observability": "object",
+        "runtime": "object",
+        "checks": "array",
+        "ok": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "request_reached_local_runtime",
+        "interpretation",
+        "policy",
+        "observability",
+        "runtime",
+        "checks",
+        "ok"
+      ]
+    },
+    "edit_file": {
+      "verified": true,
+      "properties": {
+        "ok": "boolean",
+        "path": "string",
+        "replacements": "integer",
+        "sha256": "string",
+        "bytes": "integer",
+        "matched": "string"
+      },
+      "conditional": [],
+      "required": [
+        "ok",
+        "path",
+        "replacements",
+        "sha256",
+        "bytes",
+        "matched"
+      ]
+    },
+    "exec_command": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "stdout": "string",
+        "stderr": "string",
+        "stdout_truncated_bytes": "integer",
+        "stderr_truncated_bytes": "integer",
+        "accepted": "boolean",
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "idempotency_key_accepted": "boolean",
+        "idempotency_replay": "boolean",
+        "recovery": "object",
+        "cleanup": "object",
+        "execution_mode": "string",
+        "source_tool": "string",
+        "execution_timeout_seconds": "integer",
+        "progress": "object",
+        "retry_safety": "string"
+      },
+      "conditional": [
+        "code",
+        "stdout",
+        "stderr",
+        "stdout_truncated_bytes",
+        "stderr_truncated_bytes",
+        "accepted",
+        "job_id",
+        "name",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "idempotency_key_accepted",
+        "idempotency_replay",
+        "recovery",
+        "cleanup",
+        "execution_mode",
+        "source_tool",
+        "execution_timeout_seconds",
+        "progress",
+        "retry_safety"
+      ],
+      "required": []
+    },
+    "generate_ssh_key_resource": {
+      "verified": true,
+      "properties": {
+        "name": "string",
+        "created": "boolean",
+        "registered": "boolean",
+        "fingerprint": "string",
+        "key_type": "string",
+        "private_mode": "string",
+        "public_mode": "string",
+        "private_key_content_exposed": "boolean",
+        "available_to_new_jobs_immediately": "boolean",
+        "paths_exposed": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "name",
+        "created",
+        "registered",
+        "fingerprint",
+        "key_type",
+        "private_mode",
+        "public_mode",
+        "private_key_content_exposed",
+        "available_to_new_jobs_immediately",
+        "paths_exposed"
+      ]
+    },
+    "git_commit": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "committed": "boolean",
+        "path": "string",
+        "gitRoot": "string"
+      },
+      "conditional": [],
+      "required": [
+        "code",
+        "committed",
+        "path",
+        "gitRoot"
+      ]
+    },
+    "git_diff": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "stdout": "string",
+        "stderr": "string",
+        "stdout_truncated_bytes": "integer",
+        "stderr_truncated_bytes": "integer",
+        "path": "string",
+        "gitRoot": "string",
+        "staged": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "code",
+        "stdout",
+        "stderr",
+        "stdout_truncated_bytes",
+        "stderr_truncated_bytes",
+        "path",
+        "gitRoot",
+        "staged"
+      ]
+    },
+    "git_log": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "stderr": "string",
+        "commits": "array",
+        "path": "string",
+        "gitRoot": "string"
+      },
+      "conditional": [],
+      "required": [
+        "code",
+        "stderr",
+        "commits",
+        "path",
+        "gitRoot"
+      ]
+    },
+    "git_show": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "stdout": "string",
+        "stderr": "string",
+        "stdout_truncated_bytes": "integer",
+        "stderr_truncated_bytes": "integer",
+        "revision": "string",
+        "path": "string",
+        "gitRoot": "string"
+      },
+      "conditional": [],
+      "required": [
+        "code",
+        "stdout",
+        "stderr",
+        "stdout_truncated_bytes",
+        "stderr_truncated_bytes",
+        "revision",
+        "path",
+        "gitRoot"
+      ]
+    },
+    "git_status": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "stdout": "string",
+        "stderr": "string",
+        "stdout_truncated_bytes": "integer",
+        "stderr_truncated_bytes": "integer",
+        "path": "string",
+        "gitRoot": "string"
+      },
+      "conditional": [],
+      "required": [
+        "code",
+        "stdout",
+        "stderr",
+        "stdout_truncated_bytes",
+        "stderr_truncated_bytes",
+        "path",
+        "gitRoot"
+      ]
+    },
+    "inspect_local_application": {
+      "verified": false,
+      "properties": {}
+    },
+    "kill_process": {
+      "verified": true,
+      "properties": {
+        "session_id": "string",
+        "command": "string",
+        "cwd": "string",
+        "running": "boolean",
+        "exit_code": "null",
+        "signal": "null",
+        "stdin_closed": "boolean",
+        "started_at": "string",
+        "closed_at": "null",
+        "stdout_offset": "integer",
+        "stderr_offset": "integer",
+        "termination_requested": "boolean",
+        "force": "boolean",
+        "force_after_ms": "null"
+      },
+      "conditional": [],
+      "required": [
+        "session_id",
+        "command",
+        "cwd",
+        "running",
+        "exit_code",
+        "signal",
+        "stdin_closed",
+        "started_at",
+        "closed_at",
+        "stdout_offset",
+        "stderr_offset",
+        "termination_requested",
+        "force",
+        "force_after_ms"
+      ]
+    },
+    "list_dir": {
+      "verified": true,
+      "properties": {
+        "path": "string",
+        "entries": "array",
+        "truncated": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "path",
+        "entries",
+        "truncated"
+      ]
+    },
+    "list_files": {
+      "verified": true,
+      "properties": {
+        "path": "string",
+        "files": "array",
+        "truncated": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "path",
+        "files",
+        "truncated"
+      ]
+    },
+    "list_jobs": {
+      "verified": true,
+      "properties": {
+        "jobs": "array",
+        "recent_process_recovery": "array",
+        "retained": "integer",
+        "maximum": "integer",
+        "capacity": "object",
+        "recent_activity": "object"
+      },
+      "conditional": [
+        "capacity",
+        "recent_activity"
+      ],
+      "required": [
+        "jobs",
+        "recent_process_recovery",
+        "retained",
+        "maximum"
+      ]
+    },
+    "list_local_applications": {
+      "verified": true,
+      "properties": {
+        "platform": "string",
+        "applications": "array",
+        "truncated": "boolean",
+        "scanned_entries": "integer",
+        "warnings": "array",
+        "capabilities": "object"
+      },
+      "conditional": [],
+      "required": [
+        "platform",
+        "applications",
+        "truncated",
+        "scanned_entries",
+        "warnings",
+        "capabilities"
+      ]
+    },
+    "list_local_commands": {
+      "verified": true,
+      "properties": {
+        "target": "string",
+        "scope_root": "string",
+        "commands": "array"
+      },
+      "conditional": [],
+      "required": [
+        "target",
+        "scope_root",
+        "commands"
+      ]
+    },
+    "list_local_resources": {
+      "verified": true,
+      "properties": {
+        "resources": "array",
+        "count": "integer",
+        "values_exposed": "boolean",
+        "paths_exposed": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "resources",
+        "count",
+        "values_exposed",
+        "paths_exposed"
+      ]
+    },
+    "list_local_skills": {
+      "verified": true,
+      "properties": {
+        "target": "string",
+        "scope_root": "string",
+        "skill_roots": "array",
+        "skills": "array",
+        "warnings": "array",
+        "truncated": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "target",
+        "scope_root",
+        "skill_roots",
+        "skills",
+        "warnings",
+        "truncated"
+      ]
+    },
+    "list_roots": {
+      "verified": true,
+      "properties": {
+        "roots": "array"
+      },
+      "conditional": [],
+      "required": [
+        "roots"
+      ]
+    },
+    "load_local_skill": {
+      "verified": true,
+      "properties": {
+        "skill": "object",
+        "instructions": "string",
+        "files": "array",
+        "files_truncated": "boolean",
+        "execution_semantics": "string"
+      },
+      "conditional": [],
+      "required": [
+        "skill",
+        "instructions",
+        "files",
+        "files_truncated",
+        "execution_semantics"
+      ]
+    },
+    "open_local_application": {
+      "verified": false,
+      "properties": {}
+    },
+    "operate_local_application": {
+      "verified": false,
+      "properties": {}
+    },
+    "pair_browser_extension": {
+      "verified": true,
+      "properties": {
+        "available": "boolean",
+        "connected": "boolean",
+        "broker_role": "string",
+        "runtime_clients": "integer",
+        "routed_requests": "integer",
+        "endpoint": "string",
+        "pairing_url": "string",
+        "extension_path": "string",
+        "expected_extension_version": "string",
+        "expected_extension_id": "string",
+        "extension_id": "string",
+        "extension_protocol": "null",
+        "extension_version": "string",
+        "extension_capabilities": "array",
+        "extension_reload_required": "boolean",
+        "supported_browsers": "array",
+        "controls_existing_profile": "boolean",
+        "controls_extension_profile": "boolean",
+        "launches_browser_process": "boolean",
+        "launches_separate_automation_profile": "boolean",
+        "profile_identity_verifiable": "boolean",
+        "uses_existing_tabs_and_login_state": "boolean",
+        "source_access": "boolean",
+        "semantic_snapshot_refs": "boolean",
+        "actionability_waits": "boolean",
+        "trusted_input": "boolean",
+        "trusted_input_quarantined": "boolean",
+        "trusted_input_health": "string",
+        "input_modes": "array",
+        "complex_form_fill": "boolean",
+        "tab_management": "boolean",
+        "explicit_waits": "boolean",
+        "screenshots": "boolean",
+        "computer_observation_v1": "boolean",
+        "cdp_accessibility_snapshot": "boolean",
+        "cdp_surface_screenshot": "boolean",
+        "backend_node_trusted_input": "boolean",
+        "restricted_pages": "array",
+        "security": "object",
+        "opened_pairing_page": "boolean",
+        "setup_steps": "array"
+      },
+      "conditional": [],
+      "required": [
+        "available",
+        "connected",
+        "broker_role",
+        "runtime_clients",
+        "routed_requests",
+        "endpoint",
+        "pairing_url",
+        "extension_path",
+        "expected_extension_version",
+        "expected_extension_id",
+        "extension_id",
+        "extension_protocol",
+        "extension_version",
+        "extension_capabilities",
+        "extension_reload_required",
+        "supported_browsers",
+        "controls_existing_profile",
+        "controls_extension_profile",
+        "launches_browser_process",
+        "launches_separate_automation_profile",
+        "profile_identity_verifiable",
+        "uses_existing_tabs_and_login_state",
+        "source_access",
+        "semantic_snapshot_refs",
+        "actionability_waits",
+        "trusted_input",
+        "trusted_input_quarantined",
+        "trusted_input_health",
+        "input_modes",
+        "complex_form_fill",
+        "tab_management",
+        "explicit_waits",
+        "screenshots",
+        "computer_observation_v1",
+        "cdp_accessibility_snapshot",
+        "cdp_surface_screenshot",
+        "backend_node_trusted_input",
+        "restricted_pages",
+        "security",
+        "opened_pairing_page",
+        "setup_steps"
+      ]
+    },
+    "project_overview": {
+      "verified": true,
+      "properties": {
+        "workspace": "string",
+        "workspaceName": "string",
+        "gitRoot": "string",
+        "policy": "object",
+        "tools": "array",
+        "daemonPolicy": "object",
+        "daemonTools": "array",
+        "capabilityRouting": "object",
+        "topLevel": "array",
+        "topLevelTotal": "integer",
+        "topLevelTruncated": "boolean",
+        "detail": "string",
+        "effectiveToolCount": "integer",
+        "daemonToolCount": "integer"
+      },
+      "conditional": [
+        "tools",
+        "daemonTools",
+        "detail",
+        "effectiveToolCount",
+        "daemonToolCount"
+      ],
+      "required": [
+        "workspace",
+        "workspaceName",
+        "gitRoot",
+        "policy",
+        "daemonPolicy",
+        "capabilityRouting",
+        "topLevel",
+        "topLevelTotal",
+        "topLevelTruncated"
+      ]
+    },
+    "read_file": {
+      "verified": true,
+      "properties": {
+        "path": "string",
+        "size": "integer",
+        "sha256": "string",
+        "content": "string",
+        "start_line": "integer",
+        "end_line": "integer",
+        "total_lines": "integer",
+        "complete": "boolean",
+        "truncated": "boolean",
+        "next_start_line": "integer"
+      },
+      "conditional": [
+        "next_start_line"
+      ],
+      "required": [
+        "path",
+        "size",
+        "sha256",
+        "content",
+        "start_line",
+        "end_line",
+        "total_lines",
+        "complete",
+        "truncated"
+      ]
+    },
+    "read_job": {
+      "verified": true,
+      "properties": {
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "created_at": "string",
+        "started_at": "null",
+        "finished_at": "null",
+        "current_phase": "null",
+        "current_step": "null",
+        "approval": "string",
+        "plan_sha256": "string",
+        "cleanup_guarantee": "string",
+        "error_class": "null",
+        "cleanup_error_class": "null",
+        "recovery_attempts": "integer",
+        "recovery_history": "array",
+        "recovery_history_complete": "boolean",
+        "result_persisted": "null",
+        "terminal_record_error_class": "null",
+        "artifact_cleanup_pending": "boolean",
+        "artifact_cleanup_error_class": "null",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer"
+      },
+      "conditional": [],
+      "required": [
+        "job_id",
+        "name",
+        "status",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "current_phase",
+        "current_step",
+        "approval",
+        "plan_sha256",
+        "cleanup_guarantee",
+        "error_class",
+        "cleanup_error_class",
+        "recovery_attempts",
+        "recovery_history",
+        "recovery_history_complete",
+        "result_persisted",
+        "terminal_record_error_class",
+        "artifact_cleanup_pending",
+        "artifact_cleanup_error_class",
+        "dependency_total",
+        "dependency_pending_count"
+      ]
+    },
+    "read_process": {
+      "verified": true,
+      "properties": {
+        "session_id": "string",
+        "command": "string",
+        "cwd": "string",
+        "running": "boolean",
+        "exit_code": "null",
+        "signal": "null",
+        "stdin_closed": "boolean",
+        "started_at": "string",
+        "closed_at": "null",
+        "stdout_offset": "integer",
+        "stderr_offset": "integer",
+        "stdout": "object",
+        "stderr": "object"
+      },
+      "conditional": [],
+      "required": [
+        "session_id",
+        "command",
+        "cwd",
+        "running",
+        "exit_code",
+        "signal",
+        "stdin_closed",
+        "started_at",
+        "closed_at",
+        "stdout_offset",
+        "stderr_offset",
+        "stdout",
+        "stderr"
+      ]
+    },
+    "resolve_task_capabilities": {
+      "verified": true,
+      "properties": {
+        "task": "string",
+        "target": "string",
+        "effective_instructions": "string",
+        "builtin_instructions": "object",
+        "automatic_project_context": "null",
+        "model_instructions_file": "null",
+        "instruction_files": "array",
+        "instructions_truncated": "boolean",
+        "refresh": "object",
+        "context_reuse": "object",
+        "selected_skill": "object",
+        "skill_matches": "array",
+        "command_matches": "array",
+        "metadata_authority": "object",
+        "recommended_tools": "array",
+        "host_semantics": "string",
+        "warnings": "array",
+        "instruction_warnings": "array",
+        "truncated": "boolean",
+        "application_discovery": "object",
+        "application_matches": "array",
+        "browser_backend": "object",
+        "execution_routing": "object",
+        "routing_observability": "string"
+      },
+      "conditional": [
+        "effective_instructions",
+        "builtin_instructions",
+        "automatic_project_context",
+        "model_instructions_file",
+        "instruction_files"
+      ],
+      "required": [
+        "task",
+        "target",
+        "instructions_truncated",
+        "refresh",
+        "context_reuse",
+        "selected_skill",
+        "skill_matches",
+        "command_matches",
+        "metadata_authority",
+        "recommended_tools",
+        "host_semantics",
+        "warnings",
+        "instruction_warnings",
+        "truncated",
+        "application_discovery",
+        "application_matches",
+        "browser_backend",
+        "execution_routing",
+        "routing_observability"
+      ],
+      "stdio_injected": [
+        "activated_tools"
+      ]
+    },
+    "run_local_command": {
+      "verified": true,
+      "properties": {
+        "name": "string",
+        "cwd": "string",
+        "timeout_seconds": "integer",
+        "code": "integer",
+        "stdout": "string",
+        "stderr": "string",
+        "stdout_truncated_bytes": "integer",
+        "stderr_truncated_bytes": "integer",
+        "accepted": "boolean",
+        "job_id": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "idempotency_key_accepted": "boolean",
+        "idempotency_replay": "boolean",
+        "recovery": "object",
+        "cleanup": "object",
+        "execution_mode": "string",
+        "source_tool": "string",
+        "execution_timeout_seconds": "integer",
+        "progress": "object",
+        "retry_safety": "string"
+      },
+      "conditional": [
+        "cwd",
+        "timeout_seconds",
+        "code",
+        "stdout",
+        "stderr",
+        "stdout_truncated_bytes",
+        "stderr_truncated_bytes",
+        "accepted",
+        "job_id",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "idempotency_key_accepted",
+        "idempotency_replay",
+        "recovery",
+        "cleanup",
+        "execution_mode",
+        "source_tool",
+        "execution_timeout_seconds",
+        "progress",
+        "retry_safety"
+      ],
+      "required": [
+        "name"
+      ]
+    },
+    "run_process": {
+      "verified": true,
+      "properties": {
+        "code": "integer",
+        "stdout": "string",
+        "stderr": "string",
+        "stdout_truncated_bytes": "integer",
+        "stderr_truncated_bytes": "integer",
+        "accepted": "boolean",
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "idempotency_key_accepted": "boolean",
+        "idempotency_replay": "boolean",
+        "recovery": "object",
+        "cleanup": "object",
+        "execution_mode": "string",
+        "source_tool": "string",
+        "execution_timeout_seconds": "integer",
+        "progress": "object",
+        "retry_safety": "string"
+      },
+      "conditional": [
+        "code",
+        "stdout",
+        "stderr",
+        "stdout_truncated_bytes",
+        "stderr_truncated_bytes",
+        "accepted",
+        "job_id",
+        "name",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "idempotency_key_accepted",
+        "idempotency_replay",
+        "recovery",
+        "cleanup",
+        "execution_mode",
+        "source_tool",
+        "execution_timeout_seconds",
+        "progress",
+        "retry_safety"
+      ],
+      "required": []
+    },
+    "search_text": {
+      "verified": true,
+      "properties": {
+        "query": "string",
+        "root": "string",
+        "matches": "array",
+        "visited_files": "integer",
+        "skipped_files": "integer",
+        "truncated": "boolean"
+      },
+      "conditional": [],
+      "required": [
+        "query",
+        "root",
+        "matches",
+        "visited_files",
+        "skipped_files",
+        "truncated"
+      ]
+    },
+    "server_info": {
+      "verified": true,
+      "properties": {
+        "name": "string",
+        "protocol_version": "string",
+        "supported_protocol_versions": "array",
+        "workspace": "string",
+        "workspace_name": "string",
+        "policy": "object",
+        "policy_contract": "object",
+        "enforcement": "object",
+        "tool_delivery": "object",
+        "tools": "array",
+        "observability": "object",
+        "runtime": "object",
+        "security_audit": "object",
+        "trust": "object",
+        "detail": "string",
+        "version": "string",
+        "mcp_url": "string",
+        "oauth": "object",
+        "account": "object",
+        "authorization": "object",
+        "authority_summary": "object",
+        "daemon": "object",
+        "worker": "object",
+        "tools_scope": "string"
+      },
+      "conditional": [
+        "protocol_version",
+        "supported_protocol_versions",
+        "workspace",
+        "workspace_name",
+        "policy",
+        "policy_contract",
+        "enforcement",
+        "tools",
+        "observability",
+        "runtime",
+        "security_audit",
+        "trust",
+        "detail",
+        "version",
+        "mcp_url",
+        "oauth",
+        "account",
+        "authorization",
+        "authority_summary",
+        "daemon",
+        "worker",
+        "tools_scope"
+      ],
+      "required": [
+        "name",
+        "tool_delivery"
+      ]
+    },
+    "session_bootstrap": {
+      "verified": true,
+      "properties": {
+        "target": "string",
+        "instructions": "string",
+        "builtin_instructions": "object",
+        "automatic_project_context": "null",
+        "model_instructions_file": "null",
+        "capability_refresh": "object",
+        "instruction_warnings": "array",
+        "guidance": "array",
+        "local_automation": "object"
+      },
+      "conditional": [],
+      "required": [
+        "target",
+        "instructions",
+        "builtin_instructions",
+        "automatic_project_context",
+        "model_instructions_file",
+        "capability_refresh",
+        "instruction_warnings",
+        "guidance",
+        "local_automation"
+      ]
+    },
+    "stage_job": {
+      "verified": true,
+      "properties": {
+        "staged": "boolean",
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "execution_started": "boolean",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "continuation": "string",
+        "plan_expires_after_hours": "integer"
+      },
+      "conditional": [],
+      "required": [
+        "staged",
+        "job_id",
+        "name",
+        "status",
+        "execution_started",
+        "plan_sha256",
+        "dependency_total",
+        "continuation",
+        "plan_expires_after_hours"
+      ]
+    },
+    "start_job": {
+      "verified": true,
+      "properties": {
+        "accepted": "boolean",
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "recovery": "object",
+        "cleanup": "object"
+      },
+      "conditional": [],
+      "required": [
+        "accepted",
+        "job_id",
+        "name",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "recovery",
+        "cleanup"
+      ]
+    },
+    "start_process": {
+      "verified": true,
+      "properties": {
+        "session_id": "string",
+        "command": "string",
+        "cwd": "string",
+        "running": "boolean",
+        "exit_code": "null",
+        "signal": "null",
+        "stdin_closed": "boolean",
+        "started_at": "string",
+        "closed_at": "null",
+        "stdout_offset": "integer",
+        "stderr_offset": "integer"
+      },
+      "conditional": [],
+      "required": [
+        "session_id",
+        "command",
+        "cwd",
+        "running",
+        "exit_code",
+        "signal",
+        "stdin_closed",
+        "started_at",
+        "closed_at",
+        "stdout_offset",
+        "stderr_offset"
+      ]
+    },
+    "view_image": {
+      "verified": true,
+      "properties": {
+        "path": "string",
+        "size": "integer",
+        "sha256": "string",
+        "mime_type": "string"
+      },
+      "conditional": [],
+      "required": [
+        "path",
+        "size",
+        "sha256",
+        "mime_type"
+      ]
+    },
+    "write_file": {
+      "verified": true,
+      "properties": {
+        "ok": "boolean",
+        "path": "string",
+        "sha256": "string",
+        "bytes": "integer"
+      },
+      "conditional": [],
+      "required": [
+        "ok",
+        "path",
+        "sha256",
+        "bytes"
+      ]
+    },
+    "write_process": {
+      "verified": true,
+      "properties": {
+        "session_id": "string",
+        "command": "string",
+        "cwd": "string",
+        "running": "boolean",
+        "exit_code": "null",
+        "signal": "null",
+        "stdin_closed": "boolean",
+        "started_at": "string",
+        "closed_at": "null",
+        "stdout_offset": "integer",
+        "stderr_offset": "integer",
+        "bytes_written": "integer"
+      },
+      "conditional": [],
+      "required": [
+        "session_id",
+        "command",
+        "cwd",
+        "running",
+        "exit_code",
+        "signal",
+        "stdin_closed",
+        "started_at",
+        "closed_at",
+        "stdout_offset",
+        "stderr_offset",
+        "bytes_written"
+      ]
+    }
+  }
+}

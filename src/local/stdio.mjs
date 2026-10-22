@@ -1,10 +1,11 @@
+import { instructionPromptText, diffPromptText, skillPromptText } from "../shared/prompt-projection.mjs";
 import { randomBytes } from "node:crypto";
 import { MAX_TOOL_RESULT_BYTES } from "./tool-result-boundary.mjs";
 import { LocalRuntime } from "./runtime.mjs";
 import { packageVersion } from "./package-identity.mjs";
 import { validateToolArguments } from "./tool-executor.mjs";
 import { classifyOperationalError, createLogger } from "./log.mjs";
-import { actionableGuidance, publicError } from "./errors.mjs";
+import { publicError } from "./errors.mjs";
 import {
   MCP_INSTRUCTIONS,
   SERVER_NAME,
@@ -12,13 +13,19 @@ import {
   rpcResult,
   toolResult,
   toolsForPolicy,
+  CORE_CORNERSTONE_TOOL_NAMES,
+  PROGRESSIVE_TOOL_GROUPS,
+  findToolGroup,
 } from "./tools.mjs";
 import {
-  MCP_PROTOCOL_VERSIONS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
+  MCP_PROTOCOL_VERSIONS, MCP_PROGRESSIVE_TOOL_LIST_TTL_MS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
   completeResult, discoverResult, emptySubscriptionAcknowledgement, progressNotification, serverImplementation, subscriptionCompleteResult,
-  validateRequestMetadata, validateSubscriptionRequest,
+  validateRequestMetadata, validateSubscriptionRequest, subscriptionAcknowledgement, toolsListChangedNotification,
 } from "../shared/mcp-protocol.mjs";
 import { createProgressReporter } from "../shared/progress-reporter.mjs";
+import { MCP_TASK_EXTENSION_ID, supportsMcpTasks, taskClientCapabilities } from "../shared/mcp-task-contract.mjs";
+import { taskToolResult, taskViewForJob } from "./stdio-task-projection.mjs";
+import { HELP_RESOURCES, readHelpResource } from "../shared/help-resources.mjs";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_TOOL_CALLS = 32;
@@ -36,6 +43,9 @@ const MCP_SERVER_CAPABILITIES = Object.freeze({
   tools: Object.freeze({ listChanged: false }),
   prompts: Object.freeze({ listChanged: false }),
   resources: Object.freeze({}),
+  extensions: Object.freeze({
+    [MCP_TASK_EXTENSION_ID]: Object.freeze({}),
+  }),
 });
 const MCP_DISCOVERY_TTL_MS = 0;
 const MCP_TOOL_LIST_TTL_MS = 0;
@@ -44,6 +54,7 @@ const MCP_LIMIT_EXCEEDED = -31900;
 export async function runStdioServer({
   workspace, policy, logLevel = "info", jobRoot = "", resources = {}, resourceStatePath = "", browserStateRoot = "",
   serviceControlRoot = "", verboseErrors = process.env.MBM_VERBOSE_ERRORS === "1",
+  progressiveTools = process.env.MBM_PROGRESSIVE_TOOLS === "1",
 }) {
   const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
   const runtime = new LocalRuntime({ workspace, policy, logger, jobRoot, resources, resourceStatePath, browserStateRoot, serviceControlRoot });
@@ -66,6 +77,26 @@ export async function runStdioServer({
     },
   });
   const send = outputWriter.send;
+  const progressiveEnabled = Boolean(progressiveTools);
+  const sessionProgressive = progressiveEnabled;
+  const capabilities = { ...MCP_SERVER_CAPABILITIES, tools: { listChanged: sessionProgressive } };
+  const subscriptions = new Map();
+  const activeToolNames = new Set(sessionProgressive ? CORE_CORNERSTONE_TOOL_NAMES : toolsForPolicy(policy).map((tool) => tool.name));
+
+  function activateToolGroupFor(toolNames, { expandGroups = true } = {}) {
+    if (!sessionProgressive) return [];
+    const allowed = new Set(toolsForPolicy(policy).map((tool) => tool.name));
+    const activated = [];
+    for (const toolName of toolNames) {
+      const group = expandGroups ? findToolGroup(toolName) : null;
+      const names = group ? PROGRESSIVE_TOOL_GROUPS[group] : [toolName];
+      for (const name of names) {
+        if (allowed.has(name) && !activeToolNames.has(name)) { activeToolNames.add(name); activated.push(name); }
+      }
+    }
+    if (activated.length) for (const requestId of subscriptions.values()) send(toolsListChangedNotification(requestId));
+    return activated;
+  }
 
   await consumeBoundedJsonLines(process.stdin, {
     maxLineBytes: MAX_LINE_BYTES,
@@ -79,6 +110,8 @@ export async function runStdioServer({
     },
   });
   inputState.closed = true;
+  for (const requestId of subscriptions.values()) send(rpcResult(requestId, subscriptionCompleteResult(requestId, MCP_SERVER_INFO)));
+  subscriptions.clear();
   for (const callId of pending.values()) runtime.cancelCall(callId, "stdio input closed");
   while (requestHandlers.size) await Promise.allSettled([...requestHandlers]);
   await outputWriter.waitForPendingWrites();
@@ -114,7 +147,13 @@ export async function runStdioServer({
 
   function cancelRequest(message) {
     const requestId = asObject(message.params).requestId;
-    const callId = pending.get(jsonRpcIdKey(requestId));
+    const key = jsonRpcIdKey(requestId);
+    if (subscriptions.has(key)) {
+      subscriptions.delete(key);
+      send(rpcResult(requestId, subscriptionCompleteResult(requestId, MCP_SERVER_INFO)));
+      return;
+    }
+    const callId = pending.get(key);
     if (callId) runtime.cancelCall(callId, "MCP cancellation notification");
   }
 
@@ -128,7 +167,7 @@ export async function runStdioServer({
     if (message.method === "server/discover") {
       send(rpcResult(message.id, discoverResult({
         supportedVersions: MCP_PROTOCOL_VERSIONS,
-        capabilities: MCP_SERVER_CAPABILITIES,
+        capabilities,
         instructions: MCP_INSTRUCTIONS,
         ttlMs: MCP_DISCOVERY_TTL_MS,
         serverInfo: MCP_SERVER_INFO,
@@ -136,17 +175,32 @@ export async function runStdioServer({
       return;
     }
     if (message.method === "tools/list") {
-      send(rpcResult(message.id, cacheableResult(
-        { tools: toolsForPolicy(policy) },
-        { ttlMs: MCP_TOOL_LIST_TTL_MS, cacheScope: "private", serverInfo: MCP_SERVER_INFO },
-      )));
+      const isProgressive = sessionProgressive;
+      const allTools = toolsForPolicy(policy);
+      const exposed = isProgressive
+        ? allTools.filter((tool) => activeToolNames.has(tool.name))
+        : allTools;
+      const ttlMs = isProgressive ? MCP_PROGRESSIVE_TOOL_LIST_TTL_MS : MCP_TOOL_LIST_TTL_MS;
+      send(rpcResult(message.id, cacheableResult({ tools: exposed }, { ttlMs, cacheScope: "private", serverInfo: MCP_SERVER_INFO })));
       return;
     }
     if (message.method === "subscriptions/listen") {
       try {
-        validateSubscriptionRequest(message);
-        send(emptySubscriptionAcknowledgement(message.id));
-        send(rpcResult(message.id, subscriptionCompleteResult(message.id, MCP_SERVER_INFO)));
+        const filter = validateSubscriptionRequest(message);
+        const key = jsonRpcIdKey(message.id);
+        if (pending.has(key) || subscriptions.has(key)) {
+          send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
+          return;
+        }
+        if (sessionProgressive && filter.toolsListChanged) {
+          if (Buffer.byteLength(key, "utf8") > 1024) { send(rpcError(message.id, MCP_LIMIT_EXCEEDED, "Subscription request id exceeds 1024 bytes")); return; }
+          if (subscriptions.size >= MAX_PENDING_TOOL_CALLS) { send(rpcError(message.id, MCP_LIMIT_EXCEEDED, "Too many active subscriptions")); return; }
+          subscriptions.set(key, message.id);
+          send(subscriptionAcknowledgement(message.id, { toolsListChanged: true }));
+        } else {
+          send(emptySubscriptionAcknowledgement(message.id));
+          send(rpcResult(message.id, subscriptionCompleteResult(message.id, MCP_SERVER_INFO)));
+        }
       } catch (error) {
         if (error instanceof McpProtocolError) send(rpcError(message.id, error.code, error.message, error.data));
         else throw error;
@@ -154,11 +208,22 @@ export async function runStdioServer({
       return;
     }
     if (message.method === "tools/call") {
-      await handleStdioToolCall({ message, progressToken: metadata?.progressToken, policy, pending, runtime, send, verboseErrors, inputState });
+      await handleStdioToolCall({
+        message, progressToken: metadata?.progressToken, policy, pending, runtime, send,
+        verboseErrors, inputState, activateToolGroupFor, progressiveEnabled: sessionProgressive, activeToolNames, subscriptions,
+      });
       return;
     }
     if (message.method === "prompts/list" || message.method === "prompts/get") {
       await executePromptOperation(runtime, message.method, message, send, verboseErrors);
+      return;
+    }
+    if (message.method === "tasks/get" || message.method === "tasks/list" || message.method === "tasks/cancel" || message.method === "tasks/update" || message.method === "tasks/result") {
+      if (!supportsMcpTasks(taskClientCapabilities(message))) {
+        send(rpcError(message.id, -32601, "Method not found"));
+        return;
+      }
+      await executeTaskOperation(runtime, message.method, message, send, verboseErrors);
       return;
     }
     if (message.method === "resources/list" || message.method === "resources/templates/list" || message.method === "resources/read") {
@@ -169,7 +234,7 @@ export async function runStdioServer({
   }
 }
 
-async function handleStdioToolCall({ message, progressToken, policy, pending, runtime, send, verboseErrors, inputState }) {
+async function handleStdioToolCall({ message, progressToken, policy, pending, runtime, send, verboseErrors, inputState, activateToolGroupFor = null, progressiveEnabled = false, activeToolNames = null, subscriptions = null }) {
   // EOF can race a request handler that has not registered its call ID yet. Do not
   // start a side effect after the input transport has closed.
   if (inputState.closed) return;
@@ -179,7 +244,7 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
     send(rpcError(message.id, -32602, "tools/call requires a tool name"));
     return;
   }
-  if (!toolsForPolicy(policy).some((tool) => tool.name === name)) {
+  if (!toolsForPolicy(policy).some((tool) => tool.name === name) || (progressiveEnabled && !activeToolNames?.has(name))) {
     send(rpcError(message.id, -32602, "Unknown or unavailable tool"));
     return;
   }
@@ -198,7 +263,7 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
     return;
   }
   const key = jsonRpcIdKey(message.id);
-  if (key && pending.has(key)) {
+  if (key && (pending.has(key) || subscriptions?.has(key))) {
     send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
     return;
   }
@@ -206,11 +271,21 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
   if (key) pending.set(key, callId);
   try {
     const result = await withProgress(progressToken, name, send, () => runtime.executeTool(name, rawArgs, { callId, origin: "stdio" }));
-    send(rpcResult(message.id, toolResult(result, false, MCP_SERVER_INFO)));
+    let payload = result;
+    if (progressiveEnabled && name === "resolve_task_capabilities" && typeof activateToolGroupFor === "function") {
+      const requestedGroups = Array.isArray(rawArgs?.activate_tool_groups) ? rawArgs.activate_tool_groups : [];
+      const recommended = Array.isArray(result?.recommended_tools) ? result.recommended_tools : [];
+      const activated = [
+        ...activateToolGroupFor(requestedGroups.flatMap((group) => PROGRESSIVE_TOOL_GROUPS[group] || []), { expandGroups: false }),
+        ...activateToolGroupFor(recommended, { expandGroups: rawArgs?.activate_recommended_groups === true }),
+      ];
+      if (activated.length && result && typeof result === "object" && !Array.isArray(result)) {
+        payload = { ...result, activated_tools: activated };
+      }
+    }
+    send(rpcResult(message.id, toolResult(payload, false, MCP_SERVER_INFO)));
   } catch (error) {
     const errorObject = publicError(error, { verbose: verboseErrors });
-    const remedy = actionableGuidance(error);
-    if (remedy && !errorObject.actionable_remedy) errorObject.actionable_remedy = remedy;
     send(rpcResult(message.id, toolResult({ error: errorObject }, true, MCP_SERVER_INFO)));
   } finally {
     if (key) pending.delete(key);
@@ -259,7 +334,7 @@ async function executePromptOperation(runtime, method, message, send, verboseErr
           return;
         }
         const result = await runtime.executeTool("agent_context", {}, { callId, origin: "stdio" });
-        const instructions = result?.instructions || result?.agent_instructions || "No specific instructions configured.";
+        const instructions = instructionPromptText(result);
         send(rpcResult(message.id, completeResult({
           description: "Project developer instructions",
           messages: [{ role: "user", content: { type: "text", text: String(instructions) } }],
@@ -273,7 +348,7 @@ async function executePromptOperation(runtime, method, message, send, verboseErr
         }
         const staged = args.staged === true;
         const diffResult = await runtime.executeTool("git_diff", { staged }, { callId, origin: "stdio" });
-        const diffText = String(diffResult?.diff || diffResult?.output || "No changes found.");
+        const diffText = diffPromptText(diffResult);
         send(rpcResult(message.id, completeResult({
           description: `Code review prompt for ${staged ? "staged" : "unstaged"} changes`,
           messages: [
@@ -295,7 +370,7 @@ async function executePromptOperation(runtime, method, message, send, verboseErr
           return;
         }
         const skillResult = await runtime.executeTool("load_local_skill", { skill: skillName }, { callId, origin: "stdio" });
-        const content = String(skillResult?.content || skillResult?.skill?.content || JSON.stringify(skillResult));
+        const content = skillPromptText(skillResult);
         send(rpcResult(message.id, completeResult({
           description: `Skill: ${skillName}`,
           messages: [{ role: "user", content: { type: "text", text: content } }],
@@ -334,6 +409,7 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
           description: "Machine Bridge local runtime and host status snapshot",
           mimeType: "application/json",
         },
+        ...HELP_RESOURCES,
       ];
       send(rpcResult(message.id, { resources }));
       return;
@@ -356,10 +432,17 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
         send(rpcError(message.id, -32602, "resources/read requires a uri"));
         return;
       }
+      const helpText = readHelpResource(uri);
+      if (helpText !== null) {
+        send(rpcResult(message.id, {
+          contents: [{ uri, mimeType: "text/markdown", text: helpText }],
+        }));
+        return;
+      }
       if (uri === "diff://workspace/staged" || uri === "diff://workspace/unstaged") {
         const staged = uri === "diff://workspace/staged";
         const result = await runtime.executeTool("git_diff", { staged }, { callId, origin: "stdio" });
-        const text = String(result?.diff || result?.output || "");
+        const text = diffPromptText(result);
         send(rpcResult(message.id, {
           contents: [{ uri, mimeType: "text/x-diff", text }],
         }));
@@ -377,6 +460,97 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
     }
   } catch (error) {
     send(rpcResult(message.id, { error: publicError(error, { verbose: verboseErrors }) }));
+  }
+}
+
+async function readManagedTaskJob(runtime, taskId) {
+  try {
+    return await runtime.managedJobManager.read({ job_id: taskId, wait_ms: 0 }, { origin: "stdio" });
+  } catch (error) {
+    if (error?.code === "not_found" || error?.data?.code === "not_found") return null;
+    throw error;
+  }
+}
+
+async function executeTaskOperation(runtime, method, message, send, verboseErrors) {
+  const params = asObject(message.params);
+  try {
+    if (method === "tasks/list") {
+      const jobs = await runtime.managedJobManager.list({}, { origin: "stdio" });
+      const tasks = (jobs?.jobs || []).map((job) => taskViewForJob(job, job.job_id));
+      send(rpcResult(message.id, { tasks }));
+      return;
+    }
+    const taskId = String(params.taskId || params.task_id || "");
+    if (!taskId) {
+      send(rpcError(message.id, -32602, `${method} requires a valid taskId`));
+      return;
+    }
+    if (method === "tasks/get" || method === "tasks/result") {
+      const job = await readManagedTaskJob(runtime, taskId);
+      if (!job) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
+      const view = taskViewForJob(job, taskId);
+      if (method === "tasks/result") {
+        if (view.status === "working") {
+          send(rpcError(message.id, -32002, `Task is still running: ${taskId}`, { pollIntervalMs: view.pollIntervalMs }));
+          return;
+        }
+        if (view.status === "cancelled") {
+          send(rpcError(message.id, -32800, view.statusMessage));
+          return;
+        }
+        send(rpcResult(message.id, { taskId, status: view.status, result: taskToolResult(job, MCP_SERVER_INFO) }));
+        return;
+      }
+      send(rpcResult(message.id, view.status === "completed"
+        ? { ...view, result: taskToolResult(job, MCP_SERVER_INFO) }
+        : view));
+      return;
+    }
+    if (method === "tasks/cancel") {
+      const existing = await readManagedTaskJob(runtime, taskId);
+      if (!existing) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
+      const result = await runtime.managedJobManager.cancel({ job_id: taskId }, { origin: "stdio" });
+      const job = await readManagedTaskJob(runtime, taskId);
+      if (!job) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
+      const view = taskViewForJob(job, taskId);
+      send(rpcResult(message.id, {
+        ...view,
+        cancelled: view.status === "cancelled",
+        cancellationRequested: result?.cancellation_requested === true,
+      }));
+      return;
+    }
+    if (method === "tasks/update") {
+      // Local managed jobs accept no mid-flight input. Reporting success for an unsupported
+      // input response would let a client believe the task consumed it, so the request is
+      // rejected unless it carries nothing to deliver.
+      const inputResponses = params.inputResponses ?? params.input_responses;
+      if (inputResponses !== undefined && (!inputResponses || typeof inputResponses !== "object" || Array.isArray(inputResponses)
+        || Object.keys(inputResponses).length > 0)) {
+        send(rpcError(message.id, -32602, "Local tasks accept no input responses", { reason: "input_not_supported" }));
+        return;
+      }
+      const job = await readManagedTaskJob(runtime, taskId);
+      if (!job) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
+      send(rpcResult(message.id, {}));
+      return;
+    }
+    send(rpcError(message.id, -32601, "Method not found"));
+  } catch (error) {
+    send(rpcError(message.id, -32603, "Task operation failed", publicError(error, { verbose: verboseErrors })));
   }
 }
 

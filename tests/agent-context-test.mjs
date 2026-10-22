@@ -604,6 +604,7 @@ Use the linked workflow.
 
   await testDelegatedSensitiveInstructionAndHardlinkBoundaries();
   await testSkillWarningDisplayBoundaries();
+  await testPersistentAgentMemory();
   console.log("agent context test ok");
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -721,6 +722,87 @@ async function testSkillWarningDisplayBoundaries() {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  }
+}
+
+async function testPersistentAgentMemory() {
+  const memoryWorkspace = await realpath(await mkdtemp(join(tmpdir(), "mbm-agent-memory-")));
+  try {
+    const projectLocal = join(memoryWorkspace, ".project-local");
+    await mkdir(projectLocal, { recursive: true });
+    const memoryData = {
+      version: 1,
+      updated_at: "2026-10-21T00:00:00.000Z",
+      project_insights: ["Use npm run check:fast before pushing", "Atomic write requires clean paths"],
+      ci_guidelines: ["Node 22+ required"],
+      user_preferences: ["Be concise"],
+      notes: ["Sprint 42 feature flag active"],
+    };
+    await writeFile(join(projectLocal, "agent-memory.json"), JSON.stringify(memoryData, null, 2), "utf8");
+
+    const manager = new AgentContextManager({
+      workspace: memoryWorkspace,
+      policy: { unrestrictedPaths: false },
+      displayPath: (value) => relative(memoryWorkspace, value) || ".",
+      resolveExistingPath: async (value) => value === "." ? memoryWorkspace : join(memoryWorkspace, value),
+    });
+
+    const context = await manager.agentContext({ path: "." });
+    assert(context.persistent_memory !== undefined, "agent_context omitted persistent_memory");
+    assert(context.persistent_memory.status === "ok", "persistent_memory status should be ok");
+    assert(context.persistent_memory.version === 1, "persistent_memory version mismatch");
+    assert(JSON.stringify(context.persistent_memory.project_insights.map((item) => item.text)) === JSON.stringify(memoryData.project_insights), "project_insights mismatch");
+    assert(JSON.stringify(context.persistent_memory.ci_guidelines.map((item) => item.text)) === JSON.stringify(memoryData.ci_guidelines), "ci_guidelines mismatch");
+    assert(JSON.stringify(context.persistent_memory.user_preferences.map((item) => item.text)) === JSON.stringify(memoryData.user_preferences), "user_preferences mismatch");
+    assert(JSON.stringify(context.persistent_memory.notes.map((item) => item.text)) === JSON.stringify(memoryData.notes), "notes mismatch");
+    assert(context.persistent_memory.scored_memories === undefined, "memory duplicated its canonical entries");
+    assert(context.guidance.some((g) => g.includes("agent-memory.json")), "guidance omitted persistent memory instruction");
+
+    // Structured memory preserves explicit metadata without inventing timestamps or rankings.
+    const structuredMemory = {
+      version: 1,
+      project_insights: [
+        { text: "Older low-priority insight", importance: 2, updated_at: "2026-09-01T00:00:00.000Z" },
+        { text: "Fresh high-priority insight", importance: 10, updated_at: new Date().toISOString() },
+      ],
+      ci_guidelines: ["pnpm test"],
+      user_preferences: [],
+      notes: [],
+    };
+    await writeFile(join(projectLocal, "agent-memory.json"), JSON.stringify(structuredMemory, null, 2), "utf8");
+    const structuredContext = await manager.agentContext({ path: "." });
+    const entries = structuredContext.persistent_memory.project_insights;
+    assert(entries.some((entry) => entry.text === "Fresh high-priority insight"), "structured memory text extraction failed");
+    assert(entries[0].text === "Older low-priority insight" && entries[0].importance === 2, "memory changed source order or explicit metadata");
+
+    // Test oversized memory handling (P0-4)
+    const largeMemory = {
+      version: 1,
+      project_insights: Array.from({ length: 1500 }, (_, i) => `Insight ${i}: ${"x".repeat(60)}`),
+      ci_guidelines: [],
+      user_preferences: [],
+      notes: [],
+    };
+    await writeFile(join(projectLocal, "agent-memory.json"), JSON.stringify(largeMemory), "utf8");
+    const largeContext = await manager.agentContext({ path: "." });
+    assert(largeContext.persistent_memory !== undefined, "oversized memory should not silently return undefined");
+    assert(largeContext.persistent_memory.status === "too_large", "oversized memory status should be too_large");
+    assert(typeof largeContext.persistent_memory.warning === "string" && largeContext.persistent_memory.warning.includes("not read"), "oversized memory should emit warning");
+    assert(largeContext.persistent_memory.project_insights === undefined, "oversized memory content was exposed");
+
+    // Test invalid JSON memory handling (P0-4)
+    await writeFile(join(projectLocal, "agent-memory.json"), "{ invalid json", "utf8");
+    const invalidContext = await manager.agentContext({ path: "." });
+    assert(invalidContext.persistent_memory.status === "invalid", "invalid memory status should be invalid");
+
+    // Test Repo Map symbol outline integration in agent_context
+    const sampleJs = "export class OrderService {\n  processOrder(id) { return id; }\n}\nexport function createOrder(data) { return data; }\n";
+    await writeFile(join(memoryWorkspace, "sample.js"), sampleJs, "utf8");
+    const contextWithOutline = await manager.agentContext({ path: ".", include_symbol_outline: true });
+    assert(typeof contextWithOutline.symbol_outline === "string" && contextWithOutline.symbol_outline.includes("OrderService"), "symbol outline was not included or missing symbols");
+    assert(contextWithOutline.symbol_outline.includes("createOrder"), "symbol outline omitted top-level function");
+  } finally {
+    await rm(memoryWorkspace, { recursive: true, force: true });
   }
 }
 

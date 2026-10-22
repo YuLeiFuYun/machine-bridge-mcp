@@ -13,7 +13,7 @@ import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.m
 import { runtimeRelayConnectionOptions } from "../src/local/runtime-relay-connection-options.mjs";
 import { ResilientRelayConnection } from "../src/local/resilient-relay-connection.mjs";
 import { reconnectDelay } from "../src/local/relay-connection-classification.mjs";
-import { compactRuntimeRelay } from "../src/local/runtime-info-relay-projection.mjs";
+import { compactRuntimeRelay } from "../src/local/runtime-info-projection.mjs";
 import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
 import { consumeDaemonPreflightNonce, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
 import { DaemonHttpChannel } from "../src/worker/daemon-http-channel.ts";

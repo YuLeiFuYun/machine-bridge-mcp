@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import { createHash } from "node:crypto";
 import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -10,8 +11,10 @@ import { CF_NETWORK_ARTIFACT as contract, verifyCfNetworkArtifact } from "../src
 const cfRoot = path.dirname(createRequire(import.meta.url).resolve("cf/package.json"));
 const original = readFileSync(path.join(cfRoot, contract.bundle));
 assert.equal(createHash("sha256").update(original).digest("hex"), contract.sha256);
-const root = mkdtempSync(path.join(tmpdir(), "mbm-cf-network-test-"));
-try {
+
+test("cf upstream network behavior, read-only integrity, and tamper checks", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "mbm-cf-network-test-"));
+  try {
   const packageDirectory = path.join(root, "node_modules", "cf");
   const bundle = path.join(packageDirectory, contract.bundle);
   const manifest = path.join(packageDirectory, "package.json");
@@ -72,6 +75,7 @@ try {
   assert.equal(observed.requests, 0, "construction initiated a network request");
   console.log("cf upstream network behavior, read-only integrity, and tamper checks ok");
 } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 async function observeFactory() {
   // Exercise the exported factory in the hash-pinned upstream bundle without rewriting its bundled module.

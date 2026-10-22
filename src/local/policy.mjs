@@ -221,6 +221,8 @@ export function createToolAuthorizer(policy, provided) {
   return (/** @type {string} */ tool) => gate.assert(tool);
 }
 
+export { CORE_CORNERSTONE_TOOL_NAMES, PROGRESSIVE_TOOL_GROUPS, findToolGroup } from "../shared/tool-groups.mjs";
+
 export class PolicyGate {
   /** @param {PolicyInput} policy */
   constructor(policy) {

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "cf": "1.0.0-beta.18",
-    "wrangler": "4.151.1"
+    "wrangler": "4.151.3"
   },
   "overrides": {
     "sharp": "0.35.5",
@@ -20,6 +20,7 @@
     "esbuild@0.28.2": true,
     "fsevents": false,
     "sharp@0.35.5": true,
-    "workerd@1.20261012.1": true
+    "workerd@1.20261012.1": true,
+    "workerd@1.20261019.1": true
   }
 }

@@ -1,4 +1,5 @@
 // @ts-check
+import { BridgeError } from "./errors.mjs";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 
@@ -33,7 +34,7 @@ export async function readRegularUtf8(filePath, maxBytes, label, options = {}) {
     if (!sameRegularFile(info, expected)) throw new Error(`${label} changed during read`);
     if (info.nlink > 1n) throw new Error(`${label} must not have multiple hard links: ${filePath}`);
     await assertCurrent();
-    if (info.size > BigInt(maxBytes)) throw new Error(`${label} exceeds maximum size (${info.size} > ${maxBytes})`);
+    if (info.size > BigInt(maxBytes)) throw new BridgeError("limit_exceeded", `${label} exceeds maximum size (${info.size} > ${maxBytes})`);
     const buffer = Buffer.alloc(Number(info.size));
     let offset = 0;
     while (offset < buffer.length) {

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { isRegularNonSymlink, readOptionalRegularUtf8, safeSingleLine } from "./project-metadata.mjs";
 import { isPlainRecord } from "../shared/records.mjs";
+export { packageRoot, packageName, packageVersion, appName } from "./package-identity.mjs";
 
 const MAX_METADATA_FILE_BYTES = 1024 * 1024;
 const MAX_PACKAGE_COMMANDS = 64;

@@ -87,14 +87,14 @@ try {
     problems: [],
     dependencies: {
       cf: { version: "1.0.0-beta.18" },
-      wrangler: { version: "4.151.1", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
+      wrangler: { version: "4.151.3", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
       undici: { version: "7.29.1" },
       sharp: { version: "0.35.5" },
       esbuild: { version: "0.28.2" },
       workerd: { version: "1.20261012.1" },
     },
   }, {
-    cf: "1.0.0-beta.18", wrangler: "4.151.1", undici: "7.29.1", sharp: "0.35.5",
+    cf: "1.0.0-beta.18", wrangler: "4.151.3", undici: "7.29.1", sharp: "0.35.5",
     esbuild: "0.28.2", workerd: "1.20261012.1",
   }),
   /invalid dependency node/,
@@ -115,6 +115,41 @@ try {
     dependencies: { undici: { version: privateVersion } },
   }, firstDescriptor.versions), error => /pinned version/.test(error.message) && !error.message.includes(privateVersion),
   "unverified npm dependency text leaked through an integrity error");
+
+  const lockedPackages = JSON.parse(firstDescriptor.lockBytes).packages;
+  const mixedPins = {
+    dependencies: Object.fromEntries(Object.entries(firstDescriptor.versions).map(([name, version]) => [name, { version }])),
+  };
+  const nestedWorkerd = lockedPackages["node_modules/wrangler/node_modules/workerd"].version;
+  mixedPins.dependencies.wrangler.dependencies = { workerd: { version: nestedWorkerd } };
+  // cf's logical Wrangler edge is deduplicated to the physical root Wrangler.
+  mixedPins.dependencies.cf.dependencies = {
+    wrangler: { version: firstDescriptor.versions.wrangler, dependencies: { workerd: { version: nestedWorkerd } } },
+  };
+  assert.doesNotThrow(() => validateInstalledWranglerToolchainTree(mixedPins, firstDescriptor.versions, lockedPackages),
+    "legitimate root, nested and deduplicated lock pins were rejected");
+  const wrongNestedPin = structuredClone(mixedPins);
+  wrongNestedPin.dependencies.wrangler.dependencies.workerd.version = firstDescriptor.versions.workerd;
+  assert.throws(() => validateInstalledWranglerToolchainTree(wrongNestedPin, firstDescriptor.versions, lockedPackages),
+    /pinned version/, "a root version substituted for the different locked nested pin");
+  const wrongRootPin = structuredClone(mixedPins);
+  wrongRootPin.dependencies.workerd.version = nestedWorkerd;
+  assert.throws(() => validateInstalledWranglerToolchainTree(wrongRootPin, firstDescriptor.versions, lockedPackages),
+    /pinned version/, "a nested version substituted for the root pin");
+  const missingRootPin = structuredClone(mixedPins);
+  delete missingRootPin.dependencies.workerd;
+  assert.throws(() => validateInstalledWranglerToolchainTree(missingRootPin, firstDescriptor.versions, lockedPackages),
+    /workerd dependency is missing/, "a valid nested pin fulfilled the missing root pin");
+  const wrongDeduplicatedPin = structuredClone(mixedPins);
+  wrongDeduplicatedPin.dependencies.cf.dependencies.workerd = { version: nestedWorkerd };
+  assert.throws(() => validateInstalledWranglerToolchainTree(wrongDeduplicatedPin, firstDescriptor.versions, lockedPackages),
+    /pinned version/, "a version locked elsewhere bypassed the actual ancestor resolution path");
+  assert.throws(() => validateInstalledWranglerToolchainTree({
+    dependencies: { unrecorded: { version: "1.0.0" } },
+  }, firstDescriptor.versions, lockedPackages), /locked resolution path/,
+  "an unrecorded dependency edge bypassed the exact lock");
+  assert.throws(() => validateInstalledWranglerToolchainTree(mixedPins, firstDescriptor.versions, null),
+    /lock package map is invalid/);
 
   const callsBeforeMaintenance = fake.total();
   await withForeignMaintenanceLock(stateRoot, async () => {
@@ -332,7 +367,7 @@ function createFakeNpmRunner(options = {}) {
   const launcherBins = new Set();
   const versions = {
     cf: options.cf || "1.0.0-beta.18",
-    wrangler: options.wrangler || "4.151.1",
+    wrangler: options.wrangler || "4.151.3",
     undici: options.undici || "7.29.1",
     sharp: options.sharp || "0.35.5",
     esbuild: options.esbuild || "0.28.2",
@@ -382,6 +417,7 @@ function createFakeNpmRunner(options = {}) {
             wrangler: {
               version: versions.wrangler,
               dependencies: {
+                workerd: { version: "1.20261019.1" },
                 miniflare: {
                   version: "5.20261012.1-beta",
                   dependencies: {

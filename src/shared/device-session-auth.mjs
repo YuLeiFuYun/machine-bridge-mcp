@@ -1,3 +1,5 @@
+import { canonicalTrustedOrigin } from "./trusted-origin.mjs";
+
 export const DEVICE_SESSION_CERTIFICATE_SCHEME = "device-session-certificate-v1";
 export const DEVICE_SESSION_MAX_LIFETIME_SECONDS = 24 * 60 * 60;
 
@@ -28,15 +30,7 @@ export function canonicalPublicJwk(value) {
 }
 
 function requiredOrigin(value) {
-  if (typeof value !== "string") throw new Error("device session Worker origin is invalid");
-  let url;
-  try { url = new URL(value); } catch { throw new Error("device session Worker origin is invalid"); }
-  const secure = url.protocol === "https:";
-  const loopback = url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
-  if ((!secure && !loopback) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-    throw new Error("device session Worker origin is invalid");
-  }
-  return url.origin;
+  return canonicalTrustedOrigin(value, "device session Worker origin is invalid");
 }
 
 function requiredText(value, label, minimum, maximum) {

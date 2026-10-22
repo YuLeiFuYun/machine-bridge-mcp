@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { verifyExclusiveFilePublicationResidueSync } from "./exclusive-publication-recovery.mjs";
+import { readWithPublicationRepairSync } from "./exclusive-publication-repair.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "./process-identity.mjs";
 import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync, retryTransientMultipleLinksSync } from "./secure-file.mjs";
@@ -32,9 +33,9 @@ export async function withOwnerStateLock(root, callback, options = {}) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      const inspected = retryTransientMultipleLinksSync((residueIdentity) => readOwnerStateLock(lockPath, purpose, residueIdentity), {
+      const inspected = readWithPublicationRepairSync(() => retryTransientMultipleLinksSync((residueIdentity) => readOwnerStateLock(lockPath, purpose, residueIdentity), {
         verifyResidue: () => verifyExclusiveFilePublicationResidueSync(lockPath),
-      });
+      }), lockPath);
       if (inspected.kind === "missing") continue;
       if (inspected.kind === "invalid") {
         throw new Error(`${label} lock is malformed; inspect the owner-only state directory`);

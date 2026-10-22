@@ -5,6 +5,7 @@ import {
   POLICY_PROFILES, SERVER_NAME,
 } from "./tools.mjs";
 import { executionGuardrailsSnapshot } from "./execution-limits.mjs";
+import { MCP_PROGRESSIVE_TOOL_LIST_TTL_MS } from "../shared/mcp-protocol.mjs";
 import {
   hiddenGlobalActivity, hiddenInFlightActivity, publicDeviceRootStatus, publicSecurityAudit, runtimeActivityVisible,
 } from "./runtime-activity-projection.mjs";
@@ -59,6 +60,7 @@ export function buildRuntimeInfo({
       tool_schema_generation: Number(serverMetadata.toolSchemaGeneration),
       discovery_ttl_ms: 0,
       tool_list_ttl_ms: 0,
+      progressive_tool_list_ttl_ms: MCP_PROGRESSIVE_TOOL_LIST_TTL_MS,
       host_turn_deadline_observable: false,
       managed_jobs_detached_from_mcp_response: true,
       host_exposed_tools_known_to_server: false,

@@ -29,6 +29,7 @@ import { createDeviceSessionForRoot, createUnattendedDeviceSessionFactory, devic
 import { convergeRemoteConfiguration } from "./remote-configuration.mjs";
 import { workerHealth } from "./worker-health.mjs";
 import { DOCTOR_RUNTIME_SCOPE, doctorRuntimeCheckProjection } from "./doctor-reporting.mjs";
+import { inspectResourceCoordinatorSync } from "./resource-coordinator-health.mjs";
 import { supportStateProjection } from "./support-state-projection.mjs";
 export { workerHealthUserReason } from "./worker-health.mjs";
 import { activeStateJobs, activeStateLocks, knownProfileStates, knownWorkerNames } from "./state-inventory.mjs";
@@ -509,6 +510,8 @@ async function doctorCommand(args) {
   }
   const health = state.worker?.url ? await workerHealth(state.worker.url, currentPackageVersion(), { expectedWorkerName: state.worker.name }) : { ok: false, error: "no worker url" };
   checks.push({ name: "worker-health", ok: health.ok, detail: health.ok ? "reachable" : health.error });
+  const coordinator = inspectResourceCoordinatorSync(null, { repair: args.repairResourceCoordinator === true });
+  checks.push({ name: "resource-coordinator", ok: coordinator.ok, detail: coordinator.detail });
   const diagnosticRuntime = new LocalRuntime({
     workspace,
     policy: state.policy,
@@ -811,7 +814,8 @@ Commands:
   service stop      Stop the installed autostart service
   service uninstall Remove only the autostart entry
   status            Print redacted local profile state and Worker health
-  doctor            Check Node, cf, Cloudflare login, Worker health
+  doctor            Check Node, cf, Cloudflare login, Worker health, resource-coordinator state
+                    (--repair-resource-coordinator repairs multiply-linked coordinator state)
   full-test         Run real local full-profile capability tests in a temporary sandbox
   rotate-secrets    Rotate account-admin, device identity, and global token-version secrets
   account list|clients|revoke-client|add|role|enable|disable|rotate-password|remove

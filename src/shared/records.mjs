@@ -10,3 +10,13 @@ export function isPlainRecord(value) {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
+
+/**
+ * Format a call ID compactly.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function shortCallId(value) {
+  const text = String(value || "");
+  return text.length <= 18 ? text : `${text.slice(0, 10)}...${text.slice(-5)}`;
+}

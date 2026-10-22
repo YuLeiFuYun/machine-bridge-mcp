@@ -13,7 +13,7 @@ import { createToolAuthorizer } from "./policy.mjs";
 import { BridgeError, errorCode } from "./errors.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { ProcessOutputStream } from "./process-output-stream.mjs";
-import { boundedProcessErrorMessage } from "./process-error-message.mjs";
+import { boundedProcessErrorMessage } from "./process-execution.mjs";
 import { notifySessionWaiters, waitForSpawn } from "./process-session-events.mjs";
 import { completeProcessSessionRead, readProcessSession } from "./process-session-read.mjs";
 import { terminateProcessSessions } from "./process-session-termination.mjs";

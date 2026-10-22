@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, link, lstat, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from "node:zlib";
-import { parseWorkerTypesArguments, runWranglerTypes } from "../scripts/generate-worker-types.mjs";
+import { parseWorkerTypesArguments, runWranglerTypes, wranglerWorkerdPackagePath } from "../scripts/generate-worker-types.mjs";
 import { runCompletedWranglerCommand } from "../scripts/wrangler-command-lifecycle.mjs";
 
 const WRANGLER_DRY_RUN_COMPLETION_MARKER = "--dry-run: exiting now.";
@@ -14,7 +14,7 @@ const runWranglerFixture = options => runCompletedWranglerCommand({
   completionMarker: WRANGLER_DRY_RUN_COMPLETION_MARKER,
 });
 
-const root = await mkdtemp(join(tmpdir(), "machine-bridge-wrangler-lifecycle-"));
+const root = await realpath(await mkdtemp(join(tmpdir(), "machine-bridge-wrangler-lifecycle-")));
 const fixture = join(root, "wrangler-fixture.mjs");
 const target = join(root, "worker-configuration.d.ts");
 const seed = join(root, "worker-runtime-types-seed.b64");
@@ -25,6 +25,17 @@ const refreshedRuntime = runtimePayload("interface RuntimeCache { refreshed: tru
 const mismatchedRuntime = runtimePayload("interface RuntimeCache { mismatch: true }\n");
 
 try {
+  const dependencyRoot = join(root, "dependency-resolution");
+  const fixtureWrangler = join(dependencyRoot, "node_modules", "wrangler", "bin", "wrangler.js");
+  const nestedWorkerd = join(dependencyRoot, "node_modules", "wrangler", "node_modules", "workerd", "package.json");
+  const hoistedWorkerd = join(dependencyRoot, "node_modules", "workerd", "package.json");
+  for (const file of [fixtureWrangler, nestedWorkerd, hoistedWorkerd]) await mkdir(resolve(file, ".."), { recursive: true });
+  await writeFile(fixtureWrangler, "// synthetic CLI");
+  await writeFile(nestedWorkerd, JSON.stringify({ name: "workerd", version: "9.9.9" }));
+  await writeFile(hoistedWorkerd, JSON.stringify({ name: "workerd", version: "1.0.0" }));
+  assert.equal(wranglerWorkerdPackagePath(fixtureWrangler), await realpath(nestedWorkerd),
+    "runtime header selected an unrelated hoisted Workerd instead of Wrangler's own dependency");
+
   await writeFile(fixture, `
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 const mode = process.env.MBM_WRANGLER_FIXTURE_MODE;

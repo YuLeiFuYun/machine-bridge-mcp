@@ -3,6 +3,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import process from "node:process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   brotliCompressSync, brotliDecompressSync, constants as zlibConstants,
@@ -16,7 +17,6 @@ const target = resolve(root, ".wrangler", "worker-configuration.d.ts");
 const seed = resolve(root, "toolchain", "worker-runtime-types-seed.b64");
 const wrangler = resolve(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const wranglerConfig = resolve(root, "wrangler.jsonc");
-const workerdPackage = resolve(root, "node_modules", "workerd", "package.json");
 const RUNTIME_MARKER = "// Begin runtime types\n";
 const RUNTIME_HEADER = /^\/\/ Runtime types generated with workerd@[^\r\n]+$/gm;
 const SEED_LINE_WIDTH = 76;
@@ -54,7 +54,7 @@ function prepareWranglerTypesRun(options) {
     refreshRuntimeSeed: options.refreshRuntimeSeed === true,
     expectedHeader: options.expectedRuntimeHeader || expectedRuntimeHeader({
       configPath: options.configPath || wranglerConfig,
-      workerdPackagePath: options.workerdPackagePath || workerdPackage,
+      workerdPackagePath: options.workerdPackagePath || wranglerWorkerdPackagePath(options.wranglerPath || wrangler),
     }),
     targetSnapshot,
     targetWitness: targetSnapshot,
@@ -188,6 +188,10 @@ function extractRuntimePayload(text) {
   if (marker < 0 || headers[0].index >= marker) throw new Error("Worker types runtime marker is missing or malformed");
   const header = headers[0][0];
   return { header, payload: `${header}\n${text.slice(marker)}` };
+}
+
+export function wranglerWorkerdPackagePath(wranglerPath) {
+  return createRequire(resolve(wranglerPath)).resolve("workerd/package.json");
 }
 
 function expectedRuntimeHeader({ configPath, workerdPackagePath }) {
