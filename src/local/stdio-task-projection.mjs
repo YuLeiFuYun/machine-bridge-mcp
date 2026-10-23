@@ -1,37 +1,10 @@
-import { MCP_TASK_POLL_INTERVAL_MS, MCP_TASK_TTL_MS } from "../shared/mcp-task-contract.mjs";
+// @ts-check
+
+import {
+  isSuccessfulJobStatus, MCP_TASK_POLL_INTERVAL_MS, MCP_TASK_TTL_MS, statusMessageFor, taskStatusForJob,
+} from "../shared/mcp-task-contract.mjs";
 import { completeResult } from "../shared/mcp-protocol.mjs";
 import { projectMcpResult } from "../shared/result-projection.mjs";
-
-// Managed-job statuses are projected onto the MCP task vocabulary the Worker publishes.
-// Anything that is not active and not cancelled has settled, which the extension reports as
-// `completed`; a settled failure carries its error in the result payload, never as a fake success.
-const TASK_ACTIVE_JOB_STATUSES = new Set(["accepted", "queued", "running", "cleaning", "interrupted", "dependency_wait"]);
-const TASK_TERMINAL_JOB_STATUSES = new Set([
-  "succeeded", "failed", "cancelled", "succeeded_cleanup_failed", "failed_cleanup_failed",
-  "cancelled_cleanup_failed", "recovered", "recovery_failed", "runner_failed", "runner_launch_failed",
-  "recovery_exhausted", "cancelled_before_start", "expired_before_start", "dependency_failed",
-]);
-const TASK_SUCCESSFUL_JOB_STATUSES = new Set(["succeeded", "recovered"]);
-
-function taskStatusForJob(job) {
-  const status = String(job?.status || "").toLowerCase();
-  if (status.startsWith("cancelled") || status === "expired_before_start") return "cancelled";
-  if (TASK_ACTIVE_JOB_STATUSES.has(status)) return "working";
-  if (TASK_TERMINAL_JOB_STATUSES.has(status)) return "completed";
-  return null;
-}
-
-function taskStatusMessage(job, status) {
-  if (status === "cancelled") return "Execution was cancelled.";
-  if (status === "completed") {
-    return TASK_SUCCESSFUL_JOB_STATUSES.has(String(job?.status || "").toLowerCase())
-      ? "Execution completed." : "Execution finished with an error result.";
-  }
-  const phase = typeof job?.current_phase === "string" && job.current_phase ? job.current_phase : "execution";
-  if (phase === "dependency_wait") return "Waiting for dependency jobs.";
-  const step = Number.isSafeInteger(job?.current_step) && Number(job.current_step) >= 0 ? `, step ${Number(job.current_step) + 1}` : "";
-  return `Running ${phase.replace(/[_-]+/g, " ")}${step}.`;
-}
 
 /** @param {Record<string, unknown>} job @param {string} taskId */
 export function taskViewForJob(job, taskId) {
@@ -47,7 +20,7 @@ export function taskViewForJob(job, taskId) {
   return {
     taskId,
     status,
-    statusMessage: taskStatusMessage(job, status),
+    statusMessage: statusMessageFor(job, status),
     createdAt,
     lastUpdatedAt,
     ttlMs: MCP_TASK_TTL_MS,
@@ -58,9 +31,10 @@ export function taskViewForJob(job, taskId) {
 /** @param {Record<string, unknown>} job @param {Record<string, unknown>} serverInfo */
 export function taskToolResult(job, serverInfo) {
   const projection = projectMcpResult(job);
+  /** @type {Record<string, unknown>} */
   const result = {
     content: [{ type: "text", text: projection.text }],
-    isError: !TASK_SUCCESSFUL_JOB_STATUSES.has(String(job?.status || "").toLowerCase()),
+    isError: !isSuccessfulJobStatus(job),
   };
   if (projection.hasStructuredContent) result.structuredContent = structuredClone(projection.structuredContent);
   return completeResult(result, serverInfo);

@@ -13,7 +13,7 @@ import { freshResourceHostSnapshot, resourceHostNeedsFreshIo } from "./resource-
 import { readResourceHostSample } from "./resource-host-sample-file.mjs";
 import { readResourceStateJson } from "./resource-state-file.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
-import { validateResourceRequest } from "./resource-request-contract.mjs";
+import { normalizeResourceRequest, validateResourceRequest } from "./resource-request-contract.mjs";
 import { isIgnorableCoordinatorMetadata, recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
 import { deriveHostRates, evaluateResourceAdmission, resourceAdmissionDecisionRetryable, resourcePressureSnapshot } from "./resource-admission-policy.mjs";
 import { fitElasticRequestToPressure } from "./resource-elastic-request.mjs";
@@ -87,7 +87,7 @@ export class ResourceCoordinator {
           const pressure = resourcePressureSnapshot(enrichedHost, leases, coordinatedRequest.priority, this.now(), accounting.accounting, coordinatedRequest);
           const effectiveRequest = fitElasticRequestToPressure(coordinatedRequest, pressure);
           if (waiter.request.cpu !== effectiveRequest.cpu || waiter.request.memory_mb !== effectiveRequest.memory_mb || waiter.request.compiler_jobs !== effectiveRequest.compiler_jobs) {
-            waiter.request = normalizedRequest(effectiveRequest); this.writeJson(join(this.waitersDir, `wait_${waiter.waiter_id}.json`), waiter);
+            waiter.request = normalizeResourceRequest(effectiveRequest); this.writeJson(join(this.waitersDir, `wait_${waiter.waiter_id}.json`), waiter);
           }
           const waiters = this.pruneAndReadWaiters(processStarts);
           const evaluate = resourceCoordinatorEvaluator(this.evaluate, processParents, waiter.owner.pid);
@@ -286,7 +286,7 @@ export class ResourceCoordinator {
         pid: process.pid,
         process_started_at: new Date(currentProcessStartTimeMs()).toISOString(),
       },
-      request: normalizedRequest(request),
+      request: normalizeResourceRequest(request),
     };
     createExclusiveFileSync(this.leasePath(id), `${JSON.stringify(lease)}\n`, { mode: 0o600 });
     return lease;
@@ -315,10 +315,6 @@ export class ResourceLease {
   }
 }
 
-function normalizedRequest(request) {
-  const allowed = ["family", "resource_class", "priority", "cpu", "io", "memory_mb", "disk_reserve_bytes", "heavy", "compiler_jobs", "unbounded", "serialize_project", "contention_key"];
-  return Object.fromEntries(allowed.map((key) => [key, request[key] ?? null]));
-}
 function validateLease(lease) {
   if (lease?.schema_version !== SCHEMA || typeof lease.lease_id !== "string" || !/^[a-f0-9]{32}$/.test(lease.lease_id)
       || typeof lease.token !== "string" || !/^[a-f0-9]{64}$/.test(lease.token)) throw new Error("resource coordinator lease is invalid");

@@ -119,11 +119,14 @@
     "src/local/symbol-outline.mjs",
     "src/local/workspace-paths.mjs",
     "src/shared/help-resources.mjs",
+    "src/shared/mcp-task-contract.mjs",
     "src/shared/prompt-projection.mjs",
     "src/shared/tool-groups.mjs",
+    "src/shared/trusted-origin.mjs",
     "src/local/bounded-output.mjs",
     "src/local/managed-job-listing.mjs",
-    "src/local/errors.mjs",
-    "src/local/domains/core.mjs"
+    "src/local/resource-request-contract.mjs",
+    "src/local/stdio-task-projection.mjs",
+    "src/local/errors.mjs"
   ]
 }

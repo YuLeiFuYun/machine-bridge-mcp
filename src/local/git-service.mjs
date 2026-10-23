@@ -98,37 +98,6 @@ export class GitService {
     return { code: 0, committed: true, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
   }
 
-  async branchList(args = {}, context = {}) {
-    const git = await this.context(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
-    await this.assertSafeConfig(git, context, false);
-    const commandArgs = [...gitCommandPrefix(git), "branch", "--list", "--no-color"];
-    const result = await this.runInternalProcess(
-      this.gitExecutable(), commandArgs, 30_000, true, 256 * 1024, context, git.root, null, STRUCTURED_GIT_ENVIRONMENT,
-    );
-    const branches = (result.stdout || "").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
-      const current = line.startsWith("*");
-      const name = line.replace(/^\*\s*/, "").trim();
-      return { name, current };
-    });
-    return { code: result.code, stderr: result.stderr, branches, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
-  }
-
-  async stashList(args = {}, context = {}) {
-    const git = await this.context(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
-    await this.assertSafeConfig(git, context, false);
-    const commandArgs = [...gitCommandPrefix(git), "stash", "list", "--no-color"];
-    const result = await this.runInternalProcess(
-      this.gitExecutable(), commandArgs, 30_000, true, 256 * 1024, context, git.root, null, STRUCTURED_GIT_ENVIRONMENT,
-    );
-    const stashes = (result.stdout || "").split("\n").map((line) => line.trim()).filter(Boolean).map((line, idx) => {
-      const match = /^stash@\{(\d+)\}:\s*(.*)$/.exec(line);
-      return match ? { index: Number(match[1]), description: match[2] } : { index: idx, description: line };
-    });
-    return { code: result.code, stderr: result.stderr, stashes, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
-  }
-
   assertSafeConfig(git, context, inspectWorkingTree) {
     return assertStructuredGitConfigSafe({
       git,

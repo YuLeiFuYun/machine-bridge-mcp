@@ -21,16 +21,9 @@ const REGEX_PRECEDING_KEYWORDS = Object.freeze(new Set([
   "return", "case", "typeof", "delete", "void", "throw", "instanceof", "in", "of", "yield", "await", "default",
 ]));
 
-// A signature may legitimately span more than a dozen lines (destructured parameters, generics,
-// callback types). The scan is bounded by the matching close paren and by this hard ceiling, so a
-// pathological file cannot make extraction quadratic.
 const MAX_SIGNATURE_LINES = 200;
 
-/**
- * Net parenthesis balance of one sanitized line.
- * @param {string} text
- * @returns {number}
- */
+/** @param {string} text @returns {number} */
 function parenDelta(text) {
   let depth = 0;
   for (const ch of String(text)) {
@@ -40,34 +33,16 @@ function parenDelta(text) {
   return depth;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function skipLineComment(code, len, startIdx, out) {
   out.text += "  ";
   let idx = startIdx + 2;
-  while (idx < len && code[idx] !== "\n") {
-    out.text += " ";
-    idx++;
-  }
-  if (idx < len && code[idx] === "\n") {
-    out.text += "\n";
-    idx++;
-  }
+  while (idx < len && code[idx] !== "\n") { out.text += " "; idx++; }
+  if (idx < len && code[idx] === "\n") { out.text += "\n"; idx++; }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function skipBlockComment(code, len, startIdx, out) {
   out.text += "  ";
   let idx = startIdx + 2;
@@ -75,82 +50,37 @@ function skipBlockComment(code, len, startIdx, out) {
     out.text += code[idx] === "\n" ? "\n" : " ";
     idx++;
   }
-  if (idx < len) {
-    out.text += "  ";
-    idx += 2;
-  }
+  if (idx < len) { out.text += "  "; idx += 2; }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @param {string} quote
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @param {string} quote @returns {number} */
 function skipStringLiteral(code, len, startIdx, out, quote) {
   out.text += " ";
   let idx = startIdx + 1;
   while (idx < len && code[idx] !== quote && code[idx] !== "\n") {
-    if (code[idx] === "\\") {
-      out.text += "  ";
-      idx += 2;
-    } else {
-      out.text += " ";
-      idx++;
-    }
+    if (code[idx] === "\\") { out.text += "  "; idx += 2; }
+    else { out.text += " "; idx++; }
   }
-  if (idx < len && code[idx] === quote) {
-    out.text += " ";
-    idx++;
-  }
+  if (idx < len && code[idx] === quote) { out.text += " "; idx++; }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function skipRegexLiteral(code, len, startIdx, out) {
   out.text += " ";
   let idx = startIdx + 1;
   let inClass = false;
   while (idx < len) {
     const c = code[idx];
-    if (c === "\n") {
-      out.text += "\n";
-      idx++;
-      break;
-    }
-    if (c === "\\") {
-      out.text += "  ";
-      idx += 2;
-      continue;
-    }
-    if (c === "[" && !inClass) {
-      inClass = true;
-      out.text += " ";
-      idx++;
-      continue;
-    }
-    if (c === "]" && inClass) {
-      inClass = false;
-      out.text += " ";
-      idx++;
-      continue;
-    }
+    if (c === "\n") { out.text += "\n"; idx++; break; }
+    if (c === "\\") { out.text += "  "; idx += 2; continue; }
+    if (c === "[" && !inClass) { inClass = true; out.text += " "; idx++; continue; }
+    if (c === "]" && inClass) { inClass = false; out.text += " "; idx++; continue; }
     if (c === "/" && !inClass) {
       out.text += " ";
       idx++;
-      while (idx < len && /[a-z]/i.test(code[idx])) {
-        out.text += " ";
-        idx++;
-      }
+      while (idx < len && /[a-z]/i.test(code[idx])) { out.text += " "; idx++; }
       break;
     }
     out.text += " ";
@@ -159,50 +89,28 @@ function skipRegexLiteral(code, len, startIdx, out) {
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function sanitizeTemplate(code, len, startIdx, out) {
   out.text += " ";
   let idx = startIdx + 1;
   while (idx < len) {
     const c = code[idx];
-    if (c === "`") {
-      out.text += " ";
-      return idx + 1;
-    }
-    if (c === "\\") {
-      out.text += code[idx + 1] === "\n" ? " \n" : "  ";
-      idx += 2;
-      continue;
-    }
-    if (c === "$" && code[idx + 1] === "{") {
-      out.text += "  ";
-      idx = sanitizeTemplateExpr(code, len, idx + 2, out);
-      continue;
-    }
+    if (c === "`") { out.text += " "; return idx + 1; }
+    if (c === "\\") { out.text += code[idx + 1] === "\n" ? " \n" : "  "; idx += 2; continue; }
+    if (c === "$" && code[idx + 1] === "{") { out.text += "  "; idx = sanitizeTemplateExpr(code, len, idx + 2, out); continue; }
     out.text += c === "\n" ? "\n" : " ";
     idx++;
   }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function sanitizeTemplateExpr(code, len, startIdx, out) {
   let idx = startIdx;
   let braceDepth = 1;
   let exprLastChar = "{";
   let exprLastToken = "";
+  let exprInToken = false;
 
   while (idx < len && braceDepth > 0) {
     const c = code[idx];
@@ -210,58 +118,50 @@ function sanitizeTemplateExpr(code, len, startIdx, out) {
 
     if (c === "/" && nextC === "/") {
       idx = skipLineComment(code, len, idx, out);
-      exprLastChar = ";";
-      exprLastToken = "";
+      exprLastChar = ";"; exprLastToken = ""; exprInToken = false;
       continue;
     }
     if (c === "/" && nextC === "*") {
       idx = skipBlockComment(code, len, idx, out);
+      exprInToken = false;
       continue;
     }
     if (c === '"' || c === "'") {
       idx = skipStringLiteral(code, len, idx, out, c);
-      exprLastChar = ")";
-      exprLastToken = "";
+      exprLastChar = ")"; exprLastToken = ""; exprInToken = false;
       continue;
     }
     if (c === "`") {
       idx = sanitizeTemplate(code, len, idx, out);
-      exprLastChar = ")";
-      exprLastToken = "";
+      exprLastChar = ")"; exprLastToken = ""; exprInToken = false;
       continue;
     }
     if (c === "/") {
       const isRegex = REGEX_PRECEDING_TOKENS.has(exprLastChar) || REGEX_PRECEDING_KEYWORDS.has(exprLastToken) || exprLastChar === "";
       if (isRegex) {
         idx = skipRegexLiteral(code, len, idx, out);
-        exprLastChar = ")";
-        exprLastToken = "";
+        exprLastChar = ")"; exprLastToken = ""; exprInToken = false;
         continue;
       }
     }
     if (c === "{") {
-      braceDepth++;
-      out.text += " ";
-      exprLastChar = "{";
-      exprLastToken = "";
-      idx++;
+      braceDepth++; out.text += " "; exprLastChar = "{"; exprLastToken = ""; exprInToken = false; idx++;
       continue;
     }
     if (c === "}") {
-      braceDepth--;
-      out.text += " ";
-      idx++;
+      braceDepth--; out.text += " "; idx++;
       if (braceDepth === 0) return idx;
-      exprLastChar = "}";
-      exprLastToken = "";
+      exprLastChar = "}"; exprLastToken = ""; exprInToken = false;
       continue;
     }
 
     out.text += c === "\n" ? "\n" : " ";
     if (!/\s/.test(c)) {
       exprLastChar = c;
-      if (/[a-zA-Z0-9_$]/.test(c)) exprLastToken += c;
-      else exprLastToken = "";
+      if (/[a-zA-Z0-9_$]/.test(c)) { exprLastToken = exprInToken ? exprLastToken + c : c; exprInToken = true; }
+      else { exprLastToken = ""; exprInToken = false; }
+    } else {
+      exprInToken = false;
     }
     idx++;
   }
@@ -271,9 +171,7 @@ function sanitizeTemplateExpr(code, len, startIdx, out) {
 /**
  * Strips comments, string literals, template literal bodies, and regex literals from source code
  * while strictly preserving all newline positions (\n) and column alignments.
- *
- * @param {string} code
- * @returns {string}
+ * @param {string} code @returns {string}
  */
 export function sanitizeSource(code) {
   const out = { text: "" };
@@ -281,6 +179,7 @@ export function sanitizeSource(code) {
   let i = 0;
   let lastToken = "";
   let lastChar = "";
+  let inToken = false;
 
   while (i < len) {
     const ch = code[i];
@@ -288,32 +187,29 @@ export function sanitizeSource(code) {
 
     if (ch === "/" && next === "/") {
       i = skipLineComment(code, len, i, out);
-      lastChar = ";";
-      lastToken = "";
+      lastChar = ";"; lastToken = ""; inToken = false;
       continue;
     }
     if (ch === "/" && next === "*") {
       i = skipBlockComment(code, len, i, out);
+      inToken = false;
       continue;
     }
     if (ch === '"' || ch === "'") {
       i = skipStringLiteral(code, len, i, out, ch);
-      lastChar = ")";
-      lastToken = "";
+      lastChar = ")"; lastToken = ""; inToken = false;
       continue;
     }
     if (ch === "`") {
       i = sanitizeTemplate(code, len, i, out);
-      lastChar = ")";
-      lastToken = "";
+      lastChar = ")"; lastToken = ""; inToken = false;
       continue;
     }
     if (ch === "/") {
       const isRegex = REGEX_PRECEDING_TOKENS.has(lastChar) || REGEX_PRECEDING_KEYWORDS.has(lastToken) || lastChar === "";
       if (isRegex) {
         i = skipRegexLiteral(code, len, i, out);
-        lastChar = ")";
-        lastToken = "";
+        lastChar = ")"; lastToken = ""; inToken = false;
         continue;
       }
     }
@@ -321,13 +217,23 @@ export function sanitizeSource(code) {
     out.text += ch;
     if (!/\s/.test(ch)) {
       lastChar = ch;
-      if (/[a-zA-Z0-9_$]/.test(ch)) lastToken += ch;
-      else lastToken = "";
+      if (/[a-zA-Z0-9_$]/.test(ch)) { lastToken = inToken ? lastToken + ch : ch; inToken = true; }
+      else { lastToken = ""; inToken = false; }
+    } else {
+      inToken = false;
     }
     i++;
   }
 
   return out.text;
+}
+
+/** @param {...(string | undefined)} candidates */
+function normalizeSymbolParams(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate !== undefined) return String(candidate).replace(/\s+/g, " ").trim();
+  }
+  return "";
 }
 
 /**
@@ -388,27 +294,25 @@ export function extractFileSymbols(code, filename = "anonymous.js", options = {}
       const fnMatch = trimmed.match(/^(?:export\s+(?:default\s+)?)?(async\s+)?function(?:\s*\*|\s+)?(?:\s+([A-Za-z0-9_$]+))?(?:<[^>]*>)?\s*\(([^)]*)\)/);
       if (fnMatch) {
         const origFnMatch = origTrimmed.match(/^(?:export\s+(?:default\s+)?)?(async\s+)?function(?:\s*\*|\s+)?(?:\s+([A-Za-z0-9_$]+))?(?:<[^>]*>)?\s*\(([^)]*)\)/);
-        const params = (origFnMatch ? origFnMatch[3] : fnMatch[3]).replace(/\s+/g, " ").trim();
         symbols.push({
           name: fnMatch[2] || "(anonymous)",
           kind: "function",
           line: lineNum,
           async: Boolean(fnMatch[1]),
-          params,
+          params: normalizeSymbolParams(origFnMatch?.[3], fnMatch[3]),
           isExported: trimmed.startsWith("export"),
         });
       }
 
-      const arrowMatch = trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
+      const arrowMatch = trimmed.match(/^(?:(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=|export\s+(default))\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
       if (arrowMatch) {
-        const origArrowMatch = origTrimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
-        const params = (origArrowMatch ? (origArrowMatch[3] || origArrowMatch[4]) : (arrowMatch[3] || arrowMatch[4]) || "").replace(/\s+/g, " ").trim();
+        const origArrowMatch = origTrimmed.match(/^(?:(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=|export\s+(default))\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
         symbols.push({
-          name: arrowMatch[1],
+          name: arrowMatch[1] || arrowMatch[2] || "(anonymous)",
           kind: "function",
           line: lineNum,
-          async: Boolean(arrowMatch[2]),
-          params,
+          async: Boolean(arrowMatch[3]),
+          params: normalizeSymbolParams(origArrowMatch?.[4], origArrowMatch?.[5], arrowMatch[4], arrowMatch[5]),
           isExported: trimmed.startsWith("export"),
         });
       }
@@ -436,14 +340,13 @@ export function extractFileSymbols(code, filename = "anonymous.js", options = {}
       const methodMatch = trimmed.match(/^(?:public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?(\*|get\s+|set\s+)?(#?[A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/);
       if (methodMatch && !["if", "for", "while", "switch", "catch", "return"].includes(methodMatch[4])) {
         const origMethodMatch = origTrimmed.match(/^(?:public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?(\*|get\s+|set\s+)?(#?[A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/);
-        const params = (origMethodMatch ? origMethodMatch[5] : methodMatch[5]).replace(/\s+/g, " ").trim();
         currentClass.methods.push({
           name: methodMatch[4],
           kind: methodMatch[4] === "constructor" ? "constructor" : "method",
           static: Boolean(methodMatch[1]),
           async: Boolean(methodMatch[2]),
           accessor: methodMatch[3]?.trim() || null,
-          params,
+          params: normalizeSymbolParams(origMethodMatch?.[5], methodMatch[5]),
           line: lineNum,
         });
       }
@@ -526,7 +429,7 @@ export function renderSymbolOutline(fileSymbols, options = {}) {
 /**
  * Bounded lexical index, not a semantic parser. Filesystem access is asynchronous and policy checked.
  * @typedef {{maxFiles?: number, maxLines?: number, maxEntries?: number, maxDepth?: number,
- * maxFileBytes?: number, maxTotalBytes?: number, ignoredDirs?: Set<string>,
+ * maxFileBytes?: number, maxTotalBytes?: number, maxOutputBytes?: number, ignoredDirs?: Set<string>,
  * displayPath?: (path: string) => string, assertPath?: (path: string) => void | Promise<void>,
  * throwIfCancelled?: () => void}} OutlineOptions
  */
@@ -534,7 +437,7 @@ export function renderSymbolOutline(fileSymbols, options = {}) {
 /** @param {string} input @param {OutlineOptions} [options] */
 export async function extractWorkspaceOutline(input, options = {}) {
   const maxFiles = outlineLimit(options.maxFiles, 30, 100);
-  const maxLines = outlineLimit(options.maxLines, 300, 1000);
+  const budget = outlineTextBudget(options);
   const maxEntries = outlineLimit(options.maxEntries, 2048, 10000);
   const maxDepth = outlineLimit(options.maxDepth, 8, 32);
   const maxFileBytes = outlineLimit(options.maxFileBytes, 256 * 1024, 1024 * 1024);
@@ -586,11 +489,9 @@ export async function extractWorkspaceOutline(input, options = {}) {
   let bytesRead = 0;
   let filesScanned = 0;
   let totalSymbols = 0;
-  /** @type {string[]} */
-  const lines = [];
   for (const path of files) {
     check();
-    if (lines.length >= maxLines || bytesRead >= maxTotalBytes) { truncated = true; break; }
+    if (budget.full || bytesRead >= maxTotalBytes) { truncated = true; break; }
     try {
       await assertPath(path);
       const canonical = await realpath(path);
@@ -602,21 +503,16 @@ export async function extractWorkspaceOutline(input, options = {}) {
       const symbols = extractFileSymbols(file.text, options.displayPath ? options.displayPath(path) : relative(root, path));
       totalSymbols += symbols.symbols.length;
       if (!symbols.symbols.length) continue;
-      const block = [...(lines.length ? [""] : []), ...renderSymbolOutline(symbols).split("\n")];
-      const remaining = maxLines - lines.length;
-      lines.push(...block.slice(0, remaining));
-      if (block.length > remaining) { truncated = true; break; }
+      const block = [...(budget.hasContent ? [""] : []), ...renderSymbolOutline(symbols).split("\n")];
+      if (!budget.append(block)) { truncated = true; break; }
     } catch {
       check();
       truncated = true;
       if (!warnings.includes("source_unavailable")) warnings.push("source_unavailable");
     }
   }
-  if (truncated) {
-    if (lines.length >= maxLines) lines.pop();
-    lines.push("... [Symbol outline truncated: budget reached or source unavailable]");
-  }
-  return { outline: lines.join("\n"), filesScanned, totalSymbols, truncated, visitedEntries, bytesRead, warnings };
+  const output = budget.finish(truncated, "... [Symbol outline truncated: budget reached or source unavailable]");
+  return { ...output, filesScanned, totalSymbols, visitedEntries, bytesRead, warnings };
 }
 
 /** @param {string} input @param {OutlineOptions} [options] */
@@ -632,30 +528,54 @@ export async function extractSymbolOutline(input, options = {}) {
   const file = await readRegularUtf8(input, outlineLimit(options.maxFileBytes, 256 * 1024, 1024 * 1024), "symbol source", { canonicalPath: canonical });
   check();
   const symbols = extractFileSymbols(file.text, options.displayPath ? options.displayPath(input) : relative(process.cwd(), input));
-  const lines = renderSymbolOutline(symbols).split("\n");
-  const maxLines = outlineLimit(options.maxLines, 300, 1000);
-  if (lines.length > maxLines) return [...lines.slice(0, maxLines - 1), "... [Symbol outline truncated: budget reached]"].join("\n");
-  return lines.join("\n");
-}
-
-/**
- * Global repository map generator (inspired by Aider).
- * Produces a topological overview of exported symbols across the workspace.
- * @param {string} root
- * @param {OutlineOptions} [options]
- */
-export async function generateRepoMap(root, options = {}) {
-  const result = await extractWorkspaceOutline(root, options);
-  return {
-    repo_map: result.outline,
-    files_scanned: result.filesScanned,
-    total_symbols: result.totalSymbols,
-    truncated: result.truncated,
-    warnings: result.warnings,
-  };
+  const budget = outlineTextBudget(options);
+  budget.append(renderSymbolOutline(symbols).split("\n"));
+  return budget.finish(false, "... [Symbol outline truncated: budget reached]").outline;
 }
 
 /** @param {number | undefined} value @param {number} fallback @param {number} maximum */
 function outlineLimit(value, fallback, maximum) {
   return Number.isSafeInteger(value) && Number(value) >= 1 ? Math.min(Number(value), maximum) : fallback;
+}
+
+/** @param {OutlineOptions} options */
+function outlineTextBudget(options) {
+  const maxLines = outlineLimit(options.maxLines, 300, 1000);
+  const maxBytes = outlineLimit(options.maxOutputBytes, 16 * 1024, 64 * 1024);
+  /** @type {string[]} */
+  const lines = [];
+  /** @type {Set<string>} */
+  const reasons = new Set();
+  let bytes = 0;
+  return {
+    get full() { return lines.length >= maxLines || bytes >= maxBytes; },
+    get hasContent() { return lines.length > 0; },
+    /** @param {string[]} block */
+    append(block) {
+      for (const line of block) {
+        if (lines.length >= maxLines) { reasons.add("line_limit"); return false; }
+        const size = Buffer.byteLength(line) + (lines.length ? 1 : 0);
+        if (bytes + size > maxBytes) { reasons.add("output_byte_limit"); return false; }
+        lines.push(line); bytes += size;
+      }
+      return true;
+    },
+    finish(incomplete = false, notice = "... [Symbol outline truncated]") {
+      const truncated = incomplete || reasons.size > 0;
+      if (truncated) {
+        if (lines.length >= maxLines) reasons.add("line_limit");
+        if (bytes >= maxBytes) reasons.add("output_byte_limit");
+        if (!reasons.size) reasons.add("source_incomplete");
+        if (Buffer.byteLength(notice) > maxBytes) notice = ".".repeat(Math.min(3, maxBytes));
+        const noticeBytes = Buffer.byteLength(notice);
+        while (lines.length && (lines.at(-1) === "" || lines.length >= maxLines || bytes + 1 + noticeBytes > maxBytes)) {
+          const removed = /** @type {string} */ (lines.pop());
+          bytes -= Buffer.byteLength(removed) + (lines.length ? 1 : 0);
+        }
+        bytes += (lines.length ? 1 : 0) + noticeBytes;
+        lines.push(notice);
+      }
+      return { outline: lines.join("\n"), truncated, outputBytes: bytes, truncationReasons: [...reasons] };
+    },
+  };
 }

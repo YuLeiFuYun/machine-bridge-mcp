@@ -4,9 +4,7 @@ import { managedJobDependencyCount } from "./managed-job-dependency-metadata.mjs
 import {
   managedJobRecoveryAttempts, managedJobRecoveryHistory, managedJobRecoveryHistoryComplete,
 } from "./managed-job-recovery-history.mjs";
-import {
-  redactSensitiveProcessOutput, refusalPreventionAdvisory,
-} from "./process-result-projection.mjs";
+import { redactSensitiveProcessOutput } from "./process-result-projection.mjs";
 
 /**
  * Return the review-safe job plan projection. Resource paths and values are absent by contract.
@@ -59,11 +57,7 @@ export function projectManagedJobResult(result, { includeResourceAdmissionTiming
       ? { ...projected, ...(rawStep.resource_admission_ms !== undefined ? { resource_admission_ms: rawStep.resource_admission_ms } : {}) }
       : projected;
     if (typeof target.stdout === "string") target.stdout = redactSensitiveProcessOutput(target.stdout);
-    if (typeof target.stderr === "string") {
-      target.stderr = redactSensitiveProcessOutput(target.stderr);
-      const advisory = refusalPreventionAdvisory(target.stderr, target.stdout, target.code);
-      if (advisory) target.stderr = `${target.stderr}${advisory}`;
-    }
+    if (typeof target.stderr === "string") target.stderr = redactSensitiveProcessOutput(target.stderr);
     return target;
   }) : steps;
   return { ...result, steps: projectSteps(result.steps), finally_steps: projectSteps(result.finally_steps) };

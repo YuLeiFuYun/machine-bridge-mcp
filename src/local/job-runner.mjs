@@ -206,12 +206,9 @@ async function main(plan, initial, resourceCoordinator) {
   }
   const cancelled = mainError instanceof JobCancelledError || cancellationMarker;
   const finalStatus = managedJobFinalStatus({ recover, cancelled, mainError, cleanupError });
-  if (cleanupError && classifyError(cleanupError) === "resource_error") {
-    const stage = cleanupError?.details?.admission_reason || cleanupError?.details?.reason || cleanupError?.code
-      || (/resource lease/i.test(String(cleanupError?.message || "")) ? "resource_lease" : "resource_operation");
-    try { process.stderr.write(`managed job cleanup infrastructure failure: stage=${sanitizeLogText(stage, 64)}\n`); }
-    catch { /* Last-resort diagnostics must not replace the managed job's primary failure. */ }
-  }
+  const mainErrorReason = classifyErrorReason(mainError);
+  const cleanupErrorReason = classifyErrorReason(cleanupError);
+  reportTerminalDiagnostics({ mainError, mainErrorReason, cleanupError, cancelled });
 
   const result = {
     job_id: status.job_id,
@@ -221,6 +218,7 @@ async function main(plan, initial, resourceCoordinator) {
     finally_steps: cleanupResults,
     error_class: classifyError(mainError),
     cleanup_error_class: classifyError(cleanupError),
+    ...optionalReasonFields(mainErrorReason, cleanupErrorReason),
     ...(dependencyFailureDetails(mainError) ? { dependency_failure: dependencyFailureDetails(mainError) } : {}),
     capture_limit_bytes: captureLimitBytes,
     capture_remaining_bytes: captureBudget.remaining,
@@ -236,6 +234,26 @@ async function main(plan, initial, resourceCoordinator) {
   });
   Object.assign(status, terminal.status);
   reportTerminalPersistenceFailure(terminal);
+}
+
+function optionalReasonFields(mainErrorReason, cleanupErrorReason) {
+  return {
+    ...(mainErrorReason ? { error_reason: mainErrorReason } : {}),
+    ...(cleanupErrorReason ? { cleanup_error_reason: cleanupErrorReason } : {}),
+  };
+}
+
+function reportTerminalDiagnostics({ mainError, mainErrorReason, cleanupError, cancelled }) {
+  if (mainError && !cancelled) {
+    try { process.stderr.write(`managed job step failure: reason=${sanitizeLogText(mainErrorReason, 64)}\n`); }
+    catch { /* Last-resort diagnostics must not replace the managed job's primary failure. */ }
+  }
+  if (cleanupError && classifyError(cleanupError) === "resource_error") {
+    const stage = cleanupError?.details?.admission_reason || cleanupError?.details?.reason || cleanupError?.code
+      || (/resource lease/i.test(String(cleanupError?.message || "")) ? "resource_lease" : "resource_operation");
+    try { process.stderr.write(`managed job cleanup infrastructure failure: stage=${sanitizeLogText(stage, 64)}\n`); }
+    catch { /* Last-resort diagnostics must not replace the managed job's primary failure. */ }
+  }
 }
 
 function managedJobCaptureLimit(status) {
@@ -689,6 +707,19 @@ function classifyError(error) {
   if (/not found|ENOENT/i.test(message)) return "not_found";
   if (/resource/i.test(message)) return "resource_error";
   return "execution_failed";
+}
+
+function classifyErrorReason(error) {
+  if (!error) return null;
+  if (error instanceof JobCancelledError) return "cancelled";
+  if (error instanceof ManagedJobDependencyError) return "dependency_failed";
+  const message = String(error?.message || error);
+  if (/child process identity could not be verified|active child/i.test(message)) return "child_identity_unverified";
+  if (/runner claim|ownership token|recovery lock/i.test(message)) return "runner_claim_failed";
+  if (/child stdin delivery failed/i.test(message)) return "stdin_delivery_failed";
+  if (/step \d+ timed out|cleanup step \d+ timed out/i.test(message)) return "step_timed_out";
+  if (/step \d+ exited|cleanup step \d+ exited/i.test(message)) return "step_nonzero_exit";
+  return classifyError(error);
 }
 
 function parseArgs(argv) {

@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, stat } from "node:fs/promises";
 import path, { basename, resolve } from "node:path";
+import { compileFunction } from "node:vm";
 import { directoryEntriesWithMetadata } from "./directory-metadata.mjs";
 import { BridgeError } from "./errors.mjs";
-import { hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
+import { formatNumberedSlice, hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
+import { sanitizeSource } from "./symbol-outline.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { searchWorkspaceText } from "./workspace-search-service.mjs";
 import {
@@ -26,14 +28,33 @@ const DEFAULT_IGNORED_DIRECTORIES = new Set([
   ".git", "node_modules", "dist", "build", "coverage", ".next", ".turbo", ".wrangler",
   "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv",
 ]);
+const CODE_SYNTAX_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx"]);
+const DELIMITER_PAIRS = { "{": "}", "(": ")", "[": "]" };
+const CLOSING_DELIMITERS = new Set(["}", ")", "]"]);
 
-function inspectSyntaxWarning(filePath, content) {
+export function inspectSyntaxWarning(filePath, content) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === ".json") {
-    try {
-      JSON.parse(content);
-    } catch (error) {
+    try { JSON.parse(content); } catch (error) {
       return `syntax_warning: invalid JSON: ${String(error?.message || error).slice(0, 100)}`;
+    }
+    return null;
+  }
+  if (CODE_SYNTAX_EXTENSIONS.has(ext) && content.length <= 512 * 1024) {
+    const sanitized = sanitizeSource(content);
+    const stack = [];
+    for (let i = 0; i < sanitized.length; i += 1) {
+      const ch = sanitized[i];
+      if (DELIMITER_PAIRS[ch]) stack.push(DELIMITER_PAIRS[ch]);
+      else if (CLOSING_DELIMITERS.has(ch) && stack.pop() !== ch) {
+        return `syntax_warning: unexpected closing delimiter '${ch}'`;
+      }
+    }
+    if (stack.length > 0) return `syntax_warning: unclosed delimiter expecting '${stack.at(-1)}'`;
+    if (ext === ".cjs" || (ext === ".js" && !/^\s*(?:import|export)\b/m.test(sanitized))) {
+      try { compileFunction(content); } catch (error) {
+        return `syntax_warning: invalid JavaScript syntax: ${String(error?.message || error).slice(0, 100)}`;
+      }
     }
   }
   return null;
@@ -52,36 +73,6 @@ export class WorkspaceFileService {
     this.withMutationPaths = withMutationPaths;
     this.isProtectedPath = typeof isProtectedPath === "function" ? isProtectedPath : () => false;
     this.fileTransactionOptions = fileTransactionOptions && typeof fileTransactionOptions === "object" ? fileTransactionOptions : {};
-    this.mutationHistory = [];
-  }
-
-  recordMutation(fullPath, previous, current) {
-    this.mutationHistory.push({
-      path: fullPath,
-      previousContent: previous,
-      sha256: sha256(current),
-      timestamp: Date.now(),
-    });
-    if (this.mutationHistory.length > 16) this.mutationHistory.shift();
-  }
-
-  async undoLastMutation(context = {}) {
-    this.throwIfCancelled(context);
-    const last = this.mutationHistory.pop();
-    if (!last || last.previousContent === null || last.previousContent === undefined) {
-      return { ok: false, message: "No previous mutation state available to undo" };
-    }
-    const info = await lstat(last.path).catch(() => null);
-    await commitAtomicText(last.path, last.previousContent, info, {
-      ...this.fileTransactionOptions,
-      readText: readUtf8File,
-    });
-    return {
-      ok: true,
-      path: this.displayPath(last.path, context),
-      undone_sha256: last.sha256,
-      restored_sha256: sha256(last.previousContent),
-    };
   }
 
   listRoots(context = {}) {
@@ -182,14 +173,19 @@ export class WorkspaceFileService {
     if (startLine > totalLines) throw new BridgeError("invalid_request", `start_line exceeds total lines (${startLine} > ${totalLines})`, { details: { reason: "line_out_of_range", total_lines: totalLines } });
     const automaticWindow = args.end_line === undefined;
     let selectedEnd = Math.min(endLine, totalLines);
+    const withLineNumbers = args.with_line_numbers === true;
     const base = { path: this.displayPath(full, context), size: info.size, sha256: sha256(content) };
     const hostedResult = hostedFileReadResult({
       context, base, content, lineStarts, startLine, selectedEnd, totalLines, maxContentBytes: maxBytes,
-      automatic: automaticWindow,
+      automatic: automaticWindow, withLineNumbers,
     });
     if (hostedResult) return hostedResult;
     const selectedStartOffset = lineStarts[startLine - 1];
-    const bytesThrough = (end) => Buffer.byteLength(content.slice(selectedStartOffset, end < totalLines ? lineStarts[end] : content.length));
+    const renderSlice = (end) => {
+      const raw = content.slice(selectedStartOffset, end < totalLines ? lineStarts[end] : content.length);
+      return withLineNumbers ? formatNumberedSlice(raw, startLine, end) : raw;
+    };
+    const bytesThrough = (end) => Buffer.byteLength(renderSlice(end));
     // An omitted end_line means "show me this file", not "fail if it is large". Shrink to the
     // largest line boundary that fits and report where to continue; only a single line larger
     // than the budget is a real limit error.
@@ -204,19 +200,9 @@ export class WorkspaceFileService {
       selectedEnd = low;
       truncated = true;
     }
-    const selectedEndOffset = selectedEnd < totalLines ? lineStarts[selectedEnd] : content.length;
-    const selected = content.slice(selectedStartOffset, selectedEndOffset);
-    const selectedBytes = Buffer.byteLength(selected);
+    const returnedContent = renderSlice(selectedEnd);
+    const selectedBytes = Buffer.byteLength(returnedContent);
     if (selectedBytes > maxBytes) throw new BridgeError("limit_exceeded", `selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`, { details: { reason: "read_limit", selected_bytes: selectedBytes, maximum_bytes: maxBytes } });
-    let returnedContent = selected;
-    if (args.with_line_numbers === true) {
-      const lines = selected.split(/\r?\n/);
-      const maxDigits = Math.max(4, String(selectedEnd).length);
-      returnedContent = lines.map((line, idx) => {
-        const lineNum = String(startLine + idx).padStart(maxDigits, " ");
-        return `${lineNum} | ${line}`;
-      }).join("\n");
-    }
     const result = { ...base, content: returnedContent, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines, truncated, ...(truncated ? { next_start_line: selectedEnd + 1, next_action_affordance: { action: "read_file", path: args.path, start_line: selectedEnd + 1, end_line: Math.min(selectedEnd + 300, totalLines) } } : {}) };
     if (totalLines > 300 && (selectedEnd < totalLines || args.end_line === undefined)) {
       result.pagination_guidance = selectedEnd < totalLines
@@ -276,7 +262,6 @@ export class WorkspaceFileService {
       const warnings = commit.warnings.slice();
       const syntax = inspectSyntaxWarning(full, content);
       if (syntax) warnings.push(syntax);
-      this.recordMutation(full, null, content);
       return { ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes, ...(warnings.length ? { warnings } : {}) };
     });
   }
@@ -346,7 +331,6 @@ export class WorkspaceFileService {
       const warnings = commit.warnings.slice();
       const syntax = inspectSyntaxWarning(full, updated);
       if (syntax) warnings.push(syntax);
-      this.recordMutation(full, current, updated);
       return {
         ok: true,
         path: this.displayPath(full, context),
@@ -453,36 +437,6 @@ export class WorkspaceFileService {
     }
     return { truncated: false, visitedEntries };
   }
-
-  async revertFileTransaction(args, context = {}) {
-    if (!args.path) throw new BridgeError("invalid_request", "path is required", { details: { reason: "missing_path" } });
-    const full = await this.resolveExistingPath(args.path, context);
-    const mutation = [...this.mutationHistory].reverse().find((m) => m.path === full && (!args.target_sha256 || m.sha256 === args.target_sha256));
-    if (!mutation || mutation.previousContent === null) {
-      throw new BridgeError("not_found", "no revertible previous state found in transaction history for this file", { details: { reason: "no_mutation_history" } });
-    }
-    const writeResult = await this.writeFile({ path: args.path, content: mutation.previousContent }, context);
-    return {
-      reverted: true,
-      path: this.displayPath(full, context),
-      restored_sha256: writeResult.sha256,
-      message: "File successfully reverted to state prior to latest transaction.",
-    };
-  }
-
-  async batchRead(args, context = {}) {
-    const reads = Array.isArray(args.reads) ? args.reads : (Array.isArray(args.paths) ? args.paths.map((p) => ({ path: p })) : []);
-    if (!reads.length) throw new BridgeError("invalid_request", "reads or paths array is required", { details: { reason: "empty_batch_read" } });
-    const results = await Promise.all(reads.map(async (readItem) => {
-      try {
-        const itemResult = await this.readFile(readItem, context);
-        return { path: readItem.path, success: true, result: itemResult };
-      } catch (err) {
-        return { path: readItem.path, success: false, error: err?.message || String(err) };
-      }
-    }));
-    return { count: results.length, items: results };
-  }
 }
 
 export async function readBoundedFile(filePath, maxBytes, label) {
@@ -551,7 +505,7 @@ function findNearMiss(current, oldText) {
     if (trimmed === firstOldLine || (firstOldLine.length > 5 && (trimmed.includes(firstOldLine) || firstOldLine.includes(trimmed)))) {
       const start = Math.max(1, i + 1);
       const end = Math.min(fileLines.length, i + oldLines.length + 1);
-      const snippet = fileLines.slice(start - 1, end).join("\n");
+      const snippet = formatNumberedSlice(fileLines.slice(start - 1, end).join("\n"), start, end);
       return {
         hint: `Exact match failed. Closest match found around line ${start}-${end}. Check indentation, whitespace, or line endings.`,
         candidate_lines: { start, end },
@@ -561,7 +515,6 @@ function findNearMiss(current, oldText) {
   }
   return null;
 }
-
 
 function detectImageMime(buffer) {
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
