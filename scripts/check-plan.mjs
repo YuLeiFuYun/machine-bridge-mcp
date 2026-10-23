@@ -20,8 +20,6 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "output-buffer:test",
   "release-diagnostic:test",
   "check-runner:test",
-  "coverage-generation:test",
-  "coverage-range-merge:test",
   "full-verification-receipt:test",
   "process-output:test",
   "process-nonreplayable:test",

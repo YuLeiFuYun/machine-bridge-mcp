@@ -2029,8 +2029,9 @@ console.log("resource admission test ok");
 }
 
 {
-  const healthRoot = mkdtempSync(join(tmpdir(), "mbm-coordinator-health-"));
-  const externalProtocolAlias = join(tmpdir(), `mbm-protocol-alias-${process.pid}-${Date.now()}.json`);
+  const healthSuiteRoot = mkdtempSync(join(tmpdir(), "mbm-coordinator-health-"));
+  const healthRoot = join(healthSuiteRoot, "coordinator");
+  const externalProtocolAlias = join(healthSuiteRoot, "protocol-alias.json");
   try {
     const coordinator = new ResourceCoordinator({
       root: healthRoot, now: () => Date.now(), sampleHost: () => host(), sleep: async () => {}, random: () => 0,
@@ -2073,8 +2074,7 @@ console.log("resource admission test ok");
     assert(corruptedRepair.invalid.includes("protocol.json"),
       "coordinator doctor did not report invalid content in a repaired state file");
   } finally {
-    rmSync(healthRoot, { recursive: true, force: true });
-    rmSync(externalProtocolAlias, { force: true });
+    rmSync(healthSuiteRoot, { recursive: true, force: true });
   }
 }
 

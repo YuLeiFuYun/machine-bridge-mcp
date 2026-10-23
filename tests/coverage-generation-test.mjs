@@ -18,7 +18,7 @@ try {
   assert.notEqual(contentChanged, baseline, "content drift was absent from coverage generation identity");
 
   writeFileSync(source, "export const value = 1;\n", { mode: 0o644 });
-  chmodSync(source, 0o600);
+  chmodSync(source, process.platform === "win32" ? 0o444 : 0o600);
   const modeChanged = captureCoverageGeneration(root, options);
   assert.notEqual(modeChanged, baseline, "POSIX mode drift was absent from coverage generation identity");
 
