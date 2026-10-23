@@ -257,8 +257,6 @@ Autostart uses a macOS LaunchAgent, Linux `systemd --user`, or a least-privilege
 
 The exact tool set depends on the effective policy and account role. Both transports consume the same catalog in `src/shared/tool-catalog.json`; the generated reference is [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md).
 
-`inputSchema` is hand-authored in `src/shared/tool-catalog.json` and validated by argument-contract tests. `outputSchema` is generated from a real handler response recorded in `src/shared/tool-output-contract.json` and checked by `tool-output-schemas:check`, so a declared field is a field the tool actually returns; schemas stay permissive (`additionalProperties: true`) and only list the properties that observation confirmed. Of the 56 tools, 42 have a verified observation; the remaining 14 are browser, computer-use, or macOS application tools that require a real interactive environment and keep an empty property set rather than an invented one. A failed or environment-dependent observation is never carried forward as verified. `required` lists only fields expected in every supported output mode; mode-specific or optional fields are recorded as `conditional` and are never required. A field observed only as `null` is left unconstrained because null does not prove the field's runtime type. Fields injected by the progressive stdio transport are documented separately and are not advertised as tool outputs. The `Tool schema generation N` counter covers both, and `catalog:test` fails when a declared property or required field drifts from the observed contract.
-
 Major groups include:
 
 - workspace reads, writes, exact edits, and transactional patches;
@@ -326,8 +324,12 @@ Detailed release-governance instructions are source-repository maintenance mater
 - [Upgrading](docs/UPGRADING.md)
 - [Computer use](docs/COMPUTER_USE.md)
 - [Managed jobs](docs/MANAGED_JOBS.md)
+- [Agent context](docs/AGENT_CONTEXT.md)
 - [Audit status](docs/AUDIT.md)
 - [Privacy hygiene](docs/PRIVACY.md)
+- [Architecture](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/ARCHITECTURE.md)
+- [Engineering](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/ENGINEERING.md)
+- [Project standards](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/PROJECT_STANDARDS.md)
 - [Testing](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/TESTING.md)
 
 Architecture, engineering, testing, project-standard, release-governance, contribution, conduct, and governance documents remain available in the source repository but are not part of the npm consumer payload.

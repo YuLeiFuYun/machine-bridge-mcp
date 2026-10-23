@@ -8,40 +8,12 @@ machine-mcp doctor
 machine-mcp service status
 ```
 
-### Executive Operations Cheatsheet
-
-| Operational Goal | Recommended Command / Tool | Purpose & Remedy |
-|---|---|---|
-| **Quick Health Check** | `machine-mcp status` | Verify local profile state, port bindings, and Worker deployment version |
-| **Comprehensive Diagnosis** | `machine-mcp doctor` | Verify Node.js, cf authentication, Worker health, and local security policy |
-| **Resource Coordinator Recovery** | `machine-mcp doctor --repair-resource-coordinator` | Safely clear stale staging residue, phantom hardlinks, and reclaimed transaction locks |
-| **Service Restart** | `machine-mcp service restart` | Smooth handoff and daemon restart without aborting active managed processes |
-| **Idle Sleep Assertion** | `machine-mcp idle-sleep set ac-continuous` | Prevent macOS sleep during long builds or jobs on AC power |
-| **Remote Health Observation** | `server_info(detail="summary")` | Token-efficient health check omitting noisy multi-principal telemetry |
-| **Interrupted Job Recovery** | `read_job(job_id=..., recovery_key=...)` | Settle and recover unconfirmed mutations using original credentials |
-
-### Quick Troubleshooting Decision Tree
-
-```
-Issue: Tool call or task fails
- ├── Is error code "policy_denied"?
- │    └── Do NOT retry with shell obfuscation or password guessing. Inspect unprivileged state via read_file/id.
- ├── Is error code "mbm_resource_transaction_busy" or coordinator locked?
- │    └── Run: machine-mcp doctor --repair-resource-coordinator
- ├── Is connection refused or daemon disconnected?
- │    └── Inspect service state: machine-mcp service status
- │    └── Restart if stopped: machine-mcp service restart
- └── Did job timeout or disconnect mid-flight?
-      └── Recover using read_job(job_id=..., recovery_key=...). Do NOT repeat the side-effect blindly.
-```
-
 Routine remote checks should use authenticated `server_info` with `detail: "summary"`; request the default/full projection only when the caller's authority permits and exact effective-tool, OAuth/account, or detailed owner observability is actually needed.
 Non-owner full responses intentionally retain hidden markers/counts instead of cross-principal activity, resource aliases, stable device-key identity, or daemon-only tool names.
 Remote `diagnose_runtime` is owner-only because its fixed probes expose machine-wide control-plane activity; narrower roles use `server_info`/`project_overview` for authority-scoped readiness and workspace state.
 `status` prints redacted profile state and verifies the deployed Worker version.
 Resource source paths remain redacted.
 `doctor` checks Node.js, the audited private cf binary, structured Cloudflare login, Worker health, the configured policy, the automatic-without-per-operation-prompts authorization model, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed to the remote owner by `diagnose_runtime`.
-It also reports resource-coordinator state that strict readers reject: multiply-linked lock/lease/waiter/protocol files, malformed JSON, and unexpected entries. `doctor --repair-resource-coordinator` is an explicit repair path: it removes only known desktop metadata, attributable staging residue, and phantom links whose content still validates; it never follows a symbolic link and reports an external visible second name for manual inspection.
 It constructs an isolated local runtime: `diagnosticScope.running_service_process_inspected=false` and `remote_relay_inspected=false` are deliberate, so a green doctor result is not evidence that the launchd/systemd/Scheduled Task daemon retained its Worker WebSocket.
 Inspect authenticated `server_info.daemon.relay_transport` for the running service relay.
 Authenticated `server_info.authorization.execution_model` reports the authority contract and identifies whether the account has daemon-OS-user ambient authority.
@@ -54,16 +26,21 @@ The `runtime-node-executable` check exposes only the executable provenance class
 The audit aggregate contains only counts, bounded tool names, failure totals, calls-per-minute density, and numeric result-pressure fields (`output_bytes_last_15m`, `maximum_output_bytes_last_15m`, `large_result_calls_last_15m`, and `peak_output_bytes_per_minute_last_15m`) derived from the existing content-free hash-chained audit log; it contains no tool arguments or result content.
 Its `coverage=daemon_reached_relay_tool_calls_only` and `host_side_events_observable=false` fields make the evidence boundary explicit: host-only discovery/control-plane/final-delivery events are not counted.
 The waiter projection reports only resource-request shape and the current admission reason.
-On macOS with shell-capable owner diagnostics, a 15-second bounded power probe queries timestamped `Sleep` intervals via `pmset -g log` and classifies intervals by start/end/duration/reason without exposing raw logs.
-If unavailable or timed out, `runtime.system_sleep` reports `available=false` with an `error_class`, leaving primary readiness gates intact.
-`event_loop_pause_analysis.classification=matched_system_sleep` correlates runtime stalls with OS sleep intervals within fixed tolerances.
-`relay_outage_analysis` computes sleep overlap across the latest outage; `majority_system_sleep_overlap` indicates >=50% sleep coverage, while `wake_boundary_system_sleep_aftermath` captures near-wake disconnects matching event-loop pauses.
-`no_matching_recent_system_sleep` leaves unverified causes unassigned.
+On macOS with shell-capable owner diagnostics, the fixed power probe selects actual timestamped `Sleep` records before applying the bounded tail, then reduces them to a small list of sleep start/end/duration/reason classes; it never returns raw power-log lines.
+The probe has a bounded 15-second execution budget so normal multi-second `pmset -g log` latency does not erase sleep evidence.
+If that bounded power-history probe is unavailable or times out, `runtime.system_sleep` remains `supported=true` with `available=false` and an `error_class`, while the `system-sleep-history` check is retained as skipped auxiliary causality evidence.
+That auxiliary evidence gap does not by itself make `diagnose_runtime.ok=false`; relay readiness, local filesystem/process/shell execution, managed-job storage, resource admission, and registered-resource availability remain health gates.
+`event_loop_pause_analysis.classification=matched_system_sleep` requires both the recorded runtime-stall end time and duration to match one of those bounded operating-system sleep intervals within a fixed tolerance.
+`relay_outage_analysis` separately compares the most recent completed `recent_outages[0].disconnected_at` -> `recent_outages[0].ready_at` interval with the same bounded sleep history and reports exact overlap duration/ratio; an active outage uses `outage_started_at` instead of the later `last_disconnected_at`.
+`majority_system_sleep_overlap` means at least half of that observed relay outage occurred while macOS was suspended.
+A sleeping JavaScript process may be unable to observe the stale socket until wake, so a zero-overlap close-to-ready interval is not automatically awake-network evidence: `wake_boundary_system_sleep_aftermath` is emitted only when the disconnect occurs within the fixed wake tolerance and that same sleep independently matches the event-loop stall in both end time and duration.
+Either sleep classification makes a retained `connection_reset`/timeout transport aftermath rather than sufficient evidence of a separate network root cause.
+`no_matching_recent_system_sleep` remains the classification for an awake reset or a merely coincidental near-wake reset without same-sleep stall evidence; it leaves the cause unassigned rather than guessing a VPN, edge, Worker, or host cause.
 Full relay diagnostics additionally expose `recent_outages`, a newest-first in-memory history capped at eight completed WebSocket reconnect episodes.
 Each entry also carries `https_fallback_taken_over` and bounded `https_fallback_takeover_ms`, attributed by the stable WebSocket outage number; a later fallback takeover cannot relabel an earlier or no-takeover episode.
 The top-level `https_fallback_last_takeover_outage_number` is only a bounded correlation aid for the latest takeover and must not be applied to another outage number.
 Each entry contains only bounded outage numbering, first/final disconnect and ready timestamps, duration, close/error classes, previous-ready duration/silence, first-disconnect liveness phase/timing, coarse application-route class, and connection-stage timings.
-`disconnected_at` is the first outage transition and `last_disconnect_at` is the final failed reconnect/close transition.
+`disconnected_at` is the first outage transition and `last_disconnect_at` is the final failed reconnect transition.
 A protocol/application Pong that clears a liveness suspicion without rebuilding the WebSocket remains heartbeat evidence and is deliberately absent from `recent_outages`; the array is therefore reconnect history, not a list of every transient transport suspicion.
 ChatGPT host-turn termination/final-message receipt remains explicitly unobservable.
 
@@ -427,14 +404,29 @@ Migration ownership stays inside `machine-mcp workspace migrate` and the normal 
 Even a proven-empty destination shell is not pruned until provider inactivity and source job/lock quiescence have been established; if it becomes populated before the empty-directory removal, migration fails closed.
 A populated destination profile is never an empty shell and is never merged or recursively cleared.
 
-The daemon honors standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` resolution for Worker health and relay transport (`wss:` uses HTTPS proxy; `ws:` uses HTTP proxy).
-`MBM_RELAY_PROXY` provides a relay-specific primary override; non-empty values bypass environment proxy resolution for WebSocket and default signed HTTP fallback.
-`MBM_RELAY_FALLBACK_PROXY` provides an optional fallback override for signed HTTP.
-Connection failures adhere to normal backoff and never retry over unconfigured direct interfaces.
-To isolate relay traffic from OS VPN/TUN interfaces, point `MBM_RELAY_PROXY` at a loopback sidecar bound to the desired physical adapter.
-Only HTTP/HTTPS proxy URLs are accepted; invalid protocols fail startup with actionable guidance.
-`server_info.runtime.relay.network_route` and `diagnose_runtime` report coarse classifications (`system-network-stack`, `application-http-proxy`, or `invalid-application-proxy-configuration`) without exposing credentials or endpoints.
-Worker deployment health probes respect separate standard environment proxies, while browser broker health strictly targets loopback `127.0.0.1` without proxy intervention.
+The daemon honors `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` through standard environment-proxy resolution for remote Worker health and ordinary relay traffic.
+`wss:` targets use HTTPS proxy selection and `ws:` targets use HTTP proxy selection.
+`MBM_RELAY_PROXY` is a relay-only primary override for deployments that need a stable egress boundary: when it is non-empty, WebSocket relay construction and, by default, the signed HTTP fallback use that exact HTTP(S) proxy instead of consulting `HTTPS_PROXY`/`HTTP_PROXY` or `NO_PROXY`.
+`MBM_RELAY_FALLBACK_PROXY` is an optional fallback-only override.
+When it is non-empty, signed HTTP uses that exact proxy independently of `MBM_RELAY_PROXY`; when the key is present with an empty value, signed HTTP returns to standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` resolution while WebSocket continues using its primary route.
+A connection failure through a selected route follows normal relay recovery and never silently retries the same transport through an unconfigured direct path.
+Setting `MBM_RELAY_PROXY` itself explicitly to an empty value continues to restore the standard environment-proxy model for the primary route.
+
+To isolate relay continuity from an operating-system VPN/TUN, point `MBM_RELAY_PROXY` at a loopback-only sidecar and configure that sidecar to bind its upstream proxy socket to the intended physical/network interface.
+If continuity also requires an application-layer route that does not share that sidecar, configure `MBM_RELAY_FALLBACK_PROXY` separately; an empty fallback value is useful only when the standard system/env-proxy route is intentionally the desired alternate path.
+Machine Bridge deliberately does not implement proxy protocols beyond HTTP CONNECT and does not bind the sidecar's upstream socket itself.
+Therefore a remote proxy value can still be routed through an operating-system tunnel, and `system-network-stack` does not prove tunnel bypass.
+DNS for each explicit upstream proxy remains that proxy/sidecar's responsibility.
+Avoid a second system TUN solely for Machine Bridge, because competing default-route ownership recreates the same failure class at another layer.
+
+Only HTTP and HTTPS proxy URLs are accepted.
+Invalid URLs or unsupported protocols fail startup with corrective guidance instead of entering the reconnect loop.
+Remote-owner `diagnose_runtime.runtime.relay.network_route` reports the resulting coarse application route, while local stdio `server_info.runtime.relay.network_route` reports `system-network-stack`, `application-http-proxy`, or `invalid-application-proxy-configuration`.
+The route remains `application-http-proxy` for either standard or dedicated proxy selection so diagnostics do not reveal proxy identity.
+This field describes only Machine Bridge application-level proxy selection: an operating-system VPN/TUN may still intercept `system-network-stack` traffic or the route to a remotely addressed proxy.
+`network_route_scope`, outage timestamps/durations, close category/code, transport error class, and next retry timing make that distinction explicit; proxy endpoints and credentials are never returned or logged.
+Worker deployment health continues to use standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`; set those separately when the deployment-health path also requires a proxy.
+The browser-broker CLI health probe is a separate loopback-only path: it accepts only canonical `127.0.0.1`, uses direct Node HTTP with no proxy agent, and does not depend on `NO_PROXY`.
 
 ## Browser extension setup and diagnosis
 
@@ -648,7 +640,7 @@ Never substitute the candidate CLI for that older runtime before remote transiti
 In addition to tools dispatch (`tools/list`, `tools/call`), Machine Bridge projects standard MCP 2026 operations across both local stdio and authenticated remote Cloudflare Worker relay:
 
 - **MCP Tasks (`tasks/get`, `tasks/update`, `tasks/cancel`)**:
-  Both transports advertise the `io.modelcontextprotocol/tasks` extension. A client must include that extension capability in each request before eligible asynchronous `tools/call` requests can receive a durable task handle. `tasks/get` reads owner-bound status and, when terminal, the tool result. `tasks/cancel` requests cancellation and acknowledges the request without claiming it has already settled; on stdio the acknowledgement reports the actual observed status and a `cancellationRequested` flag. `tasks/update` accepts the extension response object, but this server does not currently issue client-input requests; the local transport rejects a non-empty `inputResponses` object rather than pretending to consume it. Task records expire after their declared TTL. Terminal results are copied into task storage when a client polls after completion, provided the serialized result fits the declared per-task and aggregate storage budgets; clients should continue polling until a terminal state is returned. If the Worker's backing managed-job record disappears before a terminal result has been persisted, the next remote `tasks/get` marks the task failed with an explicit result-unavailable error rather than leaving it permanently `working` or claiming an unavailable result; the missing result cannot be reconstructed. Local stdio instead returns `-32000` for an unknown or no-longer-retained task. Local stdio additionally exposes `tasks/list` and `tasks/result` as stdio-only compatibility aliases; the authenticated Worker does not implement those aliases. The stdio-only `tasks/result` returns `-32002` while the task is working and `-32800` after cancellation; a completed execution with a failed result is returned as a normal CallToolResult with `isError: true`.
+  The authenticated remote Worker advertises the `io.modelcontextprotocol/tasks` extension. A client must include that extension capability in each request before eligible asynchronous `tools/call` requests can receive a durable task handle. `tasks/get` reads owner-bound status and the terminal tool result; `tasks/cancel` requests cancellation and acknowledges the request without claiming it has already settled. `tasks/update` accepts the extension response object, but this server does not currently issue client-input requests. Task records expire after their declared TTL. Terminal results are copied into task storage when a client polls after completion, provided the serialized result fits the declared per-task and aggregate storage budgets; clients should continue polling until a terminal state is returned. If `read_job` returns `not_found` before a terminal result has been persisted (for example, because the backing managed-job record was evicted), the next `tasks/get` marks the task failed with an explicit result-unavailable error rather than leaving it permanently `working` or claiming an unavailable result; the missing result cannot be reconstructed. The local stdio server does not advertise this extension; use `start_job`, `read_job`, and `cancel_job` directly there. The removed `tasks/list` and `tasks/result` aliases are not part of the current contract.
 - **MCP Prompts (`prompts/list`, `prompts/get`)**:
   Exposes project developer instructions (`agent_instructions`), git diff review prompt templates (`code_review`), and local agent skill execution (`run_skill`) natively into AI client prompt selectors.
 - **MCP Resources (`resources/list`, `resources/templates/list`, `resources/read`)**:
@@ -668,12 +660,15 @@ Preserve the state root and follow [UPGRADING.md](UPGRADING.md); do not delete s
 Use this sequence:
 
 1. Install the released version with the documented pinned npm 12 command.
-2. Run `machine-mcp --verbose` once.
+2.
+Run `machine-mcp --verbose` once.
 Startup verifies package/Worker versions, performs the ordinary authenticated Worker convergence when needed, stops only a verified service-style old daemon, waits for its lock, and starts the installed version.
 3. Run `machine-mcp status` and `machine-mcp doctor`.
-4. Reload the unpacked browser extension and revisit the pairing page.
+4.
+Reload the unpacked browser extension and revisit the pairing page.
 Exact package version and capability equality are required before browser readiness is reported.
-5. Reconnect MCP clients.
+5.
+Reconnect MCP clients.
 All clients rediscover the server and send fresh `2026-07-28` per-request metadata.
 Clients that still require `initialize`, session IDs, recovery GET, replay, or other removed protocol-session semantics must upgrade before reconnecting.
 
@@ -994,44 +989,11 @@ The elasticity marker remains process-local and never enters the waiter/lease sc
 Verification plans use the same rule through `MBM_CHECK_CONCURRENCY`; because their memory reservation is explicitly derived from fan-out, it contracts with the fitted worker count down to the plan's 2048 MiB floor instead of retaining a stale larger-worker reservation.
 An empty `MBM_CHECK_CONCURRENCY` has the runner's normal implicit/default meaning and may be replaced by the fitted worker count; a non-empty value outside the runner's `1..16` integer contract is preserved and classified unbounded rather than silently rewritten or charged as the default.
 Explicit worker counts and valid `CARGO_BUILD_JOBS`/`CMAKE_BUILD_PARALLEL_LEVEL` values are never shrunk; they are preserved and charged at their declared concurrency.
-Cargo's current jobs syntax is modeled exactly for explicit values: negative `--jobs`/`CARGO_BUILD_JOBS` values mean logical CPUs plus the negative offset, `default` means the logical-CPU default, CLI jobs override the environment, and arguments after Cargo's `--` separator do not alter build fan-out.
-Invalid, zero, nonpositive-after-offset, or out-of-contract values remain conservatively unbounded.
-When Cargo has no explicit jobs setting, Machine Bridge still keeps its own elastic ceiling rather than inheriting Cargo's unrestricted logical-CPU default.
-Maven thread settings include the 3.9+ `MAVEN_ARGS` environment layer as well as argv.
-Because Maven prepends `MAVEN_ARGS` before the user's CLI arguments and Commons CLI returns the first thread-option value, a thread option there is authoritative even if a later argv `-T` differs; Machine Bridge charges and preserves that first value instead of injecting a later ineffective cap.
-Core-multiplier forms such as `-T2.5C` are translated to Maven's current integer `multiplier × available processors` degree for admission accounting.
-Visible GNU make configuration in `GNUMAKEFLAGS`/`MAKEFLAGS` (including make's implicit leading dash, compact short-option clusters, and jobserver state) is likewise charged without injecting a higher-precedence replacement flag.
-Gradle fan-out follows its current configuration layers: `JAVA_OPTS` is applied before `GRADLE_OPTS` by the launcher, direct `-Dorg.gradle.workers.max=...`/`--system-prop=...` updates the system-property map after those JVM options, and `--max-workers` is the final build-option override.
-The last system-property value is charged when it is valid; a valid CLI `--max-workers` then supersedes that bound.
-Invalid final worker properties fail before the CLI build-option converter can recover them, while repeated or invalid `--max-workers` values also fail during command-line/build-option validation, so those forms use the lightweight pre-build validation profile rather than waiting for heavy capacity.
-Malformed JVM-option quoting and valid worker counts above Machine Bridge's modeled maximum remain fail-closed as unbounded.
-Go fan-out follows the current go command's own ordering and validation semantics: quoted `GOFLAGS` is applied first, direct `-p`/`--p` values then override it, and repeated numeric settings use the final effective value.
-`go test` build flags remain recognizable through its package-list parser but stop at `-args`/`--args`/`--` or once positional test arguments begin; ordinary `go build` stops flag parsing at its first package operand.
-A final nonpositive numeric `-p` is treated as lightweight pre-build validation because the go command rejects it before compiler fan-out, while malformed/non-numeric `GOFLAGS` is fatal before a later CLI value can recover it.
-If a direct `-p` could instead be the value of a preceding flag whose arity is not provable from the command shape, Machine Bridge fails closed as unbounded rather than using the validation fast path.
-SwiftPM fan-out now follows its scalar `UInt32` `@Option(.shortAndLong)` semantics: repeated `-j`/`--jobs` settings use the final value; `-j N`, `-j=N`, `--jobs N`, and `--jobs=N` are modeled, including `+N` values accepted by `UInt32`.
-A final zero remains unbounded because SwiftPM forwards zero to llbuild and llbuild substitutes hardware concurrency; a valid count above the modeled maximum is likewise unbounded unless a later scalar option replaces it.
-Direct missing, non-UInt32, or unsupported joined-short forms such as `-j8` use the lightweight pre-build validation profile, while shell-composed Swift is bounded only when the shell contains a single provable Swift segment; multi-segment or otherwise ambiguous compositions remain unbounded.
-Xcodebuild now distinguishes actual build/test invocations from its independent query, package-resolution, export/import, platform/component-maintenance, and other non-build modes before build-root handling, so commands such as `-help`, `-usage`, `-resolvePackageDependencies`, `-showBuildSettings`, and `-exportArchive` are never polluted by injected `-jobs` or `-derivedDataPath`.
-Non-build resource admission is workload-specific rather than the generic 0.5-CPU adaptive fallback: metadata/settings queries use a small adaptive profile; package resolution is a project-serialized mixed workload with a 4 GiB disk safety reservation; archive/localization/xcframework import-export is project-serialized I/O with an 8 GiB reservation; platform/component install/download/prepare operations are unbounded high-I/O with an 8 GiB minimum safety reservation; component deletion remains I/O-heavy but does not invent future disk consumption or receive the privileged disk-reclaim bypass.
-These disk figures are admission safety reservations, not claims that the native operation cannot consume more space.
-For build concurrency, current Xcode uses separated `-jobs NUMBER` for the native jobs option and accepts a leading `+` there.
-Lookalike `-jobs=...` tokens do not receive the same native jobs validation, so Machine Bridge never treats them as hard concurrency bounds.
-Canonical zero/negative separated values fail before building, and a second real `-jobs` option is rejected outright; those proven validation failures use the lightweight pre-build profile.
-Canonical positive separated values within the modeled range are charged exactly, while equals forms, noncanonical values that Xcode may parse by numeric prefix, and oversized values remain conservatively unbounded rather than being guessed into a hard ceiling.
-Xcode test/test-without-building remains overall unbounded even when build-phase `-jobs` is known, because the native command exposes independent destination concurrency and parallel-testing runner counts; a known/default build-phase cap is still enforced separately without pretending it bounds test execution.
-Direct Ninja `-j` now follows current getopt semantics rather than generic first-match parsing: repeated `-j` options use the final value, `-j0` is effectively infinite/unbounded, and negative/non-numeric jobs or the unsupported `--jobs` spelling use the lightweight pre-build validation path because Ninja exits before starting the build.
-Any valid positive direct `-jN` is an exact local worker bound and disables inherited jobserver participation.
-Ninja 1.13+ jobserver coordination is preserved when no direct `-j` is present and `MAKEFLAGS` contains a jobserver form Ninja actually supports: FIFO authentication on POSIX or semaphore authentication on Windows.
-A jobserver-aware Ninja root is treated as cooperative/unbounded for admission even when `MAKEFLAGS` also exposes `-jN`, because current Ninja can fail to initialize the inherited jobserver and then continue with its native local parallelism; Machine Bridge therefore does not claim that inherited token count is a hard execution ceiling or inject a local `-j`.
-The jobserver parser follows Ninja's current MAKEFLAGS rules: dry-run flag letters disable jobserver use, the last recognized auth/fds descriptor wins, negative descriptors disable the feature, POSIX pipe descriptors are rejected, and FIFO/semaphore modes are platform-specific.
-The preservation marker is process-local and never enters the schema-1 coordinator record.
-For pytest-xdist, explicit numeric `-n` is charged directly, `-n 0` is treated as single-process execution, and dynamic `-n auto`/`logical` remains unbounded unless an explicit `--maxprocesses=N` supplies a hard worker ceiling; environment auto-worker hints are not treated as hard limits because project hooks can override them.
-CMake build concurrency follows the current build-driver precedence rather than generic first-match parsing: repeated `-j`/`--parallel` options use the final CMake-level value, a positive CLI value overrides `CMAKE_BUILD_PARALLEL_LEVEL`, and invalid/zero/too-large pure CLI or environment values use the lightweight pre-build validation path because CMake rejects them before invoking the native build tool.
-A value-less `-j`/`--parallel` or defined-empty parallel environment remains unbounded because it delegates to the native tool.
-An uninspected `--preset` build or any native-tool arguments after CMake's `--` separator are also conservatively unbounded and are not rewritten with an injected worker cap: build presets can supply `jobs` and `nativeToolOptions`, while native options are generator-specific and can change fan-out independently of the CMake-level setting.
-Explicit concurrency forms that cannot be bounded safely (for example unlimited/value-less or out-of-contract fan-out) are treated conservatively as unbounded instead of being under-accounted.
-Shell-wrapped implicit Swift and generic builds that cannot be safely rewritten likewise remain unbounded; on POSIX, unbounded heavy work runs at a small positive nice increment to protect interactive responsiveness, while background heavy work uses the stronger background nice increment.
+Each supported build driver (`cargo`, `mvn`/`MAVEN_ARGS`, `gradle`/`JAVA_OPTS`/`GRADLE_OPTS`, `go`/`GOFLAGS`, `swift`, `xcodebuild`, `ninja`/`MAKEFLAGS`, `pytest-xdist`, and `cmake`) follows its native CLI/environment precedence:
+- Provable pre-build validation errors (for example negative/invalid worker flags or duplicate Xcode `-jobs` options) use the lightweight pre-build validation profile so they fail fast without waiting for heavy capacity.
+- Valid explicit worker counts within the modeled ceiling are charged at their effective concurrency; implicit builds without explicit concurrency use the coordinator's elastic ceiling.
+- Non-build `xcodebuild` invocations (`-help`, `-resolvePackageDependencies`, `-showBuildSettings`, `-exportArchive`, and component maintenance) are classified before build-root injection with workload-appropriate CPU/I/O/disk safety reservations.
+- Ambiguous, value-less, preset-driven, jobserver-inherited, or out-of-contract concurrency forms fail closed as `unbounded` rather than being under-accounted or rewritten; on POSIX, unbounded heavy roots run with a small positive `nice` increment, and background heavy roots use the stronger background `nice` increment.
 
 ## Upgrade behavior
 

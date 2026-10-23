@@ -427,7 +427,11 @@ Artifact identity, signed dependency trees, SBOM coverage, and the isolated depl
 toolchain are specified in [Release integrity](architecture/release-integrity.md). Runtime,
 delivery, and verification invariants that those gates depend on are in
 [Runtime and verification boundaries](architecture/runtime-verification.md). The publishing
-procedure is in [Releasing](RELEASING.md); the gates are unchanged by where they are documented.
+procedure is in [Releasing](RELEASING.md); engineering practices and repository invariants are
+in [Engineering](ENGINEERING.md), [Project standards](PROJECT_STANDARDS.md), and
+[Testing](TESTING.md). Agent context, multi-agent coordination, and comparative design rationale
+are documented in [Agent context](AGENT_CONTEXT.md), [Multi-agent patterns](MULTI_AGENT.md), and
+[Comparative review](COMPARATIVE_REVIEW.md); the gates are unchanged by where they are documented.
 
 ## Explicit non-goals
 

@@ -8,98 +8,64 @@ The bridge remains an execution and authority boundary. It does not acquire a mo
 
 | Project snapshot | Documentation signal | Decision for Machine Bridge |
 | --- | --- | --- |
-| [openai/codex](https://github.com/openai/codex/tree/c7234c1174b27d9c55199fba0d546dc27d1b0415) | Local coding tool and CLI integration | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [anthropics/claude-code](https://github.com/anthropics/claude-code/tree/d014fc0fa64280540728772fc84063918ed185cc) | Project memory and operating instructions | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli/tree/c1740d29301a73a47dc3501c1aecc7eb00c0ee58) | Context files and checkpointing | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [aaif-goose/goose](https://github.com/aaif-goose/goose/tree/7143dddf732be1b259f2fde83f225b44d10caf71) | MCP extensions and provider separation | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [cline/cline](https://github.com/cline/cline/tree/627e51e54622177d0e1a25a2e78aacdd83704d11) | Plan/act and reviewable checkpoints | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [RooCodeInc/Roo-Code (archived)](https://github.com/RooCodeInc/Roo-Code/tree/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16) | Mode-based debugging; archived snapshot | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [Aider-AI/aider](https://github.com/Aider-AI/aider/tree/5dc9490bb35f9729ef2c95d00a19ccd30c26339c) | Repository maps and bounded edit context | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands/tree/9057a57f4a7b5a74e93989090edaffc21e3554ff) | Explicit sandbox modes | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [SWE-agent/SWE-agent](https://github.com/SWE-agent/SWE-agent/tree/3ea751c087f32b16e039a2233dd6eefecef325d5) | Agent-computer interfaces | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [SWE-agent/mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent/tree/04d809ceab9df28f9adaed044884180159172930) | Small execution loop and traceability | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [continuedev/continue](https://github.com/continuedev/continue/tree/5522c6f44ca0ac3528b37244818fbfa39b5af470) | IDE context and extension routing | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [anomalyco/opencode](https://github.com/anomalyco/opencode/tree/5c5262660f87d3327868af3559a71810fefe2bed) | Terminal agent and tool routing | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [charmbracelet/crush](https://github.com/charmbracelet/crush/tree/2ec8c1ef54d0bb9b38c2410d14fa36828ea56422) | Terminal interaction and provider abstraction | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [QwenLM/qwen-code](https://github.com/QwenLM/qwen-code/tree/827bf1b76e4054b6f9a2e35b1620b499feed32ea) | Repository guidance and CLI workflows | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [MoonshotAI/kimi-cli (archived)](https://github.com/MoonshotAI/kimi-cli/tree/9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82) | CLI session and skill discovery | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [langchain-ai/langgraph](https://github.com/langchain-ai/langgraph/tree/a24fc97778fca67cfac4cd3fc63e508ee1d29f59) | Explicit graph state and resumable execution | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents/tree/4f8a6566d1c06c04f5d8d9614706f72ce64532e3) | Filesystem-oriented task context | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [microsoft/autogen](https://github.com/microsoft/autogen/tree/004749e6b7102c8fd317b9b1499ce5807223c278) | Agent roles and bounded team execution | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [microsoft/agent-framework](https://github.com/microsoft/agent-framework/tree/08851e69d722b0e0961c08eecf8575db995f0172) | Workflow-oriented agent integration | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [crewAIInc/crewAI](https://github.com/crewAIInc/crewAI/tree/a8877f0cdfbca4fc4b95e3ce54aaa69aafca7688) | Task dependencies and output schemas | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [FoundationAgents/MetaGPT](https://github.com/FoundationAgents/MetaGPT/tree/11cdf466d042aece04fc6cfd13b28e1a70341b1f) | Role-oriented software workflows | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [camel-ai/camel](https://github.com/camel-ai/camel/tree/797296a718ce856d9c9476e4bb69fedb71ab6382) | Cooperative agent roles | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [openai/openai-agents-python](https://github.com/openai/openai-agents-python/tree/64cd5dfc5a1579870dcbed0ea42b27aa84033fee) | Handoffs and tool boundaries | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [google/adk-python](https://github.com/google/adk-python/tree/8fbcd42e1d3b08951231db6169aaf75af0a9dfa4) | Tools, sessions and evaluation surfaces | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [pydantic/pydantic-ai](https://github.com/pydantic/pydantic-ai/tree/57d8610448b9a6b2b0d3f70a85bf134b59c4b7eb) | Typed agent contracts | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [huggingface/smolagents](https://github.com/huggingface/smolagents/tree/96f33faaf028479119ec8d34507b47694cf14e34) | Small tools and sandbox boundary | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [agno-agi/agno](https://github.com/agno-agi/agno/tree/d955124a89178b6bf8803a674d4489bd6a5104a3) | Agent context and structured tools | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [letta-ai/letta](https://github.com/letta-ai/letta/tree/8816d3a8516893bfdc0fa14bfb1235226012e295) | Persistent memory as a distinct subsystem | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [lastmile-ai/mcp-agent](https://github.com/lastmile-ai/mcp-agent/tree/f62d849350816588b1c6294e7914bbe4d8b84072) | MCP-aware workflow integration | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [bytedance/deer-flow](https://github.com/bytedance/deer-flow/tree/8b68832f32a0bb724e1ca39983ae0c43284a0c40) | Delegated work and reusable skills | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [browser-use/browser-use](https://github.com/browser-use/browser-use/tree/aa093a843da5edbf323c0b4145c9b6a0db3ecde8) | Browser automation loop | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [browserbase/stagehand](https://github.com/browserbase/stagehand/tree/2ee356fbb37a25dd3aeaf24738e88c26e08c3eee) | Typed browser operations | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [Skyvern-AI/skyvern](https://github.com/Skyvern-AI/skyvern/tree/2d761e7da6577dd6b504c4be55b579e2a698d923) | Browser task execution | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [simular-ai/Agent-S](https://github.com/simular-ai/Agent-S/tree/15776a8dc659658b1963816ea006f7af1978e595) | Desktop observations and actions | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [trycua/cua](https://github.com/trycua/cua/tree/c797b9ba62cff0b018c30dd4a3db6c0dc1466e08) | Explicit desktop platform capabilities | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp/tree/ab6d67cbf8b619338f096980806fdbe29432cc4d) | Accessibility snapshots and references | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser/tree/fd93075e55a21a47fcb36d7433361daa867a0580) | Compact browser reference workflow | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp/tree/bf8c6d9bc70d24523c353f43775a6542a45e8c56) | Browser diagnostics and protocol tools | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [remorses/playwriter](https://github.com/remorses/playwriter/tree/796e5716c64329c4c6a772ea62fa58216a24fe97) | Extension-bound existing browser control | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [microsoft/UFO](https://github.com/microsoft/UFO/tree/eae3c0a8d168c47cb10df0652e293e092eda1078) | Desktop application orchestration | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [ServiceNow/BrowserGym](https://github.com/ServiceNow/BrowserGym/tree/e71419aef5759a11cb7896a26c36e5f7e92d82b2) | Interactive browser task environment | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [ServiceNow/AgentLab](https://github.com/ServiceNow/AgentLab/tree/8488c564eea0525aaff5dea189bb03a9b529546e) | Agent trajectories and evaluation | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [OS-Copilot/OS-Copilot](https://github.com/OS-Copilot/OS-Copilot/tree/f720af8807e49a92dda64572d2c6bc6c0ac7ee7e) | Desktop planning with environment feedback | Bind observations and actions to current references, frames and capabilities; verify final effects. |
-| [HKUDS/AutoAgent](https://github.com/HKUDS/AutoAgent/tree/16c12b052ef2330a198063c62a07a7f9723031e3) | General agent tooling | Keep local memory bounded and untrusted; validate workflows using observable final state. |
-| [kortix-ai/suna](https://github.com/kortix-ai/suna/tree/ee289439b934f32014951591dd199d78899681ec) | Hosted agent task workflow | Keep local memory bounded and untrusted; validate workflows using observable final state. |
-| [HKUDS/nanobot](https://github.com/HKUDS/nanobot/tree/73a55e0b2fac17ae70641f028448201c4a0cb710) | Small persistent assistant runtime | Keep local memory bounded and untrusted; validate workflows using observable final state. |
-| [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code/tree/67325c1b25e46b2fc66043bceab059221b719fa9) | Coding agent integration | Bound context and edits; preserve explicit commands and host-owned agent control. |
-| [mastra-ai/mastra](https://github.com/mastra-ai/mastra/tree/605864cff64eee320a24000daf9d6312c3faf5ef) | Typed workflow tooling | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [FoundationAgents/OpenManus](https://github.com/FoundationAgents/OpenManus/tree/3309bf4e416fb1c74b008f3e86494439a31bad53) | General tool-based agent workflow | Keep task state, schemas and durable jobs; leave agent roles and model loops to the host. |
-| [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/tree/40cc180823d182826536416de2fc27be44b4ac57) | Persistent assistant context | Keep local memory bounded and untrusted; validate workflows using observable final state. |
-| [algorithmicsuperintelligence/openevolve](https://github.com/algorithmicsuperintelligence/openevolve/tree/59dfe764b5ab4478ac00214432fcac33bbe2bf4b) | Evaluation-driven search and evolution | Use reproducible evaluation; do not add autonomous production-code evolution. |
+| [openai/codex](https://github.com/openai/codex/tree/c7234c1174b27d9c55199fba0d546dc27d1b0415) | Hierarchical `AGENTS.md` and V4A patch envelopes | Adopt nearest-directory `AGENTS.md` precedence and V4A `apply_patch`; leave model loops to host CLIs. |
+| [anthropics/claude-code](https://github.com/anthropics/claude-code/tree/d014fc0fa64280540728772fc84063918ed185cc) | `CLAUDE.md` instruction trees and command permissions | Discover `CLAUDE.md` with byte budgets and explicit omission reporting; enforce permissions in policy gates. |
+| [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli/tree/c1740d29301a73a47dc3501c1aecc7eb00c0ee58) | `GEMINI.md` hierarchy and workspace checkpointing | Support `GEMINI.md` discovery and `expected_sha256` atomic writes; omit shadow Git checkpoint repos. |
+| [aaif-goose/goose](https://github.com/aaif-goose/goose/tree/7143dddf732be1b259f2fde83f225b44d10caf71) | Modular MCP extensions and `.goosehints` | Read `.goosehints` and support group-based progressive stdio tool activation; keep provider routing host-owned. |
+| [cline/cline](https://github.com/cline/cline/tree/627e51e54622177d0e1a25a2e78aacdd83704d11) | `.clinerules` guidance and reviewable plans | Read `.clinerules` in project context and expose `stage_job` for inspectable plans before `start_job`. |
+| [RooCodeInc/Roo-Code (archived)](https://github.com/RooCodeInc/Roo-Code/tree/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16) | `.roorules` mode rules; archived snapshot | Include `.roorules` in bounded instruction discovery; avoid embedding IDE-specific persona modes. |
+| [Aider-AI/aider](https://github.com/Aider-AI/aider/tree/5dc9490bb35f9729ef2c95d00a19ccd30c26339c) | Repository maps and search/replace diagnostics | Provide lexical `symbol-outline` and line-numbered `near_miss` edit hints without Tree-sitter or PageRank. |
+| [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands/tree/9057a57f4a7b5a74e93989090edaffc21e3554ff) | Event-stream action/observation split | Preserve action/result separation and `start_process`/`read_process` sessions without bundling Docker runtimes. |
+| [SWE-agent/SWE-agent](https://github.com/SWE-agent/SWE-agent/tree/3ea751c087f32b16e039a2233dd6eefecef325d5) | ACI windowed viewing and lint guards | Add `with_line_numbers` windowed file reads, JSON write syntax warnings, and interactive prompt advisories. |
+| [SWE-agent/mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent/tree/04d809ceab9df28f9adaed044884180159172930) | Minimal stateless execution loop | Keep tool calls stateless and request-scoped over MCP 2026-07-28; leave trajectory history to callers. |
+| [continuedev/continue](https://github.com/continuedev/continue/tree/5522c6f44ca0ac3528b37244818fbfa39b5af470) | `.continuerules` and pull-based context providers | Include `.continuerules` in instruction discovery and expose pull-based `project_overview`/`agent_context`. |
+| [anomalyco/opencode](https://github.com/anomalyco/opencode/tree/5c5262660f87d3327868af3559a71810fefe2bed) | Client/server terminal split and output budgets | Enforce inline output byte ceilings with `read_process` continuation so output never floods context. |
+| [charmbracelet/crush](https://github.com/charmbracelet/crush/tree/2ec8c1ef54d0bb9b38c2410d14fa36828ea56422) | TUI session ergonomics and prompt safety | Detect interactive prompt stalls (`[y/N]`, `Password:`) on failure and advise non-interactive flags or PTYs. |
+| [QwenLM/qwen-code](https://github.com/QwenLM/qwen-code/tree/827bf1b76e4054b6f9a2e35b1620b499feed32ea) | Repository workflow commands and bounded search | Expose `search_text` and `list_files` with strict byte/count limits and binary-file exclusions. |
+| [MoonshotAI/kimi-cli (archived)](https://github.com/MoonshotAI/kimi-cli/tree/9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82) | On-demand skill loading; archived CLI | Return skill metadata in `agent_context` and load full `SKILL.md` bodies only via `load_local_skill`. |
+| [langchain-ai/langgraph](https://github.com/langchain-ai/langgraph/tree/a24fc97778fca67cfac4cd3fc63e508ee1d29f59) | Checkpointed state machines and interrupt/resume | Persist durable job state and idempotency keys across disconnects; leave graph orchestration to hosts. |
+| [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents/tree/4f8a6566d1c06c04f5d8d9614706f72ce64532e3) | Sub-agent handoffs via shared workspace files | Enforce canonical path containment and atomic file transactions so concurrent tasks cannot corrupt files. |
+| [microsoft/autogen](https://github.com/microsoft/autogen/tree/004749e6b7102c8fd317b9b1499ce5807223c278) | Multi-agent teams and isolated code execution | Provide isolated process execution and per-account `effective_policy`; leave team chat routing to callers. |
+| [microsoft/agent-framework](https://github.com/microsoft/agent-framework/tree/08851e69d722b0e0961c08eecf8575db995f0172) | Enterprise workflow contracts and telemetry | Emit correlation IDs and hash-chained security audit logs without embedding a workflow engine. |
+| [crewAIInc/crewAI](https://github.com/crewAIInc/crewAI/tree/a8877f0cdfbca4fc4b95e3ce54aaa69aafca7688) | Schema-constrained task outputs | Publish verified `outputSchema` definitions in `tool-catalog.json` for deterministic output validation. |
+| [FoundationAgents/MetaGPT](https://github.com/FoundationAgents/MetaGPT/tree/11cdf466d042aece04fc6cfd13b28e1a70341b1f) | SOP role pipelines and artifact handoffs | Support structured `SKILL.md` workflows and staged multi-step jobs without fixed role personas. |
+| [camel-ai/camel](https://github.com/camel-ai/camel/tree/797296a718ce856d9c9476e4bb69fedb71ab6382) | Communicative roles and composable toolkits | Expose orthogonal MCP tools with explicit `readOnlyHint`, `destructiveHint`, and `idempotentHint` annotations. |
+| [openai/openai-agents-python](https://github.com/openai/openai-agents-python/tree/64cd5dfc5a1579870dcbed0ea42b27aa84033fee) | Input/output guardrails and tool handoffs | Validate all arguments against strict schemas (`additionalProperties: false`) and redact sensitive outputs. |
+| [google/adk-python](https://github.com/google/adk-python/tree/8fbcd42e1d3b08951231db6169aaf75af0a9dfa4) | Deterministic trajectory evaluation | Verify editing and job-recovery trajectories in `agent-workflows:test` by asserting final filesystem state. |
+| [pydantic/pydantic-ai](https://github.com/pydantic/pydantic-ai/tree/57d8610448b9a6b2b0d3f70a85bf134b59c4b7eb) | Strict schema validation and retry guidance | Bind `outputSchema.required` to `tool-output-contract.json` and return typed `actionable_remedy` on errors. |
+| [huggingface/smolagents](https://github.com/huggingface/smolagents/tree/96f33faaf028479119ec8d34507b47694cf14e34) | Minimal tool surface and execution boundaries | Start progressive stdio mode with 9 core tools and separate argv `run_process` from shell `exec_command`. |
+| [agno-agi/agno](https://github.com/agno-agi/agno/tree/d955124a89178b6bf8803a674d4489bd6a5104a3) | Fast instantiation and bounded context | Deduplicate unchanged static context in `session_bootstrap` and `resolve_task_capabilities` via fingerprints. |
+| [letta-ai/letta](https://github.com/letta-ai/letta/tree/8816d3a8516893bfdc0fa14bfb1235226012e295) | Tiered memory with read/write separation | Keep `agent_context` strictly read-only with bounded `.project-local/agent-memory.json` projection. |
+| [lastmile-ai/mcp-agent](https://github.com/lastmile-ai/mcp-agent/tree/f62d849350816588b1c6294e7914bbe4d8b84072) | MCP server composition and routing | Rank compatible tool groups and execution surfaces in `resolve_task_capabilities` without hiding allowed tools. |
+| [bytedance/deer-flow](https://github.com/bytedance/deer-flow/tree/8b68832f32a0bb724e1ca39983ae0c43284a0c40) | Planner/executor split with human review | Support `stage_job` plan inspection and local user confirmation gates for sensitive operations. |
+| [browser-use/browser-use](https://github.com/browser-use/browser-use/tree/aa093a843da5edbf323c0b4145c9b6a0db3ecde8) | Indexed DOM extraction and action loops | Assign snapshot-bound element refs (`ref`) in `browser_snapshot` and verify post-action DOM effects. |
+| [browserbase/stagehand](https://github.com/browserbase/stagehand/tree/2ee356fbb37a25dd3aeaf24738e88c26e08c3eee) | `act`/`extract`/`observe` browser primitives | Separate `browser_snapshot`, `browser_extract`, and `browser_act` with explicit tab targeting. |
+| [Skyvern-AI/skyvern](https://github.com/Skyvern-AI/skyvern/tree/2d761e7da6577dd6b504c4be55b579e2a698d923) | Form filling with credential alias injection | Inject `{{resource:name}}` secrets into browser fields without exposing raw values in MCP arguments. |
+| [simular-ai/Agent-S](https://github.com/simular-ai/Agent-S/tree/15776a8dc659658b1963816ea006f7af1978e595) | Grounded GUI observe-act-verify cycle | Require a fresh `observation_id` before `computer_act` and classify post-action effect status. |
+| [trycua/cua](https://github.com/trycua/cua/tree/c797b9ba62cff0b018c30dd4a3db6c0dc1466e08) | Cross-platform desktop capability projection | Report explicit per-platform desktop/application capabilities in `server_info` and `computer_observe`. |
+| [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp/tree/ab6d67cbf8b619338f096980806fdbe29432cc4d) | Accessibility snapshots over raw screenshots | Prefer structured DOM/Accessibility snapshots (`browser_snapshot`, `inspect_local_application`) over pixels. |
+| [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser/tree/fd93075e55a21a47fcb36d7433361daa867a0580) | Ref-based browser interaction | Bind `browser_act` element references to the exact snapshot frame and tab generation. |
+| [ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp/tree/bf8c6d9bc70d24523c353f43775a6542a45e8c56) | CDP input dispatch and page diagnostics | Support debugger-backed input/observation in the paired extension while fencing restricted browser URLs. |
+| [remorses/playwriter](https://github.com/remorses/playwriter/tree/796e5716c64329c4c6a772ea62fa58216a24fe97) | Extension bridge to existing browser profiles | Operate the user's paired Chromium profile via loopback broker with role-separated credentials. |
+| [microsoft/UFO](https://github.com/microsoft/UFO/tree/eae3c0a8d168c47cb10df0652e293e092eda1078) | OS accessibility controls with fallback | Route macOS automation through Accessibility (`operate_local_application`) first and `computer_act` second. |
+| [ServiceNow/BrowserGym](https://github.com/ServiceNow/BrowserGym/tree/e71419aef5759a11cb7896a26c36e5f7e92d82b2) | Unified DOM, AXTree, and viewport space | Combine viewport geometry, frame hierarchy, and interactive element metadata in browser observations. |
+| [ServiceNow/AgentLab](https://github.com/ServiceNow/AgentLab/tree/8488c564eea0525aaff5dea189bb03a9b529546e) | Reproducible harnesses and error taxonomy | Test computer-use and browser settlement against deterministic fault-injection fixtures. |
+| [OS-Copilot/OS-Copilot](https://github.com/OS-Copilot/OS-Copilot/tree/f720af8807e49a92dda64572d2c6bc6c0ac7ee7e) | Reusable OS skills and environment feedback | Expose local `run_local_command` presets and `SKILL.md` bundles gated by local policy. |
+| [HKUDS/AutoAgent](https://github.com/HKUDS/AutoAgent/tree/16c12b052ef2330a198063c62a07a7f9723031e3) | Zero-code agent and tool synthesis | Reject runtime self-generated tools; require all commands and skills to pass local policy checks. |
+| [kortix-ai/suna](https://github.com/kortix-ai/suna/tree/ee289439b934f32014951591dd199d78899681ec) | Hosted agent with browser/shell tools | Bridge remote MCP clients over OAuth 2.1 + DPoP relay while enforcing delegated-role path boundaries. |
+| [HKUDS/nanobot](https://github.com/HKUDS/nanobot/tree/73a55e0b2fac17ae70641f028448201c4a0cb710) | Lightweight persistent assistant runtime | Keep the local daemon dependency footprint minimal (3 runtime packages) with bounded JSON state. |
+| [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code/tree/67325c1b25e46b2fc66043bceab059221b719fa9) | IDE/CLI coding integration over MCP | Share one canonical MCP 2026-07-28 tool catalog across stdio and remote HTTP transports. |
+| [mastra-ai/mastra](https://github.com/mastra-ai/mastra/tree/605864cff64eee320a24000daf9d6312c3faf5ef) | Workflow graphs and suspended tool steps | Project durable jobs into MCP Tasks (`tasks/get`, `tasks/result`, `tasks/cancel`) via `mcp-task-contract.mjs`. |
+| [FoundationAgents/OpenManus](https://github.com/FoundationAgents/OpenManus/tree/3309bf4e416fb1c74b008f3e86494439a31bad53) | General agent combining browser, shell, files | Unify browser, desktop, file, Git, process, and job tools behind one policy-enforced MCP boundary. |
+| [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/tree/40cc180823d182826536416de2fc27be44b4ac57) | Long-horizon tool calling and scratchpads | Bound persistent memory to 64 KiB input / 16 KiB output with `untrusted-project-context` authority tags. |
+| [algorithmicsuperintelligence/openevolve](https://github.com/algorithmicsuperintelligence/openevolve/tree/59dfe764b5ab4478ac00214432fcac33bbe2bf4b) | Evolutionary loops and evaluator gates | Enforce ratcheted architecture, assertion, coverage, and doc budgets; forbid autonomous code mutation. |
 
-## Adopted changes and evidence
+## Adopted changes and synthesis
 
-- Coding-agent context ideas become bounded instruction precedence, explicit omissions, on-demand memory and lexical outlines. They do not add an embedded LLM or a third-party parser to the production runtime.
-- Progressive stdio discovery includes its own resolver, validates one shared group vocabulary and uses declared, subscription-bound notifications. The default complete catalog is retained.
-- Prompt adapters project real daemon fields, and timeout remedies preserve unknown-effect and same-operation recovery semantics across transports.
-- Deterministic workflow fixtures inspect final files and a single durable side effect after caller replacement. The older small offline contract suite remains a separate contract check, not a general agent success benchmark.
-- Small single-consumer listing/output/summary helpers are consolidated; pure Computer Use effect verification is isolated from dispatch. Identity, authority, persistence and settlement boundaries remain independently testable.
-
-## Concrete borrowings from the project set
-
-The table above deliberately groups projects by the boundary they clarify; the groups are not
-interchangeable. These are the concrete decisions taken from those groups, with the part that was
-intentionally not copied:
-
-- **Agent instruction files (Codex, Claude Code, Gemini CLI, OpenCode, Continue).** Bounded
-  instruction precedence, explicit omissions and on-demand context are implemented by
-  `agent-context.mjs` and `docs/AGENT_CONTEXT.md`. No embedded model loop or automatic
-  self-modification is copied.
-- **Repository maps (Aider, OpenHands, SWE-agent).** `project_overview` and the lexical
-  `symbol-outline` provide a cheap map without adding a parser or a ranking dependency. PageRank
-  and model-generated summaries are not used.
-- **MCP extension surfaces (Goose, Cline, mcp-agent).** Progressive stdio discovery, staged jobs and
-  reviewable checkpoints are explicit protocol features. The bridge does not acquire a planner,
-  role graph or vector memory merely because an upstream framework exposes one.
-- **Durable workflow state (LangGraph, AutoGen, CrewAI, Mastra).** `stage_job`, `start_job`,
-  `read_job` and the recovery key preserve task state across disconnects. Agent roles, handoffs and
-  model loops remain host-owned.
-- **Browser and desktop agents (browser-use, Stagehand, Playwright MCP, agent-browser,
-  Chrome DevTools MCP, Agent-S, UFO).** Observations are bound to the current tab, frame,
-  snapshot and capability; actions are followed by an observable effect check. The bridge does not
-  package a browser engine or grant ambient screen authority.
-- **Memory systems (MemGPT, Letta, Generative Agents).** Memory is bounded, explicitly typed and
-  returned with `ok/too_large/invalid` status. No vector database or unvalidated freshness score is
-  added.
-- **Typed agent contracts (Pydantic AI, OpenAI Agents SDK, Instructor).** The shared catalog and
-  observed output contract provide machine-readable tool shapes. The bridge does not adopt a model
-  provider SDK or a second validation framework.
-- **Evaluation-driven systems (OpenEvolve, AgentLab, BrowserGym).** Deterministic fixtures verify
-  final files and durable side effects. Production self-evolution and public benchmark claims are
-  explicitly out of scope.
+- **Instruction hierarchy and repo maps (Codex, Claude Code, Gemini CLI, Aider, SWE-agent).** Nearest-first instruction precedence, explicit omissions, on-demand memory, `with_line_numbers` windowed reads, numbered `near_miss` edit hints, and lexical `symbol-outline` are implemented without bundling an embedded LLM, Tree-sitter, or PageRank.
+- **MCP extensions and durable workflows (Goose, Cline, LangGraph, Mastra, mcp-agent).** Progressive stdio discovery, `stage_job`/`start_job`/`read_job`, idempotency recovery keys, and MCP Tasks projections preserve state across disconnects while leaving planners and role graphs to the host.
+- **Browser and desktop grounding (browser-use, Stagehand, Playwright MCP, Agent-S, UFO).** Observations bind to the current tab, frame, snapshot, and capability; actions verify post-dispatch effects without bundling a browser engine or granting ambient screen authority.
+- **Memory, typed contracts, and evaluation gates (Letta, Pydantic AI, AgentLab, OpenEvolve).** Memory remains read-only in `agent_context`, output schemas are verified against `tool-output-contract.json`, and deterministic fixtures verify final state.
 
 ## Foundational and recent papers
 
@@ -127,4 +93,4 @@ intentionally not copied:
 
 ## Verification boundary
 
-These are adaptation choices supported by local defects and contracts, not copied upstream implementations or reproduced paper benchmarks. Source inspection, offline regression, platform behavior, package integrity, deployed OAuth/MCP observation, external CI and owner-reported soak remain separate evidence under [RELEASING](RELEASING.md). A hosted SSE parse failure remains an open delivery diagnosis until a control experiment identifies its responsible boundary; recovering a result is not sufficient to close it.
+These are adaptation choices supported by local defects and contracts, not copied upstream implementations or reproduced paper benchmarks. Source inspection, offline regression, platform behavior, package integrity, deployed OAuth/MCP observation, external CI and owner-reported soak remain separate evidence under [RELEASING](RELEASING.md). Hosted SSE heartbeats are gated on complete frame boundaries (`\n\n` / `\r\n\r\n`), while idempotency-key job recovery remains the authoritative settlement path.

@@ -2,18 +2,18 @@
 
 ## 3.0.0 - 2026-10-22
 
-- Official 3.0.0 GA release with stabilized MCP 2026-07-28 protocol support across stdio and Cloudflare Worker transports.
-- Split project-memory writes out of read-only `agent_context` into `record_project_memory` and owner-only `forget_project_memory`. `forget_project_memory` rejects a missing selector, so `{}` no longer clears all memory.
-- Memory mutations now read the complete authoritative document under an owner-only lock, replace it atomically with mode `0600`, preserve unknown fields, and fail closed on invalid or oversized state instead of truncating entries.
-- Output-schema generation no longer carries stale `verified` observations. The contract currently records 42 current observations across 56 tools; environment-dependent tools keep an empty property set.
-- Added memory regression coverage and made `test:unit` part of the fast check plan.
-- Observed output schemas for 54 MCP tools at release: 40 had a current verified observation, while environment-dependent browser, computer-use, and macOS application tools kept an empty property set.
-- End-to-end progressive tool discovery with intent-aware capability routing, reducing initial token overhead by over 75% and preventing contextual pollution.
-- Global sanitizing result pipeline with counterfactual defensive audit envelopes, defusing false-positive safety refusals on diagnostic and security inspection tasks.
-- Integrated Aider-inspired fuzzy patch matching tolerance and SWE-agent on-the-fly syntax validation for self-healing file edits.
-- Atomic file mutation transactions with failure rollback. No user-facing undo command is shipped; remove unused in-memory undo/revert helpers rather than advertising them.
-- Actionable remedy guidance for typed tool errors; removed an unused verbal-reflection helper rather than advertising dead guidance.
-- Reorganized codebase into high-cohesion domain subpackages with modern Node.js 26 test runner ergonomics and streamlined release pipeline.
+- Stabilize 3.0.0 release with request-scoped MCP 2026-07-28 protocol support across stdio and Cloudflare Worker transports.
+- Preserve the nearest project instructions when the shared context budget is exhausted, and report omitted guidance with policy-projected paths.
+- Load persistent project memory only on demand (`agent_context` remains strictly read-only), validating versioned metadata, expiry timestamps, and canonical path containment without exposing a dedicated memory-mutation surface.
+- Bound asynchronous symbol-outline traversal, file reads, cancellation, rendered lines, and 16 KiB UTF-8 byte ceiling; omit default parameter values and enforce per-file policy checks.
+- Require exact editing and patch contexts; add `with_line_numbers` read support, 1-based line-numbered `near_miss` edit candidates, and bounded `conflict_hint` line candidates on `apply_patch` conflicts.
+- Share typed instruction, Git-diff, and skill projections across stdio and Worker prompts. Preserve failures, truncation, and sensitive-file omissions instead of reporting missing data as empty results.
+- Make optional progressive stdio discovery reachable through nine initial tools, canonical groups, and bounded request-scoped catalog subscriptions. Advertise catalog changes only in this mode; retain the full catalog by default.
+- Share reason-level remedies across transports and add interactive prompt stall detection (`[y/N]`, `Password:`) to process failure advisories.
+- Gate Worker SSE heartbeat comments on complete frame boundaries (`\n\n` / `\r\n\r\n`) via O(1) tail-byte inspection while keeping heartbeats active across multi-step streams.
+- Advance the tool schema generation and bind the catalog digest to its contract (40 verified output schemas and 14 environment-dependent interactive tools across 54 tools).
+- Unify MCP Tasks active/terminal/successful job status sets in `src/shared/mcp-task-contract.mjs`, deduplicate resource-request normalization in `src/local/resource-request-contract.mjs`, and centralize loopback origin parsing in `src/shared/trusted-origin.mjs`.
+- Move the native development smoke fixture and tool output-schema contract baseline out of the consumer package; verify nested and deduplicated Wrangler 4.151.3 dependencies at their exact locked locations.
 
 ## Historical releases
 
