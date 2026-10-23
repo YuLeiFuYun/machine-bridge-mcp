@@ -597,27 +597,6 @@ function activationRecoveryReason(error) {
   return code;
 }
 
-export async function waitForRestoredServiceRuntime({
-  inspectDaemon, expectedVersion, maximumAttempts = 240, wait = defaultWait,
-} = {}) {
-  if (typeof inspectDaemon !== "function") throw new TypeError("previous runtime recovery requires a daemon inspector");
-  const attempts = boundedAttempts(maximumAttempts);
-  let daemon = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    daemon = await inspectDaemon();
-    if (daemon?.alive && daemon?.verified_service_daemon
-        && daemon?.mode === "service" && daemon?.version === expectedVersion) {
-      return { ok: true, attempts: attempt, daemon };
-    }
-    if (attempt < attempts) await wait(attempt);
-  }
-  const reason = !daemon?.alive ? "daemon_not_running"
-    : daemon?.verified_service_daemon !== true ? `daemon_identity_${daemon?.identity_reason || "unverified"}`
-      : daemon?.mode !== "service" ? `daemon_mode_${daemon?.mode || "unknown"}`
-        : `daemon_version_${daemon?.version || "unknown"}`;
-  return { ok: false, attempts, daemon, reason };
-}
-
 export async function waitForActivatedRuntime({
   inspectDaemon,
   checkWorker,

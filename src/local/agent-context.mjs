@@ -19,7 +19,7 @@ import {
   assertContainedPath, isContainedPath, normalizeAgentConfig, requiredString,
   resolveConfiguredPath, resolveInstructionPath, validateStringArray,
 } from "./agent-contract.mjs";
-import { forgetPersistentMemory, readPersistentMemory, recordPersistentMemory } from "./agent-memory.mjs";
+import { readPersistentMemory } from "./agent-memory.mjs";
 import { extractSymbolOutline } from "./symbol-outline.mjs";
 export { parseSkillMetadata } from "./agent-skill-discovery.mjs";
 
@@ -51,14 +51,6 @@ export class AgentContextManager {
 
   async agentContext(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
-    let recordedResult = null;
-    if (args.record_memory && typeof args.record_memory === "object") {
-      recordedResult = await recordPersistentMemory(state.scopeRoot, args.record_memory, () => this.throwIfCancelled(context));
-    }
-    let forgottenResult = null;
-    if (args.forget_memory && typeof args.forget_memory === "object") {
-      forgottenResult = await forgetPersistentMemory(state.scopeRoot, args.forget_memory, () => this.throwIfCancelled(context));
-    }
     state.persistentMemory = await readPersistentMemory(state.scopeRoot, () => this.throwIfCancelled(context), async (canonical) => {
       assertContainedPath(state.scopeRoot, canonical, "project memory path");
       await this.resolveExistingPath(canonical, context);
@@ -96,8 +88,6 @@ export class AgentContextManager {
       instruction_warnings: state.instructionWarnings.map((message) => message),
       instructions_truncated: state.instructionsTruncated,
       commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
-      ...(recordedResult ? { recorded_memory: recordedResult } : {}),
-      ...(forgottenResult ? { forgotten_memory: forgottenResult } : {}),
       ...(state.persistentMemory ? {
         persistent_memory: {
           ...state.persistentMemory,
