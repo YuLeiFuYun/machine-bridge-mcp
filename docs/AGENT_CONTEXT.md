@@ -52,7 +52,7 @@ The scanner does not execute commands, inspect dependency values, read package s
 
 ### Cross-session persistent agent memory
 
-`agent_context` reads `.project-local/agent-memory.json` on demand. Automatic project facts may announce that the file exists; `session_bootstrap` and `resolve_task_capabilities` do not load its body. Memory is outside their static refresh fingerprint. It is untrusted project context and never expands execution authority.
+`agent_context` reads `.project-local/agent-memory.json` on demand. `record_project_memory` writes one explicit entry; `forget_project_memory` removes by exact text, by category, or with an explicit `all=true`. A missing filter is rejected, so a bare empty object never clears memory. Deletion is destructive and is owner-only for remote accounts. Automatic project facts may announce that the file exists; `session_bootstrap` and `resolve_task_capabilities` do not load its body. Memory is outside their static refresh fingerprint. It is untrusted project context and never expands execution authority.
 
 Version 1 accepts four optional arrays: `project_insights`, `ci_guidelines`, `user_preferences`, and `notes`. Entries are non-empty strings or objects with `text`, optional finite `importance` from 1 to 10, parseable `updated_at` / `expires_at`, and an optional bounded `source`. An explicit finite millisecond `timestamp` can supply `updated_at`. Prefer ISO timestamps:
 
@@ -69,7 +69,7 @@ Version 1 accepts four optional arrays: `project_insights`, `ci_guidelines`, `us
 
 The result contains one canonical object-entry view in source order. Plain strings acquire no invented timestamp or freshness score. Expired entries and duplicate text within a category are omitted. No `scored_memories` copy or research-derived ranking is applied.
 
-Protected, regular-file reads reject symbolic links, multiple hard links, changing identities and canonical parent escapes, and apply the request's path authority. The 64 KiB input ceiling is enforced before allocation or JSON parsing. Each text is at most 2 KiB, each category returns at most 10 entries, and all returned entries share a 16 KiB serialized budget. `truncated` describes output selection. Oversized files return `too_large` without a body; malformed version/metadata returns `invalid`; unsafe or inaccessible paths return `unavailable`. Cancellation propagates. The reader never modifies the file. Keep memory local and review its content before sharing context.
+Protected, regular-file reads reject symbolic links, multiple hard links, changing identities and canonical parent escapes, and apply the request's path authority. The 64 KiB input ceiling is enforced before allocation or JSON parsing. Mutations read the complete authoritative document under an owner-only lock and replace it atomically with mode `0600`; the bounded public projection is never used as write input. Storage retains up to 200 entries per category and 500 total. Each text is at most 2 KiB. Exceeding the file, category, or total limit fails closed instead of silently trimming entries. Each category returns at most 10 entries and all returned entries share a 16 KiB serialized budget; `truncated` describes output selection, not storage. Oversized files return `too_large` without a body; malformed version/metadata returns `invalid`; unsafe or inaccessible paths return `unavailable`. Cancellation propagates. Reads never modify the file. Keep memory local and review its content before sharing context.
 
 ### Lexical Symbol Outline (Repo Map)
 

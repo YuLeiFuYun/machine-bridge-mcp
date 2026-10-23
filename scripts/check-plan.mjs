@@ -100,6 +100,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "syntax",
   "deadline:test",
   "catalog:test",
+  "test:unit",
   "tool-arguments:test",
   "capability-ranking:test",
   "execution-routing:test",

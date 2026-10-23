@@ -1,3 +1,4 @@
+// @ts-check
 // Core Runtime & Policy
 export * from "../runtime.mjs";
 export * from "../state.mjs";

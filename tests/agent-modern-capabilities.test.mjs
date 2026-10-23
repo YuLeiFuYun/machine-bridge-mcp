@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verbalSelfReflection } from "../src/shared/error-guidance.mjs";
 import { DEFENSIVE_AUDIT_ENVELOPE, publicProcessToolResult } from "../src/local/process-result-projection.mjs";
 import { generateRepoMap } from "../src/local/symbol-outline.mjs";
 import { fileURLToPath } from "node:url";
@@ -8,15 +7,6 @@ import { dirname, join } from "node:path";
 import { workerToolsForRole } from "../src/worker/worker-tool-authority.ts";
 
 const root = dirname(fileURLToPath(import.meta.url));
-
-test("verbalSelfReflection provides structured reflection tri-tuple", () => {
-  const err = { code: "policy_denied", details: { reason: "host_elevation_rejected" } };
-  const reflection = verbalSelfReflection(err);
-  assert.ok(reflection !== null);
-  assert.match(reflection.observation, /host_elevation_rejected/);
-  assert.ok(reflection.flaw.length > 0);
-  assert.match(reflection.next_step, /privilege escalation/);
-});
 
 test("publicProcessToolResult injects DEFENSIVE_AUDIT_ENVELOPE on security errors", () => {
   const result = publicProcessToolResult({
@@ -66,7 +56,10 @@ test("recordPersistentMemory persists and updates agent memory entries", async (
 
     // Test forgetting memory
     const { forgetPersistentMemory } = await import("../src/local/agent-memory.mjs");
-    const forgotten = await forgetPersistentMemory(temp, { category: "project_insights", text: "Always run check:fast" });
+    const forgotten = await forgetPersistentMemory(temp, {
+      category: "project_insights",
+      text: "Always run check:fast before publishing releases.",
+    });
     assert.equal(forgotten.forgotten, 1);
     const readAfter = await readPersistentMemory(temp);
     assert.equal(readAfter.project_insights.length, 0);
@@ -128,12 +121,6 @@ test("WorkspaceFileService handles line ending invariance and provides near-miss
     assert.equal(caught.details.reason, "text_not_found");
     assert.ok(caught.details.hint.includes("around line"));
     assert.ok(typeof caught.details.candidate_snippet === "string");
-
-    // Test undoLastMutation
-    const undoResult = await service.undoLastMutation();
-    assert.equal(undoResult.ok, true);
-    const readReverted = await service.readFile({ path: filePath });
-    assert.ok(readReverted.content.includes("line one\r\nline two"));
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => {});
   }

@@ -17,7 +17,7 @@ function runStep(name, command, args) {
 const node = process.execPath;
 runStep("version-sync", node, ["scripts/sync-worker-version.mjs", "--check"]);
 runStep("privacy-check", node, ["scripts/privacy-check.mjs"]);
-runStep("tool-schemas", node, ["scripts/generate-tool-output-schemas.mjs", "--check"]);
+runStep("codegen-sync", node, ["scripts/codegen.mjs", "--check"]);
 runStep("typecheck", "npm", ["run", "typecheck"]);
 runStep("lint", "npm", ["run", "lint"]);
 runStep("architecture-test", node, ["tests/architecture-test.mjs"]);

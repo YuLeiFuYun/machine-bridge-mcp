@@ -55,6 +55,7 @@ Requests carry version and capabilities in `_meta`; `server/discover` replaces i
 `initialize`, `Mcp-Session-Id`, `Last-Event-ID`, replay markers, and other removed protocol-session markers receive bounded upgrade guidance and cannot dispatch tool work. There is no stdio compatibility shim; clients must use request-scoped metadata and `server/discover`.
 Remote `/mcp` is POST-only, so GET returns 405 rather than acting as a recovery channel.
 Closing a current request stream cancels that request, and a connection, process, OAuth token, or stdio lifetime is never treated as conversation identity.
+Hosted delivery investigation (Finding 31) has been resolved: transport heartbeat injections in `mcp-response-proxy.ts` were synchronized to frame boundaries and disarmed during active message delivery, preventing SSE frame corruption. See finding 31 in [AUDIT.md](AUDIT.md); do not treat transport replay as mutation replay.
 
 ## Automatic capability selection
 
@@ -62,6 +63,8 @@ Closing a current request stream cancels that request, and a connection, process
 Use the resolver when that refreshed context or route selection is material; straightforward file, Git, and shell work should use the already exposed tools directly rather than paying an extra discovery round trip.
 The resolver scores route bundles instead of forcing a single tool: registered commands, Bash/direct argv, process sessions, managed jobs, files/Git, browser, applications, resources, and diagnostics may appear together with ambiguity and fallback metadata.
 This advice never removes a policy-visible tool; direct Bash remains available under shell-capable authority.
+
+`agent_context` is read-only. Project-memory mutations use the separate write-gated `record_project_memory` and owner-only `forget_project_memory` tools; a read-only role cannot mutate memory through context discovery.
 
 The resolver always rescans task-specific metadata.
 A client that already holds `refresh.fingerprint` may send it as `known_refresh_fingerprint`; if the static instruction/skill/command identity is unchanged, the response omits that repeated material but still returns fresh skill/command matches, application results, ranked tools, and route advice.

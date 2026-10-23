@@ -26,7 +26,7 @@ for (const name of modules) {
 }
 
 const adapterModules = new Set([
-  "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs",
+  "cli.mjs", "cli-service.mjs", "daemon-process.mjs", "stdio.mjs", "service.mjs", "index.mjs",
   "service-restart-handoff.mjs", "service-restart-scheduler.mjs", "windows-service.mjs", "windows-service-convergence.mjs", "relay-connection.mjs", "runtime-relay.mjs", "macos-idle-sleep-assertion.mjs", "remote-activity-idle-sleep-guard.mjs", "worker-deployment.mjs", "hardened-npm.mjs", "hardened-npm-download.mjs", "hardened-npm-extract.mjs", "hardened-npm-verification.mjs", "wrangler-toolchain.mjs", "wrangler-toolchain-verification.mjs",
 ]);
 const boundaryModules = new Set([
@@ -177,7 +177,6 @@ const boundaryModules = new Set([
   "managed-job-directory.mjs",
   "managed-job-idempotency.mjs",
   "symbol-outline.mjs",
-  "index.mjs",
 ]);
 const internalModules = new Set([
   "account-access.mjs",

@@ -51,10 +51,17 @@ export async function proxyMcpResponseStream(input: {
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let publicTarget: ReadableStreamDefaultController<Uint8Array> | undefined;
   let cancellation: Promise<void> | undefined;
+  let bufferEndsWithDoubleNewline = true;
+  let responseStarted = false;
+  let lastChunkTime = Date.now();
+
   const finish = () => {
     if (closed) return false;
     closed = true;
-    if (heartbeat) clearInterval(heartbeat);
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = undefined;
+    }
     input.request.signal.removeEventListener("abort", abort);
     return true;
   };
@@ -87,11 +94,31 @@ export async function proxyMcpResponseStream(input: {
         return;
       }
       heartbeat = setInterval(() => {
-        if (closed) return;
-        try { target.enqueue(HEARTBEAT); }
-        catch { cancel("public response stream closed"); }
+        if (closed || responseStarted) return;
+        const now = Date.now();
+        if (now - lastChunkTime < HEARTBEAT_MS) return;
+        if (!bufferEndsWithDoubleNewline) return;
+        try {
+          target.enqueue(HEARTBEAT);
+          lastChunkTime = now;
+        } catch {
+          cancel("public response stream closed");
+        }
       }, HEARTBEAT_MS);
-      void pumpUpstream(reader, target, finish, (reason) => cancel(reason, false));
+      void pumpUpstream(reader, target, finish, (reason) => cancel(reason, false), {
+        onChunk(chunk) {
+          lastChunkTime = Date.now();
+          const text = new TextDecoder().decode(chunk);
+          if (text.includes("event: message")) {
+            responseStarted = true;
+            if (heartbeat) {
+              clearInterval(heartbeat);
+              heartbeat = undefined;
+            }
+          }
+          bufferEndsWithDoubleNewline = text.endsWith("\n\n") || text.endsWith("\r\n\r\n");
+        },
+      });
     },
     cancel(reason) { cancel(reason); return cancellation; },
   });
@@ -107,6 +134,7 @@ async function pumpUpstream(
   target: ReadableStreamDefaultController<Uint8Array>,
   finish: () => boolean,
   cancel: (reason: unknown) => boolean,
+  hooks?: { onChunk?: (chunk: Uint8Array) => void },
 ): Promise<void> {
   try {
     for (;;) {
@@ -115,6 +143,7 @@ async function pumpUpstream(
         if (finish()) target.close();
         return;
       }
+      hooks?.onChunk?.(chunk.value);
       target.enqueue(chunk.value);
     }
   } catch (error) {

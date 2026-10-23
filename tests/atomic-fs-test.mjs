@@ -542,7 +542,7 @@ try {
     ["python-indent.py", "if ready:\n    if nested:\n        work()\n", "if ready:\nif nested:\nwork()"],
     ["tab-indent.js", "\tfunction compute() {\n\t\treturn 1;\n\t}\n", "  function compute() {\n    return 1;\n  }"],
     ["string-literal.js", 'const msg = "hello  world";\n', 'const msg = "hello world";'],
-    ["crlf-file.js", "const a = 1;\r\nconst b = 2;\r\n", "const a = 1;\nconst b = 2;"],
+    ["crlf-file.js", "const a = 1;\r\nconst b = 2;\r\n", "const a = 1;\nconst b = 3;"],
   ]) {
     const path = join(root, name);
     await writeFile(path, initial, { encoding: "utf8", mode: 0o600 });

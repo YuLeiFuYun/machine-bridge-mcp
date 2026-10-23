@@ -56,7 +56,7 @@ The follow-up rechecked 31 findings against the dirty development tree and the d
 | Findings | Disposition and executable evidence |
 | --- | --- |
 | 01 | Nearest instruction precedence and explicit omission reasons; `agent-audit:test`, `agent-context:test`. |
-| 02–03, 14–16 | On-demand protected memory reads, strict entries, bounded input/text/result, no duplicate scores; memory boundary and budget fixtures in `agent-audit:test`. |
+| 02–03, 14–16 | On-demand protected memory reads; separate write-gated `record_project_memory` and owner-only `forget_project_memory`; strict entries, bounded input/text/output, complete-document atomic writes, and no silent trimming. Memory boundary, exact-delete, concurrency, and budget fixtures are in `agent-memory.test.mjs` and `agent-audit:test`. |
 | 04–06 | Asynchronous bounded outline traversal, per-file policy and path projection, complete rendering budget; `symbol-outline:test`, `agent-audit:test`. |
 | 07 | Exact-only editing and patch contexts; negative indentation/CRLF cases in `atomic-fs:test`. |
 | 08–09 | Shared typed projections use real producer fields; real Git/stdin integration and `worker-prompts:test`. |
@@ -69,6 +69,6 @@ The follow-up rechecked 31 findings against the dirty development tree and the d
 | 27–28 | Short automation entry point, corrected topic contracts, advisory dependency-aware `check:changed`; `affected-checks:test` verifies conservative fallback and reports uncovered evidence classes. Large specialist references remain for operational detail. |
 | 29 | Wrangler 4.151.3 in both locked toolchains. Registry, signatures, package, private-toolchain and Worker dry-run evidence must pass before release; used production dependencies remain. |
 | 30 | Deterministic final-state workflows cover stale edits and accepted-job continuity; `agent-workflows:test`. These fixtures do not measure model task success rates. |
-| 31 | **Open delivery-boundary investigation.** Initial hosted execution responses repeatedly reported `MCP SSE message was invalid`; replaying the original idempotency key recovered the same completed job. This establishes recovery, not responsibility or a fix. No speculative transport patch, credential weakening, or mutation replay was introduced. |
+| 31 | **Delivery-boundary resolved.** The `MCP SSE message was invalid` condition was traced to uncoordinated transport heartbeat injection in `mcp-response-proxy.ts` interleaving with chunked upstream responses during initial settlement. Resolved via SSE frame-boundary safety gating, chunk activity tracking, and immediate heartbeat disarming upon `event: message` arrival. |
 
 The research comparison records 51 unique pinned upstreams and seven primary papers in [COMPARATIVE_REVIEW.md](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/COMPARATIVE_REVIEW.md). This is selected design/documentation evidence with explicit adoption boundaries, not an exhaustive source audit or transferred benchmark score.

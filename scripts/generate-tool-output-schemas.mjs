@@ -119,6 +119,12 @@ async function observeContract() {
   await mkdir(join(workspace, "nested"), { recursive: true });
   await mkdir(join(workspace, ".machine-bridge"), { recursive: true });
   await mkdir(join(workspace, ".codex", "skills", "contract"), { recursive: true });
+  await mkdir(join(workspace, ".project-local"), { recursive: true, mode: 0o700 });
+  await writeFile(join(workspace, ".project-local", "agent-memory.json"), `${JSON.stringify({
+    version: 1,
+    updated_at: "2026-01-01T00:00:00.000Z",
+    notes: [{ text: "contract memory", importance: 1, updated_at: "2026-01-01T00:00:00.000Z" }],
+  }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(join(workspace, "contract.txt"), "alpha\nbeta\n");
   await writeFile(join(workspace, "nested", "deep.txt"), "deep\n");
   await writeFile(join(workspace, "pixel.png"), Buffer.from(
@@ -162,8 +168,7 @@ Return deterministic skill content for the output-observation harness.
   })();
   const metadata = {
     generation: Number.isSafeInteger(previous.generation) ? previous.generation : 1,
-    note: typeof previous.note === "string" ? previous.note
-      : "Top-level output fields observed from real tool invocations. Tools marked verified=false could not be executed in the offline audit harness, so their outputSchema deliberately claims no fields. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
+    note: "Top-level output fields observed from the current real tool invocation. verified=true means this generation observed an object; failed or environment-dependent observations are never carried forward, so their outputSchema deliberately claims no fields. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
   };
   const runtime = new LocalRuntime({
     workspace,
@@ -242,16 +247,12 @@ function mergeObservations(observations) {
 }
 
 function mergeObservationMetadata(observed, previous) {
+  if (!observed.verified) return { verified: false, properties: {} };
   const metadata = {};
   for (const key of ["conditional", "required", "stdio_injected"]) {
-    if (Array.isArray(previous?.[key])) metadata[key] = previous[key];
-  }
-  if (!observed.verified && previous?.verified) {
-    return {
-      verified: true,
-      properties: { ...previous.properties },
-      ...metadata,
-    };
+    if (!Array.isArray(previous?.[key])) continue;
+    const retained = previous[key].filter((name) => Object.hasOwn(observed.properties, name));
+    if (retained.length) metadata[key] = retained;
   }
   return { ...observed, ...metadata };
 }
@@ -280,12 +281,15 @@ function jsonType(value) {
 function observationArgumentVariants(name, state) {
   const args = observationArguments(name, state);
   if (name === "server_info" || name === "project_overview") return [args, { ...args, detail: "summary" }];
+  if (name === "agent_context") return [args, { ...args, include_symbol_outline: true }];
   return [args];
 }
 
 function observationArguments(name, state) {
   return {
     resolve_task_capabilities: { task: "observe tool output contract" },
+    record_project_memory: { path: ".", category: "notes", text: "observed memory", importance: 2 },
+    forget_project_memory: { path: ".", category: "notes", text: "observed memory" },
     load_local_skill: { skill: "contract-skill" },
     run_local_command: { name: "contract-command" },
     computer_observe: { surface: "browser" },

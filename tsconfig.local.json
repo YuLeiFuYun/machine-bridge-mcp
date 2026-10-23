@@ -122,6 +122,8 @@
     "src/shared/prompt-projection.mjs",
     "src/shared/tool-groups.mjs",
     "src/local/bounded-output.mjs",
-    "src/local/managed-job-listing.mjs"
+    "src/local/managed-job-listing.mjs",
+    "src/local/errors.mjs",
+    "src/local/domains/core.mjs"
   ]
 }

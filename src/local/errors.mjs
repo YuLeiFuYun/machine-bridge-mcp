@@ -1,3 +1,5 @@
+// @ts-check
+import { Buffer } from "node:buffer";
 import { settlementGuidance } from "../shared/error-guidance.mjs";
 
 const ERROR_CODES = new Set([
@@ -14,7 +16,20 @@ const MAX_PUBLIC_ERROR_MESSAGE_CHARS = 2000;
 const MAX_PUBLIC_ERROR_DETAILS_BYTES = 512 * 1024;
 const UNSAFE_ERROR_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
+/**
+ * @typedef {Object} BridgeErrorOptions
+ * @property {unknown} [cause]
+ * @property {boolean} [retryable]
+ * @property {boolean} [expose]
+ * @property {Record<string, unknown>} [details]
+ */
+
 export class BridgeError extends Error {
+  /**
+   * @param {string} [code]
+   * @param {string} [message]
+   * @param {BridgeErrorOptions} [options]
+   */
   constructor(code, message, options = {}) {
     const normalizedCode = normalizeErrorCode(code);
     super(String(message || defaultMessage(normalizedCode)), options.cause ? { cause: options.cause } : undefined);
@@ -26,6 +41,19 @@ export class BridgeError extends Error {
   }
 }
 
+/**
+ * @typedef {Object} NormalizeBridgeErrorOptions
+ * @property {string} [defaultCode]
+ * @property {string | ((error: unknown) => string)} [safeMessage]
+ * @property {boolean} [expose]
+ * @property {boolean} [retryable]
+ */
+
+/**
+ * @param {unknown} error
+ * @param {NormalizeBridgeErrorOptions} [options]
+ * @returns {BridgeError}
+ */
 export function normalizeBridgeError(error, options = {}) {
   if (error instanceof BridgeError) return error;
   const code = errorCode(error, options.defaultCode);
@@ -42,6 +70,11 @@ export function normalizeBridgeError(error, options = {}) {
   });
 }
 
+/**
+ * @param {any} error
+ * @param {string} [fallback]
+ * @returns {string}
+ */
 export function errorCode(error, fallback = "execution_failed") {
   if (error instanceof BridgeError) return error.code;
   const direct = normalizeErrorCode(error?.code, "");
@@ -56,6 +89,20 @@ export function errorCode(error, fallback = "execution_failed") {
   return normalizeErrorCode(fallback);
 }
 
+/**
+ * @typedef {Object} PublicErrorOptions
+ * @property {string} [defaultCode]
+ * @property {string | ((error: unknown) => string)} [safeMessage]
+ * @property {boolean} [expose]
+ * @property {boolean} [retryable]
+ * @property {boolean} [verbose]
+ */
+
+/**
+ * @param {any} error
+ * @param {PublicErrorOptions} [options]
+ * @returns {Record<string, unknown>}
+ */
 export function publicError(error, options = {}) {
   const normalized = normalizeBridgeError(error, options);
   // Verbose diagnostics are an explicit, per-call decision made by a local boundary.
@@ -64,6 +111,7 @@ export function publicError(error, options = {}) {
   const verbose = options.verbose === true;
   const details = normalized.expose || verbose ? publicErrorDetails(normalized.details, verbose ? normalized : null) : undefined;
   const reason = normalized.details?.reason;
+  /** @type {Record<string, unknown>} */
   const result = {
     code: normalized.code,
     message: publicErrorMessage(normalized.expose || verbose ? normalized.message : defaultMessage(normalized.code)),
@@ -78,6 +126,9 @@ export function publicError(error, options = {}) {
  * A machine code is safe to publish even when the message is not: it names the failing
  * subsystem without leaking paths, arguments, or file contents. Callers otherwise only see
  * `execution_failed: operation failed`, which is not actionable.
+ * @param {any} error
+ * @param {string} code
+ * @returns {Record<string, unknown> | undefined}
  */
 function executionFailureReason(error, code) {
   if (code !== "execution_failed" && code !== "internal_error") return undefined;
@@ -86,17 +137,32 @@ function executionFailureReason(error, code) {
   return { reason: machine.toLowerCase() };
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} [fallback]
+ * @returns {string}
+ */
 function normalizeErrorCode(value, fallback = "execution_failed") {
   const code = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 64);
   return ERROR_CODES.has(code) ? code : fallback;
 }
 
+/**
+ * @param {unknown} error
+ * @param {string} code
+ * @returns {string}
+ */
 function safeFallbackMessage(error, code) {
   if (error instanceof Error && error.message) return String(error.message).slice(0, 2000);
   return defaultMessage(code);
 }
 
+/**
+ * @param {string} code
+ * @returns {string}
+ */
 function defaultMessage(code) {
+  /** @type {Record<string, string>} */
   const messages = {
     cancelled: "operation cancelled",
     timeout: "operation timed out",
@@ -119,23 +185,40 @@ function defaultMessage(code) {
   return messages[code] || messages.execution_failed;
 }
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
 function publicErrorMessage(value) {
   const normalized = String(value || "").replace(UNSAFE_ERROR_CONTROLS, " ").replace(/\s+/g, " ").trim();
   return (normalized || "operation failed").slice(0, MAX_PUBLIC_ERROR_MESSAGE_CHARS);
 }
 
+/**
+ * @param {unknown} value
+ * @param {BridgeError | null} [debugNormalized]
+ * @returns {Record<string, unknown> | undefined}
+ */
 function publicErrorDetails(value, debugNormalized = null) {
+  /** @type {Record<string, any> | undefined} */
   let target = isRecord(value) ? { ...value } : (debugNormalized ? {} : undefined);
-  if (debugNormalized && !target?.debug_error) {
+  if (debugNormalized && target && !target.debug_error) {
+    const causeObj = debugNormalized.cause && typeof debugNormalized.cause === "object" && "message" in debugNormalized.cause
+      ? /** @type {{ message?: unknown }} */ (debugNormalized.cause)
+      : null;
     target = {
       ...target,
       debug_error: {
         message: publicErrorMessage(debugNormalized.message),
-        ...(debugNormalized.cause ? { cause: publicErrorMessage(debugNormalized.cause?.message || debugNormalized.cause) } : {}),
+        ...(debugNormalized.cause ? { cause: publicErrorMessage(causeObj?.message || debugNormalized.cause) } : {}),
       },
     };
   }
@@ -151,6 +234,10 @@ function publicErrorDetails(value, debugNormalized = null) {
   } catch { return undefined; }
 }
 
+/**
+ * @param {any} error
+ * @returns {unknown}
+ */
 export function actionableGuidance(error) {
   return settlementGuidance({ code: errorCode(error), retryable: error?.retryable, details: error?.details });
 }

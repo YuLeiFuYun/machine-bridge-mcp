@@ -94,6 +94,36 @@ try {
   const tree = checkedGit(["ls-tree", "--name-only", "HEAD"], repo).stdout.trim().split(/\r?\n/).filter(Boolean);
   assert(tree.length === 1 && tree[0] === "staged.txt", "Git commit included content outside the existing staged index");
 
+  const branches = await service.branchList({ path: repo });
+  assert(branches.code === 0 && branches.branches.some((branch) => branch.current && branch.name),
+    "GitService branch listing did not identify the current branch");
+  const stashes = await service.stashList({ path: repo });
+  assert(stashes.code === 0 && Array.isArray(stashes.stashes) && stashes.stashes.length === 0,
+    "GitService stash listing did not return an empty canonical list");
+
+  const nonRepo = join(root, "not-a-repository");
+  await mkdir(nonRepo, { recursive: true });
+  const nonRepoStatus = await service.status({ path: nonRepo });
+  assert(nonRepoStatus.code === 128 && nonRepoStatus.stderr.includes("not a Git repository"),
+    "GitService did not report a non-repository target without starting Git");
+  const nonRepoBranches = await service.branchList({ path: nonRepo });
+  assert(nonRepoBranches.code === 128 && nonRepoBranches.stderr.includes("not a Git repository"),
+    "GitService branch listing did not preserve the non-repository result");
+  const nonRepoStashes = await service.stashList({ path: nonRepo });
+  assert(nonRepoStashes.code === 128 && nonRepoStashes.stderr.includes("not a Git repository"),
+    "GitService stash listing did not preserve the non-repository result");
+
+  const emptyMessage = await rejected(() => service.commit({ path: repo, message: "" }));
+  assert(emptyMessage.code === "invalid_request" && emptyMessage.message.includes("required"),
+    "GitService accepted an empty commit message");
+  const nulMessage = await rejected(() => service.commit({ path: repo, message: "fix: bad\0message" }));
+  assert(nulMessage.code === "invalid_request" && nulMessage.message.includes("NUL"),
+    "GitService accepted a commit message containing a NUL byte");
+
+  const fileLog = await service.log({ path: join(repo, "staged.txt"), max_count: 1 });
+  assert(fileLog.code === 0 && Array.isArray(fileLog.commits),
+    "GitService log did not accept a repository-relative pathspec");
+
   const filterCommand = process.platform === "win32"
     ? "ignored-filter-command"
     : `sh -c 'touch "$1"; cat' sh '${escapeSingleQuotes(filterSentinel)}'`;
