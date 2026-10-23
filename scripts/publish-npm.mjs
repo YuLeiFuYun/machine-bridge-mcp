@@ -41,7 +41,8 @@ export function npmPublishArguments(version, mode) {
 export async function publishCurrentNpmPackage(repositoryRoot, mode, options = {}) {
   const repository = resolve(repositoryRoot);
   const pkg = JSON.parse(readFileSync(resolve(repository, "package.json"), "utf8"));
-  const parsed = parseReleaseVersion(pkg.version);
+  const rawVersion = options.version || (mode === "prerelease" && !pkg.version.includes("-") ? `${pkg.version}-beta.1` : pkg.version);
+  const parsed = parseReleaseVersion(rawVersion);
   const publishArgs = npmPublishArguments(parsed.raw, mode);
   const explicitNpmCli = String(options.npmCli || "").trim();
   const lifecycleNpmCli = String(options.lifecycleNpmCli || process.env.npm_execpath || explicitNpmCli).trim();

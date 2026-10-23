@@ -2939,6 +2939,10 @@
           "minimum": 1,
           "maximum": 5242880,
           "default": 1048576
+        },
+        "with_line_numbers": {
+          "type": "boolean",
+          "default": false
         }
       },
       "required": [

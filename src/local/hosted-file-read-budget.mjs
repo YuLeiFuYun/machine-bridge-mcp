@@ -9,17 +9,25 @@ export function hostedFileReadLimits(context) {
   return { defaultContentBytes: MAX_HOSTED_RESULT_BYTES, maximumContentBytes: MAX_HOSTED_RESULT_BYTES };
 }
 
+export function formatNumberedSlice(selected, startLine, endLine) {
+  const lines = selected.split(/\r?\n/);
+  const maxDigits = Math.max(4, String(endLine).length);
+  return lines.map((line, idx) => `${String(startLine + idx).padStart(maxDigits, " ")} | ${line}`).join("\n");
+}
+
 export function hostedFileReadResult({
-  context, base, content, lineStarts, startLine, selectedEnd, totalLines, maxContentBytes, automatic,
+  context, base, content, lineStarts, startLine, selectedEnd, totalLines, maxContentBytes, automatic, withLineNumbers = false,
 }) {
   if (context?.authority?.origin !== "relay") return null;
   const candidate = (endLine, continuation) => {
     const startOffset = lineStarts[startLine - 1];
     const endOffset = endLine < totalLines ? lineStarts[endLine] : content.length;
-    const selected = content.slice(startOffset, endOffset);
+    const rawSelected = content.slice(startOffset, endOffset);
+    const selected = withLineNumbers ? formatNumberedSlice(rawSelected, startLine, endLine) : rawSelected;
     const value = {
       ...base, content: selected, start_line: startLine, end_line: endLine, total_lines: totalLines,
-      complete: startLine === 1 && endLine === totalLines, truncated: Boolean(continuation),
+      complete: startLine === 1 && endLine === totalLines,
+      truncated: Boolean(continuation),
       ...(continuation ? { next_start_line: endLine + 1 } : {}),
     };
     return { value, contentBytes: Buffer.byteLength(selected), resultBytes: Buffer.byteLength(JSON.stringify(value)) };

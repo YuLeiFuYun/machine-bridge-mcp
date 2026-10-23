@@ -1,10 +1,11 @@
 // @ts-check
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { readOptionalRegularUtf8 } from "./agent-text-file.mjs";
 
 export const PERSISTENT_MEMORY_FILE = join(".project-local", "agent-memory.json");
-export const MAX_MEMORY_BYTES = 64 * 1024;
+const MAX_MEMORY_BYTES = 64 * 1024;
 const MAX_TEXT_BYTES = 2048;
 const MAX_OUTPUT_BYTES = 16 * 1024;
 const MAX_CATEGORY_ITEMS = 10;
@@ -32,9 +33,9 @@ function memoryEntry(value) {
   }
   for (const field of ["updated_at", "expires_at"]) {
     if (field in item) {
-      const value = Reflect.get(item, field);
-      if (!validDate(value)) throw new Error("Invalid memory timestamp.");
-      Reflect.set(entry, field, value);
+      const val = Reflect.get(item, field);
+      if (!validDate(val)) throw new Error("Invalid memory timestamp.");
+      Reflect.set(entry, field, val);
     }
   }
   if ("timestamp" in item) {
@@ -61,6 +62,9 @@ export async function readPersistentMemory(scopeRoot, throwIfCancelled = () => {
   throwIfCancelled();
   let file;
   try {
+    const dirInfo = await lstat(join(scopeRoot, ".project-local")).catch((err) => err?.code === "ENOENT" ? null : Promise.reject(err));
+    if (!dirInfo) return null;
+    if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) throw new Error("Memory directory must be a regular non-symbolic-link directory.");
     file = await readOptionalRegularUtf8(memoryPath, MAX_MEMORY_BYTES, "project memory", assertPath);
   } catch (error) {
     throwIfCancelled();

@@ -3359,6 +3359,10 @@ Read a UTF-8 regular file or an inclusive 1-based line range. Files exceeding 30
       "minimum": 1,
       "maximum": 5242880,
       "default": 1048576
+    },
+    "with_line_numbers": {
+      "type": "boolean",
+      "default": false
     }
   },
   "required": [

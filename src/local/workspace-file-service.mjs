@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, stat } from "node:fs/promises";
 import path, { basename, resolve } from "node:path";
+import { compileFunction } from "node:vm";
 import { directoryEntriesWithMetadata } from "./directory-metadata.mjs";
 import { BridgeError } from "./errors.mjs";
-import { hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
+import { formatNumberedSlice, hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
 import { applyUpdateHunks, parsePatchEnvelope } from "./patch.mjs";
 import { openDirectoryIfExists, pathEntryIfExists } from "./path-inspection.mjs";
+import { sanitizeSource } from "./symbol-outline.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { searchWorkspaceText } from "./workspace-search-service.mjs";
 import {
@@ -26,6 +28,37 @@ const DEFAULT_IGNORED_DIRECTORIES = new Set([
   ".git", "node_modules", "dist", "build", "coverage", ".next", ".turbo", ".wrangler",
   "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv",
 ]);
+const CODE_SYNTAX_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx"]);
+const DELIMITER_PAIRS = { "{": "}", "(": ")", "[": "]" };
+const CLOSING_DELIMITERS = new Set(["}", ")", "]"]);
+
+export function inspectSyntaxWarning(filePath, content) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".json") {
+    try { JSON.parse(content); } catch (error) {
+      return `syntax_warning: invalid JSON: ${String(error?.message || error).slice(0, 100)}`;
+    }
+    return null;
+  }
+  if (CODE_SYNTAX_EXTENSIONS.has(ext) && content.length <= 512 * 1024) {
+    const sanitized = sanitizeSource(content);
+    const stack = [];
+    for (let i = 0; i < sanitized.length; i += 1) {
+      const ch = sanitized[i];
+      if (DELIMITER_PAIRS[ch]) stack.push(DELIMITER_PAIRS[ch]);
+      else if (CLOSING_DELIMITERS.has(ch) && stack.pop() !== ch) {
+        return `syntax_warning: unexpected closing delimiter '${ch}'`;
+      }
+    }
+    if (stack.length > 0) return `syntax_warning: unclosed delimiter expecting '${stack.at(-1)}'`;
+    if (ext === ".cjs" || (ext === ".js" && !/^\s*(?:import|export)\b/m.test(sanitized))) {
+      try { compileFunction(content); } catch (error) {
+        return `syntax_warning: invalid JavaScript syntax: ${String(error?.message || error).slice(0, 100)}`;
+      }
+    }
+  }
+  return null;
+}
 
 export class WorkspaceFileService {
   constructor({ workspace, policy, policyGate, policyForContext = null, resolveExistingPath, resolveWritePath, displayPath, throwIfCancelled, withMutationPaths, isProtectedPath = null, fileTransactionOptions = null }) {
@@ -140,14 +173,19 @@ export class WorkspaceFileService {
     if (startLine > totalLines) throw new BridgeError("invalid_request", `start_line exceeds total lines (${startLine} > ${totalLines})`, { details: { reason: "line_out_of_range", total_lines: totalLines } });
     const automaticWindow = args.end_line === undefined;
     let selectedEnd = Math.min(endLine, totalLines);
+    const withLineNumbers = args.with_line_numbers === true;
     const base = { path: this.displayPath(full, context), size: info.size, sha256: sha256(content) };
     const hostedResult = hostedFileReadResult({
       context, base, content, lineStarts, startLine, selectedEnd, totalLines, maxContentBytes: maxBytes,
-      automatic: automaticWindow,
+      automatic: automaticWindow, withLineNumbers,
     });
     if (hostedResult) return hostedResult;
     const selectedStartOffset = lineStarts[startLine - 1];
-    const bytesThrough = (end) => Buffer.byteLength(content.slice(selectedStartOffset, end < totalLines ? lineStarts[end] : content.length));
+    const renderSlice = (end) => {
+      const raw = content.slice(selectedStartOffset, end < totalLines ? lineStarts[end] : content.length);
+      return withLineNumbers ? formatNumberedSlice(raw, startLine, end) : raw;
+    };
+    const bytesThrough = (end) => Buffer.byteLength(renderSlice(end));
     // An omitted end_line means "show me this file", not "fail if it is large". Shrink to the
     // largest line boundary that fits and report where to continue; only a single line larger
     // than the budget is a real limit error.
@@ -162,11 +200,10 @@ export class WorkspaceFileService {
       selectedEnd = low;
       truncated = true;
     }
-    const selectedEndOffset = selectedEnd < totalLines ? lineStarts[selectedEnd] : content.length;
-    const selected = content.slice(selectedStartOffset, selectedEndOffset);
-    const selectedBytes = Buffer.byteLength(selected);
+    const returnedContent = renderSlice(selectedEnd);
+    const selectedBytes = Buffer.byteLength(returnedContent);
     if (selectedBytes > maxBytes) throw new BridgeError("limit_exceeded", `selected content exceeds max_bytes (${selectedBytes} > ${maxBytes})`, { details: { reason: "read_limit", selected_bytes: selectedBytes, maximum_bytes: maxBytes } });
-    const result = { ...base, content: selected, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines, truncated, ...(truncated ? { next_start_line: selectedEnd + 1 } : {}) };
+    const result = { ...base, content: returnedContent, start_line: startLine, end_line: selectedEnd, total_lines: totalLines, complete: startLine === 1 && selectedEnd === totalLines, truncated, ...(truncated ? { next_start_line: selectedEnd + 1, next_action_affordance: { action: "read_file", path: args.path, start_line: selectedEnd + 1, end_line: Math.min(selectedEnd + 300, totalLines) } } : {}) };
     if (totalLines > 300 && (selectedEnd < totalLines || args.end_line === undefined)) {
       result.pagination_guidance = selectedEnd < totalLines
         ? `File has ${totalLines} lines. To read subsequent lines, specify start_line=${selectedEnd + 1} and end_line=${Math.min(selectedEnd + 300, totalLines)}.`
@@ -222,7 +259,10 @@ export class WorkspaceFileService {
         createOnly: args.create_only === true,
         expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
       });
-      return { ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes, ...(commit.warnings.length ? { warnings: commit.warnings } : {}) };
+      const warnings = commit.warnings.slice();
+      const syntax = inspectSyntaxWarning(full, content);
+      if (syntax) warnings.push(syntax);
+      return { ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes, ...(warnings.length ? { warnings } : {}) };
     });
   }
   async editFile(args, context = {}) {
@@ -239,10 +279,47 @@ export class WorkspaceFileService {
       if (!info.isFile() || info.isSymbolicLink()) throw new BridgeError("conflict", "path is not a regular non-symbolic-link file", { details: { reason: "unsupported_target_type" } });
       const current = await readUtf8File(full);
       if (args.expected_sha256 && sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new BridgeError("conflict", "expected_sha256 mismatch", { details: { reason: "hash_mismatch" } });
-      const occurrences = countOccurrences(current, oldText);
-      if (occurrences === 0) throw new BridgeError("not_found", "old_text was not found", { details: { reason: "text_not_found" } });
+      let occurrences = countOccurrences(current, oldText);
+      let searchTarget = oldText;
+      let matchMode = "exact";
+
+      if (occurrences === 0) {
+        if (current.includes("\r\n") && !oldText.includes("\r\n")) {
+          const crlfText = oldText.replace(/\r?\n/g, "\r\n");
+          const crlfCount = countOccurrences(current, crlfText);
+          if (crlfCount > 0) {
+            searchTarget = crlfText;
+            occurrences = crlfCount;
+            matchMode = "normalized_newlines";
+          }
+        } else if (!current.includes("\r\n") && oldText.includes("\r\n")) {
+          const lfText = oldText.replace(/\r\n/g, "\n");
+          const lfCount = countOccurrences(current, lfText);
+          if (lfCount > 0) {
+            searchTarget = lfText;
+            occurrences = lfCount;
+            matchMode = "normalized_newlines";
+          }
+        }
+      }
+
+      if (occurrences === 0) {
+        const details = { reason: "text_not_found" };
+        const nearMiss = findNearMiss(current, oldText);
+        if (nearMiss) {
+          details.hint = nearMiss.hint;
+          details.candidate_lines = nearMiss.candidate_lines;
+          details.candidate_snippet = nearMiss.candidate_snippet;
+        }
+        throw new BridgeError("not_found", "old_text was not found", { details });
+      }
+
       if (!args.replace_all && occurrences !== 1) throw new BridgeError("conflict", `old_text occurs ${occurrences} times; provide a unique fragment or set replace_all=true`, { details: { reason: "text_ambiguous", occurrences } });
-      const updated = args.replace_all ? current.split(oldText).join(newText) : current.replace(oldText, () => newText);
+      let replacement = newText;
+      if (matchMode === "normalized_newlines" && current.includes("\r\n") && !newText.includes("\r\n")) {
+        replacement = newText.replace(/\r?\n/g, "\r\n");
+      }
+      const updated = args.replace_all ? current.split(searchTarget).join(replacement) : current.replace(searchTarget, () => replacement);
       const bytes = Buffer.byteLength(updated);
       if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       this.throwIfCancelled(context);
@@ -252,13 +329,15 @@ export class WorkspaceFileService {
         readText: readUtf8File,
       });
       const warnings = commit.warnings.slice();
+      const syntax = inspectSyntaxWarning(full, updated);
+      if (syntax) warnings.push(syntax);
       return {
         ok: true,
         path: this.displayPath(full, context),
         replacements: args.replace_all ? occurrences : 1,
         sha256: sha256(updated),
         bytes,
-        matched: "exact",
+        matched: matchMode,
         ...(warnings.length ? { warnings } : {}),
       };
     });
@@ -358,7 +437,6 @@ export class WorkspaceFileService {
     }
     return { truncated: false, visitedEntries };
   }
-
 }
 
 export async function readBoundedFile(filePath, maxBytes, label) {
@@ -416,6 +494,27 @@ function countOccurrences(content, needle) {
   return count;
 }
 
+function findNearMiss(current, oldText) {
+  const oldLines = oldText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (oldLines.length === 0) return null;
+  const firstOldLine = oldLines[0];
+  const fileLines = current.split(/\r?\n/);
+  for (let i = 0; i < fileLines.length; i += 1) {
+    const trimmed = fileLines[i].trim();
+    if (!trimmed) continue;
+    if (trimmed === firstOldLine || (firstOldLine.length > 5 && (trimmed.includes(firstOldLine) || firstOldLine.includes(trimmed)))) {
+      const start = Math.max(1, i + 1);
+      const end = Math.min(fileLines.length, i + oldLines.length + 1);
+      const snippet = formatNumberedSlice(fileLines.slice(start - 1, end).join("\n"), start, end);
+      return {
+        hint: `Exact match failed. Closest match found around line ${start}-${end}. Check indentation, whitespace, or line endings.`,
+        candidate_lines: { start, end },
+        candidate_snippet: snippet,
+      };
+    }
+  }
+  return null;
+}
 
 function detectImageMime(buffer) {
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";

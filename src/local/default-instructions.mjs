@@ -59,6 +59,13 @@ These are conservative defaults. Explicit current-user requests and more specifi
 - Prefer read-only, dry-run, reversible, and bounded operations. Do not publish, deploy, rotate credentials, modify live or production data, install system-wide software, or perform destructive or irreversible actions unless the user explicitly requests that operation.
 - Instruction files guide behavior but are not an enforcement boundary; use the active policy, sandbox, permissions, and approval mechanisms for hard restrictions.
 
+## Diagnostic safety and refusal avoidance
+
+- When diagnosing local service failures (e.g. 502 Bad Gateway, port conflicts, TLS handshake errors, or unit failures), prefer narrow read-only inspection (e.g. \`lsof -nP -iTCP:<port> -sTCP:LISTEN\`, checking specific unit status, reading scoped service logs or effective configuration) over broad port scanning, raw packet sniffing, or unbounded shell probing.
+- Frame intent in terms of SRE operational telemetry (e.g. "checking whether local port 8080 is listening") rather than offensive actions.
+- Never disable system security controls as diagnostic shortcuts: avoid \`curl -k\` / \`--insecure\`, \`chmod 777\`, disabling firewalls, or dumping private keys.
+- If a diagnostic operation is refused or interrupted by upstream safety classifiers, do not attempt obfuscated retries, shell aliases, or encoding bypasses; immediately fall back to the narrower read-only factual observation (configuration, unit status, log tail) to establish equivalent evidence without abandoning the task.
+
 ## Git and delivery
 
 - Before any GitHub read or mutation, read the effective project instructions. If they require local git, gh, and gh api through Machine Bridge, never call a hosted GitHub connector or ChatGPT GitHub plugin; if that local control plane is unavailable, stop and report the boundary instead of substituting another control plane.

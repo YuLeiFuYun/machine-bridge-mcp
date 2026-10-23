@@ -68,3 +68,5 @@ try {
   }
   console.log("agent workflows passed: conflict final state, invalid memory, durable recovery and unsettled effects");
 } finally { await runtime.stop(); await rm(root, { recursive: true, force: true }); }
+
+await import("./agent-modern-capabilities.test.mjs");

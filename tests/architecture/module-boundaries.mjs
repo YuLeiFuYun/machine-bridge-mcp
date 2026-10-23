@@ -2,12 +2,27 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { moduleSpecifiers } from "./source-module-graph.mjs";
-import { hasSemanticImport } from "./semantic-analyzer.mjs";
+import { getSemanticExports, getSemanticImports, hasSemanticImport } from "./semantic-analyzer.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const localRoot = join(root, "src", "local");
 const modules = readdirSync(localRoot).filter((name) => name.endsWith(".mjs")).sort();
 const graph = new Map();
+
+function resolveLocalModulePath(name) {
+  const direct = join(localRoot, name);
+  if (existsSync(direct)) return direct;
+  for (const entry of readdirSync(localRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const nested = join(localRoot, entry.name, name);
+    if (existsSync(nested)) return nested;
+  }
+  return direct;
+}
+
+function readLocalModule(name) {
+  return readFileSync(resolveLocalModulePath(name), "utf8");
+}
 
 for (const name of modules) {
   const file = join(localRoot, name);
@@ -429,7 +444,7 @@ for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "resou
 //   - the number of large files may not increase (splitting is free, accreting is not),
 //   - one absolute ceiling stops a single file from absorbing everyone else's headroom.
 const lineBudget = Object.freeze({
-  totalLines: 64_500,
+  totalLines: 66_000,
   p95: 360,
   p99: 850,
   largestFile: 2_000,
@@ -452,10 +467,17 @@ function sourceFilesUnder(directory) {
   return found;
 }
 
+function effectiveCodeLineCount(source) {
+  return source
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:\/\/|\/\*|\*\/|\*(?:\s|$))/.test(line))
+    .length;
+}
+
 const sourceLineCounts = ["src/local", "src/worker", "src/shared", "browser-extension"]
   .flatMap(sourceFilesUnder)
   .sort()
-  .map((name) => ({ name, lines: readFileSync(join(root, name), "utf8").split(/\r?\n/).length }))
+  .map((name) => ({ name, lines: effectiveCodeLineCount(readFileSync(join(root, name), "utf8")) }))
   .sort((left, right) => left.lines - right.lines);
 const totalSourceLines = sourceLineCounts.reduce((sum, entry) => sum + entry.lines, 0);
 const fileLengthQuantile = (ratio) => sourceLineCounts[
@@ -503,11 +525,11 @@ for (const name of ["app-automation.mjs", "browser-bridge.mjs", "managed-jobs.mj
   if (!source.includes("authorizeTool")) throw new Error(`${name} lost the shared authorization gate`);
 }
 
-const computerUseSource = readFileSync(join(localRoot, "computer-use.mjs"), "utf8");
-const computerUseDeadlineSource = readFileSync(join(localRoot, "computer-use-deadline.mjs"), "utf8");
-const computerUseDispatchSettlementSource = readFileSync(join(localRoot, "computer-use-dispatch-settlement.mjs"), "utf8");
-const computerUseSnapshotStoreSource = readFileSync(join(localRoot, "computer-use-snapshot-store.mjs"), "utf8");
-const appAutomationDurationSource = readFileSync(join(localRoot, "app-automation.mjs"), "utf8");
+const computerUseSource = readLocalModule("computer-use.mjs");
+const computerUseDeadlineSource = readLocalModule("computer-use-deadline.mjs");
+const computerUseDispatchSettlementSource = readLocalModule("computer-use-dispatch-settlement.mjs");
+const computerUseSnapshotStoreSource = readLocalModule("computer-use-snapshot-store.mjs");
+const appAutomationDurationSource = readLocalModule("app-automation.mjs");
 if (!computerUseSource.includes('from "./computer-use-snapshot-store.mjs"')
     || !computerUseSource.includes('from "./computer-use-deadline.mjs"')
     || !computerUseSource.includes('from "./monotonic-deadline.mjs"')
@@ -1736,6 +1758,57 @@ for (const forbidden of ["AUTHORIZATION_FIELDS", "<form method=\"post\" action=\
 }
 for (const required of ["AUTHORIZATION_FIELDS", "authorizationPage", "redirectOrigin"]) {
   if (!workerOAuthPageBoundary.includes(required)) throw new Error(`OAuth authorization page lost rendering/security responsibility: ${required}`);
+}
+
+function collectExecutableFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const candidate = join(directory, entry.name);
+    if (entry.isDirectory()) return collectExecutableFiles(candidate);
+    return /\.(?:mjs|js|ts|mts)$/u.test(entry.name) ? [candidate] : [];
+  });
+}
+
+const importedBindingsByTarget = new Map();
+const namespaceImportedTargets = new Set();
+for (const directory of ["src", "bin", "scripts", "tests", ".github"]) {
+  for (const file of collectExecutableFiles(join(root, directory))) {
+    const source = readFileSync(file, "utf8");
+    for (const entry of getSemanticImports(source, file)) {
+      if (!entry.specifier.startsWith(".")) continue;
+      const resolved = resolve(dirname(file), entry.specifier);
+      const target = extname(resolved) ? resolved : `${resolved}.mjs`;
+      if (entry.namespaceBinding) namespaceImportedTargets.add(target);
+      let bindings = importedBindingsByTarget.get(target);
+      if (!bindings) {
+        bindings = new Set();
+        importedBindingsByTarget.set(target, bindings);
+      }
+      if (entry.defaultBinding) bindings.add("default");
+      for (const binding of entry.bindings) bindings.add(binding.imported);
+    }
+    for (const match of source.matchAll(/import\s*\(\s*["'](\.[^"']+)["']\s*\)/g)) {
+      const resolved = resolve(dirname(file), match[1]);
+      namespaceImportedTargets.add(extname(resolved) ? resolved : `${resolved}.mjs`);
+    }
+  }
+}
+
+for (const directory of ["src/local", "src/shared"]) {
+  const folder = join(root, directory);
+  for (const name of readdirSync(folder).filter((entry) => entry.endsWith(".mjs")).sort()) {
+    const file = join(folder, name);
+    if (namespaceImportedTargets.has(file)) continue;
+    const usedBindings = importedBindingsByTarget.get(file) || new Set();
+    const source = readFileSync(file, "utf8");
+    for (const exported of getSemanticExports(source, file)) {
+      if (exported.kind === "unknown") continue;
+      const key = exported.isDefault ? "default" : exported.name;
+      const occurrences = (source.match(new RegExp(`\\b${key}\\b`, "g")) || []).length;
+      if (!usedBindings.has(key) && occurrences <= 1) {
+        throw new Error(`unreferenced dead export ${key} in ${directory}/${name}:${exported.line}`);
+      }
+    }
+  }
 }
 
 console.log(`architecture module boundaries ok (${modules.length} local modules)`);

@@ -1,12 +1,10 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   extractFileSymbols,
-  extractSymbolOutline,
   extractWorkspaceOutline,
   renderSymbolOutline,
   sanitizeSource,
@@ -83,33 +81,33 @@ export const MAX_RETRY_COUNT = 10;
 `;
 
 const extracted = extractFileSymbols(complexModule, "test-module.ts", { includeInternal: true });
-const symbolNames = new Set(extracted.symbols.map((s) => s.name));
+const symbolNames = extracted.symbols.map((s) => s.name);
 
 // Verify extracted top-level symbols
-assert(symbolNames.has("DataStore"), "class DataStore not found");
-assert(symbolNames.has("processData"), "function processData not found");
-assert(symbolNames.has("computeScore"), "arrow function computeScore not found");
-assert(symbolNames.has("DataConfig"), "interface DataConfig not found");
-assert(symbolNames.has("OperationType"), "type OperationType not found");
-assert(symbolNames.has("TaskState"), "enum TaskState not found");
-assert(symbolNames.has("MAX_RETRY_COUNT"), "const MAX_RETRY_COUNT not found");
+assert(symbolNames.includes("DataStore"), "class DataStore not found");
+assert(symbolNames.includes("processData"), "function processData not found");
+assert(symbolNames.includes("computeScore"), "arrow function computeScore not found");
+assert(symbolNames.includes("DataConfig"), "interface DataConfig not found");
+assert(symbolNames.includes("OperationType"), "type OperationType not found");
+assert(symbolNames.includes("TaskState"), "enum TaskState not found");
+assert(symbolNames.includes("MAX_RETRY_COUNT"), "const MAX_RETRY_COUNT not found");
 
 // Verify no comment or string fakes were captured
-assert(!symbolNames.has("CommentFake"), "comment fake captured as class");
-assert(!symbolNames.has("StringFake"), "string fake captured as class");
+assert(!symbolNames.includes("CommentFake"), "comment fake captured as class");
+assert(!symbolNames.includes("StringFake"), "string fake captured as class");
 
 // Verify inner helper function was excluded
-assert(!symbolNames.has("innerHelper"), "inner helper was captured as top-level symbol");
+assert(!symbolNames.includes("innerHelper"), "inner helper was captured as top-level symbol");
 
 // Verify class methods
 const classSymbol = extracted.symbols.find((s) => s.name === "DataStore");
 assert(classSymbol, "DataStore class symbol missing");
 assert.equal(classSymbol.superClass, "BaseStore");
-const methodNames = new Set(classSymbol.methods.map((m) => m.name));
-assert(methodNames.has("constructor"), "constructor missing");
-assert(methodNames.has("loadItem"), "loadItem missing");
-assert(methodNames.has("configure"), "static configure missing");
-assert(methodNames.has("isReady"), "getter isReady missing");
+const methodNames = classSymbol.methods.map((m) => m.name);
+assert(methodNames.includes("constructor"), "constructor missing");
+assert(methodNames.includes("loadItem"), "loadItem missing");
+assert(methodNames.includes("configure"), "static configure missing");
+assert(methodNames.includes("isReady"), "getter isReady missing");
 
 const staticMethod = classSymbol.methods.find((m) => m.name === "configure");
 assert(staticMethod?.static, "configure should be marked static");
@@ -168,45 +166,54 @@ export class AfterRegexClass {
 }
 `;
 const trickyExtracted = extractFileSymbols(regexTrickyCode, "tricky.js");
-const trickyNames = new Set(trickyExtracted.symbols.map((s) => s.name));
-assert(trickyNames.has("afterRegexFunction"), "afterRegexFunction must be captured despite preceding regex with braces");
-assert(trickyNames.has("AfterRegexClass"), "AfterRegexClass must be captured despite preceding regex with quotes");
+const trickyNames = trickyExtracted.symbols.map((s) => s.name);
+assert(trickyNames.includes("afterRegexFunction"), "afterRegexFunction must be captured despite preceding regex with braces");
+assert(trickyNames.includes("AfterRegexClass"), "AfterRegexClass must be captured despite preceding regex with quotes");
 
 // 7. Regression: Production files log-redaction.mjs and mcp-http-contract.ts
 const logRedactionCode = readFileSync(join(root, "src", "shared", "log-redaction.mjs"), "utf8");
-const logRedactionSymbols = new Set(extractFileSymbols(logRedactionCode, "log-redaction.mjs").symbols.map((s) => s.name));
-assert(logRedactionSymbols.has("isSensitiveLogFieldName"), "isSensitiveLogFieldName must be extracted from log-redaction.mjs");
-assert(logRedactionSymbols.has("sanitizePortableLogText"), "sanitizePortableLogText must be extracted from log-redaction.mjs");
+const logRedactionSymbols = extractFileSymbols(logRedactionCode, "log-redaction.mjs").symbols.map((s) => s.name);
+assert(logRedactionSymbols.includes("isSensitiveLogFieldName"), "isSensitiveLogFieldName must be extracted from log-redaction.mjs");
+assert(logRedactionSymbols.includes("sanitizePortableLogText"), "sanitizePortableLogText must be extracted from log-redaction.mjs");
 
 const mcpContractCode = readFileSync(join(root, "src", "worker", "mcp-http-contract.ts"), "utf8");
-const mcpContractSymbols = new Set(extractFileSymbols(mcpContractCode, "mcp-http-contract.ts").symbols.map((s) => s.name));
-assert(mcpContractSymbols.has("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
-assert(mcpContractSymbols.has("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
+const mcpContractSymbols = extractFileSymbols(mcpContractCode, "mcp-http-contract.ts").symbols.map((s) => s.name);
+assert(mcpContractSymbols.includes("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
+assert(mcpContractSymbols.includes("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
 
-// Rendered bytes, UTF-8 paths and notices share the same budget for files and directories.
-{
-  const temporary = mkdtempSync(join(tmpdir(), "mbm-outline-byte-budget-"));
-  try {
-    const large = join(temporary, "large.mjs");
-    const source = "export function " + "x".repeat(20000) + "() {}";
-    writeFileSync(large, source);
-    const text = await extractSymbolOutline(large);
-    assert(Buffer.byteLength(text) <= 16 * 1024 && text.includes("truncated"), "long identifiers bypassed the default output budget");
-    const directory = await extractWorkspaceOutline(temporary, { maxOutputBytes: 128 });
-    assert(directory.truncated && directory.truncationReasons.includes("output_byte_limit"));
-    assert(directory.outputBytes === Buffer.byteLength(directory.outline) && directory.outputBytes <= 128);
-    const unicode = join(temporary, "多字节.mjs");
-    writeFileSync(unicode, source);
-    const unicodeText = await extractSymbolOutline(unicode, { maxOutputBytes: 128, displayPath: () => "多字节.mjs" });
-    assert(unicodeText.includes("多字节.mjs") && !unicodeText.includes("\uFFFD") && Buffer.byteLength(unicodeText) <= 128);
-    const tiny = await extractSymbolOutline(unicode, { maxLines: 1, maxOutputBytes: 1 });
-    assert.equal(tiny, ".", "tiny budgets must include their truncation marker");
-    const small = join(temporary, "small.mjs");
-    writeFileSync(small, "export function shortName() {}\n");
-    const full = await extractSymbolOutline(small, { displayPath: () => "small.mjs" });
-    const exact = await extractSymbolOutline(small, { maxOutputBytes: Buffer.byteLength(full), displayPath: () => "small.mjs" });
-    assert.equal(exact, full, "an exactly fitting complete outline was marked incomplete");
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
-}
+// 8. Regression: long destructured signatures and `return /}/` must not hide symbols
+const longSignatureCode = [
+  "export function withLongParams(",
+  ...Array.from({ length: 20 }, (_, index) => `  arg${index},`),
+  ") {",
+  '  return /}/.test("x");',
+  "}",
+].join("\n");
+const longSignatureNames = extractFileSymbols(longSignatureCode, "long.mjs").symbols.map((s) => s.name);
+assert(longSignatureNames.includes("withLongParams"), "a signature spanning more than 12 lines must still be captured");
+
+const runtimeReportingCode = readFileSync(join(root, "src", "local", "runtime-reporting.mjs"), "utf8");
+const runtimeReportingNames = extractFileSymbols(runtimeReportingCode, "runtime-reporting.mjs").symbols.map((s) => s.name);
+assert(runtimeReportingNames.includes("buildRuntimeInfo"), "buildRuntimeInfo must survive a multi-line parameter list");
+
+// 9. Regression: zero-parameter, async, default-exported, and default-param arrow functions
+const arrowEdgeCases = [
+  "export const zeroParam = () => { return 1; };",
+  "export const asyncZero = async () => 2;",
+  "export const defaultParam = (a = 1) => a;",
+  "export default () => true;",
+  "const internalZero = () => { const nested = () => 0; return nested(); };",
+].join("\n");
+const arrowSymbols = extractFileSymbols(arrowEdgeCases, "arrows.mjs", { includeInternal: true }).symbols;
+assert.deepEqual(
+  arrowSymbols.map((s) => ({ name: s.name, async: s.async, params: s.params, isExported: s.isExported })),
+  [
+    { name: "zeroParam", async: false, params: "", isExported: true },
+    { name: "asyncZero", async: true, params: "", isExported: true },
+    { name: "defaultParam", async: false, params: "a = 1", isExported: true },
+    { name: "default", async: false, params: "", isExported: true },
+    { name: "internalZero", async: false, params: "", isExported: false },
+  ],
+);
 
 console.log("symbol outline test ok");

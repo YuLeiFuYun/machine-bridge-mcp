@@ -59,5 +59,3 @@ function isJsonValue(value) {
     || Array.isArray(value)
     || (value && typeof value === "object");
 }
-
-/** @param {unknown} value */

@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
 import { architectureDocumentation } from "./architecture-documentation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");

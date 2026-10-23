@@ -20,7 +20,7 @@ import {
 } from "./relay-connection-classification.mjs";
 import { scheduleRelayReconnect, scheduleRelayReconnectBackoffReset, settleRelayReconnectBackoffOnClose } from "./relay-reconnect.mjs";
 export {
-  acknowledgementMismatch, isRelayReadyContext, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory,
+  acknowledgementMismatch, isSupersededClose, readinessMismatch, reconnectDelay, relayCloseCategory,
   relayOutageUserAction, relayServerErrorReconnectCategory, welcomeMismatch,
 } from "./relay-connection-classification.mjs";
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;

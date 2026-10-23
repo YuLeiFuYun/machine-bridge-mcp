@@ -5,6 +5,7 @@ import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from ".
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { isSensitivePath } from "./operation-risk.mjs";
+import { isDelegatedRelayContext } from "./authority-context.mjs";
 import {
   discoverLocalSkills, listSkillFiles, MAX_SKILL_ENTRY_BYTES, MAX_SKILL_FILES, MAX_SKILL_RESULTS,
 } from "./agent-skill-discovery.mjs";
@@ -502,13 +503,6 @@ export class AgentContextManager {
       throwIfCancelled: this.throwIfCancelled,
     });
   }
-}
-
-function isDelegatedRelayContext(context) {
-  const authority = context?.authority;
-  const principal = authority?.principal;
-  return context?.origin === "relay" && principal?.kind === "account"
-    && principal.role !== "owner" && authority.owner !== true;
 }
 
 function sameArgv(left, right) {

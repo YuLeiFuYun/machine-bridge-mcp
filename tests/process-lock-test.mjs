@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runFixtureChild, stopFixtureChild, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
-import { createExclusiveFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
+import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance } from "../src/local/process-identity.mjs";
 import { retryProcessLockIdentityReadSync } from "../src/local/process-lock-read-retry.mjs";
@@ -140,6 +140,41 @@ async function atomicExclusiveCreateTest() {
     && !JSON.stringify(warningResult).includes(warningResult.cleanupArtifact),
   "exclusive create hid post-commit cleanup failure or exposed its private staging path in serialization");
   await rm(warningResult.cleanupArtifact, { force: true });
+
+  const residueTarget = join(directory, "residue-repair.json");
+  const residueOwner = { token: "r".repeat(32), purpose: "test" };
+  const residue = createExclusiveFileSync(residueTarget, `${JSON.stringify(residueOwner)}\n`, {
+    unlink() { throw new Error("synthetic committed residue for repair"); },
+  });
+  assert(existsSync(residue.cleanupArtifact), "residue repair fixture did not retain its committed staging alias");
+  assert(removeOwnedJsonFileSync(residueTarget, residueOwner) === true && !existsSync(residueTarget) && !existsSync(residue.cleanupArtifact),
+    "owned removal did not repair and remove a committed staging alias");
+
+  const externalTarget = join(directory, "external-link.json");
+  const externalOwner = { token: "e".repeat(32), purpose: "test" };
+  const externalAlias = join(temp, "external-link-alias.json");
+  await writeFile(externalTarget, `${JSON.stringify(externalOwner)}\n`, { mode: 0o600 });
+  await link(externalTarget, externalAlias);
+  let unattributableFailure = null;
+  try { removeOwnedJsonFileSync(externalTarget, externalOwner); } catch (error) { unattributableFailure = error; }
+  assert(unattributableFailure?.code === "MBM_MULTIPLE_HARD_LINKS" && existsSync(externalTarget),
+    "owned removal stopped refusing an unattributable hard link by default");
+  assert(removeOwnedJsonFileSync(externalTarget, externalOwner, { allowUnattributableLinks: true }) === true && !existsSync(externalTarget),
+    "owned removal did not repair an unattributable hard link when the caller allowed it");
+  await rm(externalAlias, { force: true });
+
+  // A second name in the publication directory is somebody's file, not a phantom link left by a
+  // broker that reported a successful unlink, so even an opted-in repair must leave it alone.
+  const peerTarget = join(directory, "peer-link.json");
+  const peerOwner = { token: "p".repeat(32), purpose: "test" };
+  const peerAlias = join(directory, "peer-link-alias.json");
+  await writeFile(peerTarget, `${JSON.stringify(peerOwner)}\n`, { mode: 0o600 });
+  await link(peerTarget, peerAlias);
+  let peerFailure = null;
+  try { removeOwnedJsonFileSync(peerTarget, peerOwner, { allowUnattributableLinks: true }); } catch (error) { peerFailure = error; }
+  assert(peerFailure?.code === "MBM_MULTIPLE_HARD_LINKS" && existsSync(peerTarget) && existsSync(peerAlias),
+    "owned removal reclaimed a published name while a second name for the same inode was still visible");
+  await rm(peerAlias, { force: true });
 }
 
 async function atomicReplacementTest() {

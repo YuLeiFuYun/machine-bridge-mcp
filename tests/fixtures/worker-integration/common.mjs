@@ -17,7 +17,7 @@ import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp-sub
 
 export const integrationContext = {
   base: "",
-  pkg: { version: "3.0.0-beta.207" },
+  pkg: { version: "3.0.0" },
   DAEMON_SESSION_IDENTITY: null,
   activeHttpRequests: new Set(),
 };

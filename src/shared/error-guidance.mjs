@@ -8,7 +8,9 @@ export const ACTIONABLE_GUIDANCE = Object.freeze({
   timeout: "Operation timed out; inspect its settlement and recovery metadata before deciding whether to retry.",
   limit_exceeded: "Resource limit exceeded; reduce input size or batch items.",
   invalid_request: "Check input arguments against the tool schema.",
-  policy_denied: "Operation was denied by security policy.",
+  policy_denied: "Operation was denied by security policy. Do not attempt shell obfuscation or encoding retries; fall back to narrower read-only inspection.",
+  execution_failed: "The tool ran but the operation failed. Read details.reason, fix that condition, or fall back to an equivalent read-only diagnostic observation; do not assume the effect was applied.",
+  internal_error: "The bridge hit an internal inconsistency. Retry once; if it repeats, run doctor and report details.reason.",
 });
 
 const REASON_ACTIONABLE_GUIDANCE = Object.freeze({
@@ -33,6 +35,10 @@ const REASON_ACTIONABLE_GUIDANCE = Object.freeze({
   mbm_multiple_hard_links: "A local state file kept a second hard link, which the secure reader rejects. Run doctor --repair-resource-coordinator to restore the single-link invariant.",
   mbm_identity_changed: "A local state file was replaced while it was being read. Retry; if it repeats, run doctor and inspect the state directory.",
   mbm_resource_transaction_busy: "Another local operation holds the resource coordinator transaction lock. Wait for it to finish, or run doctor to reclaim a stale lock.",
+  host_elevation_rejected: "Host privilege escalation (sudo/su) was denied. Do not guess passwords; continue with unprivileged read-only diagnostics or inspect current permissions via id and getent.",
+  network_scan_unsupported: "Raw socket scanning or packet capture (nmap/tcpdump) is not permitted or unavailable. Use target-specific TCP listener verification (lsof -nP -iTCP or ss -tlnp) instead.",
+  certificate_verification_failed: "TLS certificate verification failed. Do not disable verification (-k/--insecure); inspect the issuer chain and validity with openssl x509 or s_client.",
+  connection_endpoint_refused: "Endpoint connection refused. Verify whether the local service is running and inspect bound ports before repeating requests.",
 });
 
 /** @param {unknown} value @returns {string | null} */

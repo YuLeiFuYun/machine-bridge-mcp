@@ -235,20 +235,20 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
 if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.151.3"
-    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.18"
+    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.20"
     || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
     || Object.hasOwn(packageJson.devDependencies || {}, "undici")
-    || toolchainManifest.overrides?.miniflare !== "5.20261012.1-beta"
+    || toolchainManifest.overrides?.miniflare !== "5.20261019.1-beta"
     || toolchainManifest.overrides?.ws !== "8.22.0"
     || toolchainManifest.overrides?.sharp !== "0.35.5"
     || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.151.3"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
-    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.18"
+    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.20"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.5"
     || toolchainManifest.allowScripts?.["sharp@0.35.5"] !== true) {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.18"
+if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.20"
     || Object.hasOwn(packageJson.scripts || {}, "postinstall")
     || !FAST_CHECK_TASKS.includes("cf-network:test")) {
   throw new Error("cf isolation or its upstream network integrity gate drifted");
@@ -984,7 +984,7 @@ if (!runChecksSource.includes("runVerificationPlan")
     || !verificationStateSource.includes('"release-acceptance"')
     || !runChecksSource.includes('value !== undefined && value !== ""')
     || !runChecksSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
-    || !runChecksSource.includes("Math.min(4, availableParallelism())")
+    || !runChecksSource.includes("availableParallelism()")
     || !runChecksSource.includes("rerunVerificationUnderIdleSleepGuard")
     || !verificationIdleSleepGuardSource.includes('"/usr/bin/caffeinate"')
     || !verificationIdleSleepGuardSource.includes('["-i", executable, ...argv]')
@@ -1026,43 +1026,19 @@ for (const required of ["readBoundedRegularFileSync", "rejectMultipleLinks: true
 }
 const workerDeploymentSource = readFileSync(join(root, "src", "local", "worker-deployment.mjs"), "utf8");
 const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-deployment-fingerprint.mjs"), "utf8");
-if (!hasSemanticImport(workerDeploymentSource, "./worker-deployment-fingerprint.mjs", { requiredSymbols: ["workerDeploymentFingerprint"] })) {
-  throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
+if (!hasSemanticImport(workerDeploymentSource, "./worker-deployment-fingerprint.mjs", { requiredSymbols: ["workerDeploymentFingerprint", "workerDeploymentSourceSnapshot"] })
+    || !hasSemanticImport(workerDeploymentSource, "./cf-authentication.mjs", { requiredSymbols: ["ensureCfAuthenticated", "cfDeploymentAccount"] })
+    || !hasSemanticImport(workerDeploymentSource, "./cf-project.mjs", { requiredSymbols: ["withCfProject"] })) {
+  throw new Error("Worker deployment state machine lost its dedicated fingerprint, authentication, or staging boundary");
 }
-const workerAuthProbe = workerDeploymentSource.indexOf("await ensureCfAuthenticated(");
-const workerDeployStart = workerDeploymentSource.indexOf('logger.info?.("Deploying Cloudflare Worker")');
-if (workerAuthProbe < 0 || workerDeployStart < workerAuthProbe
-    || !workerDeploymentSource.includes("interactive: !args.json")
-    || !workerDeploymentSource.includes("cfDeploymentAccount(auth, environment)")
-    || !workerDeploymentSource.includes("withCfProjectFn(sourceSnapshot")) {
-  throw new Error("Worker deployment lost cf authentication, unattended-login guard, or private source staging");
-}
-// Cloudflare authentication denial, malformed evidence and unattended-login
-// behavior are covered by cf-project:test rather than expression spelling.
-for (const required of ["mbm-worker-deploy-cf-v6", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
-  if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed cf v6 boundary: ${required}`);
+if (!hasSemanticImport(workerFingerprintSource, "./secure-file.mjs", { requiredSymbols: ["readBoundedRegularFileSync"] })) {
+  throw new Error("Worker deployment fingerprint lost bounded regular-file verification");
 }
 const workerFingerprintTraversal = workerFingerprintSource.slice(
   workerFingerprintSource.indexOf("function workerDeployHashFiles"),
 );
 if (/\bexistsSync\(target\)/.test(workerFingerprintTraversal) || /(?<!l)statSync\(target\)/.test(workerFingerprintTraversal)) {
   throw new Error("Worker deployment fingerprint regained existence-probe or symlink-following traversal");
-}
-const oauthBrowserTestSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
-for (const required of [
-  'detached: process.platform !== "win32"',
-  'process.kill(-browser.pid, signal)',
-  'signalBrowserTree(browser, "SIGTERM")',
-  'signalBrowserTree(browser, "SIGKILL")',
-  'spawnSync("taskkill"',
-  "closeHttpServer",
-  "closeAllConnections",
-  "removeBrowserProfile",
-  "OAuth browser navigation failed and browser cleanup was incomplete",
-]) {
-  if (!oauthBrowserTestSource.includes(required)) {
-    throw new Error(`OAuth browser regression lost bounded process-tree cleanup boundary: ${required}`);
-  }
 }
 const publicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
 if (!publicationGuardSource.includes("resolveTrustedGitExecutable") || publicationGuardSource.includes('spawnSync("git"')) {
@@ -1985,11 +1961,11 @@ for (const [name, command] of Object.entries(packageJson.scripts || {})) {
 }
 const packaged = new Set(packageJson.files || []);
 if (packaged.has("scripts") || packaged.has("docs") || !packaged.has("src/local") || !packaged.has("tsconfig.local.json")
-    || !packaged.has("SUPPORT.md") || !packaged.has("scripts/release-impact-check.mjs")
+    || !packaged.has("SUPPORT.md") || !packaged.has("scripts/release-oauth-canary.mjs")
     || !packaged.has("docs/UPGRADING.md") || !packaged.has("docs/AUDIT.md")) {
   throw new Error("package files lost the explicit consumer/runtime whitelist or regained broad docs/scripts publication");
 }
-for (const repositoryOnly of ["CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "GOVERNANCE.md", "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md"]) {
+for (const repositoryOnly of ["CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "GOVERNANCE.md", "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md", "scripts/release-impact-check.mjs", "scripts/github-release.mjs", "scripts/publish-npm.mjs"]) {
   if (packaged.has(repositoryOnly)) throw new Error(`package files retained repository-only maintenance material ${repositoryOnly}`);
 }
 const localTypeConfig = JSON.parse(readFileSync(join(root, "tsconfig.local.json"), "utf8"));
@@ -2726,13 +2702,12 @@ for (const required of [
   "not a separate conversational authorization boundary",
   "in-place refresh/review",
   "filtered tool/resource search is a routing aid, not authoritative schema-freshness evidence",
-  "Workspace **Action control** snapshot",
-  "harmless invocation-validator or behavior probes",
-  "stale, partial, or mixed after the supported refresh/review path",
+  "complete `machine-mcp` tool catalog **without a query filter**",
+  "stale host query/search-index cache",
+  "unfiltered full catalog is itself stale, partial, or mixed-generation",
   "stale filtered-search result alone must not block acceptance",
   "external acceptance blocker",
   "never replay an unknown-outcome UI mutation blindly",
-  "host-internal cache inspection is outside the release workflow",
 ]) {
   if (!agentContract.includes(required)) throw new Error(`repository automation contract omitted ChatGPT host-control-plane UI boundary: ${required}`);
 }

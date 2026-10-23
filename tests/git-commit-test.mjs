@@ -94,6 +94,23 @@ try {
   const tree = checkedGit(["ls-tree", "--name-only", "HEAD"], repo).stdout.trim().split(/\r?\n/).filter(Boolean);
   assert(tree.length === 1 && tree[0] === "staged.txt", "Git commit included content outside the existing staged index");
 
+  const nonRepo = join(root, "not-a-repository");
+  await mkdir(nonRepo, { recursive: true });
+  const nonRepoStatus = await service.status({ path: nonRepo });
+  assert(nonRepoStatus.code === 128 && /not a Git repository/.test(nonRepoStatus.stderr),
+    "GitService did not report a non-repository target without starting Git");
+
+  const emptyMessage = await rejected(() => service.commit({ path: repo, message: "" }));
+  assert(emptyMessage.code === "invalid_request" && /required/.test(emptyMessage.message),
+    "GitService accepted an empty commit message");
+  const nulMessage = await rejected(() => service.commit({ path: repo, message: "fix: bad\0message" }));
+  assert(nulMessage.code === "invalid_request" && /NUL/.test(nulMessage.message),
+    "GitService accepted a commit message containing a NUL byte");
+
+  const fileLog = await service.log({ path: join(repo, "staged.txt"), max_count: 1 });
+  assert(fileLog.code === 0 && Array.isArray(fileLog.commits),
+    "GitService log did not accept a repository-relative pathspec");
+
   const filterCommand = process.platform === "win32"
     ? "ignored-filter-command"
     : `sh -c 'touch "$1"; cat' sh '${escapeSingleQuotes(filterSentinel)}'`;

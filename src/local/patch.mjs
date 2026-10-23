@@ -112,19 +112,17 @@ export function applyUpdateHunks(content, hunks) {
 
   for (const [hunkIndex, hunk] of hunks.entries()) {
     const oldLines = hunk.lines.filter((line) => line.type !== "+").map((line) => line.text);
-    const newLines = hunk.lines.filter((line) => line.type !== "-").map((line) => line.text);
-    const matches = findSequenceMatches(lines, oldLines, searchFrom);
+    const rawNewLines = hunk.lines.filter((line) => line.type !== "-").map((line) => line.text);
+    const { matches, indentDeltas } = findSequenceMatches(lines, oldLines, searchFrom);
     if (matches.length === 0) {
-      throw new BridgeError("conflict", "patch context did not match current file state", {
-        details: { reason: "context_not_found", hunk: hunkIndex + 1, conflict_hint: buildConflictHint(lines, oldLines, matches) },
-      });
+      throw new BridgeError("conflict", "patch context did not match current file state", { details: { reason: "context_not_found", hunk: hunkIndex + 1 } });
     }
     if (matches.length > 1) {
-      throw new BridgeError("conflict", "patch context matched more than once", {
-        details: { reason: "context_ambiguous", hunk: hunkIndex + 1, conflict_hint: buildConflictHint(lines, oldLines, matches) },
-      });
+      throw new BridgeError("conflict", "patch context matched more than once", { details: { reason: "context_ambiguous", hunk: hunkIndex + 1 } });
     }
     const at = matches[0];
+    const delta = indentDeltas[0] || 0;
+    const newLines = delta === 0 ? rawNewLines : rawNewLines.map((line) => shiftLineIndent(line, delta));
     const removedTerminators = terminators.slice(at, at + oldLines.length);
     const replacementTerminators = replacementLineTerminators({
       removedTerminators, newLineCount: newLines.length, terminators, at, defaultEol,
@@ -135,23 +133,6 @@ export function applyUpdateHunks(content, hunks) {
   }
 
   return lines.map((line, index) => `${line}${terminators[index]}`).join("");
-}
-
-function buildConflictHint(lines, oldLines, matches) {
-  const probe = oldLines.find((line) => line.trim().length > 0) ?? oldLines[0] ?? "";
-  const trimmedProbe = probe.trim();
-  const candidateLines = matches.length > 1
-    ? matches.slice(0, 3).map((index) => index + 1)
-    : trimmedProbe
-      ? lines.reduce((acc, line, index) => {
-        if (acc.length < 3 && (line === probe || line.trim() === trimmedProbe)) acc.push(index + 1);
-        return acc;
-      }, [])
-      : [];
-  return {
-    first_expected_line: probe.slice(0, 120),
-    candidate_lines: candidateLines,
-  };
 }
 
 function splitLinesWithTerminators(source) {
@@ -196,8 +177,6 @@ function replacementLineTerminators({ removedTerminators, newLineCount, terminat
   while (replacement.length < newLineCount) replacement.push(fill);
 
   if (removedTerminators.at(-1) === "") {
-    // The replaced region ended at EOF without a newline. Only the new final line may keep
-    // that state; any lines before it need a real separator.
     replacement[newLineCount - 1] = "";
     for (let index = 0; index < newLineCount - 1; index += 1) {
       if (!replacement[index]) replacement[index] = defaultEol;
@@ -206,20 +185,61 @@ function replacementLineTerminators({ removedTerminators, newLineCount, terminat
   return replacement;
 }
 
+function leadingSpaces(line) {
+  let count = 0;
+  while (count < line.length && line[count] === " ") count += 1;
+  return count;
+}
+
+function shiftLineIndent(line, delta) {
+  if (!line.trim() || delta === 0) return line;
+  if (delta > 0) return `${" ".repeat(delta)}${line}`;
+  const remove = Math.min(-delta, leadingSpaces(line));
+  return line.slice(remove);
+}
+
 function findSequenceMatches(lines, sequence, start) {
   const matches = [];
-  if (!sequence.length) return matches;
+  const indentDeltas = [];
+  if (!sequence.length) return { matches, indentDeltas };
   for (let index = Math.max(0, start); index <= lines.length - sequence.length; index += 1) {
     let matched = true;
     for (let offset = 0; offset < sequence.length; offset += 1) {
-      if (lines[index + offset] !== sequence[offset]) {
-        matched = false;
-        break;
+      if (lines[index + offset] !== sequence[offset]) { matched = false; break; }
+    }
+    if (matched) { matches.push(index); indentDeltas.push(0); }
+  }
+  if (matches.length === 0) {
+    for (let index = Math.max(0, start); index <= lines.length - sequence.length; index += 1) {
+      let matched = true;
+      for (let offset = 0; offset < sequence.length; offset += 1) {
+        if (lines[index + offset].trimEnd() !== sequence[offset].trimEnd()) { matched = false; break; }
+      }
+      if (matched) { matches.push(index); indentDeltas.push(0); }
+    }
+  }
+  if (matches.length === 0 && sequence.filter((line) => line.trim().length > 0).length >= 2) {
+    for (let index = Math.max(0, start); index <= lines.length - sequence.length; index += 1) {
+      let matched = true;
+      let expectedDelta = null;
+      for (let offset = 0; offset < sequence.length; offset += 1) {
+        const fileLine = lines[index + offset];
+        const seqLine = sequence[offset];
+        if (fileLine.trim() !== seqLine.trim()) { matched = false; break; }
+        if (seqLine.trim().length > 0) {
+          if (fileLine.startsWith("\t") || seqLine.startsWith("\t")) { matched = false; break; }
+          const delta = leadingSpaces(fileLine) - leadingSpaces(seqLine);
+          if (expectedDelta === null) expectedDelta = delta;
+          else if (delta !== expectedDelta) { matched = false; break; }
+        }
+      }
+      if (matched && expectedDelta !== null) {
+        matches.push(index);
+        indentDeltas.push(expectedDelta);
       }
     }
-    if (matched) matches.push(index);
   }
-  return matches;
+  return { matches, indentDeltas };
 }
 
 function isSectionHeader(line) {

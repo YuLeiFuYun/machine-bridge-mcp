@@ -409,6 +409,7 @@ async function stdioCommand(args) {
     browserStateRoot: state.paths.stateRoot,
     serviceControlRoot: machineServiceControlRoot(),
     deviceRootStatus: state.worker?.deviceIdentity ? deviceRootProviderStatus(state.worker.deviceIdentity) : null,
+    progressiveTools: Boolean(args.progressive) || process.env.MBM_PROGRESSIVE_TOOLS === "1",
   });
 }
 
@@ -421,6 +422,7 @@ async function clientConfigCommand(args) {
   if (!["all", "claude", "cursor", "codex", "generic"].includes(requested)) throw new Error("client must be all, claude, cursor, codex, or generic");
   const command = process.execPath;
   const argsList = [resolve(process.argv[1]), "stdio", "--workspace", workspace, "--profile", profile];
+  if (args.progressive) argsList.push("--progressive");
   const jsonConfig = { mcpServers: { "machine-bridge": { command, args: argsList } } };
   const codex = `[mcp_servers.machine_bridge]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(argsList)}\n`;
   if (args.json) {

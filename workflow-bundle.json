@@ -138,7 +138,7 @@
     {
       "id": "project-native:npm:test:unit",
       "phase": "verify",
-      "source": "package.json#scripts.catalog:test",
+      "source": "package.json#scripts.test",
       "required_for": [
         "local_ready"
       ],
@@ -150,7 +150,7 @@
         "argv": [
           "npm",
           "run",
-          "catalog:test"
+          "test"
         ],
         "cwd": ".",
         "timeout_seconds": 300,
@@ -161,7 +161,7 @@
     {
       "id": "project-native:npm:test:integration",
       "phase": "verify",
-      "source": "package.json#scripts.stdio:integration-test",
+      "source": "package.json#scripts.test",
       "required_for": [
         "local_ready"
       ],
@@ -173,7 +173,7 @@
         "argv": [
           "npm",
           "run",
-          "stdio:integration-test"
+          "test"
         ],
         "cwd": ".",
         "timeout_seconds": 600,

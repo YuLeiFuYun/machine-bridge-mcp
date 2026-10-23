@@ -1,5 +1,5 @@
 {
-  "totalIncludes": 2683,
+  "totalIncludes": 2712,
   "files": {
     "tests/account-admin-test.mjs": 3,
     "tests/affected-checks-test.mjs": 6,
@@ -30,7 +30,7 @@
     "tests/browser-service-worker-test.mjs": 21,
     "tests/candidate-runtime-store-test.mjs": 2,
     "tests/capability-ranking-test.mjs": 6,
-    "tests/catalog-test.mjs": 17,
+    "tests/catalog-test.mjs": 20,
     "tests/check-plan-test.mjs": 6,
     "tests/check-runner-test.mjs": 23,
     "tests/cli-entrypoint-test.mjs": 31,
@@ -117,7 +117,7 @@
     "tests/state-inventory-test.mjs": 5,
     "tests/state-redaction-test.mjs": 1,
     "tests/stdio-integration-test.mjs": 26,
-    "tests/symbol-outline-test.mjs": 21,
+    "tests/symbol-outline-test.mjs": 37,
     "tests/tool-argument-validation-test.mjs": 3,
     "tests/versioned-worktree-resolver-test.mjs": 2,
     "tests/worker-deployment-test.mjs": 4,

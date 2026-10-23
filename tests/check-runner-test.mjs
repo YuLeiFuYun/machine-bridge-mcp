@@ -66,8 +66,12 @@ try {
       stdout: sink(),
       stderr: manifestError,
     }), /verification task failed/);
-    assert(manifestError.value.includes("EJSONPARSE"),
-      "nested npm configuration failure lost its causal diagnostic");
+    // The contract is "a causal configuration diagnostic survives npm --silent", not
+    // "npm's private error code appears verbatim": Node 26 aborts on a malformed nearest
+    // package.json with ERR_INVALID_PACKAGE_CONFIG before npm ever starts.
+    assert(manifestError.value.includes("package.json")
+      && /EJSONPARSE|ERR_INVALID_PACKAGE_CONFIG|Invalid package config|Unexpected token/i.test(manifestError.value),
+    "nested npm configuration failure lost its causal diagnostic");
   } finally { await rm(malformedManifest); }
 
   const fakeNpm = join(root, "fake-npm.mjs");

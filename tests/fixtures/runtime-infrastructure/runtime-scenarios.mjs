@@ -972,5 +972,10 @@ function testErrors() {
   assert(actionableGuidance(new BridgeError("not_found", "missing")).includes("Verify target path"), "actionable guidance omitted for not_found");
   assert(actionableGuidance(new BridgeError("path_boundary", "outside")).includes("workspace boundary"), "actionable guidance omitted for path_boundary");
   assert(actionableGuidance(new BridgeError("conflict", "busy")).includes("inspect current state"), "actionable guidance omitted for conflict");
-  assert(actionableGuidance(new BridgeError("internal_error", "fatal")) === null, "unexpected guidance for internal_error");
+  // internal_error redacts its message, so the remedy is the only actionable channel the agent
+  // has left; execution_failed is the highest-volume failure code and must say what to read.
+  assert(actionableGuidance(new BridgeError("internal_error", "fatal"))?.includes("run doctor"),
+    "internal errors lost the only actionable channel left after their message is redacted");
+  assert(actionableGuidance(new BridgeError("execution_failed", "operation failed"))?.includes("details.reason"),
+    "execution_failed lost its actionable remedy");
 }

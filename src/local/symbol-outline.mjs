@@ -21,34 +21,28 @@ const REGEX_PRECEDING_KEYWORDS = Object.freeze(new Set([
   "return", "case", "typeof", "delete", "void", "throw", "instanceof", "in", "of", "yield", "await", "default",
 ]));
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+const MAX_SIGNATURE_LINES = 200;
+
+/** @param {string} text @returns {number} */
+function parenDelta(text) {
+  let depth = 0;
+  for (const ch of String(text)) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+  }
+  return depth;
+}
+
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function skipLineComment(code, len, startIdx, out) {
   out.text += "  ";
   let idx = startIdx + 2;
-  while (idx < len && code[idx] !== "\n") {
-    out.text += " ";
-    idx++;
-  }
-  if (idx < len && code[idx] === "\n") {
-    out.text += "\n";
-    idx++;
-  }
+  while (idx < len && code[idx] !== "\n") { out.text += " "; idx++; }
+  if (idx < len && code[idx] === "\n") { out.text += "\n"; idx++; }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function skipBlockComment(code, len, startIdx, out) {
   out.text += "  ";
   let idx = startIdx + 2;
@@ -56,82 +50,37 @@ function skipBlockComment(code, len, startIdx, out) {
     out.text += code[idx] === "\n" ? "\n" : " ";
     idx++;
   }
-  if (idx < len) {
-    out.text += "  ";
-    idx += 2;
-  }
+  if (idx < len) { out.text += "  "; idx += 2; }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @param {string} quote
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @param {string} quote @returns {number} */
 function skipStringLiteral(code, len, startIdx, out, quote) {
   out.text += " ";
   let idx = startIdx + 1;
   while (idx < len && code[idx] !== quote && code[idx] !== "\n") {
-    if (code[idx] === "\\") {
-      out.text += "  ";
-      idx += 2;
-    } else {
-      out.text += " ";
-      idx++;
-    }
+    if (code[idx] === "\\") { out.text += "  "; idx += 2; }
+    else { out.text += " "; idx++; }
   }
-  if (idx < len && code[idx] === quote) {
-    out.text += " ";
-    idx++;
-  }
+  if (idx < len && code[idx] === quote) { out.text += " "; idx++; }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function skipRegexLiteral(code, len, startIdx, out) {
   out.text += " ";
   let idx = startIdx + 1;
   let inClass = false;
   while (idx < len) {
     const c = code[idx];
-    if (c === "\n") {
-      out.text += "\n";
-      idx++;
-      break;
-    }
-    if (c === "\\") {
-      out.text += "  ";
-      idx += 2;
-      continue;
-    }
-    if (c === "[" && !inClass) {
-      inClass = true;
-      out.text += " ";
-      idx++;
-      continue;
-    }
-    if (c === "]" && inClass) {
-      inClass = false;
-      out.text += " ";
-      idx++;
-      continue;
-    }
+    if (c === "\n") { out.text += "\n"; idx++; break; }
+    if (c === "\\") { out.text += "  "; idx += 2; continue; }
+    if (c === "[" && !inClass) { inClass = true; out.text += " "; idx++; continue; }
+    if (c === "]" && inClass) { inClass = false; out.text += " "; idx++; continue; }
     if (c === "/" && !inClass) {
       out.text += " ";
       idx++;
-      while (idx < len && /[a-z]/i.test(code[idx])) {
-        out.text += " ";
-        idx++;
-      }
+      while (idx < len && /[a-z]/i.test(code[idx])) { out.text += " "; idx++; }
       break;
     }
     out.text += " ";
@@ -140,50 +89,28 @@ function skipRegexLiteral(code, len, startIdx, out) {
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function sanitizeTemplate(code, len, startIdx, out) {
   out.text += " ";
   let idx = startIdx + 1;
   while (idx < len) {
     const c = code[idx];
-    if (c === "`") {
-      out.text += " ";
-      return idx + 1;
-    }
-    if (c === "\\") {
-      out.text += code[idx + 1] === "\n" ? " \n" : "  ";
-      idx += 2;
-      continue;
-    }
-    if (c === "$" && code[idx + 1] === "{") {
-      out.text += "  ";
-      idx = sanitizeTemplateExpr(code, len, idx + 2, out);
-      continue;
-    }
+    if (c === "`") { out.text += " "; return idx + 1; }
+    if (c === "\\") { out.text += code[idx + 1] === "\n" ? " \n" : "  "; idx += 2; continue; }
+    if (c === "$" && code[idx + 1] === "{") { out.text += "  "; idx = sanitizeTemplateExpr(code, len, idx + 2, out); continue; }
     out.text += c === "\n" ? "\n" : " ";
     idx++;
   }
   return idx;
 }
 
-/**
- * @param {string} code
- * @param {number} len
- * @param {number} startIdx
- * @param {{ text: string }} out
- * @returns {number}
- */
+/** @param {string} code @param {number} len @param {number} startIdx @param {{ text: string }} out @returns {number} */
 function sanitizeTemplateExpr(code, len, startIdx, out) {
   let idx = startIdx;
   let braceDepth = 1;
   let exprLastChar = "{";
   let exprLastToken = "";
+  let exprInToken = false;
 
   while (idx < len && braceDepth > 0) {
     const c = code[idx];
@@ -191,60 +118,50 @@ function sanitizeTemplateExpr(code, len, startIdx, out) {
 
     if (c === "/" && nextC === "/") {
       idx = skipLineComment(code, len, idx, out);
-      exprLastChar = ";";
-      exprLastToken = "";
+      exprLastChar = ";"; exprLastToken = ""; exprInToken = false;
       continue;
     }
     if (c === "/" && nextC === "*") {
       idx = skipBlockComment(code, len, idx, out);
+      exprInToken = false;
       continue;
     }
     if (c === '"' || c === "'") {
       idx = skipStringLiteral(code, len, idx, out, c);
-      exprLastChar = ")";
-      exprLastToken = "";
+      exprLastChar = ")"; exprLastToken = ""; exprInToken = false;
       continue;
     }
     if (c === "`") {
       idx = sanitizeTemplate(code, len, idx, out);
-      exprLastChar = ")";
-      exprLastToken = "";
+      exprLastChar = ")"; exprLastToken = ""; exprInToken = false;
       continue;
     }
     if (c === "/") {
       const isRegex = REGEX_PRECEDING_TOKENS.has(exprLastChar) || REGEX_PRECEDING_KEYWORDS.has(exprLastToken) || exprLastChar === "";
       if (isRegex) {
         idx = skipRegexLiteral(code, len, idx, out);
-        exprLastChar = ")";
-        exprLastToken = "";
+        exprLastChar = ")"; exprLastToken = ""; exprInToken = false;
         continue;
       }
     }
     if (c === "{") {
-      braceDepth++;
-      out.text += " ";
-      exprLastChar = "{";
-      exprLastToken = "";
-      idx++;
+      braceDepth++; out.text += " "; exprLastChar = "{"; exprLastToken = ""; exprInToken = false; idx++;
       continue;
     }
     if (c === "}") {
-      braceDepth--;
-      out.text += " ";
-      idx++;
+      braceDepth--; out.text += " "; idx++;
       if (braceDepth === 0) return idx;
-      exprLastChar = "}";
-      exprLastToken = "";
+      exprLastChar = "}"; exprLastToken = ""; exprInToken = false;
       continue;
     }
 
     out.text += c === "\n" ? "\n" : " ";
     if (!/\s/.test(c)) {
       exprLastChar = c;
-      if (/[a-zA-Z0-9_$]/.test(c)) exprLastToken += c;
-      else exprLastToken = "";
+      if (/[a-zA-Z0-9_$]/.test(c)) { exprLastToken = exprInToken ? exprLastToken + c : c; exprInToken = true; }
+      else { exprLastToken = ""; exprInToken = false; }
     } else {
-      exprLastToken = "";
+      exprInToken = false;
     }
     idx++;
   }
@@ -254,9 +171,7 @@ function sanitizeTemplateExpr(code, len, startIdx, out) {
 /**
  * Strips comments, string literals, template literal bodies, and regex literals from source code
  * while strictly preserving all newline positions (\n) and column alignments.
- *
- * @param {string} code
- * @returns {string}
+ * @param {string} code @returns {string}
  */
 export function sanitizeSource(code) {
   const out = { text: "" };
@@ -264,6 +179,7 @@ export function sanitizeSource(code) {
   let i = 0;
   let lastToken = "";
   let lastChar = "";
+  let inToken = false;
 
   while (i < len) {
     const ch = code[i];
@@ -271,32 +187,29 @@ export function sanitizeSource(code) {
 
     if (ch === "/" && next === "/") {
       i = skipLineComment(code, len, i, out);
-      lastChar = ";";
-      lastToken = "";
+      lastChar = ";"; lastToken = ""; inToken = false;
       continue;
     }
     if (ch === "/" && next === "*") {
       i = skipBlockComment(code, len, i, out);
+      inToken = false;
       continue;
     }
     if (ch === '"' || ch === "'") {
       i = skipStringLiteral(code, len, i, out, ch);
-      lastChar = ")";
-      lastToken = "";
+      lastChar = ")"; lastToken = ""; inToken = false;
       continue;
     }
     if (ch === "`") {
       i = sanitizeTemplate(code, len, i, out);
-      lastChar = ")";
-      lastToken = "";
+      lastChar = ")"; lastToken = ""; inToken = false;
       continue;
     }
     if (ch === "/") {
       const isRegex = REGEX_PRECEDING_TOKENS.has(lastChar) || REGEX_PRECEDING_KEYWORDS.has(lastToken) || lastChar === "";
       if (isRegex) {
         i = skipRegexLiteral(code, len, i, out);
-        lastChar = ")";
-        lastToken = "";
+        lastChar = ")"; lastToken = ""; inToken = false;
         continue;
       }
     }
@@ -304,15 +217,23 @@ export function sanitizeSource(code) {
     out.text += ch;
     if (!/\s/.test(ch)) {
       lastChar = ch;
-      if (/[a-zA-Z0-9_$]/.test(ch)) lastToken += ch;
-      else lastToken = "";
+      if (/[a-zA-Z0-9_$]/.test(ch)) { lastToken = inToken ? lastToken + ch : ch; inToken = true; }
+      else { lastToken = ""; inToken = false; }
     } else {
-      lastToken = "";
+      inToken = false;
     }
     i++;
   }
 
   return out.text;
+}
+
+/** @param {...(string | undefined)} candidates */
+function normalizeSymbolParams(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate !== undefined) return String(candidate).replace(/\s+/g, " ").trim();
+  }
+  return "";
 }
 
 /**
@@ -343,10 +264,12 @@ export function extractFileSymbols(code, filename = "anonymous.js", options = {}
 
     if ((trimmed.startsWith("function ") || trimmed.startsWith("async function ") || trimmed.startsWith("export ") || (currentClass && braceDepth === classDepth)) && trimmed.includes("(") && !trimmed.includes(")")) {
       let lookAhead = idx;
-      while (!line.includes(")") && lookAhead < totalLines - 1 && lookAhead < idx + 12) {
+      let openParens = parenDelta(line);
+      while (openParens > 0 && lookAhead < totalLines - 1 && lookAhead < idx + MAX_SIGNATURE_LINES) {
         lookAhead++;
         line += " " + lines[lookAhead].trim();
         origLine += " " + origLines[lookAhead].trim();
+        openParens += parenDelta(lines[lookAhead]);
       }
       trimmed = line.trim();
     }
@@ -371,27 +294,25 @@ export function extractFileSymbols(code, filename = "anonymous.js", options = {}
       const fnMatch = trimmed.match(/^(?:export\s+(?:default\s+)?)?(async\s+)?function(?:\s*\*|\s+)?(?:\s+([A-Za-z0-9_$]+))?(?:<[^>]*>)?\s*\(([^)]*)\)/);
       if (fnMatch) {
         const origFnMatch = origTrimmed.match(/^(?:export\s+(?:default\s+)?)?(async\s+)?function(?:\s*\*|\s+)?(?:\s+([A-Za-z0-9_$]+))?(?:<[^>]*>)?\s*\(([^)]*)\)/);
-        const params = (origFnMatch ? origFnMatch[3] : fnMatch[3]).replace(/\s+/g, " ").trim();
         symbols.push({
           name: fnMatch[2] || "(anonymous)",
           kind: "function",
           line: lineNum,
           async: Boolean(fnMatch[1]),
-          params,
+          params: normalizeSymbolParams(origFnMatch?.[3], fnMatch[3]),
           isExported: trimmed.startsWith("export"),
         });
       }
 
-      const arrowMatch = trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
+      const arrowMatch = trimmed.match(/^(?:(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=|export\s+(default))\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
       if (arrowMatch) {
-        const origArrowMatch = origTrimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
-        const params = (origArrowMatch ? (origArrowMatch[3] || origArrowMatch[4]) : (arrowMatch[3] || arrowMatch[4]) || "").replace(/\s+/g, " ").trim();
+        const origArrowMatch = origTrimmed.match(/^(?:(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=|export\s+(default))\s*(async\s+)?(?:\(([^)]*)\)|([A-Za-z0-9_$]+))\s*=>/);
         symbols.push({
-          name: arrowMatch[1],
+          name: arrowMatch[1] || arrowMatch[2] || "(anonymous)",
           kind: "function",
           line: lineNum,
-          async: Boolean(arrowMatch[2]),
-          params,
+          async: Boolean(arrowMatch[3]),
+          params: normalizeSymbolParams(origArrowMatch?.[4], origArrowMatch?.[5], arrowMatch[4], arrowMatch[5]),
           isExported: trimmed.startsWith("export"),
         });
       }
@@ -419,14 +340,13 @@ export function extractFileSymbols(code, filename = "anonymous.js", options = {}
       const methodMatch = trimmed.match(/^(?:public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?(\*|get\s+|set\s+)?(#?[A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/);
       if (methodMatch && !["if", "for", "while", "switch", "catch", "return"].includes(methodMatch[4])) {
         const origMethodMatch = origTrimmed.match(/^(?:public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?(\*|get\s+|set\s+)?(#?[A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/);
-        const params = (origMethodMatch ? origMethodMatch[5] : methodMatch[5]).replace(/\s+/g, " ").trim();
         currentClass.methods.push({
           name: methodMatch[4],
           kind: methodMatch[4] === "constructor" ? "constructor" : "method",
           static: Boolean(methodMatch[1]),
           async: Boolean(methodMatch[2]),
           accessor: methodMatch[3]?.trim() || null,
-          params,
+          params: normalizeSymbolParams(origMethodMatch?.[5], methodMatch[5]),
           line: lineNum,
         });
       }

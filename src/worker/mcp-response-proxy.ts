@@ -48,6 +48,7 @@ export async function proxyMcpResponseStream(input: {
 
   const reader = upstream.body.getReader();
   let closed = false;
+  let canEmitHeartbeat = true;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let publicTarget: ReadableStreamDefaultController<Uint8Array> | undefined;
   let cancellation: Promise<void> | undefined;
@@ -87,11 +88,21 @@ export async function proxyMcpResponseStream(input: {
         return;
       }
       heartbeat = setInterval(() => {
-        if (closed) return;
+        if (closed || !canEmitHeartbeat) return;
         try { target.enqueue(HEARTBEAT); }
         catch { cancel("public response stream closed"); }
       }, HEARTBEAT_MS);
-      void pumpUpstream(reader, target, finish, (reason) => cancel(reason, false));
+      void pumpUpstream(
+        reader,
+        target,
+        finish,
+        (reason) => cancel(reason, false),
+        (chunk) => {
+          if (chunk.byteLength > 0) {
+            canEmitHeartbeat = chunkEndsWithSseFrameBoundary(chunk);
+          }
+        },
+      );
     },
     cancel(reason) { cancel(reason); return cancellation; },
   });
@@ -102,11 +113,25 @@ export async function proxyMcpResponseStream(input: {
   });
 }
 
+function chunkEndsWithSseFrameBoundary(chunk: Uint8Array): boolean {
+  const len = chunk.byteLength;
+  if (len >= 2 && chunk[len - 2] === 0x0a && chunk[len - 1] === 0x0a) return true;
+  if (
+    len >= 4
+    && chunk[len - 4] === 0x0d
+    && chunk[len - 3] === 0x0a
+    && chunk[len - 2] === 0x0d
+    && chunk[len - 1] === 0x0a
+  ) return true;
+  return false;
+}
+
 async function pumpUpstream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   target: ReadableStreamDefaultController<Uint8Array>,
   finish: () => boolean,
   cancel: (reason: unknown) => boolean,
+  onChunk?: (chunk: Uint8Array) => void,
 ): Promise<void> {
   try {
     for (;;) {
@@ -115,6 +140,7 @@ async function pumpUpstream(
         if (finish()) target.close();
         return;
       }
+      onChunk?.(chunk.value);
       target.enqueue(chunk.value);
     }
   } catch (error) {

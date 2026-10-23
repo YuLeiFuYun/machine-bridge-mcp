@@ -86,16 +86,16 @@ try {
   assert.throws(() => validateInstalledWranglerToolchainTree({
     problems: [],
     dependencies: {
-      cf: { version: "1.0.0-beta.18" },
+      cf: { version: "1.0.0-beta.20" },
       wrangler: { version: "4.151.3", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
       undici: { version: "7.29.1" },
       sharp: { version: "0.35.5" },
       esbuild: { version: "0.28.2" },
-      workerd: { version: "1.20261012.1" },
+      workerd: { version: "1.20261019.1" },
     },
   }, {
-    cf: "1.0.0-beta.18", wrangler: "4.151.3", undici: "7.29.1", sharp: "0.35.5",
-    esbuild: "0.28.2", workerd: "1.20261012.1",
+    cf: "1.0.0-beta.20", wrangler: "4.151.3", undici: "7.29.1", sharp: "0.35.5",
+    esbuild: "0.28.2", workerd: "1.20261019.1",
   }),
   /invalid dependency node/,
   "malformed nested dependency node hid an unverified dependency subtree behind a patched Sharp sibling");
@@ -116,11 +116,14 @@ try {
   }, firstDescriptor.versions), error => /pinned version/.test(error.message) && !error.message.includes(privateVersion),
   "unverified npm dependency text leaked through an integrity error");
 
-  const lockedPackages = JSON.parse(firstDescriptor.lockBytes).packages;
+  const nestedWorkerd = "1.20261012.1";
+  const lockedPackages = {
+    ...JSON.parse(firstDescriptor.lockBytes).packages,
+    "node_modules/wrangler/node_modules/workerd": { version: nestedWorkerd },
+  };
   const mixedPins = {
     dependencies: Object.fromEntries(Object.entries(firstDescriptor.versions).map(([name, version]) => [name, { version }])),
   };
-  const nestedWorkerd = lockedPackages["node_modules/wrangler/node_modules/workerd"].version;
   mixedPins.dependencies.wrangler.dependencies = { workerd: { version: nestedWorkerd } };
   // cf's logical Wrangler edge is deduplicated to the physical root Wrangler.
   mixedPins.dependencies.cf.dependencies = {
@@ -366,12 +369,12 @@ function createFakeNpmRunner(options = {}) {
   const calls = [];
   const launcherBins = new Set();
   const versions = {
-    cf: options.cf || "1.0.0-beta.18",
+    cf: options.cf || "1.0.0-beta.20",
     wrangler: options.wrangler || "4.151.3",
     undici: options.undici || "7.29.1",
     sharp: options.sharp || "0.35.5",
     esbuild: options.esbuild || "0.28.2",
-    workerd: options.workerd || "1.20261012.1",
+    workerd: options.workerd || "1.20261019.1",
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
@@ -395,7 +398,8 @@ function createFakeNpmRunner(options = {}) {
         for (const [name, version] of Object.entries(versions)) {
           const directory = join(runOptions.cwd, "node_modules", name);
           mkdirSync(directory, { recursive: true });
-          writeFileSync(join(directory, "package.json"), `${JSON.stringify({ name, version })}\n`);
+          const manifest = name === "cf" ? { name, version, devDependencies: { undici: CF_NETWORK_ARTIFACT.bundledUndici } } : { name, version };
+          writeFileSync(join(directory, "package.json"), `${JSON.stringify(manifest)}\n`, { mode: 0o600 });
           if (name === "cf") {
             const upstreamRoot = dirname(createRequire(import.meta.url).resolve("cf/package.json"));
             const bundle = join(directory, CF_NETWORK_ARTIFACT.bundle);
@@ -417,9 +421,9 @@ function createFakeNpmRunner(options = {}) {
             wrangler: {
               version: versions.wrangler,
               dependencies: {
-                workerd: { version: "1.20261019.1" },
+                workerd: { version: versions.workerd },
                 miniflare: {
-                  version: "5.20261012.1-beta",
+                  version: "5.20261019.1-beta",
                   dependencies: {
                     undici: { version: versions.undici },
                     sharp: { version: versions.sharp },
