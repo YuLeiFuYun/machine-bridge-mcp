@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { createExclusiveFileSync, removeOwnedJsonFileSync } from "./exclusive-file.mjs";
 import { currentProcessStartTimeMs, inspectProcessInstance, processStartTimeFromSnapshot } from "./process-identity.mjs";
 import { readBoundedRegularFileSync } from "./secure-file.mjs";
+import { isPublicationStagingArtifactName, readWithPublicationRepairSync, sweepPublicationStagingArtifactsSync } from "./exclusive-publication-repair.mjs";
+import { isIgnorableCoordinatorMetadata } from "./resource-staging-recovery.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
 const SCHEMA = 1;
 const WAITER_FILE = /^wait_[a-f0-9]{32}\.json$/;
@@ -33,8 +35,11 @@ export function removeResourceWaiter(waitersDir, waiter) {
   }, { maxBytes: MAX_WAITER_BYTES });
 }
 export function pruneAndReadResourceWaiters(waitersDir, entries, now = Date.now(), processStarts = null) {
+  sweepPublicationStagingArtifactsSync(waitersDir, { minAgeMs: 60_000 });
   const waiters = [];
   for (const entry of entries) {
+    if (entry.isFile() && isIgnorableCoordinatorMetadata(entry.name)) continue;
+    if (entry.isFile() && isPublicationStagingArtifactName(entry.name)) continue;
     if (!entry.isFile() || !WAITER_FILE.test(entry.name)) throw new Error("resource coordinator waiter directory contains an unexpected entry");
     const file = join(waitersDir, entry.name);
     let waiter;
@@ -121,10 +126,8 @@ function validateWaiter(waiter) {
   validateResourceRequest(waiter.request);
 }
 function readWaiter(file) {
-  const text = readBoundedRegularFileSync(file, MAX_WAITER_BYTES, "resource waiter", {
-    verifyPathIdentity: true, rejectMultipleLinks: true,
-  }).toString("utf8");
-  const value = JSON.parse(text);
+  const read = () => readBoundedRegularFileSync(file, MAX_WAITER_BYTES, "resource waiter", { verifyPathIdentity: true, rejectMultipleLinks: true });
+  const value = JSON.parse(readWithPublicationRepairSync(read, file).toString("utf8"));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("resource coordinator waiter is invalid");
   return value;
 }

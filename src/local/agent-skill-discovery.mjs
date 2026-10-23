@@ -5,6 +5,7 @@ import { assertAllowedPath, MAX_SKILL_ROOTS } from "./agent-contract.mjs";
 import { sha256 } from "./agent-context-projection.mjs";
 import { readRegularUtf8 } from "./agent-text-file.mjs";
 import { isSensitivePath } from "./operation-risk.mjs";
+import { isDelegatedRelayContext } from "./authority-context.mjs";
 import { classifyOperationalError } from "./log.mjs";
 
 export const MAX_SKILL_ENTRY_BYTES = 512 * 1024;
@@ -131,15 +132,6 @@ export async function discoverLocalSkills(options) {
 
   skills.sort((left, right) => left.name.localeCompare(right.name) || left.entrypoint.localeCompare(right.entrypoint));
   return { skills, warnings, truncated };
-}
-
-/** @param {unknown} context */
-function isDelegatedRelayContext(context) {
-  const record = /** @type {Record<string, unknown>} */ (context !== null && typeof context === "object" ? context : {});
-  const authority = /** @type {Record<string, unknown>} */ (record.authority !== null && typeof record.authority === "object" ? record.authority : {});
-  const principal = /** @type {Record<string, unknown>} */ (authority.principal !== null && typeof authority.principal === "object" ? authority.principal : {});
-  return record.origin === "relay" && principal.kind === "account"
-    && principal.role !== "owner" && authority.owner !== true;
 }
 
 /** @param {string} root @param {number} maxFiles @param {unknown} context @param {(context: unknown) => void} throwIfCancelled @param {string} [expectedRoot] */

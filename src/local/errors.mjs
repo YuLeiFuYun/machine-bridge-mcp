@@ -38,6 +38,7 @@ export function normalizeBridgeError(error, options = {}) {
     cause: error instanceof Error ? error : undefined,
     expose: options.expose === true,
     retryable: options.retryable,
+    details: executionFailureReason(error, code),
   });
 }
 
@@ -62,14 +63,27 @@ export function publicError(error, options = {}) {
   // projection also serves remote relay callers.
   const verbose = options.verbose === true;
   const details = normalized.expose || verbose ? publicErrorDetails(normalized.details, verbose ? normalized : null) : undefined;
+  const reason = normalized.details?.reason;
   const result = {
     code: normalized.code,
     message: publicErrorMessage(normalized.expose || verbose ? normalized.message : defaultMessage(normalized.code)),
     retryable: normalized.retryable,
-    ...(details ? { details } : {}),
+    ...(details ? { details } : (reason ? { details: { reason } } : {})),
   };
   const remedy = settlementGuidance(result);
   return { ...result, ...(remedy ? { actionable_remedy: remedy } : {}) };
+}
+
+/**
+ * A machine code is safe to publish even when the message is not: it names the failing
+ * subsystem without leaking paths, arguments, or file contents. Callers otherwise only see
+ * `execution_failed: operation failed`, which is not actionable.
+ */
+function executionFailureReason(error, code) {
+  if (code !== "execution_failed" && code !== "internal_error") return undefined;
+  const machine = String(error?.code || "");
+  if (!/^(?:MBM_[A-Z0-9_]+|E[A-Z]{2,})$/.test(machine)) return undefined;
+  return { reason: machine.toLowerCase() };
 }
 
 function normalizeErrorCode(value, fallback = "execution_failed") {

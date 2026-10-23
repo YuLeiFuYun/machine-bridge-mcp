@@ -19,6 +19,8 @@ const docs = [
   join(root, "SUPPORT.md"),
   join(root, "GOVERNANCE.md"),
   ...readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => join(root, "docs", name)),
+  ...readdirSync(join(root, "docs", "architecture")).filter((name) => name.endsWith(".md"))
+    .map((name) => join(root, "docs", "architecture", name)),
 ];
 for (const file of docs) validateRelativeLinks(file);
 validateCurrentMcpDeliveryDocumentation();

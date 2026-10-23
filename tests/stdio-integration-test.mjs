@@ -633,6 +633,26 @@ try {
   const negotiatedTasks = await responseFor(6944);
   assert(Array.isArray(negotiatedTasks.result?.tasks), "negotiated tasks/list did not return tasks array");
 
+  const taskMeta = {
+    ...currentMeta,
+    "io.modelcontextprotocol/clientCapabilities": {
+      extensions: { "io.modelcontextprotocol/tasks": {} },
+    },
+  };
+  for (const [id, method, params, code] of [
+    [6945, "tasks/get", { taskId: `job_${"f".repeat(32)}` }, -32000],
+    [6946, "tasks/cancel", { taskId: `job_${"f".repeat(32)}` }, -32000],
+    [6947, "tasks/update", { taskId: `job_${"f".repeat(32)}` }, -32000],
+  ]) {
+    send({ jsonrpc: "2.0", id, method, params: { ...params, _meta: taskMeta } });
+    const response = await responseFor(id);
+    assert(response.error?.code === code, `${method} with an unknown task did not return JSON-RPC error ${code}: ${JSON.stringify(response)}`);
+  }
+  send({ jsonrpc: "2.0", id: 6948, method: "tasks/result", params: { taskId: stagedJobId, _meta: taskMeta } });
+  const cancelledTaskResult = await responseFor(6948);
+  assert(cancelledTaskResult.error?.code === -32800,
+    `tasks/result for a cancelled task did not return JSON-RPC error -32800: ${JSON.stringify(cancelledTaskResult)}`);
+
   await writeFile(join(workspace, "AGENTS.md"), "Project prompt sentinel: preserve semantic indentation.\n", "utf8");
   await writeFile(join(workspace, "review.txt"), "baseline\n", "utf8");
   for (const argv of [["init", "--quiet"], ["add", "review.txt"]]) {
@@ -817,6 +837,8 @@ try {
       assert(toolsResp?.result?.tools?.length === 9, `progressive tools/list did not return 9 cornerstone tools: got ${toolsResp?.result?.tools?.length}; stderr=${progressiveStderr}`);
 
       assert(toolsResp.result.tools.some((tool) => tool.name === "resolve_task_capabilities"), "progressive catalog omitted its discovery entry point");
+      assert(toolsResp.result.ttlMs >= 60_000 && toolsResp.result.ttlMs <= 300_000,
+        `progressive tools/list advertised a cache TTL that its own list mutations cannot honour: ${toolsResp.result.ttlMs}`);
       progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 200, method: "server/discover", params: { _meta: modernMeta } }) + "\n");
       progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2001, method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: modernMeta } }) + "\n");
       progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 202, method: "tools/call", params: { name: "resolve_task_capabilities", arguments: { task: "review git changes", activate_tool_groups: ["git"] }, _meta: modernMeta } }) + "\n");

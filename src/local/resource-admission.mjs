@@ -4,6 +4,7 @@ import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "./exclusive-file.mjs";
+import { repairExclusivePublicationLinksSync } from "./exclusive-publication-repair.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "./resource-wait.mjs";
 import { withResourceTransactionLock } from "./resource-transaction-lock.mjs";
 import { ensureOwnerOnlyDirectorySync } from "./secure-file.mjs";
@@ -13,7 +14,7 @@ import { readResourceHostSample } from "./resource-host-sample-file.mjs";
 import { readResourceStateJson } from "./resource-state-file.mjs";
 import { sampleResourceHostAsync } from "./resource-host-snapshot.mjs";
 import { validateResourceRequest } from "./resource-request-contract.mjs";
-import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
+import { isIgnorableCoordinatorMetadata, recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "./resource-staging-recovery.mjs";
 import { deriveHostRates, evaluateResourceAdmission, resourceAdmissionDecisionRetryable, resourcePressureSnapshot } from "./resource-admission-policy.mjs";
 import { fitElasticRequestToPressure } from "./resource-elastic-request.mjs";
 import { resourceCoordinatorAccounting, resourceCoordinatorEvaluator } from "./resource-coordinator-accounting.mjs";
@@ -203,9 +204,18 @@ export class ResourceCoordinator {
     ensureOwnerOnlyDirectorySync(this.root);
     ensureOwnerOnlyDirectorySync(this.leasesDir);
     ensureOwnerOnlyDirectorySync(this.waitersDir);
+    // A committed marker can retain its exact `.tmp` staging alias after a cleanup fault.
+    // Repair only that attributable residue before the strict read; external links stay
+    // fail-closed and are left for doctor.
+    repairExclusivePublicationLinksSync(this.markerFile);
     const marker = this.readJson(this.markerFile, 4096, "resource coordinator protocol", true);
     if (!marker) {
-      try { createExclusiveFileSync(this.markerFile, `${JSON.stringify({ schema_version: SCHEMA, protocol: "agent-resource-coordinator" })}\n`, { mode: 0o600 }); }
+      try {
+        const publication = createExclusiveFileSync(this.markerFile, `${JSON.stringify({ schema_version: SCHEMA, protocol: "agent-resource-coordinator" })}\n`, { mode: 0o600 });
+        // A post-commit cleanup failure leaves the internal `.tmp` alias behind. Repair only
+        // that attributable residue; an external hard link stays fail-closed for doctor.
+        if (publication.publicationComplete === false) repairExclusivePublicationLinksSync(this.markerFile);
+      }
       catch (error) { if (error?.code !== "EEXIST") throw error; }
     }
     const current = this.readJson(this.markerFile, 4096, "resource coordinator protocol");
@@ -245,6 +255,7 @@ export class ResourceCoordinator {
     let entries = readdirSync(this.leasesDir, { withFileTypes: true });
     if (recoverResourceDirectoryStaging(this.leasesDir, entries, "lease", processStarts)) entries = readdirSync(this.leasesDir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isFile() && isIgnorableCoordinatorMetadata(entry.name)) continue;
       if (!entry.isFile() || !LEASE_FILE.test(entry.name)) throw new Error("resource coordinator lease directory contains an unexpected entry");
       const file = join(this.leasesDir, entry.name);
       const lease = this.readJson(file, 32 * 1024, "resource lease");

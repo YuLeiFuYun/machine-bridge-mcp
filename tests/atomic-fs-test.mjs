@@ -69,6 +69,24 @@ try {
   "apply_patch hid a post-commit backup cleanup warning or implied the committed file was not written");
 
   failBackupCleanup = false;
+  await writeFile(join(root, "crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n", { encoding: "utf8", mode: 0o600 });
+  await warningService.applyPatch({ patch: "*** Begin Patch\n*** Update File: crlf.txt\n@@\n alpha\n-beta\n+beta2\n gamma\n*** End Patch" });
+  const patchedCrlf = await readFile(join(root, "crlf.txt"), "utf8");
+  assert(patchedCrlf === "alpha\r\nbeta2\r\ngamma\r\n",
+    "apply_patch rewrote the line endings of a uniformly CRLF file");
+
+  await writeFile(join(root, "mixed-eol.txt"), "alpha\r\nbeta\ngamma\r\n", { encoding: "utf8", mode: 0o600 });
+  await warningService.applyPatch({ patch: "*** Begin Patch\n*** Update File: mixed-eol.txt\n@@\n alpha\n-beta\n+beta2\n gamma\n*** End Patch" });
+  const patchedMixedEol = await readFile(join(root, "mixed-eol.txt"), "utf8");
+  assert(patchedMixedEol === "alpha\r\nbeta2\ngamma\r\n",
+    "apply_patch did not preserve per-line terminators in a mixed-EOL file");
+
+  await writeFile(join(root, "mixed-eof.txt"), "alpha\r\nbeta", { encoding: "utf8", mode: 0o600 });
+  await warningService.applyPatch({ patch: "*** Begin Patch\n*** Update File: mixed-eof.txt\n@@\n alpha\n-beta\n+beta2\n+beta3\n*** End Patch" });
+  const patchedMixedEof = await readFile(join(root, "mixed-eof.txt"), "utf8");
+  assert(patchedMixedEof === "alpha\r\nbeta2\r\nbeta3",
+    "apply_patch added or lost a final newline while expanding a mixed-EOL replacement");
+
   await writeFile(join(root, "edit-warning.txt"), "old\n", { encoding: "utf8", mode: 0o600 });
   const warnedEdit = await warningService.editFile({ path: "edit-warning.txt", old_text: "old", new_text: "new" });
   assert(await readFile(join(root, "edit-warning.txt"), "utf8") === "new\n"

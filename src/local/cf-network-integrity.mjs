@@ -5,10 +5,11 @@ import { readBoundedRegularFileSync } from "./secure-file.mjs";
 import { privateToolchainIntegrityError, throwOperationalOrIntegrity } from "./private-toolchain-integrity.mjs";
 
 export const CF_NETWORK_ARTIFACT = Object.freeze({
-  version: "1.0.0-beta.18",
-  bundledUndici: "7.30.0",
-  bundle: "dist/dist-DZRTPMMA.mjs",
-  sha256: "d77810cfe122299f2e5c22edb1e93f6f85a306b7bda0bc26aafda8c5b525f9c9",
+  version: "1.0.0-beta.20",
+  bundledUndici: "8.12.2",
+  bundle: "dist/dist-CX6dDtzj.mjs",
+  sha256: "d4bb24517159c0b8d799f39b54ebb066fc7933435276f7ff3fdab965b18bb36b",
+  undiciExport: "B",
 });
 const MAX_BUNDLE_BYTES = 2 * 1024 * 1024;
 
@@ -36,6 +37,9 @@ export function verifyCfNetworkArtifact(root, { allowAbsent = false } = {}) {
   }
   if (manifest?.name !== "cf" || manifest.version !== CF_NETWORK_ARTIFACT.version) {
     throw privateToolchainIntegrityError("cf package version does not match the reviewed upstream artifact");
+  }
+  if (manifest?.devDependencies?.undici !== CF_NETWORK_ARTIFACT.bundledUndici) {
+    throw privateToolchainIntegrityError("cf package bundled Undici version does not match the reviewed artifact");
   }
   const file = path.join(cfRoot, CF_NETWORK_ARTIFACT.bundle);
   requireContainedRegularFile(canonicalRoot, file);

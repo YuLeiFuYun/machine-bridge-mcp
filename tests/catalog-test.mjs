@@ -10,6 +10,8 @@ import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
+const outputContract = JSON.parse(await readFile(new URL("../src/shared/tool-output-contract.json", import.meta.url), "utf8"));
+const JSON_SCHEMA_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
 const activationSchema = catalog.find((tool) => tool.name === "resolve_task_capabilities").inputSchema.properties.activate_tool_groups.items;
 assert(JSON.stringify([...activationSchema.enum].sort()) === JSON.stringify(Object.keys(PROGRESSIVE_TOOL_GROUPS).sort()), "progressive group schema drifted from implementation");
@@ -73,6 +75,38 @@ for (const tool of catalog) {
   assert(tool.inputSchema?.additionalProperties === false, `${tool.name} inputSchema must reject unknown fields`);
   assert(tool.outputSchema?.type === "object", `${tool.name} outputSchema must be an object`);
   assert(tool.outputSchema?.properties && typeof tool.outputSchema.properties === "object", `${tool.name} outputSchema must declare properties`);
+  const observed = outputContract.tools?.[tool.name];
+  assert(observed, `${tool.name} has no entry in the observed output contract`);
+  for (const field of Object.keys(tool.outputSchema.properties)) {
+    assert(Object.hasOwn(observed.properties, field),
+      `${tool.name} outputSchema declares "${field}", which no real invocation returned`);
+  }
+  const requiredOutput = tool.outputSchema.required;
+  assert(requiredOutput === undefined
+    || (Array.isArray(requiredOutput) && requiredOutput.every((field) => Object.hasOwn(tool.outputSchema.properties, field))),
+  `${tool.name} outputSchema requires a field it does not declare`);
+  const expectedRequired = (observed.required || []).filter((field) => Object.hasOwn(observed.properties, field)
+    && !(observed.conditional || []).includes(field)
+    && !(observed.stdio_injected || []).includes(field));
+  assert(JSON.stringify(requiredOutput || []) === JSON.stringify(expectedRequired),
+    `${tool.name} outputSchema required fields drifted from the observed contract`);
+  for (const field of requiredOutput || []) {
+    assert(!(observed.conditional || []).includes(field),
+      `${tool.name} outputSchema marks conditional field "${field}" as required`);
+  }
+  for (const [field, schema] of Object.entries(tool.outputSchema.properties)) {
+    assert(schema && typeof schema === "object" && !Array.isArray(schema), `${tool.name} outputSchema field "${field}" is not an object schema`);
+    if (schema.type === undefined) {
+      assert(Object.keys(schema).length === 0, `${tool.name} outputSchema field "${field}" has no JSON type and no unconstrained marker`);
+      continue;
+    }
+    assert(JSON_SCHEMA_TYPES.has(schema.type), `${tool.name} outputSchema field "${field}" has no JSON type`);
+    assert(schema.type !== "null", `${tool.name} outputSchema field "${field}" froze a single null observation`);
+  }
+  for (const field of observed.stdio_injected || []) {
+    assert(!Object.hasOwn(tool.outputSchema.properties, field),
+      `${tool.name} outputSchema advertises transport-injected field "${field}" as a tool output`);
+  }
   for (const field of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]) {
     assert(typeof tool.annotations?.[field] === "boolean", `${tool.name} annotation ${field} is missing`);
   }

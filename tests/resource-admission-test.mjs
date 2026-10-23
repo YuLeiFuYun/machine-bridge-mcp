@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { waitForFixtureExit } from "./fixtures/child-fixture.mjs";
-import { closeSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,7 @@ import { foregroundResourceWaitMs, processSessionResourceWaitMs } from "../src/l
 import { releaseControlExecutableIsTrusted } from "../src/local/resource-release-control-executable.mjs";
 import { releaseControlWorkspaceForCommand, releaseControlWorkspaceMatches } from "../src/local/resource-release-control-workspace.mjs";
 import { recoverResourceDirectoryStaging, RESOURCE_STAGING_BUSY_CODE } from "../src/local/resource-staging-recovery.mjs";
+import { inspectResourceCoordinatorSync } from "../src/local/resource-coordinator-health.mjs";
 import { withResourceTransactionLock } from "../src/local/resource-transaction-lock.mjs";
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
@@ -2004,6 +2005,78 @@ try {
   rmSync(`${root}-unbounded`, { recursive: true, force: true });
 }
 console.log("resource admission test ok");
+
+{
+  const markerRoot = mkdtempSync(join(tmpdir(), "mbm-marker-alias-"));
+  try {
+    const options = {
+      root: markerRoot, now: () => Date.now(), sampleHost: () => host(), sleep: async () => {}, random: () => 0,
+    };
+    const first = new ResourceCoordinator(options);
+    await first.snapshot({ cwd: markerRoot });
+    const marker = join(markerRoot, "protocol.json");
+    const alias = join(markerRoot, `.protocol.json.${process.pid}.${"a".repeat(16)}.tmp`);
+    linkSync(marker, alias);
+    assert.equal(lstatSync(marker).nlink, 2, "marker alias fixture did not create a second hard link");
+    const second = new ResourceCoordinator(options);
+    const healed = await second.snapshot({ cwd: markerRoot });
+    assert.equal(healed.healthy, true, "coordinator did not recover its attributable protocol staging alias");
+    assert.equal(lstatSync(marker).nlink, 1, "coordinator left the protocol marker multiply-linked");
+    assert.equal(existsSync(alias), false, "coordinator did not remove the attributable protocol staging alias");
+  } finally {
+    rmSync(markerRoot, { recursive: true, force: true });
+  }
+}
+
+{
+  const healthRoot = mkdtempSync(join(tmpdir(), "mbm-coordinator-health-"));
+  const externalProtocolAlias = join(tmpdir(), `mbm-protocol-alias-${process.pid}-${Date.now()}.json`);
+  try {
+    const coordinator = new ResourceCoordinator({
+      root: healthRoot, now: () => Date.now(), sampleHost: () => host(), sleep: async () => {}, random: () => 0,
+    });
+    const snapshot = await coordinator.snapshot({ cwd: healthRoot });
+    assert.equal(snapshot.healthy, true, "coordinator snapshot rejected benign desktop metadata");
+    writeFileSync(join(healthRoot, "waiters", ".DS_Store"), "desktop metadata\n");
+    const withMetadata = inspectResourceCoordinatorSync(healthRoot);
+    assert.equal(withMetadata.ok, true, "coordinator doctor treated desktop metadata as an integrity failure");
+    assert.deepEqual(withMetadata.metadata, ["waiters/.DS_Store"], "coordinator doctor did not report ignored desktop metadata");
+    const afterMetadataRepair = inspectResourceCoordinatorSync(healthRoot, { repair: true });
+    assert.equal(afterMetadataRepair.ok, true, "coordinator doctor repair failed on benign desktop metadata");
+    assert.equal(readdirSync(join(healthRoot, "waiters")).includes(".DS_Store"), false,
+      "coordinator doctor repair did not remove known desktop metadata");
+
+    const symlinkName = `wait_${"a".repeat(32)}.json`;
+    const symlinkPath = join(healthRoot, "waiters", symlinkName);
+    writeFileSync(join(healthRoot, "link-target.json"), "{}\n");
+    symlinkSync(join(healthRoot, "link-target.json"), symlinkPath);
+    const withSymlink = inspectResourceCoordinatorSync(healthRoot);
+    assert.equal(withSymlink.ok, false, "coordinator doctor accepted a symbolic link in the waiter directory");
+    assert(withSymlink.unexpected.includes(`waiters/${symlinkName}`),
+      "coordinator doctor did not report the symbolic link as an unexpected entry");
+    rmSync(symlinkPath, { force: true });
+    rmSync(join(healthRoot, "link-target.json"), { force: true });
+
+    linkSync(join(healthRoot, "protocol.json"), externalProtocolAlias);
+    const linked = inspectResourceCoordinatorSync(healthRoot);
+    assert.equal(linked.ok, false, "coordinator doctor did not detect a multiply-linked protocol marker");
+    assert(linked.multiplyLinked.includes("protocol.json"), "coordinator doctor omitted the multiply-linked protocol marker");
+    const afterProtocolRepair = inspectResourceCoordinatorSync(healthRoot, { repair: true });
+    assert.equal(afterProtocolRepair.ok, true, "coordinator doctor could not repair a multiply-linked protocol marker");
+    assert.equal(lstatSync(join(healthRoot, "protocol.json")).nlink, 1,
+      "coordinator doctor repair did not restore a single-linked protocol marker");
+    rmSync(externalProtocolAlias, { force: true });
+    linkSync(join(healthRoot, "protocol.json"), externalProtocolAlias);
+    writeFileSync(externalProtocolAlias, "not-json\n");
+    const corruptedRepair = inspectResourceCoordinatorSync(healthRoot, { repair: true });
+    assert.equal(corruptedRepair.ok, false, "coordinator doctor accepted invalid bytes after repairing a multiply-linked state file");
+    assert(corruptedRepair.invalid.includes("protocol.json"),
+      "coordinator doctor did not report invalid content in a repaired state file");
+  } finally {
+    rmSync(healthRoot, { recursive: true, force: true });
+    rmSync(externalProtocolAlias, { force: true });
+  }
+}
 
 function resourceLease(id, pid, request, boundMs) {
   return {

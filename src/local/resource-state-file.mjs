@@ -2,6 +2,12 @@ import { readBoundedRegularFileSync } from "./secure-file.mjs";
 
 const RESOURCE_STATE_READ_ATTEMPTS = 4;
 
+/**
+ * Read coordinator state without mutating its link topology. An extra hard link can be an
+ * attacker-controlled alias, so a normal read fails closed; only the explicit doctor repair
+ * may replace an unattributable link. Directory staging recovery handles the attributable
+ * `.tmp` alias before this reader is called.
+ */
 export function readResourceStateJson(file, maxBytes, label, options = {}) {
   const readFile = options.readFile || readBoundedRegularFileSync;
   for (let attempt = 1; attempt <= RESOURCE_STATE_READ_ATTEMPTS; attempt += 1) {

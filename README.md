@@ -257,6 +257,8 @@ Autostart uses a macOS LaunchAgent, Linux `systemd --user`, or a least-privilege
 
 The exact tool set depends on the effective policy and account role. Both transports consume the same catalog in `src/shared/tool-catalog.json`; the generated reference is [docs/TOOL_REFERENCE.md](docs/TOOL_REFERENCE.md).
 
+`inputSchema` is hand-authored in `src/shared/tool-catalog.json` and validated by argument-contract tests. `outputSchema` is generated from a real handler response recorded in `src/shared/tool-output-contract.json` and checked by `tool-output-schemas:check`, so a declared field is a field the tool actually returns; schemas stay permissive (`additionalProperties: true`) and only list the properties that observation confirmed. Of the 54 tools, 40 have a verified observation; the remaining 14 are browser, computer-use, or macOS application tools that require a real interactive environment and keep an empty property set rather than an invented one. `required` lists only fields expected in every supported output mode; mode-specific or optional fields are recorded as `conditional` and are never required. A field observed only as `null` is left unconstrained because null does not prove the field's runtime type. Fields injected by the progressive stdio transport are documented separately and are not advertised as tool outputs. The `Tool schema generation N` counter covers both, and `catalog:test` fails when a declared property or required field drifts from the observed contract.
+
 Major groups include:
 
 - workspace reads, writes, exact edits, and transactional patches;

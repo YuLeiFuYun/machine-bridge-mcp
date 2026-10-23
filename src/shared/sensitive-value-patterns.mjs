@@ -21,3 +21,33 @@ export function sensitiveValuePattern(name, flags = "g") {
   const source = SOURCES[name];
   return new RegExp(source, flags);
 }
+
+const PRIVATE_KEY_BLOCK = /-----BEGIN\s+((?:(?:OPENSSH|RSA|EC|DSA|ENCRYPTED)\s+)?PRIVATE\s+KEY)-----[\s\S]*?(?:-----END\s+\1-----|$)/g;
+const HEX_SHELLCODE = /(?:\\x[0-9a-fA-F]{2}){8,}/g;
+const REVERSE_SHELL = /\b(?:bash|sh|zsh)\s+-i\s+>&?\s*\/dev\/tcp\/[^\s'"]+/gi;
+const SHADOW_PASSWORD_HASH = /\b[a-zA-Z0-9_-]+:\$[156y]\$[A-Za-z0-9./]+\$[A-Za-z0-9./]{16,}/g;
+
+/**
+ * Universal sensitive token redaction across all MCP projections.
+ * @param {unknown} text
+ * @returns {unknown}
+ */
+export function redactSensitiveText(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  return text
+    .replace(PRIVATE_KEY_BLOCK, "<redacted:private_key>")
+    .replace(sensitiveValuePattern("privateKeyHeader"), "<redacted:private_key_header>")
+    .replace(sensitiveValuePattern("awsAccessKey"), "<redacted:aws_key>")
+    .replace(sensitiveValuePattern("githubAccessToken"), "<redacted:github_token>")
+    .replace(sensitiveValuePattern("gitlabAccessToken"), "<redacted:gitlab_token>")
+    .replace(sensitiveValuePattern("npmAccessToken"), "<redacted:npm_token>")
+    .replace(sensitiveValuePattern("slackAccessToken"), "<redacted:slack_token>")
+    .replace(sensitiveValuePattern("googleApiKey"), "<redacted:google_api_key>")
+    .replace(sensitiveValuePattern("livePaymentApiKey"), "<redacted:payment_api_key>")
+    .replace(sensitiveValuePattern("machineBridgeCredential"), "<redacted:credential>")
+    .replace(sensitiveValuePattern("jwtLikeBearerToken"), "<redacted:jwt_token>")
+    .replace(sensitiveValuePattern("apiSecretToken"), "<redacted:api_secret>")
+    .replace(HEX_SHELLCODE, "<redacted:binary_payload>")
+    .replace(REVERSE_SHELL, "<redacted:reverse_shell>")
+    .replace(SHADOW_PASSWORD_HASH, "<redacted:password_hash>");
+}

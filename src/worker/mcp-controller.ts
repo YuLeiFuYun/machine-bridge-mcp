@@ -27,7 +27,7 @@ type McpConfig = Readonly<{
   toolListTtlMs: number;
   taskStore?: McpTaskStore;
   resolveTaskCredentials?: TaskCredentialResolver;
-  tools: (authorized: AuthorizedToken) => Array<Record<string, unknown>>;
+  tools: (authorized: AuthorizedToken, options?: { progressive?: boolean; groups?: string[]; intent?: string; topK?: number }) => Array<Record<string, unknown>>;
   recordError: (code: string) => void;
   cancelClientRequest: (requestKey?: string) => Promise<void>;
   callTool: (input: {
@@ -80,7 +80,12 @@ export class McpController {
     progressToken?: unknown;
   }): Promise<Response> {
     const { request, body } = input;
-    if (body.id === undefined) return json(rpcError(undefined, -32601, "Method not found"), 404);
+    if (body.id === undefined) {
+      if (body.method === "tools/call" || body.method === "notifications/cancelled") {
+        return json(rpcError(undefined, -32601, "Method not found"), 404);
+      }
+      return new Response(null, { status: 202 });
+    }
     if (body.id === null) return json(rpcError(null, -32600, "MCP requests require a non-null request id"), 400);
     const requestKey = input.proxyMode === "direct"
       ? mcpStreamRequestKey(mcpStreamProxyId(request))
@@ -158,8 +163,12 @@ export class McpController {
   }
 
   private listTools(request: JsonRpcRequest, authorized: AuthorizedToken): McpDispatchResult {
+    const params = request.params && typeof request.params === "object" ? request.params as Record<string, unknown> : {};
+    const progressive = params.progressive === true || params.progressive === "true";
+    const groups = Array.isArray(params.groups) ? params.groups.filter((g) => typeof g === "string") : undefined;
+    const intent = typeof params.intent === "string" ? params.intent : undefined;
     return { status: 200, message: rpcResult(request.id, cacheableResult(
-      { tools: this.config.tools(authorized) },
+      { tools: this.config.tools(authorized, { progressive, groups, intent }) },
       { ttlMs: this.config.toolListTtlMs, cacheScope: "private", serverInfo: this.config.serverInfo },
     ))! };
   }

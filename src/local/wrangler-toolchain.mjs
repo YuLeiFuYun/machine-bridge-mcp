@@ -37,7 +37,9 @@ export async function ensureWranglerToolchain(options = {}) {
   const runCommand = options.runCommand;
   if (typeof runCommand !== "function") throw new TypeError("Wrangler toolchain requires an executable runner");
   const descriptor = wranglerToolchainDescriptor(options);
-  const explicitNpmCli = options.npmCli ? resolveNpmCli(options) : "";
+  const explicitNpmCli = options.npmCli
+    ? resolveNpmCli(options)
+    : (options.hardenedNpm ? "" : (process.env.npm_execpath || ""));
   const now = typeof options.now === "function" ? options.now : Date.now;
   const auditMaxAgeMs = positiveInteger(options.auditMaxAgeMs, DEFAULT_AUDIT_MAX_AGE_MS);
   const parent = path.join(descriptor.stateRoot, TOOLCHAIN_DIRECTORY);
@@ -168,12 +170,12 @@ function validateTemplate(manifest, lock) {
     throw new Error("Cloudflare toolchain manifest lost its exact private dependencies");
   }
   if (manifest.overrides?.sharp !== "0.35.5"
-      || manifest.overrides?.miniflare !== "5.20261012.1-beta"
+      || manifest.overrides?.miniflare !== "5.20261019.1-beta"
       || manifest.overrides?.ws !== "8.22.0"
       || Object.keys(manifest.overrides).length !== 3) {
     throw new Error("Cloudflare toolchain manifest lost its security and deduplication overrides");
   }
-  const expectedScripts = { "esbuild@0.28.2": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20261012.1": true, "workerd@1.20261019.1": true };
+  const expectedScripts = { "esbuild@0.28.2": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20261019.1": true };
   if (JSON.stringify(manifest.allowScripts) !== JSON.stringify(expectedScripts)) {
     throw new Error("Cloudflare toolchain manifest lost its exact install-script policy");
   }
@@ -190,7 +192,7 @@ function validateTemplate(manifest, lock) {
   }
   if (lock.packages?.["node_modules/undici"]?.version !== "7.29.1"
       || lock.packages?.["node_modules/esbuild"]?.version !== "0.28.2"
-      || lock.packages?.["node_modules/workerd"]?.version !== "1.20261012.1") {
+      || lock.packages?.["node_modules/workerd"]?.version !== "1.20261019.1") {
     throw new Error("Cloudflare toolchain lockfile lost an installed dependency pin");
   }
 }

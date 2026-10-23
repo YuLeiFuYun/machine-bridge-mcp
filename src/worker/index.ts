@@ -58,7 +58,7 @@ import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasMa
 import { McpTaskService } from "./mcp-task-service.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.207";
+const SERVER_VERSION = "3.0.0";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
@@ -85,7 +85,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
       taskStore: this.mcpTaskService.store,
       resolveTaskCredentials: this.mcpTaskService.resolveCredentials,
-      tools: (authorized) => workerToolsForRole(authorized.role),
+      tools: (authorized, options) => workerToolsForRole(authorized.role, options),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
       callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken }) => this.callTool(

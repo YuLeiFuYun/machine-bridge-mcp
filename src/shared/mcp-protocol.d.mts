@@ -4,6 +4,7 @@ export const MCP_HEADER_MISMATCH: -32020;
 export const MCP_MISSING_REQUIRED_CLIENT_CAPABILITY: -32021;
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION: -32022;
 export const MCP_REMOVED_PROTOCOL_MESSAGE: "MCP session protocol was removed; upgrade the client and use request-scoped metadata/server/discover";
+export const MCP_PROGRESSIVE_TOOL_LIST_TTL_MS: 120000;
 export class McpProtocolError extends Error {
   code: number;
   data?: unknown;

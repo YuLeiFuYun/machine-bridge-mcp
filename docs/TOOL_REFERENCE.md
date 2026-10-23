@@ -104,23 +104,63 @@ Return live authorization and daemon status. Use detail=summary for routine vers
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "name": {
       "type": "string"
     },
-    "version": {
+    "protocol_version": {
       "type": "string"
     },
-    "status": {
-      "type": "string"
+    "supported_protocol_versions": {
+      "type": "array"
     },
     "workspace": {
+      "type": "string"
+    },
+    "workspace_name": {
+      "type": "string"
+    },
+    "policy": {
       "type": "object"
     },
-    "authority": {
+    "policy_contract": {
       "type": "object"
+    },
+    "enforcement": {
+      "type": "object"
+    },
+    "tool_delivery": {
+      "type": "object"
+    },
+    "tools": {
+      "type": "array"
+    },
+    "observability": {
+      "type": "object"
+    },
+    "runtime": {
+      "type": "object"
+    },
+    "security_audit": {
+      "type": "object"
+    },
+    "trust": {
+      "type": "object"
+    },
+    "detail": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "name",
+    "protocol_version",
+    "workspace",
+    "workspace_name",
+    "policy",
+    "tool_delivery",
+    "runtime"
+  ]
 }
 ```
 
@@ -163,20 +203,62 @@ Summarize the connected workspace, repository root, top-level entries, and proje
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "workspace": {
       "type": "string"
     },
-    "instructions": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "workspaceName": {
+      "type": "string"
     },
-    "overview": {
+    "gitRoot": {
+      "type": "string"
+    },
+    "policy": {
       "type": "object"
+    },
+    "tools": {
+      "type": "array"
+    },
+    "daemonPolicy": {
+      "type": "object"
+    },
+    "daemonTools": {
+      "type": "array"
+    },
+    "capabilityRouting": {
+      "type": "object"
+    },
+    "topLevel": {
+      "type": "array"
+    },
+    "topLevelTotal": {
+      "type": "integer"
+    },
+    "topLevelTruncated": {
+      "type": "boolean"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "effectiveToolCount": {
+      "type": "integer"
+    },
+    "daemonToolCount": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "workspace",
+    "workspaceName",
+    "gitRoot",
+    "policy",
+    "daemonPolicy",
+    "capabilityRouting",
+    "topLevel",
+    "topLevelTotal",
+    "topLevelTruncated"
+  ]
 }
 ```
 
@@ -215,23 +297,43 @@ Load built-in working agreements, bounded automatic project facts, authority-per
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "workspace": {
+    "target": {
       "type": "string"
     },
     "instructions": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "type": "string"
     },
-    "tools": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "builtin_instructions": {
+      "type": "object"
+    },
+    "automatic_project_context": {},
+    "model_instructions_file": {},
+    "capability_refresh": {
+      "type": "object"
+    },
+    "instruction_warnings": {
+      "type": "array"
+    },
+    "guidance": {
+      "type": "array"
+    },
+    "local_automation": {
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "target",
+    "instructions",
+    "builtin_instructions",
+    "automatic_project_context",
+    "model_instructions_file",
+    "capability_refresh",
+    "instruction_warnings",
+    "guidance",
+    "local_automation"
+  ]
 }
 ```
 
@@ -239,7 +341,7 @@ Load built-in working agreements, bounded automatic project facts, authority-per
 
 **Resolve task capabilities**
 
-Rescan authority-permitted task-relevant instructions, skills, registered commands, installed applications, browser metadata, and the effective tool catalog. Delegated remote accounts remain confined to project-scoped capability context unless their effective authority permits unrestricted paths. Return bounded set-level execution routes, ranked tools, routing ambiguity, and an optional selected skill. Pass known_refresh_fingerprint to omit unchanged static instructions while recomputing task-specific ranking. The result is advisory: direct Bash and every other policy-allowed tool remain available.
+Evaluate workspace context and return recommended tools, command matches, skill matches, and set-level execution routes for a task. Helps choose between direct tools and compound workflows.
 
 | Contract field | Value |
 |---|---|
@@ -298,6 +400,11 @@ Rescan authority-permitted task-relevant instructions, skills, registered comman
         ]
       },
       "description": "Explicit progressive stdio groups to expose: browser, app, jobs, git, process, diagnostics, skills, files. This does not expand policy authority."
+    },
+    "activate_recommended_groups": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also expose the whole progressive group of each recommended tool. The default exposes only the recommended tools themselves, so a single recommendation cannot widen the tool list by a whole group."
     }
   },
   "required": [
@@ -311,20 +418,98 @@ Rescan authority-permitted task-relevant instructions, skills, registered comman
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "task": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "effective_instructions": {
+      "type": "string"
+    },
+    "builtin_instructions": {
+      "type": "object"
+    },
+    "automatic_project_context": {},
+    "model_instructions_file": {},
+    "instruction_files": {
+      "type": "array"
+    },
+    "instructions_truncated": {
+      "type": "boolean"
+    },
+    "refresh": {
+      "type": "object"
+    },
+    "context_reuse": {
+      "type": "object"
+    },
+    "selected_skill": {
+      "type": "object"
+    },
+    "skill_matches": {
+      "type": "array"
+    },
+    "command_matches": {
+      "type": "array"
+    },
+    "metadata_authority": {
+      "type": "object"
+    },
+    "recommended_tools": {
+      "type": "array"
+    },
+    "host_semantics": {
+      "type": "string"
+    },
+    "warnings": {
+      "type": "array"
+    },
+    "instruction_warnings": {
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "application_discovery": {
+      "type": "object"
+    },
+    "application_matches": {
+      "type": "array"
+    },
+    "browser_backend": {
+      "type": "object"
+    },
     "execution_routing": {
       "type": "object"
     },
-    "ranked_tools": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "selected_skill": {
+    "routing_observability": {
       "type": "string"
     }
-  }
+  },
+  "required": [
+    "task",
+    "target",
+    "instructions_truncated",
+    "refresh",
+    "context_reuse",
+    "selected_skill",
+    "skill_matches",
+    "command_matches",
+    "metadata_authority",
+    "recommended_tools",
+    "host_semantics",
+    "warnings",
+    "instruction_warnings",
+    "truncated",
+    "application_discovery",
+    "application_matches",
+    "browser_backend",
+    "execution_routing",
+    "routing_observability"
+  ]
 }
 ```
 
@@ -369,14 +554,35 @@ Discover installed local applications and launchers without reading their docume
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "platform": {
+      "type": "string"
+    },
     "applications": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "scanned_entries": {
+      "type": "integer"
+    },
+    "warnings": {
+      "type": "array"
+    },
+    "capabilities": {
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "platform",
+    "applications",
+    "truncated",
+    "scanned_entries",
+    "warnings",
+    "capabilities"
+  ]
 }
 ```
 
@@ -384,7 +590,7 @@ Discover installed local applications and launchers without reading their docume
 
 **Open local application**
 
-Open a named local application, optionally with a document or URL target, using the operating system launcher. Launch is non-idempotent: cancellation is checked immediately before invoking the launcher, but once the launcher process invocation is attempted, timeout, cancellation, or response loss is an unknown launch outcome and callers should inspect application state before retrying. That fixed ambiguous settlement is returned as a public, non-retryable MCP error. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Launch, activate, or reveal a local macOS desktop application by bundle identifier or application name. Brings the target app to foreground and returns launch status.
 
 | Contract field | Value |
 |---|---|
@@ -432,17 +638,29 @@ Open a named local application, optionally with a document or URL target, using 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
-      "type": "string"
-    },
     "application": {
       "type": "string"
     },
-    "pid": {
+    "resolved_application": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "code": {
       "type": "integer"
     }
-  }
+  },
+  "required": [
+    "application",
+    "resolved_application",
+    "platform"
+  ]
 }
 ```
 
@@ -511,20 +729,31 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "application": {
       "type": "string"
     },
-    "windows": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+    "frontmost": {
+      "type": "boolean"
     },
-    "tree": {
-      "type": "object"
+    "elements": {
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "process_id": {
+      "type": "integer"
+    },
+    "process_generation": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "application",
+    "frontmost"
+  ]
 }
 ```
 
@@ -532,7 +761,7 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
 
 **Operate local application UI**
 
-Perform a structured macOS Accessibility action on a matched UI element. check/uncheck are desired-state operations: they read the current checkbox/radio state at dispatch time, skip input when already satisfied, and otherwise issue at most one AXPress (uncheck is checkbox-only). Text can be supplied through a registered local resource so secret values do not enter MCP arguments. keystroke focuses the matched AX target and delivers surrogate-safe Unicode chunks with public PID-scoped CoreGraphics keyboard events; key_press delivers a layout-independent special key (Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, or Space) with optional Shift+, likewise PID-scoped and without making the application frontmost. Both return input_transport=public-cgevent-pid; Meta/Control/Alt and character shortcuts are deliberately unsupported because inactive-AppKit validation did not establish reliable command-shortcut semantics. Cancellation is re-checked after asynchronous local-resource resolution and before invoking the fixed JXA mutation helper. Explicit JXA selector/geometry/action preflight errors remain definite, but once the mutating osascript invocation is attempted, timeout, cancellation, missing output, or malformed helper settlement is an unknown action outcome and must not be replayed blindly. Fixed launch/Accessibility/visual ambiguous settlements are returned as public, non-retryable MCP errors. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Automate local macOS applications via AppleScript and System Events (menu item clicks, window focus, keystrokes, activate, quit). Higher-level and more reliable than raw coordinate clicks.
 
 | Contract field | Value |
 |---|---|
@@ -647,17 +876,29 @@ Perform a structured macOS Accessibility action on a matched UI element. check/u
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
+    "application": {
       "type": "string"
     },
     "action": {
       "type": "string"
     },
-    "result": {
-      "type": "object"
+    "ok": {
+      "type": "boolean"
+    },
+    "input_transport": {
+      "type": "string"
+    },
+    "focus_prepared": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "application",
+    "action",
+    "ok"
+  ]
 }
 ```
 
@@ -665,7 +906,7 @@ Perform a structured macOS Accessibility action on a matched UI element. check/u
 
 **Observe computer surface**
 
-Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state. timeout_seconds is one end-to-end observation budget; compound screenshot/semantic/window-revalidation stages consume the remaining deadline rather than restarting it.
+Inspect current macOS desktop state: returns focused window, running applications, display dimensions, cursor position, and optional screen capture. Use before computer_act for coordinate targeting.
 
 | Contract field | Value |
 |---|---|
@@ -790,17 +1031,28 @@ Create a snapshot-bound browser or desktop observation. Browser mode combines ex
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "screenshot": {
+    "snapshot_id": {
       "type": "string"
     },
-    "dimensions": {
+    "surface": {
+      "type": "string"
+    },
+    "semantic": {
       "type": "object"
     },
-    "active_window": {
+    "target": {
       "type": "object"
+    },
+    "screenshot_sha256": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "snapshot_id",
+    "surface"
+  ]
 }
 ```
 
@@ -808,7 +1060,7 @@ Create a snapshot-bound browser or desktop observation. Browser mode combines ex
 
 **Act on computer snapshot**
 
-Perform one snapshot-bound browser or desktop action and then observe/verify the effect. Semantic targets use refs from computer_observe. Browser click/double-click/hover/scroll may use normalized_viewport coordinates from the same navigation-coherent CDP screenshot; browser drag uses a source target plus destination from that same snapshot and requires ref-to-ref or point-to-point evidence. macOS application drag uses two normalized points from the same window screenshot, and application scroll uses one normalized point plus bounded wheel deltas; both require the opt-in snapshot-bound native pixel backend and do not guess Accessibility fallbacks. Point dispatch revalidates the exact screenshot immediately before native/trusted input; browser ref drag revalidates both trusted backend identities and in-viewport geometry before any drag input; browser ref scroll revalidates the anchor identity and requires its content quad to remain in viewport before one trusted wheel event. Browser reload/back/forward also bind the observed tab URL, document epoch, and current history-list slot and revalidate those authorities immediately before the navigation mutation; stale or unavailable history authority fails before dispatch. Results distinguish dispatch_status from effect_status; unknown outcomes must be inspected before retrying. dispatch_status=unknown is driven only by fixed lower-layer mutation-settlement markers, so a resource or preflight timeout before mutation remains a definite failure. Deterministic post-observation checks expose `verification.post_checks[].evidence_source` (`browser_tab_state`, `browser_semantic`, `application_process`, `application_workspace`, `application_accessibility`, or `screenshot`) so callers can distinguish state evidence from pixel evidence. Browser post-state defaults to a compact summary plus bounded semantic delta; post_screenshot=auto avoids redundant images unless visual evidence or ambiguous dispatch requires one. Request post_observation_detail=full only when the full tree is needed. timeout_seconds is one end-to-end action budget spanning preflight, the single dispatch attempt, verification, and post-observation; internal stages receive only the remaining deadline.
+Execute OS-level input actions on macOS (mouse move, click, double click, drag, scroll, key press, text typing, shortcuts) via Quartz event taps. Returns action result and updated display geometry.
 
 | Contract field | Value |
 |---|---|
@@ -1174,17 +1426,34 @@ Perform one snapshot-bound browser or desktop action and then observe/verify the
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
+    "dispatch_status": {
       "type": "string"
     },
-    "action": {
+    "effect_status": {
       "type": "string"
     },
-    "post_screenshot": {
+    "post_snapshot_id": {
       "type": "string"
+    },
+    "observed_diff": {
+      "type": "object"
+    },
+    "verification": {
+      "type": "object"
+    },
+    "post_observation": {
+      "type": "object"
+    },
+    "continuation": {
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "dispatch_status",
+    "effect_status"
+  ]
 }
 ```
 
@@ -1192,7 +1461,7 @@ Perform one snapshot-bound browser or desktop action and then observe/verify the
 
 **Browser bridge status**
 
-Start or inspect the loopback bridge for the Chromium profile where the extension is installed. Machine Bridge does not launch Playwright or another browser process, but cannot infer whether that profile is the user's daily or isolated profile; status reports authenticated extension version, protocol, capabilities, and reload state. Concurrent callers may share one broker-startup operation, but each caller re-checks its own cancellation after shared startup settles, so cancelling one request does not cancel startup for another waiter or return completion to the cancelled caller.
+Query the browser automation bridge status: connection state, listening port, active paired extension version, and open tabs count. Use before initiating browser actions.
 
 | Contract field | Value |
 |---|---|
@@ -1216,20 +1485,165 @@ Start or inspect the loopback bridge for the Chromium profile where the extensio
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "paired": {
+    "available": {
       "type": "boolean"
     },
-    "port": {
-      "type": "integer"
+    "connected": {
+      "type": "boolean"
     },
-    "browser": {
+    "broker_role": {
       "type": "string"
     },
-    "tabs_count": {
+    "runtime_clients": {
       "type": "integer"
+    },
+    "routed_requests": {
+      "type": "integer"
+    },
+    "endpoint": {
+      "type": "string"
+    },
+    "pairing_url": {
+      "type": "string"
+    },
+    "extension_path": {
+      "type": "string"
+    },
+    "expected_extension_version": {
+      "type": "string"
+    },
+    "expected_extension_id": {
+      "type": "string"
+    },
+    "extension_id": {
+      "type": "string"
+    },
+    "extension_protocol": {},
+    "extension_version": {
+      "type": "string"
+    },
+    "extension_capabilities": {
+      "type": "array"
+    },
+    "extension_reload_required": {
+      "type": "boolean"
+    },
+    "supported_browsers": {
+      "type": "array"
+    },
+    "controls_existing_profile": {
+      "type": "boolean"
+    },
+    "controls_extension_profile": {
+      "type": "boolean"
+    },
+    "launches_browser_process": {
+      "type": "boolean"
+    },
+    "launches_separate_automation_profile": {
+      "type": "boolean"
+    },
+    "profile_identity_verifiable": {
+      "type": "boolean"
+    },
+    "uses_existing_tabs_and_login_state": {
+      "type": "boolean"
+    },
+    "source_access": {
+      "type": "boolean"
+    },
+    "semantic_snapshot_refs": {
+      "type": "boolean"
+    },
+    "actionability_waits": {
+      "type": "boolean"
+    },
+    "trusted_input": {
+      "type": "boolean"
+    },
+    "trusted_input_quarantined": {
+      "type": "boolean"
+    },
+    "trusted_input_health": {
+      "type": "string"
+    },
+    "input_modes": {
+      "type": "array"
+    },
+    "complex_form_fill": {
+      "type": "boolean"
+    },
+    "tab_management": {
+      "type": "boolean"
+    },
+    "explicit_waits": {
+      "type": "boolean"
+    },
+    "screenshots": {
+      "type": "boolean"
+    },
+    "computer_observation_v1": {
+      "type": "boolean"
+    },
+    "cdp_accessibility_snapshot": {
+      "type": "boolean"
+    },
+    "cdp_surface_screenshot": {
+      "type": "boolean"
+    },
+    "backend_node_trusted_input": {
+      "type": "boolean"
+    },
+    "restricted_pages": {
+      "type": "array"
+    },
+    "security": {
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "available",
+    "connected",
+    "broker_role",
+    "runtime_clients",
+    "routed_requests",
+    "endpoint",
+    "pairing_url",
+    "extension_path",
+    "expected_extension_version",
+    "expected_extension_id",
+    "extension_id",
+    "extension_protocol",
+    "extension_version",
+    "extension_capabilities",
+    "extension_reload_required",
+    "supported_browsers",
+    "controls_existing_profile",
+    "controls_extension_profile",
+    "launches_browser_process",
+    "launches_separate_automation_profile",
+    "profile_identity_verifiable",
+    "uses_existing_tabs_and_login_state",
+    "source_access",
+    "semantic_snapshot_refs",
+    "actionability_waits",
+    "trusted_input",
+    "trusted_input_quarantined",
+    "trusted_input_health",
+    "input_modes",
+    "complex_form_fill",
+    "tab_management",
+    "explicit_waits",
+    "screenshots",
+    "computer_observation_v1",
+    "cdp_accessibility_snapshot",
+    "cdp_surface_screenshot",
+    "backend_node_trusted_input",
+    "restricted_pages",
+    "security"
+  ]
 }
 ```
 
@@ -1237,7 +1651,7 @@ Start or inspect the loopback bridge for the Chromium profile where the extensio
 
 **Pair browser extension**
 
-Open the local pairing page and return the packaged unpacked-extension path for installation in the user's intended Chromium profile. Pairing is persisted only after an acknowledged version/capability handshake. Opening the pairing page is non-idempotent: cancellation is checked immediately before the OS launcher, but once that launcher invocation is attempted, timeout/cancellation/response loss is an unknown launch outcome and callers should inspect the browser before opening it again. That fixed ambiguous settlement is returned as a public, non-retryable MCP error.
+Generate a pairing URL and token for the unpacked Chrome/Firefox extension. Enables browser tab inspection, DOM interaction, and form automation through the local bridge.
 
 | Contract field | Value |
 |---|---|
@@ -1267,17 +1681,173 @@ Open the local pairing page and return the packaged unpacked-extension path for 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "paired": {
+    "available": {
       "type": "boolean"
     },
-    "port": {
+    "connected": {
+      "type": "boolean"
+    },
+    "broker_role": {
+      "type": "string"
+    },
+    "runtime_clients": {
       "type": "integer"
     },
-    "token": {
+    "routed_requests": {
+      "type": "integer"
+    },
+    "endpoint": {
       "type": "string"
+    },
+    "pairing_url": {
+      "type": "string"
+    },
+    "extension_path": {
+      "type": "string"
+    },
+    "expected_extension_version": {
+      "type": "string"
+    },
+    "expected_extension_id": {
+      "type": "string"
+    },
+    "extension_id": {
+      "type": "string"
+    },
+    "extension_protocol": {},
+    "extension_version": {
+      "type": "string"
+    },
+    "extension_capabilities": {
+      "type": "array"
+    },
+    "extension_reload_required": {
+      "type": "boolean"
+    },
+    "supported_browsers": {
+      "type": "array"
+    },
+    "controls_existing_profile": {
+      "type": "boolean"
+    },
+    "controls_extension_profile": {
+      "type": "boolean"
+    },
+    "launches_browser_process": {
+      "type": "boolean"
+    },
+    "launches_separate_automation_profile": {
+      "type": "boolean"
+    },
+    "profile_identity_verifiable": {
+      "type": "boolean"
+    },
+    "uses_existing_tabs_and_login_state": {
+      "type": "boolean"
+    },
+    "source_access": {
+      "type": "boolean"
+    },
+    "semantic_snapshot_refs": {
+      "type": "boolean"
+    },
+    "actionability_waits": {
+      "type": "boolean"
+    },
+    "trusted_input": {
+      "type": "boolean"
+    },
+    "trusted_input_quarantined": {
+      "type": "boolean"
+    },
+    "trusted_input_health": {
+      "type": "string"
+    },
+    "input_modes": {
+      "type": "array"
+    },
+    "complex_form_fill": {
+      "type": "boolean"
+    },
+    "tab_management": {
+      "type": "boolean"
+    },
+    "explicit_waits": {
+      "type": "boolean"
+    },
+    "screenshots": {
+      "type": "boolean"
+    },
+    "computer_observation_v1": {
+      "type": "boolean"
+    },
+    "cdp_accessibility_snapshot": {
+      "type": "boolean"
+    },
+    "cdp_surface_screenshot": {
+      "type": "boolean"
+    },
+    "backend_node_trusted_input": {
+      "type": "boolean"
+    },
+    "restricted_pages": {
+      "type": "array"
+    },
+    "security": {
+      "type": "object"
+    },
+    "opened_pairing_page": {
+      "type": "boolean"
+    },
+    "setup_steps": {
+      "type": "array"
     }
-  }
+  },
+  "required": [
+    "available",
+    "connected",
+    "broker_role",
+    "runtime_clients",
+    "routed_requests",
+    "endpoint",
+    "pairing_url",
+    "extension_path",
+    "expected_extension_version",
+    "expected_extension_id",
+    "extension_id",
+    "extension_protocol",
+    "extension_version",
+    "extension_capabilities",
+    "extension_reload_required",
+    "supported_browsers",
+    "controls_existing_profile",
+    "controls_extension_profile",
+    "launches_browser_process",
+    "launches_separate_automation_profile",
+    "profile_identity_verifiable",
+    "uses_existing_tabs_and_login_state",
+    "source_access",
+    "semantic_snapshot_refs",
+    "actionability_waits",
+    "trusted_input",
+    "trusted_input_quarantined",
+    "trusted_input_health",
+    "input_modes",
+    "complex_form_fill",
+    "tab_management",
+    "explicit_waits",
+    "screenshots",
+    "computer_observation_v1",
+    "cdp_accessibility_snapshot",
+    "cdp_surface_screenshot",
+    "backend_node_trusted_input",
+    "restricted_pages",
+    "security",
+    "opened_pairing_page",
+    "setup_steps"
+  ]
 }
 ```
 
@@ -1325,14 +1895,18 @@ Read the tab inventory from the paired existing Chromium profile without creatin
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "tabs": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "active_tab_id": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "tabs"
+  ]
 }
 ```
 
@@ -1340,7 +1914,7 @@ Read the tab inventory from the paired existing Chromium profile without creatin
 
 **Manage browser tabs**
 
-Create, activate, or close tabs in the paired existing Chromium profile. Tab mutations are non-idempotent: if Chrome rejects a mutation request after invocation, or the broker loses the extension response after attempting dispatch, the outcome is reported as unknown and callers should inspect browser_list_tabs before retrying. If a completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and must not be used as evidence that activation/close/create did not run. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Activation is verified between its two mutation stages: after tab activation resolves, the target is re-read and must still be active before its freshly observed current window is focused; after focus resolves, the target is re-read again and success returns only the final verified tab provenance. Concurrent tab/window moves or user tab switches are reported as partial completion with inspection guidance and are never automatically re-activated or re-focused. Cancellation is re-checked after asynchronous tab lookup and before each later mutation stage; a stage not yet started is skipped, while an earlier completed stage is not rolled back. Use browser_list_tabs when only a read-only tab inventory is needed. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Manage browser extension tabs: create, switch, close, reload, or mute tabs. Returns updated tab list with identifiers, URLs, and active states.
 
 | Contract field | Value |
 |---|---|
@@ -1397,17 +1971,22 @@ Create, activate, or close tabs in the paired existing Chromium profile. Tab mut
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "action": {
       "type": "string"
     },
     "tab_id": {
-      "type": "string"
+      "type": "integer"
     },
-    "status": {
-      "type": "string"
+    "ok": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "action",
+    "ok"
+  ]
 }
 ```
 
@@ -1415,7 +1994,7 @@ Create, activate, or close tabs in the paired existing Chromium profile. Tab mut
 
 **Read browser page source**
 
-Read bounded raw serialized DOM HTML from the active or selected tab only when source markup is genuinely required. Raw source can contain hidden bootstrap, session, account, authentication, or other sensitive data that is not visible in the rendered page; treat the entire result as sensitive and do not use it for routine semantic inspection. Prefer browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Retrieve raw serialized DOM HTML from a browser tab. Intended for inspecting hidden bootstrap, session, account, authentication or structural markup; do not use it for routine semantic inspection.
 
 | Contract field | Value |
 |---|---|
@@ -1465,17 +2044,22 @@ Read bounded raw serialized DOM HTML from the active or selected tab only when s
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "url": {
-      "type": "string"
-    },
-    "title": {
-      "type": "string"
-    },
     "source": {
       "type": "string"
+    },
+    "tab_id": {
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "source",
+    "tab_id"
+  ]
 }
 ```
 
@@ -1483,7 +2067,7 @@ Read bounded raw serialized DOM HTML from the active or selected tab only when s
 
 **Inspect browser page**
 
-Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. Candidates are salience-ranked globally across accessible frames instead of consuming the aggregate budget in frame traversal order. include_values=false is the default; when include_values=true, non-sensitive page controls may return their current values, including content the page previously received from a local resource if that content is now present in an ordinary control. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Inspect interactive DOM elements on the current page. Returns a structured semantic/actionability snapshot with CSS selectors, element roles, labels, and Set-of-Marks visual IDs.
 
 | Contract field | Value |
 |---|---|
@@ -1537,6 +2121,7 @@ Inspect a bounded semantic/actionability snapshot with reusable element refs for
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "url": {
       "type": "string"
@@ -1544,10 +2129,20 @@ Inspect a bounded semantic/actionability snapshot with reusable element refs for
     "title": {
       "type": "string"
     },
-    "accessibility_tree": {
-      "type": "object"
+    "tab_id": {
+      "type": "integer"
+    },
+    "elements": {
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "url",
+    "tab_id"
+  ]
 }
 ```
 
@@ -1668,17 +2263,21 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
-      "type": "string"
-    },
-    "url": {
-      "type": "string"
-    },
-    "condition_met": {
+    "ready": {
       "type": "boolean"
+    },
+    "elapsed_ms": {
+      "type": "integer"
+    },
+    "condition": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "ready"
+  ]
 }
 ```
 
@@ -1686,7 +2285,7 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
 
 **Operate browser page**
 
-Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. A value_resource is resolved locally and is not echoed in the mutating result, but the destination page receives the value and later page observations may expose content the page now holds. Automatic trusted-input fallback occurs only before any trusted preparation (including DOM focus/scroll) or DevTools Input mutation starts; ambiguous post-dispatch failures require inspection before retry. Broker timeout, disconnect, extension replacement, or response loss after WebSocket dispatch is attempted is also an unknown mutation outcome, not proof that the action did not run. If the mutating extension call completes but its success result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown and callers must inspect state rather than replay. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. DOM/trusted-preparation page calls use a structured settlement envelope: an explicit page preflight error remains definite, while loss of the mutating scripting invocation response after that invocation is attempted is an unknown action outcome and must not be replayed blindly. Cancellation is re-checked after asynchronous target/preparation steps and before each later mutation stage; a stage not yet started is skipped, while earlier focus/scroll/input effects are not rolled back. A successful action is not converted to failure by a later tab-metadata read: current tab provenance is returned only when verified, otherwise tab_metadata_verified is false and stale pre-action title/URL metadata is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Execute a single DOM action (click, hover, fill, select, press, navigate, reload) in a paired browser tab. Supports CSS selectors, input modes, and navigation settlement.
 
 | Contract field | Value |
 |---|---|
@@ -1835,14 +2434,28 @@ Perform one structured navigation or page action in the user's existing browser 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
-      "type": "string"
-    },
     "action": {
       "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "method": {
+      "type": "string"
+    },
+    "value_exposed": {
+      "type": "boolean"
+    },
+    "value_source": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "action",
+    "ok"
+  ]
 }
 ```
 
@@ -1850,7 +2463,7 @@ Perform one structured navigation or page action in the user's existing browser 
 
 **Fill complex browser form**
 
-Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; the mutating result and errors do not return field values, but the destination page receives them and later page observations may expose content the page now holds. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the form must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/field preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown form outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before page mutation skips the fill stage; once page mutation starts, earlier field changes are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-fill provenance is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Batch fill multiple form fields (inputs, textareas, checkboxes, selects) in one round trip using CSS selectors or labels, reducing latency and tool-turn overhead.
 
 | Contract field | Value |
 |---|---|
@@ -2037,14 +2650,22 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
+    "method": {
       "type": "string"
     },
-    "fields_filled": {
+    "ok": {
+      "type": "boolean"
+    },
+    "fields_count": {
       "type": "integer"
     }
-  }
+  },
+  "required": [
+    "method",
+    "ok"
+  ]
 }
 ```
 
@@ -2052,7 +2673,7 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 
 **Capture browser screenshot**
 
-Capture the visible area of the active or selected tab from the paired existing browser profile and return native MCP image content without focusing another window. Selecting an inactive tab may temporarily activate it; pass allow_tab_switch=false to refuse that activation, in which case an inactive target fails before capture and the active tab is never changed. Immediately before activation, the extension revalidates that the same restore-baseline tab is still active in that window; a concurrent user tab switch fails definite pre-dispatch without activating anything. If the activation response is then lost, or if the resolved activation no longer verifies the same target tab in the restore-baseline window, the outcome is unknown, no capture or automatic rollback is attempted, and callers should inspect browser_list_tabs before retrying. Broker response loss after extension dispatch is attempted is also reported as unknown because the temporary activation/capture lifecycle may already have run. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown because temporary tab activation/restoration may already have occurred. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Cancellation observed before temporary activation prevents activation; if it arrives after confirmed temporary activation but before capture, capture is skipped and the previous active tab is restored when safely verifiable. After confirmed temporary activation, later capture or verification failures restore the previous active tab when safe while preserving a concurrent user tab switch; restoration revalidates that the baseline tab still belongs to the capture window before activating it. Once the restore activation API is invoked, a rejected response, returned window mismatch, or failed post-restore verification is an unknown active-tab outcome and callers must inspect browser_list_tabs before retrying; no same screenshot is replayed automatically. Successful results use the verified post-capture active-tab observation for title/URL provenance and report tab_metadata_verified=true. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Capture a PNG screenshot of the active browser tab or viewport. Supports full page, clipping rects, and visual mark overlays. Returns image metadata and base64 payload.
 
 | Contract field | Value |
 |---|---|
@@ -2107,14 +2728,25 @@ Capture the visible area of the active or selected tab from the paired existing 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "screenshot": {
+    "tab_id": {
+      "type": "integer"
+    },
+    "url": {
       "type": "string"
     },
-    "mimeType": {
+    "title": {
       "type": "string"
+    },
+    "tab_metadata_verified": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "tab_id",
+    "url"
+  ]
 }
 ```
 
@@ -2122,7 +2754,7 @@ Capture the visible area of the active or selected tab from the paired existing 
 
 **Upload browser files**
 
-Populate a browser file input from registered local resource files without returning file contents through MCP results. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the upload must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/file-input preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown upload outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before the file-input mutation skips that stage; once the page mutation starts, resulting input/change handlers are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-upload provenance is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Attach local workspace files to a file input element in the active browser tab via secure bridge staging. Requires existing local file paths.
 
 | Contract field | Value |
 |---|---|
@@ -2241,17 +2873,21 @@ Populate a browser file input from registered local resource files without retur
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
-      "type": "string"
+    "resource_names": {
+      "type": "array"
     },
-    "uploaded_files": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "resource_contents_exposed": {
+      "type": "boolean"
+    },
+    "ok": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "ok"
+  ]
 }
 ```
 
@@ -2259,7 +2895,7 @@ Populate a browser file input from registered local resource files without retur
 
 **Load agent context**
 
-Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Set include_symbol_outline=true or symbol_path to include a lightweight Repo Map symbol outline. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.
+Discover project instructions, skills, registered commands, and persistent memory. Use this when the caller needs the context itself rather than task-specific capability routing.
 
 | Contract field | Value |
 |---|---|
@@ -2312,6 +2948,53 @@ Discover the instruction, skill, and registered-command inventory for a target p
       "minimum": 1,
       "maximum": 500,
       "default": 100
+    },
+    "record_memory": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": [
+            "project_insights",
+            "ci_guidelines",
+            "user_preferences",
+            "notes"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "importance": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        }
+      },
+      "required": [
+        "category",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "forget_memory": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": [
+            "project_insights",
+            "ci_guidelines",
+            "user_preferences",
+            "notes"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
@@ -2323,26 +3006,74 @@ Discover the instruction, skill, and registered-command inventory for a target p
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "effective_instructions": {
+    "target": {
       "type": "string"
     },
+    "scope_root": {
+      "type": "string"
+    },
+    "precedence": {
+      "type": "string"
+    },
+    "config_files": {
+      "type": "array"
+    },
+    "builtin_instructions": {
+      "type": "object"
+    },
+    "automatic_project_context": {},
+    "model_instructions_file": {},
+    "instruction_files": {
+      "type": "array"
+    },
     "skills": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "skills_truncated": {
+      "type": "boolean"
+    },
+    "skill_warnings": {
+      "type": "array"
+    },
+    "instruction_warnings": {
+      "type": "array"
+    },
+    "instructions_truncated": {
+      "type": "boolean"
     },
     "commands": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
     },
-    "symbol_outline": {
+    "metadata_authority": {
       "type": "object"
+    },
+    "guidance": {
+      "type": "array"
+    },
+    "effective_instructions": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "target",
+    "scope_root",
+    "precedence",
+    "config_files",
+    "builtin_instructions",
+    "automatic_project_context",
+    "model_instructions_file",
+    "instruction_files",
+    "skills",
+    "skills_truncated",
+    "skill_warnings",
+    "instruction_warnings",
+    "instructions_truncated",
+    "commands",
+    "metadata_authority",
+    "guidance"
+  ]
 }
 ```
 
@@ -2392,14 +3123,35 @@ Search bounded SKILL.md or skill.md bundles from Codex-compatible and explicitly
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "target": {
+      "type": "string"
+    },
+    "scope_root": {
+      "type": "string"
+    },
+    "skill_roots": {
+      "type": "array"
+    },
     "skills": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "warnings": {
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "target",
+    "scope_root",
+    "skill_roots",
+    "skills",
+    "warnings",
+    "truncated"
+  ]
 }
 ```
 
@@ -2452,20 +3204,31 @@ Load one discovered local skill entrypoint and a bounded relative file inventory
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "skill": {
-      "type": "string"
+      "type": "object"
     },
     "instructions": {
       "type": "string"
     },
     "files": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "type": "array"
+    },
+    "files_truncated": {
+      "type": "boolean"
+    },
+    "execution_semantics": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "skill",
+    "instructions",
+    "files",
+    "files_truncated",
+    "execution_semantics"
+  ]
 }
 ```
 
@@ -2504,14 +3267,23 @@ List effective direct-argv commands from project manifests and safe automatic pa
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "target": {
+      "type": "string"
+    },
+    "scope_root": {
+      "type": "string"
+    },
     "commands": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
     }
-  }
+  },
+  "required": [
+    "target",
+    "scope_root",
+    "commands"
+  ]
 }
 ```
 
@@ -2519,7 +3291,7 @@ List effective direct-argv commands from project manifests and safe automatic pa
 
 **Run registered local command**
 
-Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.
+Prefer this when the repository already defines the desired operation as a registered command with fixed argv and working directory. A package script name is not implicitly registered. For multiple non-interactive commands, prefer one multi-step start_job to keep event density bounded.
 
 | Contract field | Value |
 |---|---|
@@ -2577,8 +3349,18 @@ Prefer this when the repository already defines the desired operation as a regis
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "exit_code": {
+    "name": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "timeout_seconds": {
+      "type": "integer"
+    },
+    "code": {
       "type": "integer"
     },
     "stdout": {
@@ -2587,10 +3369,23 @@ Prefer this when the repository already defines the desired operation as a regis
     "stderr": {
       "type": "string"
     },
-    "duration_ms": {
-      "type": "number"
+    "stdout_truncated_bytes": {
+      "type": "integer"
+    },
+    "stderr_truncated_bytes": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "name",
+    "cwd",
+    "timeout_seconds",
+    "code",
+    "stdout",
+    "stderr",
+    "stdout_truncated_bytes",
+    "stderr_truncated_bytes"
+  ]
 }
 ```
 
@@ -2622,14 +3417,15 @@ List filesystem roots exposed by the active local policy. The default full profi
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "roots": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
     }
-  }
+  },
+  "required": [
+    "roots"
+  ]
 }
 ```
 
@@ -2667,17 +3463,23 @@ List direct children of a workspace directory.
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "path": {
       "type": "string"
     },
     "entries": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "truncated": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "path",
+    "entries",
+    "truncated"
+  ]
 }
 ```
 
@@ -2725,20 +3527,23 @@ Recursively list files under a workspace path with bounded traversal and output.
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "path": {
       "type": "string"
     },
     "files": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "type": "array"
     },
     "truncated": {
       "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "path",
+    "files",
+    "truncated"
+  ]
 }
 ```
 
@@ -2778,6 +3583,11 @@ Read a UTF-8 regular file or an inclusive 1-based line range. Files exceeding 30
       "minimum": 1,
       "maximum": 5242880,
       "default": 1048576
+    },
+    "with_line_numbers": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, format returned content with 1-based line numbers prefixed as line | content."
     }
   },
   "required": [
@@ -2792,23 +3602,50 @@ Read a UTF-8 regular file or an inclusive 1-based line range. Files exceeding 30
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "path": {
-      "type": "string"
-    },
-    "content": {
       "type": "string"
     },
     "size": {
       "type": "integer"
     },
+    "sha256": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "start_line": {
+      "type": "integer"
+    },
+    "end_line": {
+      "type": "integer"
+    },
+    "total_lines": {
+      "type": "integer"
+    },
+    "complete": {
+      "type": "boolean"
+    },
     "truncated": {
       "type": "boolean"
     },
-    "encoding": {
-      "type": "string"
+    "next_start_line": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "path",
+    "size",
+    "sha256",
+    "content",
+    "start_line",
+    "end_line",
+    "total_lines",
+    "complete",
+    "truncated"
+  ]
 }
 ```
 
@@ -2848,20 +3685,27 @@ Read a bounded PNG, JPEG, GIF, or WebP image from the workspace and return nativ
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "path": {
       "type": "string"
     },
-    "mimeType": {
-      "type": "string"
-    },
-    "base64": {
-      "type": "string"
-    },
     "size": {
       "type": "integer"
+    },
+    "sha256": {
+      "type": "string"
+    },
+    "mime_type": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "path",
+    "size",
+    "sha256",
+    "mime_type"
+  ]
 }
 ```
 
@@ -2913,17 +3757,27 @@ Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 pr
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "ok": {
+      "type": "boolean"
+    },
     "path": {
       "type": "string"
     },
-    "bytes_written": {
-      "type": "integer"
+    "sha256": {
+      "type": "string"
     },
-    "created": {
-      "type": "boolean"
+    "bytes": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "ok",
+    "path",
+    "sha256",
+    "bytes"
+  ]
 }
 ```
 
@@ -2980,17 +3834,35 @@ Atomically replace a text fragment in one UTF-8 file while keeping the destinati
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "ok": {
+      "type": "boolean"
+    },
     "path": {
       "type": "string"
     },
     "replacements": {
       "type": "integer"
     },
-    "bytes_written": {
+    "sha256": {
+      "type": "string"
+    },
+    "bytes": {
       "type": "integer"
+    },
+    "matched": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "ok",
+    "path",
+    "replacements",
+    "sha256",
+    "bytes",
+    "matched"
+  ]
 }
 ```
 
@@ -2998,7 +3870,7 @@ Atomically replace a text fragment in one UTF-8 file while keeping the destinati
 
 **Apply structured patch**
 
-Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Hunk context must match exactly, including indentation. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.
+Atomically apply unified diff hunks across one or more files with collision checks, validation, and SHA-256 verification. Fails cleanly without partial file mutations.
 
 | Contract field | Value |
 |---|---|
@@ -3032,17 +3904,19 @@ Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "path": {
-      "type": "string"
-    },
-    "status": {
-      "type": "string"
-    },
-    "patched": {
+    "ok": {
       "type": "boolean"
+    },
+    "files": {
+      "type": "array"
     }
-  }
+  },
+  "required": [
+    "ok",
+    "files"
+  ]
 }
 ```
 
@@ -3050,7 +3924,7 @@ Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or 
 
 **Search text**
 
-Search UTF-8 text files under a workspace path for a literal substring. Supports a relative glob, case sensitivity, and bounded surrounding lines. Generated and dependency directories (.git, node_modules, dist, build, coverage, .next, .turbo, .wrangler, Python caches, and virtual environments) are ignored by default; set include_ignored=true to traverse them. Reports skipped_files and truncated=true when candidate files are skipped because of read limits, hard-link protection, unsafe file types, or delegated sensitive-path restrictions.
+Search text files across the workspace using literal strings or regular expressions. Supports path filtering, case sensitivity, max matches, and line pagination.
 
 | Contract field | Value |
 |---|---|
@@ -3119,20 +3993,35 @@ Search UTF-8 text files under a workspace path for a literal substring. Supports
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "matches": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+    "query": {
+      "type": "string"
     },
-    "total_matches": {
+    "root": {
+      "type": "string"
+    },
+    "matches": {
+      "type": "array"
+    },
+    "visited_files": {
+      "type": "integer"
+    },
+    "skipped_files": {
       "type": "integer"
     },
     "truncated": {
       "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "query",
+    "root",
+    "matches",
+    "visited_files",
+    "skipped_files",
+    "truncated"
+  ]
 }
 ```
 
@@ -3171,32 +4060,39 @@ Return bounded Git porcelain status for the repository containing a workspace pa
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "branch": {
+    "code": {
+      "type": "integer"
+    },
+    "stdout": {
       "type": "string"
     },
-    "clean": {
-      "type": "boolean"
+    "stderr": {
+      "type": "string"
     },
-    "staged": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "stdout_truncated_bytes": {
+      "type": "integer"
     },
-    "unstaged": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "stderr_truncated_bytes": {
+      "type": "integer"
     },
-    "untracked": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+    "path": {
+      "type": "string"
+    },
+    "gitRoot": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "code",
+    "stdout",
+    "stderr",
+    "stdout_truncated_bytes",
+    "stderr_truncated_bytes",
+    "path",
+    "gitRoot"
+  ]
 }
 ```
 
@@ -3234,6 +4130,10 @@ Return bounded unified Git diff with external diff, text conversion, and filesys
       "minimum": 1,
       "maximum": 5242880,
       "default": 1048576
+    },
+    "with_line_numbers": {
+      "type": "boolean",
+      "default": false
     }
   },
   "additionalProperties": false
@@ -3245,14 +4145,43 @@ Return bounded unified Git diff with external diff, text conversion, and filesys
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "diff": {
+    "code": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stdout_truncated_bytes": {
+      "type": "integer"
+    },
+    "stderr_truncated_bytes": {
+      "type": "integer"
+    },
+    "path": {
+      "type": "string"
+    },
+    "gitRoot": {
       "type": "string"
     },
     "staged": {
       "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "code",
+    "stdout",
+    "stderr",
+    "stdout_truncated_bytes",
+    "stderr_truncated_bytes",
+    "path",
+    "gitRoot",
+    "staged"
+  ]
 }
 ```
 
@@ -3301,14 +4230,31 @@ Return recent commits in a bounded, machine-readable format. Author email addres
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "code": {
+      "type": "integer"
+    },
+    "stderr": {
+      "type": "string"
+    },
     "commits": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "path": {
+      "type": "string"
+    },
+    "gitRoot": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "code",
+    "stderr",
+    "commits",
+    "path",
+    "gitRoot"
+  ]
 }
 ```
 
@@ -3347,6 +4293,10 @@ Return bounded metadata and patch output for one revision without running reposi
       "minimum": 1,
       "maximum": 5242880,
       "default": 1048576
+    },
+    "with_line_numbers": {
+      "type": "boolean",
+      "default": false
     }
   },
   "additionalProperties": false
@@ -3358,14 +4308,43 @@ Return bounded metadata and patch output for one revision without running reposi
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "commit": {
-      "type": "object"
+    "code": {
+      "type": "integer"
     },
-    "diff": {
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stdout_truncated_bytes": {
+      "type": "integer"
+    },
+    "stderr_truncated_bytes": {
+      "type": "integer"
+    },
+    "revision": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "gitRoot": {
       "type": "string"
     }
-  }
+  },
+  "required": [
+    "code",
+    "stdout",
+    "stderr",
+    "stdout_truncated_bytes",
+    "stderr_truncated_bytes",
+    "revision",
+    "path",
+    "gitRoot"
+  ]
 }
 ```
 
@@ -3412,20 +4391,27 @@ Create one local Git commit from the repository's existing staged index. This to
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "commit": {
-      "type": "string"
-    },
-    "branch": {
-      "type": "string"
-    },
-    "summary": {
-      "type": "string"
-    },
-    "files_changed": {
+    "code": {
       "type": "integer"
+    },
+    "committed": {
+      "type": "boolean"
+    },
+    "path": {
+      "type": "string"
+    },
+    "gitRoot": {
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "code",
+    "committed",
+    "path",
+    "gitRoot"
+  ]
 }
 ```
 
@@ -3433,7 +4419,7 @@ Create one local Git commit from the repository's existing staged index. This to
 
 **Run process directly**
 
-Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.
+Run an explicit executable plus argv with no shell syntax needed and no registered command fitting. Bypasses shell quoting and globbing. For multiple commands, prefer one multi-step start_job.
 
 | Contract field | Value |
 |---|---|
@@ -3484,8 +4470,9 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "exit_code": {
+    "code": {
       "type": "integer"
     },
     "stdout": {
@@ -3494,10 +4481,20 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
     "stderr": {
       "type": "string"
     },
-    "duration_ms": {
-      "type": "number"
+    "stdout_truncated_bytes": {
+      "type": "integer"
+    },
+    "stderr_truncated_bytes": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "code",
+    "stdout",
+    "stderr",
+    "stdout_truncated_bytes",
+    "stderr_truncated_bytes"
+  ]
 }
 ```
 
@@ -3505,7 +4502,7 @@ Run an explicit executable plus argv when no shell syntax is needed and no regis
 
 **Start process session**
 
-Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly. Process sessions are daemon-lifetime state: use start_job/read_job when work must survive a Machine Bridge daemon restart, service replacement, or MCP disconnect. For an authorized remote call on macOS, a successfully admitted session keeps an idle-sleep assertion for the child lifetime; this does not override explicit sleep or lid-close behavior. Remote OAuth process-session access is owner-only because arbitrary executables can read workspace credentials.
+Launch an asynchronous long-running process session in the background with streaming I/O handles. Use read_process and write_process to interact with stdin/stdout/stderr.
 
 | Contract field | Value |
 |---|---|
@@ -3546,17 +4543,49 @@ Start a direct argv process without a shell and retain bounded stdout, stderr, a
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "session_id": {
       "type": "string"
     },
-    "pid": {
+    "command": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "running": {
+      "type": "boolean"
+    },
+    "exit_code": {},
+    "signal": {},
+    "stdin_closed": {
+      "type": "boolean"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "closed_at": {},
+    "stdout_offset": {
       "type": "integer"
     },
-    "status": {
-      "type": "string"
+    "stderr_offset": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "session_id",
+    "command",
+    "cwd",
+    "running",
+    "exit_code",
+    "signal",
+    "stdin_closed",
+    "started_at",
+    "closed_at",
+    "stdout_offset",
+    "stderr_offset"
+  ]
 }
 ```
 
@@ -3622,23 +4651,57 @@ Read bounded stdout and stderr deltas from a running process session or a recent
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "session_id": {
       "type": "string"
     },
-    "stdout": {
+    "command": {
       "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "running": {
+      "type": "boolean"
+    },
+    "exit_code": {},
+    "signal": {},
+    "stdin_closed": {
+      "type": "boolean"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "closed_at": {},
+    "stdout_offset": {
+      "type": "integer"
+    },
+    "stderr_offset": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "object"
     },
     "stderr": {
-      "type": "string"
-    },
-    "status": {
-      "type": "string"
-    },
-    "exit_code": {
-      "type": "integer"
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "session_id",
+    "command",
+    "cwd",
+    "running",
+    "exit_code",
+    "signal",
+    "stdin_closed",
+    "started_at",
+    "closed_at",
+    "stdout_offset",
+    "stderr_offset",
+    "stdout",
+    "stderr"
+  ]
 }
 ```
 
@@ -3686,14 +4749,53 @@ Write bounded UTF-8 data to a live process session and optionally close its stdi
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "session_id": {
       "type": "string"
     },
+    "command": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "running": {
+      "type": "boolean"
+    },
+    "exit_code": {},
+    "signal": {},
+    "stdin_closed": {
+      "type": "boolean"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "closed_at": {},
+    "stdout_offset": {
+      "type": "integer"
+    },
+    "stderr_offset": {
+      "type": "integer"
+    },
     "bytes_written": {
       "type": "integer"
     }
-  }
+  },
+  "required": [
+    "session_id",
+    "command",
+    "cwd",
+    "running",
+    "exit_code",
+    "signal",
+    "stdin_closed",
+    "started_at",
+    "closed_at",
+    "stdout_offset",
+    "stderr_offset",
+    "bytes_written"
+  ]
 }
 ```
 
@@ -3737,17 +4839,59 @@ Terminate a live server-managed process tree with graceful or forced termination
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "session_id": {
       "type": "string"
     },
-    "killed": {
+    "command": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "running": {
       "type": "boolean"
     },
-    "signal": {
+    "exit_code": {},
+    "signal": {},
+    "stdin_closed": {
+      "type": "boolean"
+    },
+    "started_at": {
       "type": "string"
-    }
-  }
+    },
+    "closed_at": {},
+    "stdout_offset": {
+      "type": "integer"
+    },
+    "stderr_offset": {
+      "type": "integer"
+    },
+    "termination_requested": {
+      "type": "boolean"
+    },
+    "force": {
+      "type": "boolean"
+    },
+    "force_after_ms": {}
+  },
+  "required": [
+    "session_id",
+    "command",
+    "cwd",
+    "running",
+    "exit_code",
+    "signal",
+    "stdin_closed",
+    "started_at",
+    "closed_at",
+    "stdout_offset",
+    "stderr_offset",
+    "termination_requested",
+    "force",
+    "force_after_ms"
+  ]
 }
 ```
 
@@ -3755,7 +4899,7 @@ Terminate a live server-managed process tree with graceful or forced termination
 
 **Diagnose runtime layers**
 
-Run fixed, non-user-controlled local probes and return privacy-safe control-plane state to distinguish MCP policy, local filesystem, process-spawn, shell, managed-job storage, resource-admission, relay, event-density, and operating-system-suspension evidence. Owner/local diagnostics include bounded managed-job churn, content-free recent security-audit tool-call aggregates, bounded resource-waiter summaries with current pre-spawn admission reasons, and on macOS bounded sleep-history correlation for both runtime stalls and the most recently recovered relay outage; they never expose tool arguments/results, waiter IDs/tokens/PIDs, private paths, or raw power logs. A successful response proves the request reached the local daemon; it cannot diagnose a host refusal that blocks the tool call itself or observe ChatGPT final-message receipt.
+Inspect local Machine Bridge runtime health, active daemon status, background jobs, resource coordinator, network connectivity, and policy boundaries.
 
 | Contract field | Value |
 |---|---|
@@ -3779,20 +4923,39 @@ Run fixed, non-user-controlled local probes and return privacy-safe control-plan
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "status": {
-      "type": "string"
-    },
-    "healthy": {
+    "request_reached_local_runtime": {
       "type": "boolean"
     },
-    "layers": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+    "interpretation": {
+      "type": "object"
+    },
+    "policy": {
+      "type": "object"
+    },
+    "observability": {
+      "type": "object"
+    },
+    "runtime": {
+      "type": "object"
+    },
+    "checks": {
+      "type": "array"
+    },
+    "ok": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "request_reached_local_runtime",
+    "interpretation",
+    "policy",
+    "observability",
+    "runtime",
+    "checks",
+    "ok"
+  ]
 }
 ```
 
@@ -3824,14 +4987,27 @@ List names and validation status for locally registered file resources without r
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "resources": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "values_exposed": {
+      "type": "boolean"
+    },
+    "paths_exposed": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "resources",
+    "count",
+    "values_exposed",
+    "paths_exposed"
+  ]
 }
 ```
 
@@ -3884,17 +5060,51 @@ Generate or reuse an Ed25519 SSH key pair on the local machine and register the 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "resource": {
+    "name": {
       "type": "string"
     },
-    "public_key": {
-      "type": "string"
+    "created": {
+      "type": "boolean"
+    },
+    "registered": {
+      "type": "boolean"
     },
     "fingerprint": {
       "type": "string"
+    },
+    "key_type": {
+      "type": "string"
+    },
+    "private_mode": {
+      "type": "string"
+    },
+    "public_mode": {
+      "type": "string"
+    },
+    "private_key_content_exposed": {
+      "type": "boolean"
+    },
+    "available_to_new_jobs_immediately": {
+      "type": "boolean"
+    },
+    "paths_exposed": {
+      "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "name",
+    "created",
+    "registered",
+    "fingerprint",
+    "key_type",
+    "private_mode",
+    "public_mode",
+    "private_key_content_exposed",
+    "available_to_new_jobs_immediately",
+    "paths_exposed"
+  ]
 }
 ```
 
@@ -3902,7 +5112,7 @@ Generate or reuse an Ed25519 SSH key pair on the local machine and register the 
 
 **Stage managed job draft**
 
-Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan. Optional depends_on declares existing executable managed-job dependencies so durable orchestration can use terminal job state instead of blind file polling; staged or already-failed dependencies are rejected. Main and finally steps default to 600 seconds and may explicitly request up to 21600 seconds (six hours), so one continuous command can exceed 100 minutes without artificial step splitting.
+Stage and validate a multi-step managed job definition without executing it. Checks step parameters, dependencies, resource bindings, and syntax before execution.
 
 | Contract field | Value |
 |---|---|
@@ -4114,14 +5324,47 @@ Validate and persist a durable managed-job draft without starting any process. T
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "staged": {
+      "type": "boolean"
+    },
     "job_id": {
       "type": "string"
     },
-    "stage": {
+    "name": {
       "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "execution_started": {
+      "type": "boolean"
+    },
+    "plan_sha256": {
+      "type": "string"
+    },
+    "dependency_total": {
+      "type": "integer"
+    },
+    "continuation": {
+      "type": "string"
+    },
+    "plan_expires_after_hours": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "staged",
+    "job_id",
+    "name",
+    "status",
+    "execution_started",
+    "plan_sha256",
+    "dependency_total",
+    "continuation",
+    "plan_expires_after_hours"
+  ]
 }
 ```
 
@@ -4129,7 +5372,7 @@ Validate and persist a durable managed-job draft without starting any process. T
 
 **Start managed job**
 
-Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, guaranteed-attempt finally steps, and optional depends_on links to existing managed jobs. The independent local runner continues if the MCP connection disappears. Dependencies are evaluated from durable managed-job terminal state rather than blind artifact polling: while an upstream job is active the dependent job remains queued in current_phase=dependency_wait without spawning its main child, then proceeds after all dependencies succeed or terminates with error_class=dependency_failed if an upstream later fails. A transient dependency-state read classified as permission_denied, identity_changed, or generic resource_unavailable receives a fixed 45-second recovery grace; one successful read clears that grace, while persistent unavailability fails closed as dependency_unavailable and missing/integrity/witness-invalid evidence remains immediate failure. Staged or already-failed dependencies are rejected before acceptance. On macOS, an authorized remote account job keeps a runner-owned idle-sleep assertion only after the runner ownership claim is confirmed and persisted account ownership is validated, then through dependency wait, admission, steps, cleanup, and terminal persistence; local managed jobs do not acquire this remote-continuity assertion, and it does not override explicit sleep or lid-close behavior. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments. Each main/finally step defaults to 600 seconds and may explicitly request up to 21600 seconds (six hours); use this managed-job surface when one continuous command legitimately needs more than the 600-second durable one-step process limit. Hosted start_job keeps the original response open for the short initial-settlement window advertised by server_info.tool_delivery. If the accepted job reaches terminal state inside that window, the same response includes its terminal result with follow_up_read_required=false; otherwise it preserves the original job_id/recovery envelope with follow_up_read_required=true and normal read_job continuation. This response coalescing does not change durable ownership, dependency waiting, resource admission, or step execution deadlines. For one coherent non-interactive workflow, prefer one multi-step managed job over a chain of one-step process carriers so host-visible event density stays bounded. Do not split a long task merely to satisfy an assumed host deadline, and do not use the user as a polling clock. Optional continuation_mode=task_supervisor is a narrow durable-task ownership declaration: use it only when this job's own reviewed plan already encapsulates all remaining noninteractive task work. Machine Bridge validates the persisted declaration, active state, and current monitor claim but cannot infer conversation-level completeness; that completeness is an owner/caller semantic assertion. It does not grant the Job Monitor execution authority and must be omitted for ordinary child jobs.
+Durably accept an asynchronous multi-step managed job with ordered steps, temporary files, cleanup guarantees, and depends_on links. Evaluates dependencies from durable terminal state and deduplicates retries via idempotency_key. For multiple non-interactive commands, prefer one multi-step start_job to keep host-visible event density bounded; conversation-level task completeness is an owner/caller semantic assertion.
 
 | Contract field | Value |
 |---|---|
@@ -4352,20 +5595,59 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
     "job_id": {
       "type": "string"
     },
-    "recovery_key": {
+    "name": {
       "type": "string"
     },
     "status": {
       "type": "string"
     },
-    "follow_up_read_required": {
+    "detached": {
       "type": "boolean"
+    },
+    "continues_without_mcp_connection": {
+      "type": "boolean"
+    },
+    "approval": {
+      "type": "string"
+    },
+    "plan_sha256": {
+      "type": "string"
+    },
+    "dependency_total": {
+      "type": "integer"
+    },
+    "dependency_pending_count": {
+      "type": "integer"
+    },
+    "recovery": {
+      "type": "object"
+    },
+    "cleanup": {
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "accepted",
+    "job_id",
+    "name",
+    "status",
+    "detached",
+    "continues_without_mcp_connection",
+    "approval",
+    "plan_sha256",
+    "dependency_total",
+    "dependency_pending_count",
+    "recovery",
+    "cleanup"
+  ]
 }
 ```
 
@@ -4373,7 +5655,7 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
 
 **List managed jobs**
 
-List detached managed-job recovery state without returning step output. The primary jobs array remains capped at 50 and prioritizes unreadable, active, staged, and durable terminal recovery state before transient one-step helper history so helper churn cannot hide an older recoverable long-running job or its terminal result. A hosted one-step process whose current response still requires read_job continuation is non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace. If all 512 retained states are non-evictable, new admission returns typed retryable limit_exceeded backpressure instead of deleting promised recovery evidence. Once Machine Bridge produces a terminal hosted response for that helper, whether during initial settlement or a later read_job, it drops to the shorter 30-minute bounded newest-16 transient delivery reserve; a still-pending result becomes removable after its 24-hour grace expires. recent_process_recovery remains capped at 16 additional authority-visible public job handles, prioritizes retained follow-up-required helpers when they are omitted from the primary window, and returns no step output or internal retention metadata. This is bounded recovery discovery only: it is not an MCP terminal-result replay/session store and must not be used for polling. The durable retained-state store is larger than these response windows. Owner/local callers also receive coarse retained-state capacity including durable-versus-transient terminal counts plus recent job-creation/churn aggregates without internal retired filenames, filesystem identities, argv, paths, or output.
+List recent managed jobs across active, settled, and retained states. Filters by status, principal, or tag. A hosted one-step process whose current response still requires read_job continuation is non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace. Returns summary metadata without loading large step outputs.
 
 | Contract field | Value |
 |---|---|
@@ -4405,14 +5687,33 @@ List detached managed-job recovery state without returning step output. The prim
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "jobs": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
+      "type": "array"
+    },
+    "recent_process_recovery": {
+      "type": "array"
+    },
+    "retained": {
+      "type": "integer"
+    },
+    "maximum": {
+      "type": "integer"
+    },
+    "capacity": {
+      "type": "object"
+    },
+    "recent_activity": {
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "jobs",
+    "recent_process_recovery",
+    "retained",
+    "maximum"
+  ]
 }
 ```
 
@@ -4420,7 +5721,7 @@ List detached managed-job recovery state without returning step output. The prim
 
 **Read managed job**
 
-Return one managed job status plus bounded, resource-redacted step results. current_phase=dependency_wait means an accepted dependent job is waiting locally for declared depends_on jobs and has not spawned its main child; dependency_pending_count decreases as upstream jobs settle, all-success releases execution, and a later upstream failure terminates the dependent with result.error_class=dependency_failed. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Hosted active reads are server-paced: terminal settlement returns on the next bounded poll, nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. This reduces host-visible event density without shortening the managed job. A planned local-daemon restart settles an in-flight hosted read_job as retryable unavailable with recovery.mode=read_same_job and the original job_id; hosted callers must also retain the recovery_key issued with acceptance and recover by reading that same job_id plus recovery_key after reconnect, never by resubmitting its business side effect. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.
+Return one managed job status plus bounded step results. In dependency_wait or resource_admission phases, children have not spawned yet; nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. Use job_id plus recovery_key for recovery.
 
 | Contract field | Value |
 |---|---|
@@ -4460,23 +5761,81 @@ Return one managed job status plus bounded, resource-redacted step results. curr
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "job_id": {
+      "type": "string"
+    },
+    "name": {
       "type": "string"
     },
     "status": {
       "type": "string"
     },
-    "exit_code": {
+    "created_at": {
+      "type": "string"
+    },
+    "started_at": {},
+    "finished_at": {},
+    "current_phase": {},
+    "current_step": {},
+    "approval": {
+      "type": "string"
+    },
+    "plan_sha256": {
+      "type": "string"
+    },
+    "cleanup_guarantee": {
+      "type": "string"
+    },
+    "error_class": {},
+    "cleanup_error_class": {},
+    "recovery_attempts": {
       "type": "integer"
     },
-    "stdout": {
-      "type": "string"
+    "recovery_history": {
+      "type": "array"
     },
-    "stderr": {
-      "type": "string"
+    "recovery_history_complete": {
+      "type": "boolean"
+    },
+    "result_persisted": {},
+    "terminal_record_error_class": {},
+    "artifact_cleanup_pending": {
+      "type": "boolean"
+    },
+    "artifact_cleanup_error_class": {},
+    "dependency_total": {
+      "type": "integer"
+    },
+    "dependency_pending_count": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "job_id",
+    "name",
+    "status",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "current_phase",
+    "current_step",
+    "approval",
+    "plan_sha256",
+    "cleanup_guarantee",
+    "error_class",
+    "cleanup_error_class",
+    "recovery_attempts",
+    "recovery_history",
+    "recovery_history_complete",
+    "result_persisted",
+    "terminal_record_error_class",
+    "artifact_cleanup_pending",
+    "artifact_cleanup_error_class",
+    "dependency_total",
+    "dependency_pending_count"
+  ]
 }
 ```
 
@@ -4517,14 +5876,99 @@ Request cancellation of a detached managed job. The runner terminates the active
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
     "job_id": {
       "type": "string"
     },
-    "cancelled": {
+    "name": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "started_at": {},
+    "finished_at": {
+      "type": "string"
+    },
+    "current_phase": {},
+    "current_step": {},
+    "approval": {
+      "type": "string"
+    },
+    "plan_sha256": {
+      "type": "string"
+    },
+    "cleanup_guarantee": {
+      "type": "string"
+    },
+    "error_class": {
+      "type": "string"
+    },
+    "cleanup_error_class": {},
+    "recovery_attempts": {
+      "type": "integer"
+    },
+    "recovery_history": {
+      "type": "array"
+    },
+    "recovery_history_complete": {
+      "type": "boolean"
+    },
+    "result_persisted": {
+      "type": "boolean"
+    },
+    "terminal_record_error_class": {},
+    "artifact_cleanup_pending": {
+      "type": "boolean"
+    },
+    "artifact_cleanup_error_class": {},
+    "dependency_total": {
+      "type": "integer"
+    },
+    "dependency_pending_count": {
+      "type": "integer"
+    },
+    "cancellation_requested": {
+      "type": "boolean"
+    },
+    "cleanup_will_run": {
+      "type": "boolean"
+    },
+    "execution_started": {
       "type": "boolean"
     }
-  }
+  },
+  "required": [
+    "job_id",
+    "name",
+    "status",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "current_phase",
+    "current_step",
+    "approval",
+    "plan_sha256",
+    "cleanup_guarantee",
+    "error_class",
+    "cleanup_error_class",
+    "recovery_attempts",
+    "recovery_history",
+    "recovery_history_complete",
+    "result_persisted",
+    "terminal_record_error_class",
+    "artifact_cleanup_pending",
+    "artifact_cleanup_error_class",
+    "dependency_total",
+    "dependency_pending_count",
+    "cancellation_requested",
+    "cleanup_will_run",
+    "execution_started"
+  ]
 }
 ```
 
@@ -4532,7 +5976,7 @@ Request cancellation of a detached managed job. The runner terminates the active
 
 **Execute shell command**
 
-Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the shell argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer one multi-step start_job or a repository umbrella command instead of a chain of one-step shell calls; this reduces host-visible event density without shortening execution.
+Execute Bash shell commands, pipelines, redirection, and conditionals in the workspace. Serves as a general escape hatch with operating-system authority. For multiple non-interactive commands, prefer one multi-step start_job to keep event density bounded.
 
 | Contract field | Value |
 |---|---|
@@ -4576,8 +6020,9 @@ Run Bash-compatible shell composition in the workspace: pipelines, redirection, 
 ```json
 {
   "type": "object",
+  "additionalProperties": true,
   "properties": {
-    "exit_code": {
+    "code": {
       "type": "integer"
     },
     "stdout": {
@@ -4586,10 +6031,20 @@ Run Bash-compatible shell composition in the workspace: pipelines, redirection, 
     "stderr": {
       "type": "string"
     },
-    "duration_ms": {
-      "type": "number"
+    "stdout_truncated_bytes": {
+      "type": "integer"
+    },
+    "stderr_truncated_bytes": {
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "code",
+    "stdout",
+    "stderr",
+    "stdout_truncated_bytes",
+    "stderr_truncated_bytes"
+  ]
 }
 ```
 

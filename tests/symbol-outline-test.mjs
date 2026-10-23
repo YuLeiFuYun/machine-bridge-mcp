@@ -181,4 +181,19 @@ const mcpContractSymbols = extractFileSymbols(mcpContractCode, "mcp-http-contrac
 assert(mcpContractSymbols.includes("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
 assert(mcpContractSymbols.includes("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
 
+// 8. Regression: long destructured signatures and `return /}/` must not hide symbols
+const longSignatureCode = [
+  "export function withLongParams(",
+  ...Array.from({ length: 20 }, (_, index) => `  arg${index},`),
+  ") {",
+  '  return /}/.test("x");',
+  "}",
+].join("\n");
+const longSignatureNames = extractFileSymbols(longSignatureCode, "long.mjs").symbols.map((s) => s.name);
+assert(longSignatureNames.includes("withLongParams"), "a signature spanning more than 12 lines must still be captured");
+
+const runtimeReportingCode = readFileSync(join(root, "src", "local", "runtime-reporting.mjs"), "utf8");
+const runtimeReportingNames = extractFileSymbols(runtimeReportingCode, "runtime-reporting.mjs").symbols.map((s) => s.name);
+assert(runtimeReportingNames.includes("buildRuntimeInfo"), "buildRuntimeInfo must survive a multi-line parameter list");
+
 console.log("symbol outline test ok");

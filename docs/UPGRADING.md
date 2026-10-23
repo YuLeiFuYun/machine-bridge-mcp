@@ -16,6 +16,7 @@ The following matrix records only transitions explicitly supported by the curren
 
 | Source version or state shape | Target | Supported behavior | Recovery if encountered outside that path |
 |---|---|---|---|
+| 3.0.0-beta.x runtime/state | 3.0.0 GA | Direct in-place upgrade. State formats (schema 3 for pairing, audit, and OAuth) are canonical in 3.0.0 GA. | Run `node scripts/release-check.mjs` and restart services. |
 | Version 2.x runtime/state | Version 3.x runtime | Mixed 2.x/3.x operation is unsupported. Use a release-specific migration and rollback plan; no general cross-major state-reader compatibility is promised. | Stop the upgrade and restore a complete compatible deployment snapshot rather than running mixed components. |
 | Beta.198 browser-pairing/OAuth state | Beta.199 | Beta.199 updates the exact beta.198 pairing writer in place without rotating pairing credentials or changing its port. A pending beta.198 pairing migration is not collapsed into the new schema; older OAuth refresh shapes must be normalized by the supported beta.198 path first. | Return to the documented beta.198 normalization path before upgrading. Do not delete pairing or OAuth state to force progress. |
 | Historical `transaction.lock/owner.json` directory mutex | Current owner-state regular-file format | No current reader migrates the directory format. The current runtime fails closed and leaves it unchanged. | Preserve the directory and either traverse a supported immediately preceding release path or restore the complete pre-upgrade rollback snapshot. |

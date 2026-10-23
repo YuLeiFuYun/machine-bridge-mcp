@@ -8,12 +8,40 @@ machine-mcp doctor
 machine-mcp service status
 ```
 
+### Executive Operations Cheatsheet
+
+| Operational Goal | Recommended Command / Tool | Purpose & Remedy |
+|---|---|---|
+| **Quick Health Check** | `machine-mcp status` | Verify local profile state, port bindings, and Worker deployment version |
+| **Comprehensive Diagnosis** | `machine-mcp doctor` | Verify Node.js, cf authentication, Worker health, and local security policy |
+| **Resource Coordinator Recovery** | `machine-mcp doctor --repair-resource-coordinator` | Safely clear stale staging residue, phantom hardlinks, and reclaimed transaction locks |
+| **Service Restart** | `machine-mcp service restart` | Smooth handoff and daemon restart without aborting active managed processes |
+| **Idle Sleep Assertion** | `machine-mcp idle-sleep set ac-continuous` | Prevent macOS sleep during long builds or jobs on AC power |
+| **Remote Health Observation** | `server_info(detail="summary")` | Token-efficient health check omitting noisy multi-principal telemetry |
+| **Interrupted Job Recovery** | `read_job(job_id=..., recovery_key=...)` | Settle and recover unconfirmed mutations using original credentials |
+
+### Quick Troubleshooting Decision Tree
+
+```
+Issue: Tool call or task fails
+ ├── Is error code "policy_denied"?
+ │    └── Do NOT retry with shell obfuscation or password guessing. Inspect unprivileged state via read_file/id.
+ ├── Is error code "mbm_resource_transaction_busy" or coordinator locked?
+ │    └── Run: machine-mcp doctor --repair-resource-coordinator
+ ├── Is connection refused or daemon disconnected?
+ │    └── Inspect service state: machine-mcp service status
+ │    └── Restart if stopped: machine-mcp service restart
+ └── Did job timeout or disconnect mid-flight?
+      └── Recover using read_job(job_id=..., recovery_key=...). Do NOT repeat the side-effect blindly.
+```
+
 Routine remote checks should use authenticated `server_info` with `detail: "summary"`; request the default/full projection only when the caller's authority permits and exact effective-tool, OAuth/account, or detailed owner observability is actually needed.
 Non-owner full responses intentionally retain hidden markers/counts instead of cross-principal activity, resource aliases, stable device-key identity, or daemon-only tool names.
 Remote `diagnose_runtime` is owner-only because its fixed probes expose machine-wide control-plane activity; narrower roles use `server_info`/`project_overview` for authority-scoped readiness and workspace state.
 `status` prints redacted profile state and verifies the deployed Worker version.
 Resource source paths remain redacted.
 `doctor` checks Node.js, the audited private cf binary, structured Cloudflare login, Worker health, the configured policy, the automatic-without-per-operation-prompts authorization model, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed to the remote owner by `diagnose_runtime`.
+It also reports resource-coordinator state that strict readers reject: multiply-linked lock/lease/waiter/protocol files, malformed JSON, and unexpected entries. `doctor --repair-resource-coordinator` is an explicit repair path: it removes only known desktop metadata, attributable staging residue, and phantom links whose content still validates; it never follows a symbolic link and reports an external visible second name for manual inspection.
 It constructs an isolated local runtime: `diagnosticScope.running_service_process_inspected=false` and `remote_relay_inspected=false` are deliberate, so a green doctor result is not evidence that the launchd/systemd/Scheduled Task daemon retained its Worker WebSocket.
 Inspect authenticated `server_info.daemon.relay_transport` for the running service relay.
 Authenticated `server_info.authorization.execution_model` reports the authority contract and identifies whether the account has daemon-OS-user ambient authority.
@@ -26,21 +54,16 @@ The `runtime-node-executable` check exposes only the executable provenance class
 The audit aggregate contains only counts, bounded tool names, failure totals, calls-per-minute density, and numeric result-pressure fields (`output_bytes_last_15m`, `maximum_output_bytes_last_15m`, `large_result_calls_last_15m`, and `peak_output_bytes_per_minute_last_15m`) derived from the existing content-free hash-chained audit log; it contains no tool arguments or result content.
 Its `coverage=daemon_reached_relay_tool_calls_only` and `host_side_events_observable=false` fields make the evidence boundary explicit: host-only discovery/control-plane/final-delivery events are not counted.
 The waiter projection reports only resource-request shape and the current admission reason.
-On macOS with shell-capable owner diagnostics, the fixed power probe selects actual timestamped `Sleep` records before applying the bounded tail, then reduces them to a small list of sleep start/end/duration/reason classes; it never returns raw power-log lines.
-The probe has a bounded 15-second execution budget so normal multi-second `pmset -g log` latency does not erase sleep evidence.
-If that bounded power-history probe is unavailable or times out, `runtime.system_sleep` remains `supported=true` with `available=false` and an `error_class`, while the `system-sleep-history` check is retained as skipped auxiliary causality evidence.
-That auxiliary evidence gap does not by itself make `diagnose_runtime.ok=false`; relay readiness, local filesystem/process/shell execution, managed-job storage, resource admission, and registered-resource availability remain health gates.
-`event_loop_pause_analysis.classification=matched_system_sleep` requires both the recorded runtime-stall end time and duration to match one of those bounded operating-system sleep intervals within a fixed tolerance.
-`relay_outage_analysis` separately compares the most recent completed `recent_outages[0].disconnected_at` -> `recent_outages[0].ready_at` interval with the same bounded sleep history and reports exact overlap duration/ratio; an active outage uses `outage_started_at` instead of the later `last_disconnected_at`.
-`majority_system_sleep_overlap` means at least half of that observed relay outage occurred while macOS was suspended.
-A sleeping JavaScript process may be unable to observe the stale socket until wake, so a zero-overlap close-to-ready interval is not automatically awake-network evidence: `wake_boundary_system_sleep_aftermath` is emitted only when the disconnect occurs within the fixed wake tolerance and that same sleep independently matches the event-loop stall in both end time and duration.
-Either sleep classification makes a retained `connection_reset`/timeout transport aftermath rather than sufficient evidence of a separate network root cause.
-`no_matching_recent_system_sleep` remains the classification for an awake reset or a merely coincidental near-wake reset without same-sleep stall evidence; it leaves the cause unassigned rather than guessing a VPN, edge, Worker, or host cause.
+On macOS with shell-capable owner diagnostics, a 15-second bounded power probe queries timestamped `Sleep` intervals via `pmset -g log` and classifies intervals by start/end/duration/reason without exposing raw logs.
+If unavailable or timed out, `runtime.system_sleep` reports `available=false` with an `error_class`, leaving primary readiness gates intact.
+`event_loop_pause_analysis.classification=matched_system_sleep` correlates runtime stalls with OS sleep intervals within fixed tolerances.
+`relay_outage_analysis` computes sleep overlap across the latest outage; `majority_system_sleep_overlap` indicates >=50% sleep coverage, while `wake_boundary_system_sleep_aftermath` captures near-wake disconnects matching event-loop pauses.
+`no_matching_recent_system_sleep` leaves unverified causes unassigned.
 Full relay diagnostics additionally expose `recent_outages`, a newest-first in-memory history capped at eight completed WebSocket reconnect episodes.
 Each entry also carries `https_fallback_taken_over` and bounded `https_fallback_takeover_ms`, attributed by the stable WebSocket outage number; a later fallback takeover cannot relabel an earlier or no-takeover episode.
 The top-level `https_fallback_last_takeover_outage_number` is only a bounded correlation aid for the latest takeover and must not be applied to another outage number.
 Each entry contains only bounded outage numbering, first/final disconnect and ready timestamps, duration, close/error classes, previous-ready duration/silence, first-disconnect liveness phase/timing, coarse application-route class, and connection-stage timings.
-`disconnected_at` is the first outage transition and `last_disconnect_at` is the final failed reconnect transition.
+`disconnected_at` is the first outage transition and `last_disconnect_at` is the final failed reconnect/close transition.
 A protocol/application Pong that clears a liveness suspicion without rebuilding the WebSocket remains heartbeat evidence and is deliberately absent from `recent_outages`; the array is therefore reconnect history, not a list of every transient transport suspicion.
 ChatGPT host-turn termination/final-message receipt remains explicitly unobservable.
 
@@ -404,29 +427,14 @@ Migration ownership stays inside `machine-mcp workspace migrate` and the normal 
 Even a proven-empty destination shell is not pruned until provider inactivity and source job/lock quiescence have been established; if it becomes populated before the empty-directory removal, migration fails closed.
 A populated destination profile is never an empty shell and is never merged or recursively cleared.
 
-The daemon honors `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` through standard environment-proxy resolution for remote Worker health and ordinary relay traffic.
-`wss:` targets use HTTPS proxy selection and `ws:` targets use HTTP proxy selection.
-`MBM_RELAY_PROXY` is a relay-only primary override for deployments that need a stable egress boundary: when it is non-empty, WebSocket relay construction and, by default, the signed HTTP fallback use that exact HTTP(S) proxy instead of consulting `HTTPS_PROXY`/`HTTP_PROXY` or `NO_PROXY`.
-`MBM_RELAY_FALLBACK_PROXY` is an optional fallback-only override.
-When it is non-empty, signed HTTP uses that exact proxy independently of `MBM_RELAY_PROXY`; when the key is present with an empty value, signed HTTP returns to standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` resolution while WebSocket continues using its primary route.
-A connection failure through a selected route follows normal relay recovery and never silently retries the same transport through an unconfigured direct path.
-Setting `MBM_RELAY_PROXY` itself explicitly to an empty value continues to restore the standard environment-proxy model for the primary route.
-
-To isolate relay continuity from an operating-system VPN/TUN, point `MBM_RELAY_PROXY` at a loopback-only sidecar and configure that sidecar to bind its upstream proxy socket to the intended physical/network interface.
-If continuity also requires an application-layer route that does not share that sidecar, configure `MBM_RELAY_FALLBACK_PROXY` separately; an empty fallback value is useful only when the standard system/env-proxy route is intentionally the desired alternate path.
-Machine Bridge deliberately does not implement proxy protocols beyond HTTP CONNECT and does not bind the sidecar's upstream socket itself.
-Therefore a remote proxy value can still be routed through an operating-system tunnel, and `system-network-stack` does not prove tunnel bypass.
-DNS for each explicit upstream proxy remains that proxy/sidecar's responsibility.
-Avoid a second system TUN solely for Machine Bridge, because competing default-route ownership recreates the same failure class at another layer.
-
-Only HTTP and HTTPS proxy URLs are accepted.
-Invalid URLs or unsupported protocols fail startup with corrective guidance instead of entering the reconnect loop.
-Remote-owner `diagnose_runtime.runtime.relay.network_route` reports the resulting coarse application route, while local stdio `server_info.runtime.relay.network_route` reports `system-network-stack`, `application-http-proxy`, or `invalid-application-proxy-configuration`.
-The route remains `application-http-proxy` for either standard or dedicated proxy selection so diagnostics do not reveal proxy identity.
-This field describes only Machine Bridge application-level proxy selection: an operating-system VPN/TUN may still intercept `system-network-stack` traffic or the route to a remotely addressed proxy.
-`network_route_scope`, outage timestamps/durations, close category/code, transport error class, and next retry timing make that distinction explicit; proxy endpoints and credentials are never returned or logged.
-Worker deployment health continues to use standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`; set those separately when the deployment-health path also requires a proxy.
-The browser-broker CLI health probe is a separate loopback-only path: it accepts only canonical `127.0.0.1`, uses direct Node HTTP with no proxy agent, and does not depend on `NO_PROXY`.
+The daemon honors standard `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` resolution for Worker health and relay transport (`wss:` uses HTTPS proxy; `ws:` uses HTTP proxy).
+`MBM_RELAY_PROXY` provides a relay-specific primary override; non-empty values bypass environment proxy resolution for WebSocket and default signed HTTP fallback.
+`MBM_RELAY_FALLBACK_PROXY` provides an optional fallback override for signed HTTP.
+Connection failures adhere to normal backoff and never retry over unconfigured direct interfaces.
+To isolate relay traffic from OS VPN/TUN interfaces, point `MBM_RELAY_PROXY` at a loopback sidecar bound to the desired physical adapter.
+Only HTTP/HTTPS proxy URLs are accepted; invalid protocols fail startup with actionable guidance.
+`server_info.runtime.relay.network_route` and `diagnose_runtime` report coarse classifications (`system-network-stack`, `application-http-proxy`, or `invalid-application-proxy-configuration`) without exposing credentials or endpoints.
+Worker deployment health probes respect separate standard environment proxies, while browser broker health strictly targets loopback `127.0.0.1` without proxy intervention.
 
 ## Browser extension setup and diagnosis
 
@@ -640,7 +648,7 @@ Never substitute the candidate CLI for that older runtime before remote transiti
 In addition to tools dispatch (`tools/list`, `tools/call`), Machine Bridge projects standard MCP 2026 operations across both local stdio and authenticated remote Cloudflare Worker relay:
 
 - **MCP Tasks (`tasks/get`, `tasks/update`, `tasks/cancel`)**:
-  The authenticated remote Worker advertises the `io.modelcontextprotocol/tasks` extension. A client must include that extension capability in each request before eligible asynchronous `tools/call` requests can receive a durable task handle. `tasks/get` reads owner-bound status and the terminal tool result; `tasks/cancel` requests cancellation and acknowledges the request without claiming it has already settled. `tasks/update` accepts the extension response object, but this server does not currently issue client-input requests. Task records expire after their declared TTL. Terminal results are copied into task storage when a client polls after completion, provided the serialized result fits the declared per-task and aggregate storage budgets; clients should continue polling until a terminal state is returned. If `read_job` returns `not_found` before a terminal result has been persisted (for example, because the backing managed-job record was evicted), the next `tasks/get` marks the task failed with an explicit result-unavailable error rather than leaving it permanently `working` or claiming an unavailable result; the missing result cannot be reconstructed. The local stdio server does not advertise this extension; use `start_job`, `read_job`, and `cancel_job` directly there. The removed `tasks/list` and `tasks/result` aliases are not part of the current contract.
+  Both transports advertise the `io.modelcontextprotocol/tasks` extension. A client must include that extension capability in each request before eligible asynchronous `tools/call` requests can receive a durable task handle. `tasks/get` reads owner-bound status and, when terminal, the tool result. `tasks/cancel` requests cancellation and acknowledges the request without claiming it has already settled; on stdio the acknowledgement reports the actual observed status and a `cancellationRequested` flag. `tasks/update` accepts the extension response object, but this server does not currently issue client-input requests; the local transport rejects a non-empty `inputResponses` object rather than pretending to consume it. Task records expire after their declared TTL. Terminal results are copied into task storage when a client polls after completion, provided the serialized result fits the declared per-task and aggregate storage budgets; clients should continue polling until a terminal state is returned. If the Worker's backing managed-job record disappears before a terminal result has been persisted, the next remote `tasks/get` marks the task failed with an explicit result-unavailable error rather than leaving it permanently `working` or claiming an unavailable result; the missing result cannot be reconstructed. Local stdio instead returns `-32000` for an unknown or no-longer-retained task. Local stdio additionally exposes `tasks/list` and `tasks/result` as stdio-only compatibility aliases; the authenticated Worker does not implement those aliases. The stdio-only `tasks/result` returns `-32002` while the task is working and `-32800` after cancellation; a completed execution with a failed result is returned as a normal CallToolResult with `isError: true`.
 - **MCP Prompts (`prompts/list`, `prompts/get`)**:
   Exposes project developer instructions (`agent_instructions`), git diff review prompt templates (`code_review`), and local agent skill execution (`run_skill`) natively into AI client prompt selectors.
 - **MCP Resources (`resources/list`, `resources/templates/list`, `resources/read`)**:
@@ -660,15 +668,12 @@ Preserve the state root and follow [UPGRADING.md](UPGRADING.md); do not delete s
 Use this sequence:
 
 1. Install the released version with the documented pinned npm 12 command.
-2.
-Run `machine-mcp --verbose` once.
+2. Run `machine-mcp --verbose` once.
 Startup verifies package/Worker versions, performs the ordinary authenticated Worker convergence when needed, stops only a verified service-style old daemon, waits for its lock, and starts the installed version.
 3. Run `machine-mcp status` and `machine-mcp doctor`.
-4.
-Reload the unpacked browser extension and revisit the pairing page.
+4. Reload the unpacked browser extension and revisit the pairing page.
 Exact package version and capability equality are required before browser readiness is reported.
-5.
-Reconnect MCP clients.
+5. Reconnect MCP clients.
 All clients rediscover the server and send fresh `2026-07-28` per-request metadata.
 Clients that still require `initialize`, session IDs, recovery GET, replay, or other removed protocol-session semantics must upgrade before reconnecting.
 

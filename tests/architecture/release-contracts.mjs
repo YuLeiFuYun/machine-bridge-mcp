@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, FULL_CHECK_TASKS, PLATFORM_CHECK_TASKS } from "../../scripts/check-plan.mjs";
 import { hasSemanticImport, getSemanticExports } from "./semantic-analyzer.mjs";
+import { architectureDocumentation } from "./architecture-documentation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const readLfSource = (...segments) => readFileSync(join(root, ...segments), "utf8").replace(/\r\n/g, "\n");
@@ -234,23 +235,40 @@ if (packageJson.engines?.node !== ">=26.0.0" || packageJson.devEngines?.runtime?
 const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
 if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.151.3"
-    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.18"
+    || toolchainManifest.dependencies?.cf !== "1.0.0-beta.20"
     || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
     || Object.hasOwn(packageJson.devDependencies || {}, "undici")
-    || toolchainManifest.overrides?.miniflare !== "5.20261012.1-beta"
+    || toolchainManifest.overrides?.miniflare !== "5.20261019.1-beta"
     || toolchainManifest.overrides?.ws !== "8.22.0"
     || toolchainManifest.overrides?.sharp !== "0.35.5"
     || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.151.3"
     || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
-    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.18"
+    || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.20"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.5"
     || toolchainManifest.allowScripts?.["sharp@0.35.5"] !== true) {
   throw new Error("private Wrangler toolchain manifest or lock lost its exact security contract");
 }
-if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.18"
+if (Object.hasOwn(packageJson.dependencies || {}, "cf") || packageJson.devDependencies?.cf !== "1.0.0-beta.20"
     || Object.hasOwn(packageJson.scripts || {}, "postinstall")
     || !FAST_CHECK_TASKS.includes("cf-network:test")) {
   throw new Error("cf isolation or its upstream network integrity gate drifted");
+}
+// cf orchestrates a deployment but delegates the actual Worker build to Wrangler when the project
+// has no custom buildCommand. Keep both execution paths pinned: the private toolchain copy is used
+// by cf-project.mjs, while repository typegen and local integration tests invoke the top-level copy.
+const cfProjectSource = readFileSync(join(root, "src", "local", "cf-project.mjs"), "utf8");
+if (!cfProjectSource.includes("const builderVersion = toolchainManifest.dependencies.wrangler")
+    || !cfProjectSource.includes("devDependencies: { wrangler: builderVersion }")
+    || !cfProjectSource.includes('symlinkSync(path.join(toolchainRoot, "node_modules")')) {
+  throw new Error("cf project isolation lost the delegated Wrangler build boundary");
+}
+for (const [file, marker] of [
+  ["scripts/generate-worker-types.mjs", 'resolve(root, "node_modules", "wrangler", "bin", "wrangler.js")'],
+  ["tests/worker-integration-test.mjs", 'path.join(packageRoot, "node_modules", "wrangler", "bin", "wrangler.js")'],
+]) {
+  if (!readFileSync(join(root, file), "utf8").includes(marker)) {
+    throw new Error(`top-level Wrangler execution path is missing from ${file}`);
+  }
 }
 const patchedSharpVersion = "0.35.5";
 if (packageJson.overrides?.sharp !== patchedSharpVersion) throw new Error("the audited Sharp override is missing or drifted");
@@ -966,7 +984,7 @@ if (!runChecksSource.includes("runVerificationPlan")
     || !verificationStateSource.includes('"release-acceptance"')
     || !runChecksSource.includes('value !== undefined && value !== ""')
     || !runChecksSource.includes("MBM_CHECK_CONCURRENCY must be an integer from 1 to 16")
-    || !runChecksSource.includes("Math.min(4, availableParallelism())")
+    || !runChecksSource.includes("availableParallelism()")
     || !runChecksSource.includes("rerunVerificationUnderIdleSleepGuard")
     || !verificationIdleSleepGuardSource.includes('"/usr/bin/caffeinate"')
     || !verificationIdleSleepGuardSource.includes('["-i", executable, ...argv]')
@@ -2021,7 +2039,7 @@ for (const file of [join(root, "docs", "RELEASING.md")]) {
 }
 if (!cliSource.replace(/\s+/g, " ").includes(`${pinnedInstallCommand} && machine-mcp`)) throw new Error("CLI pinned npm installation guidance drifted from user documentation");
 
-const architecture = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
+const architecture = architectureDocumentation;
 for (const stale of [
   "State schema version 5",
   "does not distinguish independently authorized human principals",

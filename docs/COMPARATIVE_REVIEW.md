@@ -1,6 +1,6 @@
 # Comparative review — 2026-10-21
 
-This snapshot covers **51 distinct agent projects** at the exact Git commits linked below. Coverage is repository documentation and the previously recorded selected entrypoints, not an exhaustive source/security audit of every upstream. Archived projects are labelled. Marketing scores are not project benchmarks. No upstream code or new production dependency is required by these decisions.
+This snapshot covers **51 distinct agent projects** and **19 foundational/recent papers** at the exact sources linked below. Coverage is repository documentation and the previously recorded selected entrypoints, not an exhaustive source/security audit of every upstream. Archived projects are labelled. Marketing scores are not project benchmarks. No upstream code or new production dependency is required by these decisions.
 
 The bridge remains an execution and authority boundary. It does not acquire a model loop, vector database, distributed queue, continuous screen recorder or automatic self-modification merely because an upstream framework offers one. Its three direct runtime dependencies remain purposeful: `ws`, `https-proxy-agent` and `proxy-from-env`. Managed-job records are bounded JSON, not CBOR.
 
@@ -68,10 +68,55 @@ The bridge remains an execution and authority boundary. It does not acquire a mo
 - Deterministic workflow fixtures inspect final files and a single durable side effect after caller replacement. The older small offline contract suite remains a separate contract check, not a general agent success benchmark.
 - Small single-consumer listing/output/summary helpers are consolidated; pure Computer Use effect verification is isolated from dispatch. Identity, authority, persistence and settlement boundaries remain independently testable.
 
-## Recent papers and adoption limits
+## Concrete borrowings from the project set
+
+The table above deliberately groups projects by the boundary they clarify; the groups are not
+interchangeable. These are the concrete decisions taken from those groups, with the part that was
+intentionally not copied:
+
+- **Agent instruction files (Codex, Claude Code, Gemini CLI, OpenCode, Continue).** Bounded
+  instruction precedence, explicit omissions and on-demand context are implemented by
+  `agent-context.mjs` and `docs/AGENT_CONTEXT.md`. No embedded model loop or automatic
+  self-modification is copied.
+- **Repository maps (Aider, OpenHands, SWE-agent).** `project_overview` and the lexical
+  `symbol-outline` provide a cheap map without adding a parser or a ranking dependency. PageRank
+  and model-generated summaries are not used.
+- **MCP extension surfaces (Goose, Cline, mcp-agent).** Progressive stdio discovery, staged jobs and
+  reviewable checkpoints are explicit protocol features. The bridge does not acquire a planner,
+  role graph or vector memory merely because an upstream framework exposes one.
+- **Durable workflow state (LangGraph, AutoGen, CrewAI, Mastra).** `stage_job`, `start_job`,
+  `read_job` and the recovery key preserve task state across disconnects. Agent roles, handoffs and
+  model loops remain host-owned.
+- **Browser and desktop agents (browser-use, Stagehand, Playwright MCP, agent-browser,
+  Chrome DevTools MCP, Agent-S, UFO).** Observations are bound to the current tab, frame,
+  snapshot and capability; actions are followed by an observable effect check. The bridge does not
+  package a browser engine or grant ambient screen authority.
+- **Memory systems (MemGPT, Letta, Generative Agents).** Memory is bounded, explicitly typed and
+  returned with `ok/too_large/invalid` status. No vector database or unvalidated freshness score is
+  added.
+- **Typed agent contracts (Pydantic AI, OpenAI Agents SDK, Instructor).** The shared catalog and
+  observed output contract provide machine-readable tool shapes. The bridge does not adopt a model
+  provider SDK or a second validation framework.
+- **Evaluation-driven systems (OpenEvolve, AgentLab, BrowserGym).** Deterministic fixtures verify
+  final files and durable side effects. Production self-evolution and public benchmark claims are
+  explicitly out of scope.
+
+## Foundational and recent papers
 
 | Primary paper | Applicable change | Boundary |
 | --- | --- | --- |
+| [ReAct: Synergizing Reasoning and Acting in Language Models, 2022](https://arxiv.org/abs/2210.03629) | Separate an observable action from its rationale; record the action and its result as distinct evidence | The bridge exposes tools; it does not add a thought/action loop or interpret chain-of-thought as authority |
+| [Reflexion: Language Agents with Verbal Reinforcement Learning, 2023](https://arxiv.org/abs/2303.11366) | Keep failure classification and a bounded retry decision outside the tool result | No self-modifying prompt memory or automatic retry of unknown-outcome effects |
+| [Toolformer: Language Models Can Teach Themselves to Use Tools, 2023](https://arxiv.org/abs/2302.04761) | Treat tool selection as a separate, schema-validated decision | No model-generated tool arguments bypass the shared argument and policy gates |
+| [Gorilla: Large Language Model Connected with Massive APIs, 2023](https://arxiv.org/abs/2305.15334) | Use a compact, permission-filtered catalog and explicit API contracts | No retriever or hosted model dependency is required to dispatch a tool |
+| [SWE-bench: Can Language Models Resolve Real-World GitHub Issues?, 2023](https://arxiv.org/abs/2310.06770) | Evaluate final repository state, not a successful command invocation | The bridge does not claim benchmark scores or reproduce the SWE-bench harness |
+| [WebArena: A Realistic Web Environment for Building Autonomous Agents, 2023](https://arxiv.org/abs/2307.13854) | Bind browser observations to the current page and verify the post-action state | No browser engine, site credentials or autonomous browsing loop is bundled |
+| [OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks in Real Computer Environments, 2024](https://arxiv.org/abs/2404.07972) | Treat desktop state and OS authority as first-class observation boundaries | The bridge does not grant ambient screen or input authority outside explicit tools |
+| [τ-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains, 2024](https://arxiv.org/abs/2406.12045) | Keep task state, terminal status and user-visible errors separate | No simulated user policy or domain benchmark is embedded in the runtime |
+| [AgentDojo: A Dynamic Environment to Evaluate Prompt Injection Attacks and Defenses for LLM Agents, 2024](https://arxiv.org/abs/2406.13352) | Treat tool, skill and memory content as untrusted planning context while preserving authority gates | Published attack rates are not evidence that this bridge was compromised |
+| [MemGPT: Towards LLMs as Operating Systems, 2023](https://arxiv.org/abs/2310.08560) | Use bounded, status-bearing memory reads instead of an unbounded context window | No virtual memory manager or external vector store is added |
+| [Lost in the Middle: How Language Models Use Long Contexts, 2023](https://arxiv.org/abs/2307.03172) | Bound context and return explicit truncation/next-page metadata | The bridge does not infer model attention quality from a successful read |
+| [Tree of Thoughts: Deliberate Problem Solving with Large Language Models, 2023](https://arxiv.org/abs/2305.10601) | Keep alternative plans and checkpoints reviewable before durable execution | The bridge does not add an internal search tree or autonomous plan selection |
 | [Beyond Downstream QA: Rethinking How We Evaluate Agent Memory, 2026-10-15](https://arxiv.org/abs/2610.22209v1) | Inspect actual memory state and malformed/expired entries rather than only the eventual answer | The project does not claim to reproduce FEB-30 or transfer its scores |
 | [RATED: Reliability-Aware AI Agent Tool Retrieval via Execution Dynamics, 2026-10-09](https://arxiv.org/abs/2610.13889v1) | Keep permission filtering and observable readiness before recommending execution routes | A small fixed catalog does not justify adding a dual encoder or online bandit without a local measured benefit |
 | [A2M: Trace-Optimized Agent Hijacking in the MCP Ecosystem, 2026-09-22](https://arxiv.org/abs/2609.26761v1) | Treat tool/skill/memory content as untrusted planning context and preserve execution authority gates | Source labels alone do not prevent prompt injection; published attack rates are not evidence this bridge was compromised |

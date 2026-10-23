@@ -21,6 +21,25 @@ const REGEX_PRECEDING_KEYWORDS = Object.freeze(new Set([
   "return", "case", "typeof", "delete", "void", "throw", "instanceof", "in", "of", "yield", "await", "default",
 ]));
 
+// A signature may legitimately span more than a dozen lines (destructured parameters, generics,
+// callback types). The scan is bounded by the matching close paren and by this hard ceiling, so a
+// pathological file cannot make extraction quadratic.
+const MAX_SIGNATURE_LINES = 200;
+
+/**
+ * Net parenthesis balance of one sanitized line.
+ * @param {string} text
+ * @returns {number}
+ */
+function parenDelta(text) {
+  let depth = 0;
+  for (const ch of String(text)) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+  }
+  return depth;
+}
+
 /**
  * @param {string} code
  * @param {number} len
@@ -243,8 +262,6 @@ function sanitizeTemplateExpr(code, len, startIdx, out) {
       exprLastChar = c;
       if (/[a-zA-Z0-9_$]/.test(c)) exprLastToken += c;
       else exprLastToken = "";
-    } else {
-      exprLastToken = "";
     }
     idx++;
   }
@@ -306,8 +323,6 @@ export function sanitizeSource(code) {
       lastChar = ch;
       if (/[a-zA-Z0-9_$]/.test(ch)) lastToken += ch;
       else lastToken = "";
-    } else {
-      lastToken = "";
     }
     i++;
   }
@@ -343,10 +358,12 @@ export function extractFileSymbols(code, filename = "anonymous.js", options = {}
 
     if ((trimmed.startsWith("function ") || trimmed.startsWith("async function ") || trimmed.startsWith("export ") || (currentClass && braceDepth === classDepth)) && trimmed.includes("(") && !trimmed.includes(")")) {
       let lookAhead = idx;
-      while (!line.includes(")") && lookAhead < totalLines - 1 && lookAhead < idx + 12) {
+      let openParens = parenDelta(line);
+      while (openParens > 0 && lookAhead < totalLines - 1 && lookAhead < idx + MAX_SIGNATURE_LINES) {
         lookAhead++;
         line += " " + lines[lookAhead].trim();
         origLine += " " + origLines[lookAhead].trim();
+        openParens += parenDelta(lines[lookAhead]);
       }
       trimmed = line.trim();
     }
@@ -619,6 +636,23 @@ export async function extractSymbolOutline(input, options = {}) {
   const maxLines = outlineLimit(options.maxLines, 300, 1000);
   if (lines.length > maxLines) return [...lines.slice(0, maxLines - 1), "... [Symbol outline truncated: budget reached]"].join("\n");
   return lines.join("\n");
+}
+
+/**
+ * Global repository map generator (inspired by Aider).
+ * Produces a topological overview of exported symbols across the workspace.
+ * @param {string} root
+ * @param {OutlineOptions} [options]
+ */
+export async function generateRepoMap(root, options = {}) {
+  const result = await extractWorkspaceOutline(root, options);
+  return {
+    repo_map: result.outline,
+    files_scanned: result.filesScanned,
+    total_symbols: result.totalSymbols,
+    truncated: result.truncated,
+    warnings: result.warnings,
+  };
 }
 
 /** @param {number | undefined} value @param {number} fallback @param {number} maximum */

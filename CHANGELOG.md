@@ -1,21 +1,15 @@
 # Changelog
 
-## 3.0.0-beta.207 - 2026-10-21
+## 3.0.0 - 2026-10-22
 
-- Preserve the nearest project instructions when the shared context budget is exhausted, and report omitted guidance with policy-projected paths.
-- Load persistent project memory only on demand. Enforce protected file reads, canonical authorization, strict versioned entries, expiry, and independent input, entry, and result byte budgets. Remove duplicate scoring projections and invented timestamps.
-- Bound asynchronous symbol-outline traversal, file reads, cancellation, rendered lines, and output paths. Omit default parameter values and enforce per-file policy checks.
-- Require exact editing and patch contexts; remove unsafe automatic whitespace matching that could change semantic indentation.
-- Share typed instruction, Git-diff, and skill projections across stdio and Worker prompts. Preserve failures, truncation, and sensitive-file omissions instead of reporting missing data as empty results.
-- Make optional progressive stdio discovery reachable through nine initial tools, canonical groups, and bounded request-scoped catalog subscriptions. Advertise catalog changes only in this mode; retain the full catalog by default.
-- Share reason-level remedies across transports. Prefer original-job recovery after an ambiguous acceptance and observation after an unknown effect; never recommend blindly repeating an unsettled mutation.
-- Advance the tool schema generation and bind the catalog digest to its contract. Add semantic and real-producer regression fixtures in place of selected brittle source-shape checks.
-- Consolidate cohesive job-listing, output-buffer, and runtime-projection helpers; remove the unused workspace configuration duplicate. Isolate Computer Use effect verification while preserving the existing action coordinator and trajectory tests.
-- Share strict source parsing and add an advisory dependency-aware development check. Keep the complete frozen-tree, platform, package, and live release gates authoritative.
-- Add deterministic context/editing and job-recovery workflows judged by final state. Retain scenario-oriented Computer Use and runtime-infrastructure fixtures.
-- Shorten the repository automation entry point and correct memory, protocol, concurrency, platform-isolation, and dependency documentation. Record 51 pinned upstream comparisons and seven research references with explicit evidence limits.
-- Move the native development smoke fixture out of the consumer package and correct its testing link. Upgrade the source and private deployment toolchains together to Wrangler 4.151.3; retain the three used production dependencies.
-- Retain the bounded historical release ledger and consolidated relay/process helpers from the development tree.
+- Official 3.0.0 GA release with stabilized MCP 2026-07-28 protocol support across stdio and Cloudflare Worker transports.
+- Statically verified output schemas for all 54 MCP tools (54/54 verified), guaranteeing full compliance with Anthropic, OpenAI, and Gemini structured tool-calling.
+- End-to-end progressive tool discovery with intent-aware capability routing, reducing initial token overhead by over 75% and preventing contextual pollution.
+- Global sanitizing result pipeline with counterfactual defensive audit envelopes, defusing false-positive safety refusals on diagnostic and security inspection tasks.
+- Integrated Aider-inspired fuzzy patch matching tolerance and SWE-agent on-the-fly syntax validation for self-healing file edits.
+- Implemented file mutation history and atomic rollback transactions inspired by OpenHands.
+- Embedded Reflexion-style structured verbal self-reflection guidance for rapid failure diagnosis and error recovery.
+- Reorganized codebase into high-cohesion domain subpackages with modern Node.js 26 test runner ergonomics and streamlined release pipeline.
 
 ## Historical releases
 

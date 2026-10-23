@@ -417,6 +417,8 @@ The macOS trust test performs intentional tampering only through an `O_NOFOLLOW`
 - Logs and public metadata should be tested for absence of sensitive fields, arguments, outputs, and routine success noise—not only presence of expected fields.
 - Cross-platform tests must avoid shell syntax, URL-path conversion, and executable-shim assumptions specific to one operating system. A fixture that injects a logical platform such as `darwin` or `win32` must not silently treat the physical CI host's UID, file-mode, executable-bit, signal-delivery, path, or service-manager semantics as evidence for that injected platform; inject the required host capability explicitly or gate only the assertion that the physical host cannot prove.
 - Release-evidence privacy tests must inject private-looking but publication-safe paths/URLs/text and assert absence from every recovered-success projection and persisted record. Do not commit a real credential pattern merely to test redaction.
+- `tests/architecture/test-assertion-budget.json` is a ratchet, not a target: the current substring-assertion count is the ceiling, new test files start with zero allowance, and the `node:test` adoption floor may only rise. Lower the budget when a test moves to a structural assertion; do not raise it to admit new substring checks.
+- `cf-build:test` exercises the actual top-level `cf`/Wrangler delegated build in a disposable fixture. It complements, and does not replace, the deployed candidate canary or a real rollback.
 
 ## Privacy hygiene
 

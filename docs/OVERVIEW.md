@@ -122,7 +122,7 @@ Use these sources when changing externally observable behavior. Other documents 
 | Computer Use | `src/local/computer-use-observation-contract.mjs`, `src/local/computer-use-dispatch-settlement.mjs`, `src/local/computer-use-snapshot-store.mjs`, and the Computer Use dispatcher | [Computer Use](COMPUTER_USE.md) |
 | Release and migration gates | `package.json`, `scripts/`, and the release workflow definitions | repository `docs/RELEASING.md`; [Upgrading](UPGRADING.md) documents the supported migration path |
 
-`MULTI_AGENT.md` and `COMPARATIVE_REVIEW.md` are explanatory/research material. Their examples and external references do not override the current protocol, authorization, recovery, or release contracts above.
+The source repository also contains `MULTI_AGENT.md` and `COMPARATIVE_REVIEW.md` as explanatory/research material; they are intentionally excluded from the published package. Their examples and external references do not override the current protocol, authorization, recovery, or release contracts above.
 
 ## Read next
 

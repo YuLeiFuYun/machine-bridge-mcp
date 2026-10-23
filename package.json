@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.207",
+  "version": "3.0.0",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -93,6 +93,11 @@
   ],
   "scripts": {
     "test": "npm run check:fast",
+    "test:unit": "node --test tests/**/*.test.mjs",
+    "test:integration": "node tests/stdio-integration-test.mjs && node tests/worker-integration-test.mjs",
+    "schema:check": "npm run tool-output-schemas:check",
+    "schema:sync": "node scripts/generate-tool-output-schemas.mjs",
+    "tool-output-schemas:generate": "node scripts/generate-tool-output-schemas.mjs",
     "start": "node bin/machine-mcp.mjs start",
     "doctor": "node bin/machine-mcp.mjs doctor",
     "self-test": "node tests/local-self-test.mjs",
@@ -188,6 +193,7 @@
     "commit-message:test": "node tests/commit-message-test.mjs",
     "tool-docs:generate": "node scripts/generate-tool-reference.mjs",
     "tool-docs:check": "node scripts/generate-tool-reference.mjs --check",
+    "tool-output-schemas:check": "node scripts/generate-tool-output-schemas.mjs --check",
     "account:test": "node tests/account-admin-test.mjs",
     "sarif-security:test": "node tests/sarif-security-gate-test.mjs",
     "security-properties:test": "node tests/security-properties-test.js",
@@ -288,7 +294,10 @@
     "check:changed": "node scripts/check-changed.mjs",
     "affected-checks:test": "node tests/affected-checks-test.mjs",
     "agent-workflows:test": "node tests/agent-workflows-test.mjs",
-    "agent-audit:test": "node tests/fixtures/agent-audit/regression.mjs && node tests/fixtures/agent-audit/guidance.mjs"
+    "agent-audit:test": "node tests/fixtures/agent-audit/regression.mjs && node tests/fixtures/agent-audit/guidance.mjs",
+    "cf-build:test": "node tests/cf-build-integration-test.mjs",
+    "release:check": "npm run consumer-security:test && node scripts/github-release.mjs --check",
+    "release:ship": "node scripts/release-publish.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "9.1.0",
@@ -298,7 +307,7 @@
   "devDependencies": {
     "@babel/parser": "8.0.7",
     "@types/node": "26.6.5",
-    "cf": "1.0.0-beta.18",
+    "cf": "1.0.0-beta.20",
     "eslint": "10.13.0",
     "fast-check": "4.10.2",
     "globals": "17.13.0",
@@ -335,7 +344,6 @@
     "esbuild@0.28.2": true,
     "fsevents": false,
     "sharp@0.35.5": true,
-    "workerd@1.20261012.1": true,
     "workerd@1.20261019.1": true
   },
   "packageManager": "npm@12.0.2",
@@ -354,7 +362,7 @@
   "overrides": {
     "sharp": "0.35.5",
     "brace-expansion": "5.0.12",
-    "miniflare": "5.20261012.1-beta",
+    "miniflare": "5.20261019.1-beta",
     "ws": "$ws"
   }
 }

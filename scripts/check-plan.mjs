@@ -1,3 +1,5 @@
+export { TASK_EXECUTION_COMMANDS } from "./task-execution-commands.mjs";
+
 export const FAST_CHECK_TASKS = Object.freeze([
   "privacy:check",
   "release-impact:check",
@@ -44,6 +46,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "consumer-package-security:test",
   "wrangler-toolchain:test",
   "cf-network:test",
+  "cf-build:test",
   "worker-types-generator:test",
   "shell:test",
   "architecture:test",
@@ -64,6 +67,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "worker-prompts:test",
   "policy-docs:check",
   "tool-docs:check",
+  "tool-output-schemas:check",
   "runtime-infrastructure:test",
   "control-plane-resilience:test",
   "runtime-boundaries:test",

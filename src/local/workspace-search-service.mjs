@@ -3,6 +3,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { isSensitivePath } from "./operation-risk.mjs";
+import { isDelegatedRelayContext } from "./authority-context.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { BridgeError } from "./errors.mjs";
 import { searchWorkspaceFiles } from "./workspace-search.mjs";
@@ -194,15 +195,6 @@ function isSkippableSearchFileError(error) {
     || reason === "read_limit"
     || reason === "unsupported_path_type"
     || reason === "multiple_hard_links";
-}
-
-/** @param {unknown} context */
-function isDelegatedRelayContext(context) {
-  const record = /** @type {Record<string, unknown>} */ (context !== null && typeof context === "object" ? context : {});
-  const authority = /** @type {Record<string, unknown>} */ (record.authority !== null && typeof record.authority === "object" ? record.authority : {});
-  const principal = /** @type {Record<string, unknown>} */ (authority.principal !== null && typeof authority.principal === "object" ? authority.principal : {});
-  return record.origin === "relay" && principal.kind === "account"
-    && principal.role !== "owner" && authority.owner !== true;
 }
 
 /** @param {unknown} context */

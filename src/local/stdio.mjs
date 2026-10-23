@@ -18,12 +18,13 @@ import {
   findToolGroup,
 } from "./tools.mjs";
 import {
-  MCP_PROTOCOL_VERSIONS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
+  MCP_PROTOCOL_VERSIONS, MCP_PROGRESSIVE_TOOL_LIST_TTL_MS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
   completeResult, discoverResult, emptySubscriptionAcknowledgement, progressNotification, serverImplementation, subscriptionCompleteResult,
   validateRequestMetadata, validateSubscriptionRequest, subscriptionAcknowledgement, toolsListChangedNotification,
 } from "../shared/mcp-protocol.mjs";
 import { createProgressReporter } from "../shared/progress-reporter.mjs";
 import { MCP_TASK_EXTENSION_ID, supportsMcpTasks, taskClientCapabilities } from "../shared/mcp-task-contract.mjs";
+import { taskToolResult, taskViewForJob } from "./stdio-task-projection.mjs";
 import { HELP_RESOURCES, readHelpResource } from "../shared/help-resources.mjs";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -82,19 +83,19 @@ export async function runStdioServer({
   const subscriptions = new Map();
   const activeToolNames = new Set(sessionProgressive ? CORE_CORNERSTONE_TOOL_NAMES : toolsForPolicy(policy).map((tool) => tool.name));
 
-  function activateToolGroupFor(toolNames) {
-    if (!sessionProgressive) return false;
+  function activateToolGroupFor(toolNames, { expandGroups = true } = {}) {
+    if (!sessionProgressive) return [];
     const allowed = new Set(toolsForPolicy(policy).map((tool) => tool.name));
-    let added = false;
+    const activated = [];
     for (const toolName of toolNames) {
-      const group = findToolGroup(toolName);
+      const group = expandGroups ? findToolGroup(toolName) : null;
       const names = group ? PROGRESSIVE_TOOL_GROUPS[group] : [toolName];
       for (const name of names) {
-        if (allowed.has(name) && !activeToolNames.has(name)) { activeToolNames.add(name); added = true; }
+        if (allowed.has(name) && !activeToolNames.has(name)) { activeToolNames.add(name); activated.push(name); }
       }
     }
-    if (added) for (const requestId of subscriptions.values()) send(toolsListChangedNotification(requestId));
-    return added;
+    if (activated.length) for (const requestId of subscriptions.values()) send(toolsListChangedNotification(requestId));
+    return activated;
   }
 
   await consumeBoundedJsonLines(process.stdin, {
@@ -179,10 +180,8 @@ export async function runStdioServer({
       const exposed = isProgressive
         ? allTools.filter((tool) => activeToolNames.has(tool.name))
         : allTools;
-      send(rpcResult(message.id, cacheableResult(
-        { tools: exposed },
-        { ttlMs: MCP_TOOL_LIST_TTL_MS, cacheScope: "private", serverInfo: MCP_SERVER_INFO },
-      )));
+      const ttlMs = isProgressive ? MCP_PROGRESSIVE_TOOL_LIST_TTL_MS : MCP_TOOL_LIST_TTL_MS;
+      send(rpcResult(message.id, cacheableResult({ tools: exposed }, { ttlMs, cacheScope: "private", serverInfo: MCP_SERVER_INFO })));
       return;
     }
     if (message.method === "subscriptions/listen") {
@@ -272,12 +271,19 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
   if (key) pending.set(key, callId);
   try {
     const result = await withProgress(progressToken, name, send, () => runtime.executeTool(name, rawArgs, { callId, origin: "stdio" }));
+    let payload = result;
     if (progressiveEnabled && name === "resolve_task_capabilities" && typeof activateToolGroupFor === "function") {
-      const requested = Array.isArray(rawArgs?.activate_tool_groups)
-        ? rawArgs.activate_tool_groups.flatMap((group) => PROGRESSIVE_TOOL_GROUPS[group] || []) : [];
-      activateToolGroupFor([...requested, ...(Array.isArray(result?.recommended_tools) ? result.recommended_tools : [])]);
+      const requestedGroups = Array.isArray(rawArgs?.activate_tool_groups) ? rawArgs.activate_tool_groups : [];
+      const recommended = Array.isArray(result?.recommended_tools) ? result.recommended_tools : [];
+      const activated = [
+        ...activateToolGroupFor(requestedGroups.flatMap((group) => PROGRESSIVE_TOOL_GROUPS[group] || []), { expandGroups: false }),
+        ...activateToolGroupFor(recommended, { expandGroups: rawArgs?.activate_recommended_groups === true }),
+      ];
+      if (activated.length && result && typeof result === "object" && !Array.isArray(result)) {
+        payload = { ...result, activated_tools: activated };
+      }
     }
-    send(rpcResult(message.id, toolResult(result, false, MCP_SERVER_INFO)));
+    send(rpcResult(message.id, toolResult(payload, false, MCP_SERVER_INFO)));
   } catch (error) {
     const errorObject = publicError(error, { verbose: verboseErrors });
     send(rpcResult(message.id, toolResult({ error: errorObject }, true, MCP_SERVER_INFO)));
@@ -457,17 +463,21 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
   }
 }
 
+async function readManagedTaskJob(runtime, taskId) {
+  try {
+    return await runtime.managedJobManager.read({ job_id: taskId, wait_ms: 0 }, { origin: "stdio" });
+  } catch (error) {
+    if (error?.code === "not_found" || error?.data?.code === "not_found") return null;
+    throw error;
+  }
+}
+
 async function executeTaskOperation(runtime, method, message, send, verboseErrors) {
   const params = asObject(message.params);
   try {
     if (method === "tasks/list") {
       const jobs = await runtime.managedJobManager.list({}, { origin: "stdio" });
-      const tasks = (jobs?.jobs || []).map((j) => ({
-        taskId: j.job_id,
-        status: j.status === "completed" ? "completed" : j.status === "failed" ? "failed" : j.status === "cancelled" ? "cancelled" : "running",
-        statusMessage: j.statusMessage || `Managed job ${j.job_id} is ${j.status}`,
-        createdAt: j.created_at || new Date().toISOString(),
-      }));
+      const tasks = (jobs?.jobs || []).map((job) => taskViewForJob(job, job.job_id));
       send(rpcResult(message.id, { tasks }));
       return;
     }
@@ -476,37 +486,71 @@ async function executeTaskOperation(runtime, method, message, send, verboseError
       send(rpcError(message.id, -32602, `${method} requires a valid taskId`));
       return;
     }
-    if (method === "tasks/get") {
-      const job = await runtime.managedJobManager.read({ job_id: taskId, wait_ms: 0 }, { origin: "stdio" });
+    if (method === "tasks/get" || method === "tasks/result") {
+      const job = await readManagedTaskJob(runtime, taskId);
       if (!job) {
         send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
         return;
       }
-      const taskStatus = job.status === "completed" ? "completed" : job.status === "failed" ? "failed" : job.status === "cancelled" ? "cancelled" : "running";
-      send(rpcResult(message.id, {
-        taskId,
-        status: taskStatus,
-        statusMessage: job.statusMessage || `Task is ${taskStatus}`,
-        result: job.status === "completed" ? job : undefined,
-        error: job.status === "failed" ? { code: -32603, message: job.stderr || "Task failed" } : undefined,
-      }));
+      const view = taskViewForJob(job, taskId);
+      if (method === "tasks/result") {
+        if (view.status === "working") {
+          send(rpcError(message.id, -32002, `Task is still running: ${taskId}`, { pollIntervalMs: view.pollIntervalMs }));
+          return;
+        }
+        if (view.status === "cancelled") {
+          send(rpcError(message.id, -32800, view.statusMessage));
+          return;
+        }
+        send(rpcResult(message.id, { taskId, status: view.status, result: taskToolResult(job, MCP_SERVER_INFO) }));
+        return;
+      }
+      send(rpcResult(message.id, view.status === "completed"
+        ? { ...view, result: taskToolResult(job, MCP_SERVER_INFO) }
+        : view));
       return;
     }
     if (method === "tasks/cancel") {
+      const existing = await readManagedTaskJob(runtime, taskId);
+      if (!existing) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
       const result = await runtime.managedJobManager.cancel({ job_id: taskId }, { origin: "stdio" });
+      const job = await readManagedTaskJob(runtime, taskId);
+      if (!job) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
+      const view = taskViewForJob(job, taskId);
       send(rpcResult(message.id, {
-        taskId,
-        status: "cancelled",
-        cancelled: result?.cancelled !== false,
+        ...view,
+        cancelled: view.status === "cancelled",
+        cancellationRequested: result?.cancellation_requested === true,
       }));
       return;
     }
     if (method === "tasks/update") {
-      send(rpcResult(message.id, { taskId, status: "running" }));
+      // Local managed jobs accept no mid-flight input. Reporting success for an unsupported
+      // input response would let a client believe the task consumed it, so the request is
+      // rejected unless it carries nothing to deliver.
+      const inputResponses = params.inputResponses ?? params.input_responses;
+      if (inputResponses !== undefined && (!inputResponses || typeof inputResponses !== "object" || Array.isArray(inputResponses)
+        || Object.keys(inputResponses).length > 0)) {
+        send(rpcError(message.id, -32602, "Local tasks accept no input responses", { reason: "input_not_supported" }));
+        return;
+      }
+      const job = await readManagedTaskJob(runtime, taskId);
+      if (!job) {
+        send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
+        return;
+      }
+      send(rpcResult(message.id, {}));
       return;
     }
+    send(rpcError(message.id, -32601, "Method not found"));
   } catch (error) {
-    send(rpcResult(message.id, { error: publicError(error, { verbose: verboseErrors }) }));
+    send(rpcError(message.id, -32603, "Task operation failed", publicError(error, { verbose: verboseErrors })));
   }
 }
 

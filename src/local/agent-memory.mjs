@@ -1,4 +1,5 @@
 // @ts-check
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BridgeError } from "./errors.mjs";
 import { readOptionalRegularUtf8 } from "./agent-text-file.mjs";
@@ -103,4 +104,97 @@ export async function readPersistentMemory(scopeRoot, throwIfCancelled = () => {
     if (error instanceof BridgeError && error.code === "cancelled") throw error;
     return { ...base, status: "invalid", warning: "Memory must contain version 1, bounded text entries and finite, valid metadata." };
   }
+}
+
+/**
+ * Record a single memory item into persistent memory (.project-local/agent-memory.json).
+ * Validates category, text, importance. Atomically updates the file.
+ * @param {string} scopeRoot
+ * @param {{category: string, text: string, importance?: number, source?: string, expires_at?: string}} item
+ * @param {() => void} [throwIfCancelled]
+ */
+export async function recordPersistentMemory(scopeRoot, item, throwIfCancelled = () => {}) {
+  throwIfCancelled();
+  if (!item || typeof item !== "object") throw new BridgeError("invalid_request", "Memory entry must be an object.");
+  const category = item.category;
+  if (!CATEGORIES.includes(category)) {
+    throw new BridgeError("invalid_request", `Invalid memory category "${category}". Expected one of: ${CATEGORIES.join(", ")}.`);
+  }
+  const entry = memoryEntry(item);
+  entry.updated_at = new Date().toISOString();
+
+  const memoryDir = join(scopeRoot, ".project-local");
+  await mkdir(memoryDir, { recursive: true });
+  const memoryPath = join(scopeRoot, PERSISTENT_MEMORY_FILE);
+
+  /** @type {Record<string, any>} */
+  const currentData = { version: 1, updated_at: entry.updated_at };
+  for (const cat of CATEGORIES) {
+    currentData[cat] = [];
+  }
+
+  const existing = /** @type {Record<string, any> | null} */ (await readPersistentMemory(scopeRoot, throwIfCancelled));
+  if (existing && existing.status === "ok") {
+    for (const cat of CATEGORIES) {
+      if (Array.isArray(existing[cat])) {
+        currentData[cat] = existing[cat].slice();
+      }
+    }
+  }
+
+  const list = currentData[category] || [];
+  const existingIdx = list.findIndex(/** @param {any} e */ (e) => e && e.text === entry.text);
+  if (existingIdx >= 0) {
+    list[existingIdx] = entry;
+  } else {
+    list.push(entry);
+    if (list.length > MAX_CATEGORY_ITEMS) {
+      list.shift();
+    }
+  }
+  currentData[category] = list;
+
+  const serialized = `${JSON.stringify(currentData, null, 2)}\n`;
+  if (Buffer.byteLength(serialized) > MAX_MEMORY_BYTES) {
+    throw new BridgeError("limit_exceeded", `Memory file exceeds maximum size (${MAX_MEMORY_BYTES} bytes).`);
+  }
+
+  throwIfCancelled();
+  await writeFile(memoryPath, serialized, { mode: 0o600, encoding: "utf8" });
+  return { recorded: true, category, entry, path: memoryPath };
+}
+
+/**
+ * Remove matching memory items from persistent memory (.project-local/agent-memory.json).
+ * @param {string} scopeRoot
+ * @param {{category?: string, text?: string}} item
+ * @param {() => void} [throwIfCancelled]
+ */
+export async function forgetPersistentMemory(scopeRoot, item, throwIfCancelled = () => {}) {
+  throwIfCancelled();
+  if (!item || typeof item !== "object") throw new BridgeError("invalid_request", "Filter item must be an object.");
+  const memoryPath = join(scopeRoot, PERSISTENT_MEMORY_FILE);
+  const existing = /** @type {Record<string, any> | null} */ (await readPersistentMemory(scopeRoot, throwIfCancelled));
+  if (!existing || existing.status !== "ok") return { forgotten: 0, path: memoryPath };
+
+  /** @type {Record<string, any>} */
+  const currentData = { version: 1, updated_at: new Date().toISOString() };
+  let removedCount = 0;
+  for (const cat of CATEGORIES) {
+    const list = Array.isArray(existing[cat]) ? existing[cat].slice() : [];
+    if (!item.category || item.category === cat) {
+      currentData[cat] = list.filter((/** @type {any} */ entry) => {
+        const match = !item.text || (entry && entry.text.includes(item.text.trim()));
+        if (match) removedCount += 1;
+        return !match;
+      });
+    } else {
+      currentData[cat] = list;
+    }
+  }
+
+  const serialized = `${JSON.stringify(currentData, null, 2)}\n`;
+  throwIfCancelled();
+  await writeFile(memoryPath, serialized, { mode: 0o600, encoding: "utf8" });
+  return { forgotten: removedCount, path: memoryPath };
 }

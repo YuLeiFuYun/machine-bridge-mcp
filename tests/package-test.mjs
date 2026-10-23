@@ -82,7 +82,7 @@ try {
   for (const tool of ["cf", "wrangler", "undici", "miniflare", "workerd"]) {
     if (Object.hasOwn(packageJson.dependencies || {}, tool)) throw new Error(`Consumer dependencies must exclude the private deployment tool ${tool}`);
   }
-  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.18", wrangler: "4.151.3" })) {
+  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.20", wrangler: "4.151.3" })) {
     if (packageJson.devDependencies?.[tool] !== version || privateManifest.dependencies?.[tool] !== version
         || privateLock.packages?.[""]?.dependencies?.[tool] !== version
         || privateLock.packages?.[`node_modules/${tool}`]?.version !== version) {

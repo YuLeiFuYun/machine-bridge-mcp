@@ -63,6 +63,20 @@ export function buildAuthorityContext({ authorization = {}, daemonPolicy, origin
   });
 }
 
+/**
+ * A relay operation is delegated when it acts for a non-owner account. Local owner operations
+ * and owner-role relay operations retain the full local authority boundary. This predicate is
+ * shared by every path that must hide sensitive files from delegated remote callers.
+ * @param {unknown} context
+ */
+export function isDelegatedRelayContext(context) {
+  const record = /** @type {Record<string, unknown>} */ (context !== null && typeof context === "object" ? context : {});
+  const authority = /** @type {Record<string, unknown>} */ (record.authority !== null && typeof record.authority === "object" ? record.authority : {});
+  const principal = /** @type {Record<string, unknown>} */ (authority.principal !== null && typeof authority.principal === "object" ? authority.principal : {});
+  return record.origin === "relay" && principal.kind === "account"
+    && principal.role !== "owner" && authority.owner !== true;
+}
+
 /** @param {OperationContext | null | undefined} context @param {NormalizedPolicy | undefined} fallbackPolicy */
 export function policyForContext(context, fallbackPolicy) {
   return normalizePolicy(context?.authority?.effectivePolicy || fallbackPolicy || {});

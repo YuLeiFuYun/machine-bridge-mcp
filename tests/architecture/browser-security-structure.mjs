@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { architectureDocumentation } from "./architecture-documentation.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -60,7 +61,7 @@ const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-
 const localToolResultBoundarySource = readFileSync(join(root, "src", "local", "tool-result-boundary.mjs"), "utf8");
 const browserRequestSettlementSource = readFileSync(join(root, "src", "local", "browser-request-settlement.mjs"), "utf8");
 const localAutomationDocsSource = readFileSync(join(root, "docs", "LOCAL_AUTOMATION.md"), "utf8");
-const architectureDocsSource = readFileSync(join(root, "docs", "ARCHITECTURE.md"), "utf8");
+const architectureDocsSource = architectureDocumentation;
 if (!pageAutomationSource.includes("snapshot_version: 3")
     || !localAutomationDocsSource.includes("`browser_inspect_page` returns snapshot version 3")
     || localAutomationDocsSource.includes("`browser_inspect_page` returns snapshot version 2")

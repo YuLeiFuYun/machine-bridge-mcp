@@ -5,6 +5,7 @@ import { createBuiltinInstruction, discoverAutomaticProjectInstruction } from ".
 import { automaticPackageCommands, readProjectPackageMetadata } from "./project-package.mjs";
 import { clampInteger } from "../shared/numbers.mjs";
 import { isSensitivePath } from "./operation-risk.mjs";
+import { isDelegatedRelayContext } from "./authority-context.mjs";
 import {
   discoverLocalSkills, listSkillFiles, MAX_SKILL_ENTRY_BYTES, MAX_SKILL_FILES, MAX_SKILL_RESULTS,
 } from "./agent-skill-discovery.mjs";
@@ -18,7 +19,7 @@ import {
   assertContainedPath, isContainedPath, normalizeAgentConfig, requiredString,
   resolveConfiguredPath, resolveInstructionPath, validateStringArray,
 } from "./agent-contract.mjs";
-import { readPersistentMemory } from "./agent-memory.mjs";
+import { forgetPersistentMemory, readPersistentMemory, recordPersistentMemory } from "./agent-memory.mjs";
 import { extractSymbolOutline } from "./symbol-outline.mjs";
 export { parseSkillMetadata } from "./agent-skill-discovery.mjs";
 
@@ -50,6 +51,14 @@ export class AgentContextManager {
 
   async agentContext(args = {}, context = {}) {
     const state = await this.discoverState(args.path || ".", context);
+    let recordedResult = null;
+    if (args.record_memory && typeof args.record_memory === "object") {
+      recordedResult = await recordPersistentMemory(state.scopeRoot, args.record_memory, () => this.throwIfCancelled(context));
+    }
+    let forgottenResult = null;
+    if (args.forget_memory && typeof args.forget_memory === "object") {
+      forgottenResult = await forgetPersistentMemory(state.scopeRoot, args.forget_memory, () => this.throwIfCancelled(context));
+    }
     state.persistentMemory = await readPersistentMemory(state.scopeRoot, () => this.throwIfCancelled(context), async (canonical) => {
       assertContainedPath(state.scopeRoot, canonical, "project memory path");
       await this.resolveExistingPath(canonical, context);
@@ -87,6 +96,8 @@ export class AgentContextManager {
       instruction_warnings: state.instructionWarnings.map((message) => message),
       instructions_truncated: state.instructionsTruncated,
       commands: publicCommands(state.commands, (value) => this.displayPath(value, context)),
+      ...(recordedResult ? { recorded_memory: recordedResult } : {}),
+      ...(forgottenResult ? { forgotten_memory: forgottenResult } : {}),
       ...(state.persistentMemory ? {
         persistent_memory: {
           ...state.persistentMemory,
@@ -502,13 +513,6 @@ export class AgentContextManager {
       throwIfCancelled: this.throwIfCancelled,
     });
   }
-}
-
-function isDelegatedRelayContext(context) {
-  const authority = context?.authority;
-  const principal = authority?.principal;
-  return context?.origin === "relay" && principal?.kind === "account"
-    && principal.role !== "owner" && authority.owner !== true;
 }
 
 function sameArgv(left, right) {

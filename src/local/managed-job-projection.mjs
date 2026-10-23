@@ -4,6 +4,9 @@ import { managedJobDependencyCount } from "./managed-job-dependency-metadata.mjs
 import {
   managedJobRecoveryAttempts, managedJobRecoveryHistory, managedJobRecoveryHistoryComplete,
 } from "./managed-job-recovery-history.mjs";
+import {
+  redactSensitiveProcessOutput, refusalPreventionAdvisory,
+} from "./process-result-projection.mjs";
 
 /**
  * Return the review-safe job plan projection. Resource paths and values are absent by contract.
@@ -41,16 +44,27 @@ export function reviewablePlan(plan) {
 }
 
 /**
- * Project owner-only managed-job timing out of delegated result reads.
+ * Project owner-only managed-job timing out of delegated result reads,
+ * and redact sensitive secrets/payloads with SRE guidance across all step outputs.
  * @param {Record<string, unknown> | null | undefined} result
  * @param {{includeResourceAdmissionTiming?: boolean}} [options]
  */
 export function projectManagedJobResult(result, { includeResourceAdmissionTiming = false } = {}) {
-  if (!result || includeResourceAdmissionTiming) return result;
+  if (!result || typeof result !== "object") return result;
   const projectSteps = (/** @type {unknown} */ steps) => Array.isArray(steps) ? steps.map((/** @type {unknown} */ step) => {
     if (!step || typeof step !== "object" || Array.isArray(step)) return step;
-    const { resource_admission_ms: _resourceAdmissionMs, ...projected } = /** @type {Record<string, unknown>} */ (step);
-    return projected;
+    const rawStep = /** @type {Record<string, any>} */ (step);
+    const { resource_admission_ms: _resourceAdmissionMs, ...projected } = rawStep;
+    const target = includeResourceAdmissionTiming
+      ? { ...projected, ...(rawStep.resource_admission_ms !== undefined ? { resource_admission_ms: rawStep.resource_admission_ms } : {}) }
+      : projected;
+    if (typeof target.stdout === "string") target.stdout = redactSensitiveProcessOutput(target.stdout);
+    if (typeof target.stderr === "string") {
+      target.stderr = redactSensitiveProcessOutput(target.stderr);
+      const advisory = refusalPreventionAdvisory(target.stderr, target.stdout, target.code);
+      if (advisory) target.stderr = `${target.stderr}${advisory}`;
+    }
+    return target;
   }) : steps;
   return { ...result, steps: projectSteps(result.steps), finally_steps: projectSteps(result.finally_steps) };
 }
