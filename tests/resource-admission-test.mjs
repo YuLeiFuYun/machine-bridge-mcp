@@ -2041,7 +2041,7 @@ console.log("resource admission test ok");
     writeFileSync(join(healthRoot, "waiters", ".DS_Store"), "desktop metadata\n");
     const withMetadata = inspectResourceCoordinatorSync(healthRoot);
     assert.equal(withMetadata.ok, true, "coordinator doctor treated desktop metadata as an integrity failure");
-    assert.deepEqual(withMetadata.metadata, ["waiters/.DS_Store"], "coordinator doctor did not report ignored desktop metadata");
+    assert.deepEqual(withMetadata.metadata, [join("waiters", ".DS_Store")], "coordinator doctor did not report ignored desktop metadata");
     const afterMetadataRepair = inspectResourceCoordinatorSync(healthRoot, { repair: true });
     assert.equal(afterMetadataRepair.ok, true, "coordinator doctor repair failed on benign desktop metadata");
     assert.equal(readdirSync(join(healthRoot, "waiters")).includes(".DS_Store"), false,
@@ -2053,7 +2053,7 @@ console.log("resource admission test ok");
     symlinkSync(join(healthRoot, "link-target.json"), symlinkPath);
     const withSymlink = inspectResourceCoordinatorSync(healthRoot);
     assert.equal(withSymlink.ok, false, "coordinator doctor accepted a symbolic link in the waiter directory");
-    assert(withSymlink.unexpected.includes(`waiters/${symlinkName}`),
+    assert(withSymlink.unexpected.includes(join("waiters", symlinkName)),
       "coordinator doctor did not report the symbolic link as an unexpected entry");
     rmSync(symlinkPath, { force: true });
     rmSync(join(healthRoot, "link-target.json"), { force: true });
