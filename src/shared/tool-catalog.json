@@ -73,16 +73,38 @@
         },
         "detail": {
           "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "mcp_url": {
+          "type": "string"
+        },
+        "oauth": {
+          "type": "object"
+        },
+        "account": {
+          "type": "object"
+        },
+        "authorization": {
+          "type": "object"
+        },
+        "authority_summary": {
+          "type": "object"
+        },
+        "daemon": {
+          "type": "object"
+        },
+        "worker": {
+          "type": "object"
+        },
+        "tools_scope": {
+          "type": "string"
         }
       },
       "required": [
         "name",
-        "protocol_version",
-        "workspace",
-        "workspace_name",
-        "policy",
-        "tool_delivery",
-        "runtime"
+        "tool_delivery"
       ]
     }
   },
@@ -238,7 +260,7 @@
   {
     "name": "resolve_task_capabilities",
     "title": "Resolve task capabilities",
-    "description": "Evaluate workspace context and return recommended tools, command matches, skill matches, and set-level execution routes for a task. Helps choose between direct tools and compound workflows.",
+    "description": "Rescan authority-permitted task-relevant instructions, skills, registered commands, installed applications, browser metadata, and the effective tool catalog. Delegated remote accounts remain confined to project-scoped capability context unless their effective authority permits unrestricted paths. Return bounded set-level execution routes, ranked tools, routing ambiguity, and an optional selected skill. Pass known_refresh_fingerprint to omit unchanged static instructions while recomputing task-specific ranking. The result is advisory: direct Bash and every other policy-allowed tool remain available.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -463,7 +485,7 @@
   {
     "name": "open_local_application",
     "title": "Open local application",
-    "description": "Launch, activate, or reveal a local macOS desktop application by bundle identifier or application name. Brings the target app to foreground and returns launch status.",
+    "description": "Open a named local application, optionally with a document or URL target, using the operating system launcher. Launch is non-idempotent: cancellation is checked immediately before invoking the launcher, but once the launcher process invocation is attempted, timeout, cancellation, or response loss is an unknown launch outcome and callers should inspect application state before retrying. That fixed ambiguous settlement is returned as a public, non-retryable MCP error. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -502,28 +524,7 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "application": {
-          "type": "string"
-        },
-        "resolved_application": {
-          "type": "string"
-        },
-        "target": {
-          "type": "string"
-        },
-        "platform": {
-          "type": "string"
-        },
-        "code": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "application",
-        "resolved_application",
-        "platform"
-      ]
+      "properties": {}
     }
   },
   {
@@ -581,36 +582,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "application": {
-          "type": "string"
-        },
-        "frontmost": {
-          "type": "boolean"
-        },
-        "elements": {
-          "type": "array"
-        },
-        "truncated": {
-          "type": "boolean"
-        },
-        "process_id": {
-          "type": "integer"
-        },
-        "process_generation": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "application",
-        "frontmost"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "operate_local_application",
     "title": "Operate local application UI",
-    "description": "Automate local macOS applications via AppleScript and System Events (menu item clicks, window focus, keystrokes, activate, quit). Higher-level and more reliable than raw coordinate clicks.",
+    "description": "Perform a structured macOS Accessibility action on a matched UI element. check/uncheck are desired-state operations: they read the current checkbox/radio state at dispatch time, skip input when already satisfied, and otherwise issue at most one AXPress (uncheck is checkbox-only). Text can be supplied through a registered local resource so secret values do not enter MCP arguments. keystroke focuses the matched AX target and delivers surrogate-safe Unicode chunks with public PID-scoped CoreGraphics keyboard events; key_press delivers a layout-independent special key (Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, or Space) with optional Shift+, likewise PID-scoped and without making the application frontmost. Both return input_transport=public-cgevent-pid; Meta/Control/Alt and character shortcuts are deliberately unsupported because inactive-AppKit validation did not establish reliable command-shortcut semantics. Cancellation is re-checked after asynchronous local-resource resolution and before invoking the fixed JXA mutation helper. Explicit JXA selector/geometry/action preflight errors remain definite, but once the mutating osascript invocation is attempted, timeout, cancellation, missing output, or malformed helper settlement is an unknown action outcome and must not be replayed blindly. Fixed launch/Accessibility/visual ambiguous settlements are returned as public, non-retryable MCP errors. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -716,34 +694,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "application": {
-          "type": "string"
-        },
-        "action": {
-          "type": "string"
-        },
-        "ok": {
-          "type": "boolean"
-        },
-        "input_transport": {
-          "type": "string"
-        },
-        "focus_prepared": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "application",
-        "action",
-        "ok"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "computer_observe",
     "title": "Observe computer surface",
-    "description": "Inspect current macOS desktop state: returns focused window, running applications, display dimensions, cursor position, and optional screen capture. Use before computer_act for coordinate targeting.",
+    "description": "Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state. timeout_seconds is one end-to-end observation budget; compound screenshot/semantic/window-revalidation stages consume the remaining deadline rather than restarting it.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -859,33 +816,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "snapshot_id": {
-          "type": "string"
-        },
-        "surface": {
-          "type": "string"
-        },
-        "semantic": {
-          "type": "object"
-        },
-        "target": {
-          "type": "object"
-        },
-        "screenshot_sha256": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "snapshot_id",
-        "surface"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "computer_act",
     "title": "Act on computer snapshot",
-    "description": "Execute OS-level input actions on macOS (mouse move, click, double click, drag, scroll, key press, text typing, shortcuts) via Quartz event taps. Returns action result and updated display geometry.",
+    "description": "Perform one snapshot-bound browser or desktop action and then observe/verify the effect. Semantic targets use refs from computer_observe. Browser click/double-click/hover/scroll may use normalized_viewport coordinates from the same navigation-coherent CDP screenshot; browser drag uses a source target plus destination from that same snapshot and requires ref-to-ref or point-to-point evidence. macOS application drag uses two normalized points from the same window screenshot, and application scroll uses one normalized point plus bounded wheel deltas; both require the opt-in snapshot-bound native pixel backend and do not guess Accessibility fallbacks. Point dispatch revalidates the exact screenshot immediately before native/trusted input; browser ref drag revalidates both trusted backend identities and in-viewport geometry before any drag input; browser ref scroll revalidates the anchor identity and requires its content quad to remain in viewport before one trusted wheel event. Browser reload/back/forward also bind the observed tab URL, document epoch, and current history-list slot and revalidate those authorities immediately before the navigation mutation; stale or unavailable history authority fails before dispatch. Results distinguish dispatch_status from effect_status; unknown outcomes must be inspected before retrying. dispatch_status=unknown is driven only by fixed lower-layer mutation-settlement markers, so a resource or preflight timeout before mutation remains a definite failure. Deterministic post-observation checks expose `verification.post_checks[].evidence_source` (`browser_tab_state`, `browser_semantic`, `application_process`, `application_workspace`, `application_accessibility`, or `screenshot`) so callers can distinguish state evidence from pixel evidence. Browser post-state defaults to a compact summary plus bounded semantic delta; post_screenshot=auto avoids redundant images unless visual evidence or ambiguous dispatch requires one. Request post_observation_detail=full only when the full tree is needed. timeout_seconds is one end-to-end action budget spanning preflight, the single dispatch attempt, verification, and post-observation; internal stages receive only the remaining deadline.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -1242,39 +1179,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "dispatch_status": {
-          "type": "string"
-        },
-        "effect_status": {
-          "type": "string"
-        },
-        "post_snapshot_id": {
-          "type": "string"
-        },
-        "observed_diff": {
-          "type": "object"
-        },
-        "verification": {
-          "type": "object"
-        },
-        "post_observation": {
-          "type": "object"
-        },
-        "continuation": {
-          "type": "object"
-        }
-      },
-      "required": [
-        "dispatch_status",
-        "effect_status"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_status",
     "title": "Browser bridge status",
-    "description": "Query the browser automation bridge status: connection state, listening port, active paired extension version, and open tabs count. Use before initiating browser actions.",
+    "description": "Start or inspect the loopback bridge for the Chromium profile where the extension is installed. Machine Bridge does not launch Playwright or another browser process, but cannot infer whether that profile is the user's daily or isolated profile; status reports authenticated extension version, protocol, capabilities, and reload state. Concurrent callers may share one broker-startup operation, but each caller re-checks its own cancellation after shared startup settles, so cancelling one request does not cancel startup for another waiter or return completion to the cancelled caller.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -1452,7 +1363,7 @@
   {
     "name": "pair_browser_extension",
     "title": "Pair browser extension",
-    "description": "Generate a pairing URL and token for the unpacked Chrome/Firefox extension. Enables browser tab inspection, DOM interaction, and form automation through the local bridge.",
+    "description": "Open the local pairing page and return the packaged unpacked-extension path for installation in the user's intended Chromium profile. Pairing is persisted only after an acknowledged version/capability handshake. Opening the pairing page is non-idempotent: cancellation is checked immediately before the OS launcher, but once that launcher invocation is attempted, timeout/cancellation/response loss is an unknown launch outcome and callers should inspect the browser before opening it again. That fixed ambiguous settlement is returned as a public, non-retryable MCP error.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -1675,23 +1586,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "tabs": {
-          "type": "array"
-        },
-        "active_tab_id": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "tabs"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_manage_tabs",
     "title": "Manage browser tabs",
-    "description": "Manage browser extension tabs: create, switch, close, reload, or mute tabs. Returns updated tab list with identifiers, URLs, and active states.",
+    "description": "Create, activate, or close tabs in the paired existing Chromium profile. Tab mutations are non-idempotent: if Chrome rejects a mutation request after invocation, or the broker loses the extension response after attempting dispatch, the outcome is reported as unknown and callers should inspect browser_list_tabs before retrying. If a completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and must not be used as evidence that activation/close/create did not run. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Activation is verified between its two mutation stages: after tab activation resolves, the target is re-read and must still be active before its freshly observed current window is focused; after focus resolves, the target is re-read again and success returns only the final verified tab provenance. Concurrent tab/window moves or user tab switches are reported as partial completion with inspection guidance and are never automatically re-activated or re-focused. Cancellation is re-checked after asynchronous tab lookup and before each later mutation stage; a stage not yet started is skipped, while an earlier completed stage is not rolled back. Use browser_list_tabs when only a read-only tab inventory is needed. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -1739,27 +1640,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "action": {
-          "type": "string"
-        },
-        "tab_id": {
-          "type": "integer"
-        },
-        "ok": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "action",
-        "ok"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_get_source",
     "title": "Read browser page source",
-    "description": "Retrieve raw serialized DOM HTML from a browser tab. Intended for inspecting hidden bootstrap, session, account, authentication or structural markup; do not use it for routine semantic inspection.",
+    "description": "Read bounded raw serialized DOM HTML from the active or selected tab only when source markup is genuinely required. Raw source can contain hidden bootstrap, session, account, authentication, or other sensitive data that is not visible in the rendered page; treat the entire result as sensitive and do not use it for routine semantic inspection. Prefer browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": true,
@@ -1800,27 +1687,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "source": {
-          "type": "string"
-        },
-        "tab_id": {
-          "type": "integer"
-        },
-        "truncated": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "source",
-        "tab_id"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_inspect_page",
     "title": "Inspect browser page",
-    "description": "Inspect interactive DOM elements on the current page. Returns a structured semantic/actionability snapshot with CSS selectors, element roles, labels, and Set-of-Marks visual IDs.",
+    "description": "Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. Candidates are salience-ranked globally across accessible frames instead of consuming the aggregate budget in frame traversal order. include_values=false is the default; when include_values=true, non-sensitive page controls may return their current values, including content the page previously received from a local resource if that content is now present in an ordinary control. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": true,
@@ -1865,27 +1738,7 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "url": {
-          "type": "string"
-        },
-        "title": {
-          "type": "string"
-        },
-        "tab_id": {
-          "type": "integer"
-        },
-        "elements": {
-          "type": "array"
-        },
-        "truncated": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "url",
-        "tab_id"
-      ]
+      "properties": {}
     }
   },
   {
@@ -1995,26 +1848,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "ready": {
-          "type": "boolean"
-        },
-        "elapsed_ms": {
-          "type": "integer"
-        },
-        "condition": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "ready"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_action",
     "title": "Operate browser page",
-    "description": "Execute a single DOM action (click, hover, fill, select, press, navigate, reload) in a paired browser tab. Supports CSS selectors, input modes, and navigation settlement.",
+    "description": "Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. A value_resource is resolved locally and is not echoed in the mutating result, but the destination page receives the value and later page observations may expose content the page now holds. Automatic trusted-input fallback occurs only before any trusted preparation (including DOM focus/scroll) or DevTools Input mutation starts; ambiguous post-dispatch failures require inspection before retry. Broker timeout, disconnect, extension replacement, or response loss after WebSocket dispatch is attempted is also an unknown mutation outcome, not proof that the action did not run. If the mutating extension call completes but its success result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown and callers must inspect state rather than replay. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. DOM/trusted-preparation page calls use a structured settlement envelope: an explicit page preflight error remains definite, while loss of the mutating scripting invocation response after that invocation is attempted is an unknown action outcome and must not be replayed blindly. Cancellation is re-checked after asynchronous target/preparation steps and before each later mutation stage; a stage not yet started is skipped, while earlier focus/scroll/input effects are not rolled back. A successful action is not converted to failure by a later tab-metadata read: current tab provenance is returned only when verified, otherwise tab_metadata_verified is false and stale pre-action title/URL metadata is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -2154,33 +1994,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "action": {
-          "type": "string"
-        },
-        "ok": {
-          "type": "boolean"
-        },
-        "method": {
-          "type": "string"
-        },
-        "value_exposed": {
-          "type": "boolean"
-        },
-        "value_source": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "action",
-        "ok"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_fill_form",
     "title": "Fill complex browser form",
-    "description": "Batch fill multiple form fields (inputs, textareas, checkboxes, selects) in one round trip using CSS selectors or labels, reducing latency and tool-turn overhead.",
+    "description": "Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; the mutating result and errors do not return field values, but the destination page receives them and later page observations may expose content the page now holds. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the form must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/field preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown form outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before page mutation skips the fill stage; once page mutation starts, earlier field changes are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-fill provenance is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -2358,27 +2178,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "method": {
-          "type": "string"
-        },
-        "ok": {
-          "type": "boolean"
-        },
-        "fields_count": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "method",
-        "ok"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_screenshot",
     "title": "Capture browser screenshot",
-    "description": "Capture a PNG screenshot of the active browser tab or viewport. Supports full page, clipping rects, and visual mark overlays. Returns image metadata and base64 payload.",
+    "description": "Capture the visible area of the active or selected tab from the paired existing browser profile and return native MCP image content without focusing another window. Selecting an inactive tab may temporarily activate it; pass allow_tab_switch=false to refuse that activation, in which case an inactive target fails before capture and the active tab is never changed. Immediately before activation, the extension revalidates that the same restore-baseline tab is still active in that window; a concurrent user tab switch fails definite pre-dispatch without activating anything. If the activation response is then lost, or if the resolved activation no longer verifies the same target tab in the restore-baseline window, the outcome is unknown, no capture or automatic rollback is attempted, and callers should inspect browser_list_tabs before retrying. Broker response loss after extension dispatch is attempted is also reported as unknown because the temporary activation/capture lifecycle may already have run. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown because temporary tab activation/restoration may already have occurred. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Cancellation observed before temporary activation prevents activation; if it arrives after confirmed temporary activation but before capture, capture is skipped and the previous active tab is restored when safely verifiable. After confirmed temporary activation, later capture or verification failures restore the previous active tab when safe while preserving a concurrent user tab switch; restoration revalidates that the baseline tab still belongs to the capture window before activating it. Once the restore activation API is invoked, a rejected response, returned window mismatch, or failed post-restore verification is an unknown active-tab outcome and callers must inspect browser_list_tabs before retrying; no same screenshot is replayed automatically. Successful results use the verified post-capture active-tab observation for title/URL provenance and report tab_metadata_verified=true. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -2424,30 +2230,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "tab_id": {
-          "type": "integer"
-        },
-        "url": {
-          "type": "string"
-        },
-        "title": {
-          "type": "string"
-        },
-        "tab_metadata_verified": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "tab_id",
-        "url"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "browser_upload_files",
     "title": "Upload browser files",
-    "description": "Attach local workspace files to a file input element in the active browser tab via secure bridge staging. Requires existing local file paths.",
+    "description": "Populate a browser file input from registered local resource files without returning file contents through MCP results. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the upload must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/file-input preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown upload outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before the file-input mutation skips that stage; once the page mutation starts, resulting input/change handlers are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-upload provenance is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.",
     "availability": "full",
     "annotations": {
       "readOnlyHint": false,
@@ -2557,26 +2346,13 @@
     "outputSchema": {
       "type": "object",
       "additionalProperties": true,
-      "properties": {
-        "resource_names": {
-          "type": "array"
-        },
-        "resource_contents_exposed": {
-          "type": "boolean"
-        },
-        "ok": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "ok"
-      ]
+      "properties": {}
     }
   },
   {
     "name": "agent_context",
     "title": "Load agent context",
-    "description": "Discover project instructions, skills, registered commands, and persistent memory. Use this when the caller needs the context itself rather than task-specific capability routing.",
+    "description": "Discover the instruction, skill, and registered-command inventory for a target path, including precedence and provenance. Returns one consolidated effective_instructions body by default; set include_source_content=true to also return each source body. Set include_instruction_content=false to omit instruction bodies entirely. Set include_symbol_outline=true or symbol_path to include a lightweight Repo Map symbol outline. Use this when the caller needs the context itself; use resolve_task_capabilities when task-specific ranking and execution-route advice is needed.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -2624,53 +2400,6 @@
           "minimum": 1,
           "maximum": 500,
           "default": 100
-        },
-        "record_memory": {
-          "type": "object",
-          "properties": {
-            "category": {
-              "type": "string",
-              "enum": [
-                "project_insights",
-                "ci_guidelines",
-                "user_preferences",
-                "notes"
-              ]
-            },
-            "text": {
-              "type": "string",
-              "maxLength": 2048
-            },
-            "importance": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 10
-            }
-          },
-          "required": [
-            "category",
-            "text"
-          ],
-          "additionalProperties": false
-        },
-        "forget_memory": {
-          "type": "object",
-          "properties": {
-            "category": {
-              "type": "string",
-              "enum": [
-                "project_insights",
-                "ci_guidelines",
-                "user_preferences",
-                "notes"
-              ]
-            },
-            "text": {
-              "type": "string",
-              "maxLength": 2048
-            }
-          },
-          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -2924,7 +2653,7 @@
   {
     "name": "run_local_command",
     "title": "Run registered local command",
-    "description": "Prefer this when the repository already defines the desired operation as a registered command with fixed argv and working directory. A package script name is not implicitly registered. For multiple non-interactive commands, prefer one multi-step start_job to keep event density bounded.",
+    "description": "Prefer this when the repository already defines the desired operation as a registered local command; a registered command may explicitly wrap a package-manager script. It runs the fixed argv/cwd/timeout contract without shell reinterpretation. A package script name is not implicitly registered: use run_process with the package manager argv when no registered command exists, or exec_command for ad hoc shell composition. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the command is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -2997,17 +2726,64 @@
         },
         "stderr_truncated_bytes": {
           "type": "integer"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "continues_without_mcp_connection": {
+          "type": "boolean"
+        },
+        "approval": {
+          "type": "string"
+        },
+        "plan_sha256": {
+          "type": "string"
+        },
+        "dependency_total": {
+          "type": "integer"
+        },
+        "dependency_pending_count": {
+          "type": "integer"
+        },
+        "idempotency_key_accepted": {
+          "type": "boolean"
+        },
+        "idempotency_replay": {
+          "type": "boolean"
+        },
+        "recovery": {
+          "type": "object"
+        },
+        "cleanup": {
+          "type": "object"
+        },
+        "execution_mode": {
+          "type": "string"
+        },
+        "source_tool": {
+          "type": "string"
+        },
+        "execution_timeout_seconds": {
+          "type": "integer"
+        },
+        "progress": {
+          "type": "object"
+        },
+        "retry_safety": {
+          "type": "string"
         }
       },
       "required": [
-        "name",
-        "cwd",
-        "timeout_seconds",
-        "code",
-        "stdout",
-        "stderr",
-        "stdout_truncated_bytes",
-        "stderr_truncated_bytes"
+        "name"
       ]
     }
   },
@@ -3166,8 +2942,7 @@
         },
         "with_line_numbers": {
           "type": "boolean",
-          "default": false,
-          "description": "When true, format returned content with 1-based line numbers prefixed as line | content."
+          "default": false
         }
       },
       "required": [
@@ -3407,7 +3182,7 @@
   {
     "name": "apply_patch",
     "title": "Apply structured patch",
-    "description": "Atomically apply unified diff hunks across one or more files with collision checks, validation, and SHA-256 verification. Fails cleanly without partial file mutations.",
+    "description": "Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Hunk context must match exactly, including indentation. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -3449,7 +3224,7 @@
   {
     "name": "search_text",
     "title": "Search text",
-    "description": "Search text files across the workspace using literal strings or regular expressions. Supports path filtering, case sensitivity, max matches, and line pagination.",
+    "description": "Search UTF-8 text files under a workspace path for a literal substring. Supports a relative glob, case sensitivity, and bounded surrounding lines. Generated and dependency directories (.git, node_modules, dist, build, coverage, .next, .turbo, .wrangler, Python caches, and virtual environments) are ignored by default; set include_ignored=true to traverse them. Reports skipped_files and truncated=true when candidate files are skipped because of read limits, hard-link protection, unsafe file types, or delegated sensitive-path restrictions.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -3626,10 +3401,6 @@
           "minimum": 1,
           "maximum": 5242880,
           "default": 1048576
-        },
-        "with_line_numbers": {
-          "type": "boolean",
-          "default": false
         }
       },
       "additionalProperties": false
@@ -3765,10 +3536,6 @@
           "minimum": 1,
           "maximum": 5242880,
           "default": 1048576
-        },
-        "with_line_numbers": {
-          "type": "boolean",
-          "default": false
         }
       },
       "additionalProperties": false
@@ -3872,7 +3639,7 @@
   {
     "name": "run_process",
     "title": "Run process directly",
-    "description": "Run an explicit executable plus argv with no shell syntax needed and no registered command fitting. Bypasses shell quoting and globbing. For multiple commands, prefer one multi-step start_job.",
+    "description": "Run an explicit executable plus argv when no shell syntax is needed and no registered command fits. This avoids quoting, globbing, pipelines, and redirection, but it is not a sandbox; use exec_command when Bash composition is the convenient choice. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer a repository umbrella command or one multi-step start_job instead of issuing many one-step calls; this reduces host-visible event density without shortening execution.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -3929,21 +3696,71 @@
         },
         "stderr_truncated_bytes": {
           "type": "integer"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "continues_without_mcp_connection": {
+          "type": "boolean"
+        },
+        "approval": {
+          "type": "string"
+        },
+        "plan_sha256": {
+          "type": "string"
+        },
+        "dependency_total": {
+          "type": "integer"
+        },
+        "dependency_pending_count": {
+          "type": "integer"
+        },
+        "idempotency_key_accepted": {
+          "type": "boolean"
+        },
+        "idempotency_replay": {
+          "type": "boolean"
+        },
+        "recovery": {
+          "type": "object"
+        },
+        "cleanup": {
+          "type": "object"
+        },
+        "execution_mode": {
+          "type": "string"
+        },
+        "source_tool": {
+          "type": "string"
+        },
+        "execution_timeout_seconds": {
+          "type": "integer"
+        },
+        "progress": {
+          "type": "object"
+        },
+        "retry_safety": {
+          "type": "string"
         }
-      },
-      "required": [
-        "code",
-        "stdout",
-        "stderr",
-        "stdout_truncated_bytes",
-        "stderr_truncated_bytes"
-      ]
+      }
     }
   },
   {
     "name": "start_process",
     "title": "Start process session",
-    "description": "Launch an asynchronous long-running process session in the background with streaming I/O handles. Use read_process and write_process to interact with stdin/stdout/stderr.",
+    "description": "Start a direct argv process without a shell and retain bounded stdout, stderr, and stdin state across MCP calls. Cancellation before spawn is definite. If cancellation or deadline arrives after the child has spawned but before the start result settles, the server requests termination and returns a public non-retryable unknown outcome with the allocated session_id; the retained session remains inspectable so callers can verify its state instead of starting the command again blindly. Process sessions are daemon-lifetime state: use start_job/read_job when work must survive a Machine Bridge daemon restart, service replacement, or MCP disconnect. For an authorized remote call on macOS, a successfully admitted session keeps an idle-sleep assertion for the child lifetime; this does not override explicit sleep or lid-close behavior. Remote OAuth process-session access is owner-only because arbitrary executables can read workspace credentials.",
     "availability": "direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -4292,7 +4109,7 @@
   {
     "name": "diagnose_runtime",
     "title": "Diagnose runtime layers",
-    "description": "Inspect local Machine Bridge runtime health, active daemon status, background jobs, resource coordinator, network connectivity, and policy boundaries.",
+    "description": "Run fixed, non-user-controlled local probes and return privacy-safe control-plane state to distinguish MCP policy, local filesystem, process-spawn, shell, managed-job storage, resource-admission, relay, event-density, and operating-system-suspension evidence. Owner/local diagnostics include bounded managed-job churn, content-free recent security-audit tool-call aggregates, bounded resource-waiter summaries with current pre-spawn admission reasons, and on macOS bounded sleep-history correlation for both runtime stalls and the most recently recovered relay outage; they never expose tool arguments/results, waiter IDs/tokens/PIDs, private paths, or raw power logs. A successful response proves the request reached the local daemon; it cannot diagnose a host refusal that blocks the tool call itself or observe ChatGPT final-message receipt.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -4469,7 +4286,7 @@
   {
     "name": "stage_job",
     "title": "Stage managed job draft",
-    "description": "Stage and validate a multi-step managed job definition without executing it. Checks step parameters, dependencies, resource bindings, and syntax before execution.",
+    "description": "Validate and persist a durable managed-job draft without starting any process. This is a non-executing record only; a trusted owner client starts work with start_job after reviewing or reconstructing the plan. Optional depends_on declares existing executable managed-job dependencies so durable orchestration can use terminal job state instead of blind file polling; staged or already-failed dependencies are rejected. Main and finally steps default to 600 seconds and may explicitly request up to 21600 seconds (six hours), so one continuous command can exceed 100 minutes without artificial step splitting.",
     "availability": "write",
     "annotations": {
       "readOnlyHint": false,
@@ -4717,7 +4534,7 @@
   {
     "name": "start_job",
     "title": "Start managed job",
-    "description": "Durably accept an asynchronous multi-step managed job with ordered steps, temporary files, cleanup guarantees, and depends_on links. Evaluates dependencies from durable terminal state and deduplicates retries via idempotency_key. For multiple non-interactive commands, prefer one multi-step start_job to keep host-visible event density bounded; conversation-level task completeness is an owner/caller semantic assertion.",
+    "description": "Durably accept a detached argv-based job with ordered steps, job-scoped temporary files, guaranteed-attempt finally steps, and optional depends_on links to existing managed jobs. The independent local runner continues if the MCP connection disappears. Dependencies are evaluated from durable managed-job terminal state rather than blind artifact polling: while an upstream job is active the dependent job remains queued in current_phase=dependency_wait without spawning its main child, then proceeds after all dependencies succeed or terminates with error_class=dependency_failed if an upstream later fails. A transient dependency-state read classified as permission_denied, identity_changed, or generic resource_unavailable receives a fixed 45-second recovery grace; one successful read clears that grace, while persistent unavailability fails closed as dependency_unavailable and missing/integrity/witness-invalid evidence remains immediate failure. Staged or already-failed dependencies are rejected before acceptance. On macOS, an authorized remote account job keeps a runner-owned idle-sleep assertion only after the runner ownership claim is confirmed and persisted account ownership is validated, then through dependency wait, admission, steps, cleanup, and terminal persistence; local managed jobs do not acquire this remote-continuity assertion, and it does not override explicit sleep or lid-close behavior. Use an idempotency_key to deduplicate an uncertain retry while the original job record is retained; eviction/retention expiry ends that deduplication window, so this is not permanent exactly-once execution. Use {{temp:name}}, {{resource:name}}, env_resources, or stdin_resource; registered resource contents never enter MCP arguments. Each main/finally step defaults to 600 seconds and may explicitly request up to 21600 seconds (six hours); use this managed-job surface when one continuous command legitimately needs more than the 600-second durable one-step process limit. Hosted start_job keeps the original response open for the short initial-settlement window advertised by server_info.tool_delivery. If the accepted job reaches terminal state inside that window, the same response includes its terminal result with follow_up_read_required=false; otherwise it preserves the original job_id/recovery envelope with follow_up_read_required=true and normal read_job continuation. This response coalescing does not change durable ownership, dependency waiting, resource admission, or step execution deadlines. For one coherent non-interactive workflow, prefer one multi-step managed job over a chain of one-step process carriers so host-visible event density stays bounded. Do not split a long task merely to satisfy an assumed host deadline, and do not use the user as a polling clock. Optional continuation_mode=task_supervisor is a narrow durable-task ownership declaration: use it only when this job's own reviewed plan already encapsulates all remaining noninteractive task work. Machine Bridge validates the persisted declaration, active state, and current monitor claim but cannot infer conversation-level completeness; that completeness is an owner/caller semantic assertion. It does not grant the Job Monitor execution authority and must be omitted for ordinary child jobs.",
     "availability": "write+direct-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -4988,7 +4805,7 @@
   {
     "name": "list_jobs",
     "title": "List managed jobs",
-    "description": "List recent managed jobs across active, settled, and retained states. Filters by status, principal, or tag. A hosted one-step process whose current response still requires read_job continuation is non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace. Returns summary metadata without loading large step outputs.",
+    "description": "List detached managed-job recovery state without returning step output. The primary jobs array remains capped at 50 and prioritizes unreadable, active, staged, and durable terminal recovery state before transient one-step helper history so helper churn cannot hide an older recoverable long-running job or its terminal result. A hosted one-step process whose current response still requires read_job continuation is non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace. If all 512 retained states are non-evictable, new admission returns typed retryable limit_exceeded backpressure instead of deleting promised recovery evidence. Once Machine Bridge produces a terminal hosted response for that helper, whether during initial settlement or a later read_job, it drops to the shorter 30-minute bounded newest-16 transient delivery reserve; a still-pending result becomes removable after its 24-hour grace expires. recent_process_recovery remains capped at 16 additional authority-visible public job handles, prioritizes retained follow-up-required helpers when they are omitted from the primary window, and returns no step output or internal retention metadata. This is bounded recovery discovery only: it is not an MCP terminal-result replay/session store and must not be used for polling. The durable retained-state store is larger than these response windows. Owner/local callers also receive coarse retained-state capacity including durable-versus-transient terminal counts plus recent job-creation/churn aggregates without internal retired filenames, filesystem identities, argv, paths, or output.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -5042,7 +4859,7 @@
   {
     "name": "read_job",
     "title": "Read managed job",
-    "description": "Return one managed job status plus bounded step results. In dependency_wait or resource_admission phases, children have not spawned yet; nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. Use job_id plus recovery_key for recovery.",
+    "description": "Return one managed job status plus bounded, resource-redacted step results. current_phase=dependency_wait means an accepted dependent job is waiting locally for declared depends_on jobs and has not spawned its main child; dependency_pending_count decreases as upstream jobs settle, all-success releases execution, and a later upstream failure terminates the dependent with result.error_class=dependency_failed. current_phase=resource_admission means the runner is still in cooperative pre-spawn resource admission and no child for that step has started yet. Hosted active reads are server-paced: terminal settlement returns on the next bounded poll, nonterminal progress is coalesced for at least thirty seconds by default, and current_step-only churn does not wake a host call by itself. This reduces host-visible event density without shortening the managed job. A planned local-daemon restart settles an in-flight hosted read_job as retryable unavailable with recovery.mode=read_same_job and the original job_id; hosted callers must also retain the recovery_key issued with acceptance and recover by reading that same job_id plus recovery_key after reconnect, never by resubmitting its business side effect. Completed step results keep duration_ms as total orchestration duration; local/owner reads additionally expose resource_admission_ms as the pre-spawn portion, while delegated non-owner reads omit that machine-user scheduling timing. Registered resource paths and contents are never returned. A valid job_id whose retained record no longer exists fails with typed not_found; absence of retained state is not proof that the underlying operation never executed, so callers must not blindly resubmit side effects.",
     "availability": "always",
     "annotations": {
       "readOnlyHint": true,
@@ -5190,9 +5007,7 @@
           "type": "string"
         },
         "started_at": {},
-        "finished_at": {
-          "type": "string"
-        },
+        "finished_at": {},
         "current_phase": {},
         "current_step": {},
         "approval": {
@@ -5204,9 +5019,7 @@
         "cleanup_guarantee": {
           "type": "string"
         },
-        "error_class": {
-          "type": "string"
-        },
+        "error_class": {},
         "cleanup_error_class": {},
         "recovery_attempts": {
           "type": "integer"
@@ -5217,9 +5030,7 @@
         "recovery_history_complete": {
           "type": "boolean"
         },
-        "result_persisted": {
-          "type": "boolean"
-        },
+        "result_persisted": {},
         "terminal_record_error_class": {},
         "artifact_cleanup_pending": {
           "type": "boolean"
@@ -5239,6 +5050,12 @@
         },
         "execution_started": {
           "type": "boolean"
+        },
+        "already_finished": {
+          "type": "boolean"
+        },
+        "cancellation_delivery": {
+          "type": "string"
         }
       },
       "required": [
@@ -5264,16 +5081,14 @@
         "artifact_cleanup_error_class",
         "dependency_total",
         "dependency_pending_count",
-        "cancellation_requested",
-        "cleanup_will_run",
-        "execution_started"
+        "cancellation_requested"
       ]
     }
   },
   {
     "name": "exec_command",
     "title": "Execute shell command",
-    "description": "Execute Bash shell commands, pipelines, redirection, and conditionals in the workspace. Serves as a general escape hatch with operating-system authority. For multiple non-interactive commands, prefer one multi-step start_job to keep event density bounded.",
+    "description": "Run Bash-compatible shell composition in the workspace: pipelines, redirection, globbing, conditionals, or compact multi-command probes. This is the convenient general escape hatch, not a sandbox, and has the local user's operating-system authority. Prefer run_local_command for an existing fixed project command and run_process when no shell syntax is needed. Remote OAuth access is owner-only because arbitrary executables can read workspace credentials; delegated accounts use structured tools instead. Local stdio execution remains request-scoped. Remote execution is durable-first: the shell argv is committed as a principal-bound one-step managed job and the response returns a job_id for read_job recovery across MCP disconnects or daemon replacement. Supply idempotency_key when retry-safe recovery of an ambiguous acceptance response is required. For a coherent workflow with several non-interactive commands, prefer one multi-step start_job or a repository umbrella command instead of a chain of one-step shell calls; this reduces host-visible event density without shortening execution.",
     "availability": "shell-exec",
     "annotations": {
       "readOnlyHint": false,
@@ -5323,15 +5138,65 @@
         },
         "stderr_truncated_bytes": {
           "type": "integer"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "job_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "continues_without_mcp_connection": {
+          "type": "boolean"
+        },
+        "approval": {
+          "type": "string"
+        },
+        "plan_sha256": {
+          "type": "string"
+        },
+        "dependency_total": {
+          "type": "integer"
+        },
+        "dependency_pending_count": {
+          "type": "integer"
+        },
+        "idempotency_key_accepted": {
+          "type": "boolean"
+        },
+        "idempotency_replay": {
+          "type": "boolean"
+        },
+        "recovery": {
+          "type": "object"
+        },
+        "cleanup": {
+          "type": "object"
+        },
+        "execution_mode": {
+          "type": "string"
+        },
+        "source_tool": {
+          "type": "string"
+        },
+        "execution_timeout_seconds": {
+          "type": "integer"
+        },
+        "progress": {
+          "type": "object"
+        },
+        "retry_safety": {
+          "type": "string"
         }
-      },
-      "required": [
-        "code",
-        "stdout",
-        "stderr",
-        "stdout_truncated_bytes",
-        "stderr_truncated_bytes"
-      ]
+      }
     }
   }
 ]

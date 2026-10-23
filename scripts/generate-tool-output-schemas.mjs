@@ -1,6 +1,6 @@
 // Regenerate every tool `outputSchema` from the observed output contract.
 //
-// The contract (src/shared/tool-output-contract.json) records the top-level fields each
+// The contract (tests/fixtures/tool-output-contract.json) records the top-level fields each
 // tool actually returned in a real invocation. `outputSchema` is a projection of that
 // evidence, so a tool can never advertise a field it does not return. Tools that the
 // offline harness cannot execute keep an empty property set instead of an invented one.
@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const catalogPath = join(root, "src/shared/tool-catalog.json");
 const metadataPath = join(root, "src/shared/server-metadata.json");
-const contractPath = join(root, "src/shared/tool-output-contract.json");
+const contractPath = join(root, "tests/fixtures/tool-output-contract.json");
 const args = new Set(process.argv.slice(2));
 
 let observedContract = null;
@@ -119,12 +119,6 @@ async function observeContract() {
   await mkdir(join(workspace, "nested"), { recursive: true });
   await mkdir(join(workspace, ".machine-bridge"), { recursive: true });
   await mkdir(join(workspace, ".codex", "skills", "contract"), { recursive: true });
-  await mkdir(join(workspace, ".project-local"), { recursive: true, mode: 0o700 });
-  await writeFile(join(workspace, ".project-local", "agent-memory.json"), `${JSON.stringify({
-    version: 1,
-    updated_at: "2026-01-01T00:00:00.000Z",
-    notes: [{ text: "contract memory", importance: 1, updated_at: "2026-01-01T00:00:00.000Z" }],
-  }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(join(workspace, "contract.txt"), "alpha\nbeta\n");
   await writeFile(join(workspace, "nested", "deep.txt"), "deep\n");
   await writeFile(join(workspace, "pixel.png"), Buffer.from(
@@ -168,8 +162,12 @@ Return deterministic skill content for the output-observation harness.
   })();
   const metadata = {
     generation: Number.isSafeInteger(previous.generation) ? previous.generation : 1,
-    note: "Top-level output fields observed from the current real tool invocation. verified=true means this generation observed an object; failed or environment-dependent observations are never carried forward, so their outputSchema deliberately claims no fields. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
+    note: typeof previous.note === "string" ? previous.note
+      : "Top-level output fields observed from real tool invocations. Tools marked verified=false could not be executed in the offline audit harness, so their outputSchema deliberately claims no fields. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
   };
+  const { buildServerInfoResult } = await import("../src/worker/server-info.ts");
+  const { DaemonRegistry } = await import("../src/worker/daemon-registry.ts");
+  const { WorkerObservability } = await import("../src/worker/observability.ts");
   const runtime = new LocalRuntime({
     workspace,
     policy: policyProfile("full", "explicit"),
@@ -179,7 +177,8 @@ Return deterministic skill content for the output-observation harness.
     resourceStatePath: join(stateRoot, "profiles", "contract", "state.json"),
     recoverJobs: false,
   });
-  const state = { workspace, stagedJobs: [], processSessionId: "" };
+  runtime.managedJobManager.runnerSpawnProcess = () => ({ pid: process.pid, unref() {}, once() {} });
+  const state = { workspace, stagedJobs: [], startedJobId: "", processSessionId: "" };
   const tools = {};
   try {
     for (const label of ["read", "cancel"]) {
@@ -196,6 +195,7 @@ Return deterministic skill content for the output-observation harness.
     for (const [index, name] of runtimeToolHandlerNames().entries()) {
       const observations = [];
       let startProcessResult = null;
+      let startJobResult = null;
       for (const [variantIndex, args] of observationArgumentVariants(name, state).entries()) {
         let result = null;
         try {
@@ -206,11 +206,43 @@ Return deterministic skill content for the output-observation harness.
         } catch {
           result = null;
         }
-        if (name === "start_process") startProcessResult = result;
+        if (name === "start_process" && !startProcessResult) startProcessResult = result;
+        if (name === "start_job" && !startJobResult) startJobResult = result;
         observations.push(observeResult(result));
+      }
+      if (name === "server_info") {
+        const workerInput = {
+          serverName: "machine-bridge-mcp",
+          serverVersion: "0.0.0-contract",
+          base: "https://bridge.example.test",
+          oauth: { issuer: "https://bridge.example.test" },
+          authorization: {
+            account: { role: "owner", version: 1 },
+            summary: { role: "owner" },
+            effective_policy: { profile: "full" },
+            effective_tool_count: 1,
+            account_role_is_owner: true,
+            effective_profile_is_full: true,
+            execution_model: { within_effective_authority: "direct", owner_ambient_authority: true },
+          },
+          daemon: { connected: true, count: 1, tool_count: 1, readiness_verified: true },
+          effectiveTools: ["server_info"],
+          advertisedTools: ["server_info"],
+          pendingSnapshot: { active: 0, maximum: 8 },
+          toolListSubscription: { activeForAccount: 0, openedForAccount: false },
+          daemonRegistry: new DaemonRegistry({ getWebSockets: () => [] }),
+          observability: new WorkerObservability(),
+        };
+        observations.push(
+          observeResult(buildServerInfoResult(workerInput, "full")),
+          observeResult(buildServerInfoResult(workerInput, "summary")),
+        );
       }
       if (name === "start_process" && typeof startProcessResult?.session_id === "string") {
         state.processSessionId = startProcessResult.session_id;
+      }
+      if (name === "start_job" && typeof startJobResult?.job_id === "string") {
+        state.startedJobId = startJobResult.job_id;
       }
       tools[name] = mergeObservationMetadata(mergeObservations(observations), previous.tools?.[name]);
     }
@@ -243,18 +275,37 @@ function mergeObservations(observations) {
       else if (properties[name] !== type) properties[name] = "unknown";
     }
   }
-  return { verified: true, properties };
+  const alwaysPresent = new Set(
+    Object.keys(properties).filter((name) => verified.every((entry) => Object.hasOwn(entry.properties, name))),
+  );
+  return { verified: true, properties, alwaysPresent };
 }
 
 function mergeObservationMetadata(observed, previous) {
   if (!observed.verified) return { verified: false, properties: {} };
-  const metadata = {};
-  for (const key of ["conditional", "required", "stdio_injected"]) {
-    if (!Array.isArray(previous?.[key])) continue;
-    const retained = previous[key].filter((name) => Object.hasOwn(observed.properties, name));
-    if (retained.length) metadata[key] = retained;
+  const { alwaysPresent = new Set(), ...rest } = observed;
+  const stdioInjected = Array.isArray(previous?.stdio_injected) ? previous.stdio_injected : [];
+  const injectedSet = new Set(stdioInjected);
+  const conditionalSet = new Set(
+    (Array.isArray(previous?.conditional) ? previous.conditional : [])
+      .filter((name) => Object.hasOwn(rest.properties, name) && !injectedSet.has(name) && !alwaysPresent.has(name)),
+  );
+  for (const name of ["effective_instructions", "builtin_instructions", "automatic_project_context", "model_instructions_file", "instruction_files", "capacity", "recent_activity", "next_start_line"]) {
+    if (Array.isArray(previous?.conditional) && previous.conditional.includes(name) && Object.hasOwn(rest.properties, name) && !injectedSet.has(name)) {
+      conditionalSet.add(name);
+    }
   }
-  return { ...observed, ...metadata };
+  for (const name of Object.keys(rest.properties)) {
+    if (!injectedSet.has(name) && !alwaysPresent.has(name)) conditionalSet.add(name);
+  }
+  const conditional = Object.keys(rest.properties).filter((name) => conditionalSet.has(name));
+  const required = Object.keys(rest.properties).filter((name) => !conditionalSet.has(name) && !injectedSet.has(name));
+  return {
+    ...rest,
+    conditional,
+    required,
+    ...(stdioInjected.length ? { stdio_injected: stdioInjected } : {}),
+  };
 }
 
 function observeResult(result) {
@@ -281,15 +332,18 @@ function jsonType(value) {
 function observationArgumentVariants(name, state) {
   const args = observationArguments(name, state);
   if (name === "server_info" || name === "project_overview") return [args, { ...args, detail: "summary" }];
-  if (name === "agent_context") return [args, { ...args, include_symbol_outline: true }];
+  if (name === "exec_command" || name === "run_process" || name === "run_local_command") {
+    return [args, { ...args, idempotency_key: `contract-${name}-durable` }];
+  }
+  if (name === "cancel_job") {
+    return [args, args, { job_id: state.startedJobId || `job_${"C".repeat(24)}` }];
+  }
   return [args];
 }
 
 function observationArguments(name, state) {
   return {
     resolve_task_capabilities: { task: "observe tool output contract" },
-    record_project_memory: { path: ".", category: "notes", text: "observed memory", importance: 2 },
-    forget_project_memory: { path: ".", category: "notes", text: "observed memory" },
     load_local_skill: { skill: "contract-skill" },
     run_local_command: { name: "contract-command" },
     computer_observe: { surface: "browser" },

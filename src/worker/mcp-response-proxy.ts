@@ -48,20 +48,14 @@ export async function proxyMcpResponseStream(input: {
 
   const reader = upstream.body.getReader();
   let closed = false;
+  let canEmitHeartbeat = true;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let publicTarget: ReadableStreamDefaultController<Uint8Array> | undefined;
   let cancellation: Promise<void> | undefined;
-  let bufferEndsWithDoubleNewline = true;
-  let responseStarted = false;
-  let lastChunkTime = Date.now();
-
   const finish = () => {
     if (closed) return false;
     closed = true;
-    if (heartbeat) {
-      clearInterval(heartbeat);
-      heartbeat = undefined;
-    }
+    if (heartbeat) clearInterval(heartbeat);
     input.request.signal.removeEventListener("abort", abort);
     return true;
   };
@@ -94,31 +88,21 @@ export async function proxyMcpResponseStream(input: {
         return;
       }
       heartbeat = setInterval(() => {
-        if (closed || responseStarted) return;
-        const now = Date.now();
-        if (now - lastChunkTime < HEARTBEAT_MS) return;
-        if (!bufferEndsWithDoubleNewline) return;
-        try {
-          target.enqueue(HEARTBEAT);
-          lastChunkTime = now;
-        } catch {
-          cancel("public response stream closed");
-        }
+        if (closed || !canEmitHeartbeat) return;
+        try { target.enqueue(HEARTBEAT); }
+        catch { cancel("public response stream closed"); }
       }, HEARTBEAT_MS);
-      void pumpUpstream(reader, target, finish, (reason) => cancel(reason, false), {
-        onChunk(chunk) {
-          lastChunkTime = Date.now();
-          const text = new TextDecoder().decode(chunk);
-          if (text.includes("event: message")) {
-            responseStarted = true;
-            if (heartbeat) {
-              clearInterval(heartbeat);
-              heartbeat = undefined;
-            }
+      void pumpUpstream(
+        reader,
+        target,
+        finish,
+        (reason) => cancel(reason, false),
+        (chunk) => {
+          if (chunk.byteLength > 0) {
+            canEmitHeartbeat = chunkEndsWithSseFrameBoundary(chunk);
           }
-          bufferEndsWithDoubleNewline = text.endsWith("\n\n") || text.endsWith("\r\n\r\n");
         },
-      });
+      );
     },
     cancel(reason) { cancel(reason); return cancellation; },
   });
@@ -129,12 +113,25 @@ export async function proxyMcpResponseStream(input: {
   });
 }
 
+function chunkEndsWithSseFrameBoundary(chunk: Uint8Array): boolean {
+  const len = chunk.byteLength;
+  if (len >= 2 && chunk[len - 2] === 0x0a && chunk[len - 1] === 0x0a) return true;
+  if (
+    len >= 4
+    && chunk[len - 4] === 0x0d
+    && chunk[len - 3] === 0x0a
+    && chunk[len - 2] === 0x0d
+    && chunk[len - 1] === 0x0a
+  ) return true;
+  return false;
+}
+
 async function pumpUpstream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   target: ReadableStreamDefaultController<Uint8Array>,
   finish: () => boolean,
   cancel: (reason: unknown) => boolean,
-  hooks?: { onChunk?: (chunk: Uint8Array) => void },
+  onChunk?: (chunk: Uint8Array) => void,
 ): Promise<void> {
   try {
     for (;;) {
@@ -143,7 +140,7 @@ async function pumpUpstream(
         if (finish()) target.close();
         return;
       }
-      hooks?.onChunk?.(chunk.value);
+      onChunk?.(chunk.value);
       target.enqueue(chunk.value);
     }
   } catch (error) {

@@ -59,22 +59,3 @@ export function settlementGuidance(value) {
   return /** @type {Record<string, string>} */ (REASON_ACTIONABLE_GUIDANCE)[reason]
     || /** @type {Record<string, string>} */ (ACTIONABLE_GUIDANCE)[code] || null;
 }
-
-/**
- * Verbal self-reflection feedback loop (Reflexion paper).
- * Provides structured diagnosis (observation, hypothesis flaw, strategic alternative).
- * @param {unknown} value
- * @returns {{ observation: string, flaw: string, next_step: string } | null}
- */
-export function verbalSelfReflection(value) {
-  if (!value || typeof value !== "object") return null;
-  const guidance = settlementGuidance(value);
-  if (!guidance) return null;
-  const details = "details" in value && value.details && typeof value.details === "object" ? value.details : {};
-  const reason = "reason" in details ? String(details.reason) : ("code" in value ? String(value.code) : "unknown");
-  return {
-    observation: `Tool invocation encountered ${reason}.`,
-    flaw: "Initial assumptions about file contents, concurrent state, or environment constraints diverged from reality.",
-    next_step: guidance,
-  };
-}

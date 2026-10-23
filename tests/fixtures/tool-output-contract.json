@@ -1,7 +1,7 @@
 {
   "generation": 1,
   "note": "Top-level output fields observed from real tool invocations. Tools marked verified=false could not be executed in the offline audit harness, so their outputSchema deliberately claims no fields. Fields listed in conditional appear only in that case; fields listed in stdio_injected are added by the progressive stdio transport, not by the tool itself. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
-  "verified": 54,
+  "verified": 40,
   "total": 54,
   "tools": {
     "agent_context": {
@@ -60,117 +60,32 @@
       ]
     },
     "browser_action": {
-      "verified": true,
-      "properties": {
-        "action": "string",
-        "ok": "boolean",
-        "method": "string",
-        "value_exposed": "boolean",
-        "value_source": "string"
-      },
-      "conditional": [
-        "method",
-        "value_exposed",
-        "value_source"
-      ],
-      "required": [
-        "action",
-        "ok"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_fill_form": {
-      "verified": true,
-      "properties": {
-        "method": "string",
-        "ok": "boolean",
-        "fields_count": "integer"
-      },
-      "conditional": [
-        "fields_count"
-      ],
-      "required": [
-        "method",
-        "ok"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_get_source": {
-      "verified": true,
-      "properties": {
-        "source": "string",
-        "tab_id": "integer",
-        "truncated": "boolean"
-      },
-      "conditional": [
-        "truncated"
-      ],
-      "required": [
-        "source",
-        "tab_id"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_inspect_page": {
-      "verified": true,
-      "properties": {
-        "url": "string",
-        "title": "string",
-        "tab_id": "integer",
-        "elements": "array",
-        "truncated": "boolean"
-      },
-      "conditional": [
-        "title",
-        "elements",
-        "truncated"
-      ],
-      "required": [
-        "url",
-        "tab_id"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_list_tabs": {
-      "verified": true,
-      "properties": {
-        "tabs": "array",
-        "active_tab_id": "integer"
-      },
-      "conditional": [
-        "active_tab_id"
-      ],
-      "required": [
-        "tabs"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_manage_tabs": {
-      "verified": true,
-      "properties": {
-        "action": "string",
-        "tab_id": "integer",
-        "ok": "boolean"
-      },
-      "conditional": [
-        "tab_id"
-      ],
-      "required": [
-        "action",
-        "ok"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_screenshot": {
-      "verified": true,
-      "properties": {
-        "tab_id": "integer",
-        "url": "string",
-        "title": "string",
-        "tab_metadata_verified": "boolean"
-      },
-      "conditional": [
-        "title",
-        "tab_metadata_verified"
-      ],
-      "required": [
-        "tab_id",
-        "url"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_status": {
       "verified": true,
@@ -259,34 +174,12 @@
       ]
     },
     "browser_upload_files": {
-      "verified": true,
-      "properties": {
-        "resource_names": "array",
-        "resource_contents_exposed": "boolean",
-        "ok": "boolean"
-      },
-      "conditional": [
-        "resource_names",
-        "resource_contents_exposed"
-      ],
-      "required": [
-        "ok"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "browser_wait": {
-      "verified": true,
-      "properties": {
-        "ready": "boolean",
-        "elapsed_ms": "integer",
-        "condition": "string"
-      },
-      "conditional": [
-        "condition",
-        "elapsed_ms"
-      ],
-      "required": [
-        "ready"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "cancel_job": {
       "verified": true,
@@ -296,18 +189,18 @@
         "status": "string",
         "created_at": "string",
         "started_at": "null",
-        "finished_at": "string",
+        "finished_at": "unknown",
         "current_phase": "null",
         "current_step": "null",
         "approval": "string",
         "plan_sha256": "string",
         "cleanup_guarantee": "string",
-        "error_class": "string",
+        "error_class": "unknown",
         "cleanup_error_class": "null",
         "recovery_attempts": "integer",
         "recovery_history": "array",
         "recovery_history_complete": "boolean",
-        "result_persisted": "boolean",
+        "result_persisted": "unknown",
         "terminal_record_error_class": "null",
         "artifact_cleanup_pending": "boolean",
         "artifact_cleanup_error_class": "null",
@@ -315,9 +208,16 @@
         "dependency_pending_count": "integer",
         "cancellation_requested": "boolean",
         "cleanup_will_run": "boolean",
-        "execution_started": "boolean"
+        "execution_started": "boolean",
+        "already_finished": "boolean",
+        "cancellation_delivery": "string"
       },
-      "conditional": [],
+      "conditional": [
+        "cleanup_will_run",
+        "execution_started",
+        "already_finished",
+        "cancellation_delivery"
+      ],
       "required": [
         "job_id",
         "name",
@@ -341,52 +241,16 @@
         "artifact_cleanup_error_class",
         "dependency_total",
         "dependency_pending_count",
-        "cancellation_requested",
-        "cleanup_will_run",
-        "execution_started"
+        "cancellation_requested"
       ]
     },
     "computer_act": {
-      "verified": true,
-      "properties": {
-        "dispatch_status": "string",
-        "effect_status": "string",
-        "post_snapshot_id": "string",
-        "observed_diff": "object",
-        "verification": "object",
-        "post_observation": "object",
-        "continuation": "object"
-      },
-      "conditional": [
-        "post_snapshot_id",
-        "observed_diff",
-        "verification",
-        "post_observation",
-        "continuation"
-      ],
-      "required": [
-        "dispatch_status",
-        "effect_status"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "computer_observe": {
-      "verified": true,
-      "properties": {
-        "snapshot_id": "string",
-        "surface": "string",
-        "semantic": "object",
-        "target": "object",
-        "screenshot_sha256": "string"
-      },
-      "conditional": [
-        "semantic",
-        "target",
-        "screenshot_sha256"
-      ],
-      "required": [
-        "snapshot_id",
-        "surface"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "diagnose_runtime": {
       "verified": true,
@@ -437,16 +301,54 @@
         "stdout": "string",
         "stderr": "string",
         "stdout_truncated_bytes": "integer",
-        "stderr_truncated_bytes": "integer"
+        "stderr_truncated_bytes": "integer",
+        "accepted": "boolean",
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "idempotency_key_accepted": "boolean",
+        "idempotency_replay": "boolean",
+        "recovery": "object",
+        "cleanup": "object",
+        "execution_mode": "string",
+        "source_tool": "string",
+        "execution_timeout_seconds": "integer",
+        "progress": "object",
+        "retry_safety": "string"
       },
-      "conditional": [],
-      "required": [
+      "conditional": [
         "code",
         "stdout",
         "stderr",
         "stdout_truncated_bytes",
-        "stderr_truncated_bytes"
-      ]
+        "stderr_truncated_bytes",
+        "accepted",
+        "job_id",
+        "name",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "idempotency_key_accepted",
+        "idempotency_replay",
+        "recovery",
+        "cleanup",
+        "execution_mode",
+        "source_tool",
+        "execution_timeout_seconds",
+        "progress",
+        "retry_safety"
+      ],
+      "required": []
     },
     "generate_ssh_key_resource": {
       "verified": true,
@@ -581,25 +483,8 @@
       ]
     },
     "inspect_local_application": {
-      "verified": true,
-      "properties": {
-        "application": "string",
-        "frontmost": "boolean",
-        "elements": "array",
-        "truncated": "boolean",
-        "process_id": "integer",
-        "process_generation": "string"
-      },
-      "conditional": [
-        "elements",
-        "truncated",
-        "process_id",
-        "process_generation"
-      ],
-      "required": [
-        "application",
-        "frontmost"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "kill_process": {
       "verified": true,
@@ -785,42 +670,12 @@
       ]
     },
     "open_local_application": {
-      "verified": true,
-      "properties": {
-        "application": "string",
-        "resolved_application": "string",
-        "target": "string",
-        "platform": "string",
-        "code": "integer"
-      },
-      "conditional": [
-        "target",
-        "code"
-      ],
-      "required": [
-        "application",
-        "resolved_application",
-        "platform"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "operate_local_application": {
-      "verified": true,
-      "properties": {
-        "application": "string",
-        "action": "string",
-        "ok": "boolean",
-        "input_transport": "string",
-        "focus_prepared": "boolean"
-      },
-      "conditional": [
-        "input_transport",
-        "focus_prepared"
-      ],
-      "required": [
-        "application",
-        "action",
-        "ok"
-      ]
+      "verified": false,
+      "properties": {}
     },
     "pair_browser_extension": {
       "verified": true,
@@ -1134,18 +989,55 @@
         "stdout": "string",
         "stderr": "string",
         "stdout_truncated_bytes": "integer",
-        "stderr_truncated_bytes": "integer"
+        "stderr_truncated_bytes": "integer",
+        "accepted": "boolean",
+        "job_id": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "idempotency_key_accepted": "boolean",
+        "idempotency_replay": "boolean",
+        "recovery": "object",
+        "cleanup": "object",
+        "execution_mode": "string",
+        "source_tool": "string",
+        "execution_timeout_seconds": "integer",
+        "progress": "object",
+        "retry_safety": "string"
       },
-      "conditional": [],
-      "required": [
-        "name",
+      "conditional": [
         "cwd",
         "timeout_seconds",
         "code",
         "stdout",
         "stderr",
         "stdout_truncated_bytes",
-        "stderr_truncated_bytes"
+        "stderr_truncated_bytes",
+        "accepted",
+        "job_id",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "idempotency_key_accepted",
+        "idempotency_replay",
+        "recovery",
+        "cleanup",
+        "execution_mode",
+        "source_tool",
+        "execution_timeout_seconds",
+        "progress",
+        "retry_safety"
+      ],
+      "required": [
+        "name"
       ]
     },
     "run_process": {
@@ -1155,16 +1047,54 @@
         "stdout": "string",
         "stderr": "string",
         "stdout_truncated_bytes": "integer",
-        "stderr_truncated_bytes": "integer"
+        "stderr_truncated_bytes": "integer",
+        "accepted": "boolean",
+        "job_id": "string",
+        "name": "string",
+        "status": "string",
+        "detached": "boolean",
+        "continues_without_mcp_connection": "boolean",
+        "approval": "string",
+        "plan_sha256": "string",
+        "dependency_total": "integer",
+        "dependency_pending_count": "integer",
+        "idempotency_key_accepted": "boolean",
+        "idempotency_replay": "boolean",
+        "recovery": "object",
+        "cleanup": "object",
+        "execution_mode": "string",
+        "source_tool": "string",
+        "execution_timeout_seconds": "integer",
+        "progress": "object",
+        "retry_safety": "string"
       },
-      "conditional": [],
-      "required": [
+      "conditional": [
         "code",
         "stdout",
         "stderr",
         "stdout_truncated_bytes",
-        "stderr_truncated_bytes"
-      ]
+        "stderr_truncated_bytes",
+        "accepted",
+        "job_id",
+        "name",
+        "status",
+        "detached",
+        "continues_without_mcp_connection",
+        "approval",
+        "plan_sha256",
+        "dependency_total",
+        "dependency_pending_count",
+        "idempotency_key_accepted",
+        "idempotency_replay",
+        "recovery",
+        "cleanup",
+        "execution_mode",
+        "source_tool",
+        "execution_timeout_seconds",
+        "progress",
+        "retry_safety"
+      ],
+      "required": []
     },
     "search_text": {
       "verified": true,
@@ -1203,26 +1133,44 @@
         "runtime": "object",
         "security_audit": "object",
         "trust": "object",
-        "detail": "string"
+        "detail": "string",
+        "version": "string",
+        "mcp_url": "string",
+        "oauth": "object",
+        "account": "object",
+        "authorization": "object",
+        "authority_summary": "object",
+        "daemon": "object",
+        "worker": "object",
+        "tools_scope": "string"
       },
       "conditional": [
+        "protocol_version",
         "supported_protocol_versions",
+        "workspace",
+        "workspace_name",
+        "policy",
         "policy_contract",
         "enforcement",
         "tools",
         "observability",
+        "runtime",
         "security_audit",
         "trust",
-        "detail"
+        "detail",
+        "version",
+        "mcp_url",
+        "oauth",
+        "account",
+        "authorization",
+        "authority_summary",
+        "daemon",
+        "worker",
+        "tools_scope"
       ],
       "required": [
         "name",
-        "protocol_version",
-        "workspace",
-        "workspace_name",
-        "policy",
-        "tool_delivery",
-        "runtime"
+        "tool_delivery"
       ]
     },
     "session_bootstrap": {

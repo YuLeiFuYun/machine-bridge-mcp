@@ -1,8 +1,16 @@
+export type McpProjectedTaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
 export const MCP_TASK_EXTENSION_ID: "io.modelcontextprotocol/tasks";
 export const MCP_TASK_TTL_MS: number;
 export const MCP_TASK_POLL_INTERVAL_MS: number;
 export const MCP_TASK_JOB_ID_PATTERN: "^job_[A-Za-z0-9_-]{24,}$";
+export const MCP_TASK_ACTIVE_JOB_STATUSES: ReadonlySet<string>;
+export const MCP_TASK_TERMINAL_JOB_STATUSES: ReadonlySet<string>;
+export const MCP_TASK_SUCCESSFUL_JOB_STATUSES: ReadonlySet<string>;
 export function isMcpTaskJobId(value: unknown): value is string;
 export function supportsMcpTasks(clientCapabilities: unknown): boolean;
 export function isMcpTaskAugmentedTool(name: string): boolean;
 export function taskClientCapabilities(request: unknown): Record<string, unknown>;
+export function taskStatusForJob(statusOrJob: unknown): "working" | "completed" | "cancelled" | null;
+export function isSeedableTaskJobStatus(statusOrJob: unknown): boolean;
+export function isSuccessfulJobStatus(statusOrJob: unknown): boolean;
+export function statusMessageFor(job: unknown, status: McpProjectedTaskStatus): string;

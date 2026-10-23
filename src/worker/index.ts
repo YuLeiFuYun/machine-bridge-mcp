@@ -85,7 +85,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
       taskStore: this.mcpTaskService.store,
       resolveTaskCredentials: this.mcpTaskService.resolveCredentials,
-      tools: (authorized, options) => workerToolsForRole(authorized.role, options),
+      tools: (authorized) => workerToolsForRole(authorized.role),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
       callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken }) => this.callTool(

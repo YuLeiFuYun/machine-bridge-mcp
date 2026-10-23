@@ -55,3 +55,71 @@ for (const [group, tools] of Object.entries(PROGRESSIVE_TOOL_GROUPS)) {
 export function findToolGroup(toolName) {
   return TOOL_TO_GROUP.get(String(toolName || "")) || null;
 }
+
+/** @typedef {{ name?: string, description?: string, inputSchema?: Record<string, any> }} ToolDefinition */
+
+/**
+ * Project MCP tool definitions into compact Code Mode TypeScript SDK declarations.
+ * @param {ReadonlyArray<ToolDefinition> | { tools?: ReadonlyArray<ToolDefinition> }} toolsOrCatalog
+ * @param {{ toolNames?: Iterable<string>, namespace?: string }} [options]
+ * @returns {string}
+ */
+export function projectToolTypeScriptDeclarations(toolsOrCatalog, options = {}) {
+  const allowed = options.toolNames ? new Set(options.toolNames) : null;
+  const rawNamespace = String(options.namespace || "mbm").replace(/[^A-Za-z0-9_$]/g, "");
+  const namespace = /^[A-Za-z_$]/.test(rawNamespace) ? rawNamespace : "mbm";
+  /** @type {ReadonlyArray<ToolDefinition>} */
+  const list = Array.isArray(toolsOrCatalog)
+    ? toolsOrCatalog
+    : (toolsOrCatalog && typeof toolsOrCatalog === "object" && "tools" in toolsOrCatalog && Array.isArray(toolsOrCatalog.tools) ? toolsOrCatalog.tools : []);
+  const entries = list
+    .filter((/** @type {ToolDefinition} */ tool) => Boolean(tool && typeof tool.name === "string" && (!allowed || allowed.has(tool.name))));
+  const lines = [`declare namespace ${namespace} {`];
+  for (const tool of entries) {
+    const fnName = String(tool.name).replace(/[^A-Za-z0-9_$]/g, "_");
+    const summary = String(tool.description || "").replace(/\s+/g, " ").trim().split(/(?<=\.)\s+/)[0];
+    if (summary) lines.push(`  /** ${summary.replace(/\*\//g, "* /")} */`);
+    const paramType = schemaObjectToTypeScript(tool.inputSchema);
+    const optionalArgs = !hasRequiredProperties(tool.inputSchema);
+    lines.push(`  function ${fnName}(args${optionalArgs ? "?" : ""}: ${paramType}): Promise<Record<string, unknown>>;`);
+  }
+  lines.push("}");
+  return lines.join("\n");
+}
+
+/** @param {Record<string, any> | undefined} schema */
+function hasRequiredProperties(schema) {
+  return Boolean(schema && Array.isArray(schema.required) && schema.required.length > 0);
+}
+
+/** @param {Record<string, any> | undefined} schema @returns {string} */
+function schemaObjectToTypeScript(schema) {
+  if (!schema || typeof schema !== "object") return "Record<string, unknown>";
+  const props = schema.properties && typeof schema.properties === "object" ? schema.properties : null;
+  if (!props || !Object.keys(props).length) return "Record<string, unknown>";
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const fields = Object.entries(props).map(([key, propSchema]) => {
+    const safeKey = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
+    const opt = required.has(key) ? "" : "?";
+    return `${safeKey}${opt}: ${schemaPropertyToTypeScript(propSchema)}`;
+  });
+  return `{ ${fields.join("; ")} }`;
+}
+
+/** @param {any} prop @returns {string} */
+function schemaPropertyToTypeScript(prop) {
+  if (!prop || typeof prop !== "object") return "unknown";
+  if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+    return prop.enum.map((/** @type {unknown} */ val) => JSON.stringify(val)).join(" | ");
+  }
+  const type = Array.isArray(prop.type) ? prop.type[0] : prop.type;
+  if (type === "string") return "string";
+  if (type === "number" || type === "integer") return "number";
+  if (type === "boolean") return "boolean";
+  if (type === "array") {
+    const itemType = schemaPropertyToTypeScript(prop.items);
+    return `Array<${itemType}>`;
+  }
+  if (type === "object") return schemaObjectToTypeScript(prop);
+  return "unknown";
+}

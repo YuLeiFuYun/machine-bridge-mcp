@@ -10,3 +10,7 @@ export const PROGRESSIVE_TOOL_GROUPS: Readonly<{
   files: readonly string[];
 }>;
 export function findToolGroup(toolName: unknown): string | null;
+export function projectToolTypeScriptDeclarations(
+  tools: ReadonlyArray<{ name?: string; description?: string; inputSchema?: Record<string, unknown> }>,
+  options?: { toolNames?: Iterable<string>; namespace?: string },
+): string;

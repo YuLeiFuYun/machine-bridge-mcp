@@ -11,12 +11,6 @@ const MONITOR_ID = /^mcp_jm_[a-f0-9]{32}$/;
 export type ManagedJobMonitorCoordinationOperation = "issue" | "claim_probe" | "revocation_cleanup";
 export type ManagedJobMonitorCoordinationFailureObserver = (operation: ManagedJobMonitorCoordinationOperation, error: unknown) => void;
 
-export function issueManagedJobMonitor(
-  store: ManagedJobMonitorClaimStore, jobId: string, authorized: AuthorizedToken,
-): Promise<string> {
-  return store.issue(jobId, authorized);
-}
-
 export async function issueManagedJobMonitorIfAvailable(
   store: ManagedJobMonitorClaimStore, jobId: string, authorized: AuthorizedToken,
   observeFailure?: ManagedJobMonitorCoordinationFailureObserver,
@@ -65,12 +59,6 @@ export function refreshManagedJobMonitorClaim(
 ): Promise<boolean> {
   return typeof jobId === "string" && JOB_ID.test(jobId) && validManagedJobMonitorId(monitorId)
     ? store.refresh(jobId, monitorId, authorized) : Promise.resolve(false);
-}
-
-export function cancelManagedJobMonitorClaims(
-  store: ManagedJobMonitorClaimStore, revocation: AuthorityRevocation,
-): Promise<number> {
-  return store.cancelAuthority(revocation);
 }
 
 export async function cancelManagedJobMonitorClaimsIfAvailable(

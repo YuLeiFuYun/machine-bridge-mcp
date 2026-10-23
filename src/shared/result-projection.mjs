@@ -1,7 +1,6 @@
 // @ts-check
 
 import resultProjection from "./result-projection.json" with { type: "json" };
-import { redactSensitiveText } from "./sensitive-value-patterns.mjs";
 
 export const MCP_TEXT_PROJECTION_KEY = "$mcpText";
 
@@ -40,15 +39,12 @@ export function projectMcpResult(value) {
   if (Object.prototype.hasOwnProperty.call(object, MCP_TEXT_PROJECTION_KEY)
       && typeof object[MCP_TEXT_PROJECTION_KEY] === "string") {
     const structuredContent = { ...object };
-    const rawText = String(structuredContent[MCP_TEXT_PROJECTION_KEY]).slice(0, 4096);
+    const text = String(structuredContent[MCP_TEXT_PROJECTION_KEY]).slice(0, 4096);
     delete structuredContent[MCP_TEXT_PROJECTION_KEY];
-    const text = String(redactSensitiveText(rawText));
     return { text, hasStructuredContent: true, structuredContent };
   }
-  const rawText = mirroredResultText(value);
-  const text = String(redactSensitiveText(rawText));
   return {
-    text,
+    text: mirroredResultText(value),
     hasStructuredContent: isJsonValue(value),
     structuredContent: value,
   };
@@ -63,5 +59,3 @@ function isJsonValue(value) {
     || Array.isArray(value)
     || (value && typeof value === "object");
 }
-
-/** @param {unknown} value */
