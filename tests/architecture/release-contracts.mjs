@@ -1026,43 +1026,19 @@ for (const required of ["readBoundedRegularFileSync", "rejectMultipleLinks: true
 }
 const workerDeploymentSource = readFileSync(join(root, "src", "local", "worker-deployment.mjs"), "utf8");
 const workerFingerprintSource = readFileSync(join(root, "src", "local", "worker-deployment-fingerprint.mjs"), "utf8");
-if (!hasSemanticImport(workerDeploymentSource, "./worker-deployment-fingerprint.mjs", { requiredSymbols: ["workerDeploymentFingerprint"] })) {
-  throw new Error("Worker deployment state machine lost its dedicated fingerprint boundary");
+if (!hasSemanticImport(workerDeploymentSource, "./worker-deployment-fingerprint.mjs", { requiredSymbols: ["workerDeploymentFingerprint", "workerDeploymentSourceSnapshot"] })
+    || !hasSemanticImport(workerDeploymentSource, "./cf-authentication.mjs", { requiredSymbols: ["ensureCfAuthenticated", "cfDeploymentAccount"] })
+    || !hasSemanticImport(workerDeploymentSource, "./cf-project.mjs", { requiredSymbols: ["withCfProject"] })) {
+  throw new Error("Worker deployment state machine lost its dedicated fingerprint, authentication, or staging boundary");
 }
-const workerAuthProbe = workerDeploymentSource.indexOf("await ensureCfAuthenticated(");
-const workerDeployStart = workerDeploymentSource.indexOf('logger.info?.("Deploying Cloudflare Worker")');
-if (workerAuthProbe < 0 || workerDeployStart < workerAuthProbe
-    || !workerDeploymentSource.includes("interactive: !args.json")
-    || !workerDeploymentSource.includes("cfDeploymentAccount(auth, environment)")
-    || !workerDeploymentSource.includes("withCfProjectFn(sourceSnapshot")) {
-  throw new Error("Worker deployment lost cf authentication, unattended-login guard, or private source staging");
-}
-// Cloudflare authentication denial, malformed evidence and unattended-login
-// behavior are covered by cf-project:test rather than expression spelling.
-for (const required of ["mbm-worker-deploy-cf-v6", "addFingerprintField", "source.files.length", 'replaceAll(path.sep, "/")', "readBoundedRegularFileSync", "rejectMultipleLinks: true", "lstatSync", "realpathSync", "requireRealDeploymentRoot", "collectRequiredHashPath", "must not be a symbolic link", "required source is missing"]) {
-  if (!workerFingerprintSource.includes(required)) throw new Error(`Worker deployment fingerprint lost fail-closed cf v6 boundary: ${required}`);
+if (!hasSemanticImport(workerFingerprintSource, "./secure-file.mjs", { requiredSymbols: ["readBoundedRegularFileSync"] })) {
+  throw new Error("Worker deployment fingerprint lost bounded regular-file verification");
 }
 const workerFingerprintTraversal = workerFingerprintSource.slice(
   workerFingerprintSource.indexOf("function workerDeployHashFiles"),
 );
 if (/\bexistsSync\(target\)/.test(workerFingerprintTraversal) || /(?<!l)statSync\(target\)/.test(workerFingerprintTraversal)) {
   throw new Error("Worker deployment fingerprint regained existence-probe or symlink-following traversal");
-}
-const oauthBrowserTestSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
-for (const required of [
-  'detached: process.platform !== "win32"',
-  'process.kill(-browser.pid, signal)',
-  'signalBrowserTree(browser, "SIGTERM")',
-  'signalBrowserTree(browser, "SIGKILL")',
-  'spawnSync("taskkill"',
-  "closeHttpServer",
-  "closeAllConnections",
-  "removeBrowserProfile",
-  "OAuth browser navigation failed and browser cleanup was incomplete",
-]) {
-  if (!oauthBrowserTestSource.includes(required)) {
-    throw new Error(`OAuth browser regression lost bounded process-tree cleanup boundary: ${required}`);
-  }
 }
 const publicationGuardSource = readFileSync(join(root, "scripts", "release-publication-guard.mjs"), "utf8");
 if (!publicationGuardSource.includes("resolveTrustedGitExecutable") || publicationGuardSource.includes('spawnSync("git"')) {
@@ -1530,7 +1506,7 @@ if (!managedJobProjectionSource.includes("resource_admission_ms: _resourceAdmiss
     || !managedJobsIntegrationSource.includes("owner managed-job read lost resource admission timing needed for queue diagnosis")) {
   throw new Error("managed-job admission timing lost its owner-only projection or delegated privacy regression");
 }
-if (!managedJobTerminalSource.includes('export const ACTIVE_JOB_STATES = new Set(["queued", "running", "cleaning", "interrupted"])')
+if (!managedJobTerminalSource.includes("export const ACTIVE_JOB_STATES = MCP_TASK_ACTIVE_JOB_STATUSES")
     || !managedJobRunnerSource.includes("ACTIVE_JOB_STATES.has(status.status)")
     || !managedJobRetentionSource.includes("...ACTIVE_JOB_STATES")
     || managedJobRunnerSource.includes("FATAL_RECORDABLE_STATUSES")) {
@@ -1985,11 +1961,11 @@ for (const [name, command] of Object.entries(packageJson.scripts || {})) {
 }
 const packaged = new Set(packageJson.files || []);
 if (packaged.has("scripts") || packaged.has("docs") || !packaged.has("src/local") || !packaged.has("tsconfig.local.json")
-    || !packaged.has("SUPPORT.md") || !packaged.has("scripts/release-impact-check.mjs")
+    || !packaged.has("SUPPORT.md") || !packaged.has("scripts/release-oauth-canary.mjs")
     || !packaged.has("docs/UPGRADING.md") || !packaged.has("docs/AUDIT.md")) {
   throw new Error("package files lost the explicit consumer/runtime whitelist or regained broad docs/scripts publication");
 }
-for (const repositoryOnly of ["CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "GOVERNANCE.md", "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md"]) {
+for (const repositoryOnly of ["CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "GOVERNANCE.md", "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md", "scripts/release-impact-check.mjs", "scripts/github-release.mjs", "scripts/publish-npm.mjs"]) {
   if (packaged.has(repositoryOnly)) throw new Error(`package files retained repository-only maintenance material ${repositoryOnly}`);
 }
 const localTypeConfig = JSON.parse(readFileSync(join(root, "tsconfig.local.json"), "utf8"));

@@ -10,7 +10,7 @@ import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
-const outputContract = JSON.parse(await readFile(new URL("../src/shared/tool-output-contract.json", import.meta.url), "utf8"));
+const outputContract = JSON.parse(await readFile(new URL("./fixtures/tool-output-contract.json", import.meta.url), "utf8"));
 const JSON_SCHEMA_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
 const activationSchema = catalog.find((tool) => tool.name === "resolve_task_capabilities").inputSchema.properties.activate_tool_groups.items;
@@ -31,6 +31,18 @@ assert(metadata.instructions.some((line) => line.includes("never use a hosted Gi
 assert(metadata.instructions.some((line) => line.includes("Straightforward file, Git, and shell work") && line.includes("instead of adding a resolver call")), "shared instructions still require an unnecessary capability-resolution round trip for direct work");
 assert(metadata.instructions.some((line) => line.includes("child exit code") && line.includes("forced-command refusal") && line.includes("downstream target evidence")), "shared instructions do not distinguish a spawned nested-command refusal from Machine Bridge policy denial");
 assert(MCP_INSTRUCTIONS === metadata.instructions.join("\n"), "runtime MCP instructions differ from shared metadata");
+assert(metadata.instructions.some((line) => [
+  "If continue_same_response=true and the terminal result is still needed",
+  "continue bounded read_job follow-up while calls are accepted",
+].every((fragment) => line.includes(fragment))),
+"shared instructions omitted bounded same-response continuation while the result is needed");
+assert(metadata.instructions.some((line) => [
+  "do not split that work into one-step calls merely because a host deadline is assumed",
+  "Stop or hand off only at an actual host/tool boundary",
+  "external input or authorization is required",
+  "user explicitly requested a checkpoint",
+].every((fragment) => line.includes(fragment))),
+"shared instructions replaced observed continuation boundaries with an assumed deadline");
 // `instructions` is re-sent at the start of every session, so its size is a per-session context
 // cost rather than a documentation detail. The ceiling keeps growth deliberate: at the time it
 // was set, only ~545 of these characters also appeared in a tool description, so most of this
@@ -63,14 +75,16 @@ assert(computerActionSchema?.properties?.post_screenshot?.default === "auto"
   && Number.isSafeInteger(metadata.toolSchemaGeneration) && metadata.toolSchemaGeneration > 0,
 "computer_act exposes retired screenshot compatibility or an outdated schema generation");
 
+const DURABLE_PROCESS_TOOLS = new Set(["run_process", "run_local_command", "exec_command"]);
+const VALID_AVAILABILITIES = new Set(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"]);
 for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);
   assert(typeof tool.title === "string" && tool.title.length > 0, `${tool.name} is missing title`);
   assert(typeof tool.description === "string" && tool.description.length > 20, `${tool.name} has an insufficient description`);
-  if (["run_process", "run_local_command", "exec_command"].includes(tool.name)) {
+  if (DURABLE_PROCESS_TOOLS.has(tool.name)) {
     assert(Array.isArray(tool.inputSchema?.required), `${tool.name} durable schema must declare its required fields statically`);
   }
-  assert(["always", "write", "direct-exec", "write+direct-exec", "shell-exec", "full"].includes(tool.availability), `${tool.name} has invalid availability`);
+  assert(VALID_AVAILABILITIES.has(tool.availability), `${tool.name} has invalid availability`);
   assert(tool.inputSchema?.type === "object", `${tool.name} inputSchema must be an object`);
   assert(tool.inputSchema?.additionalProperties === false, `${tool.name} inputSchema must reject unknown fields`);
   assert(tool.outputSchema?.type === "object", `${tool.name} outputSchema must be an object`);
@@ -85,13 +99,15 @@ for (const tool of catalog) {
   assert(requiredOutput === undefined
     || (Array.isArray(requiredOutput) && requiredOutput.every((field) => Object.hasOwn(tool.outputSchema.properties, field))),
   `${tool.name} outputSchema requires a field it does not declare`);
+  const conditionalSet = new Set(observed.conditional || []);
+  const injectedSet = new Set(observed.stdio_injected || []);
   const expectedRequired = (observed.required || []).filter((field) => Object.hasOwn(observed.properties, field)
-    && !(observed.conditional || []).includes(field)
-    && !(observed.stdio_injected || []).includes(field));
+    && !conditionalSet.has(field)
+    && !injectedSet.has(field));
   assert(JSON.stringify(requiredOutput || []) === JSON.stringify(expectedRequired),
     `${tool.name} outputSchema required fields drifted from the observed contract`);
   for (const field of requiredOutput || []) {
-    assert(!(observed.conditional || []).includes(field),
+    assert(!conditionalSet.has(field),
       `${tool.name} outputSchema marks conditional field "${field}" as required`);
   }
   for (const [field, schema] of Object.entries(tool.outputSchema.properties)) {

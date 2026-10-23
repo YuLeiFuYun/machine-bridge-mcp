@@ -10,12 +10,11 @@ import {
   PLATFORM_CHECK_TASKS,
   PLATFORM_ONLY_CHECK_TASKS,
   SERIAL_FAST_CHECK_TASKS,
-  TASK_EXECUTION_COMMANDS,
   checkTasks,
 } from "../scripts/check-plan.mjs";
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-const scripts = { ...TASK_EXECUTION_COMMANDS, ...(packageJson.scripts || {}) };
+const scripts = packageJson.scripts || {};
 
 assert.deepEqual(checkTasks("fast"), FAST_CHECK_TASKS);
 assert.deepEqual(checkTasks("platform"), PLATFORM_CHECK_TASKS);

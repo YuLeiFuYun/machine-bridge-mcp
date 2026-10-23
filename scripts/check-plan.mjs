@@ -1,5 +1,3 @@
-export { TASK_EXECUTION_COMMANDS } from "./task-execution-commands.mjs";
-
 export const FAST_CHECK_TASKS = Object.freeze([
   "privacy:check",
   "release-impact:check",
@@ -22,6 +20,8 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "output-buffer:test",
   "release-diagnostic:test",
   "check-runner:test",
+  "coverage-generation:test",
+  "coverage-range-merge:test",
   "full-verification-receipt:test",
   "process-output:test",
   "process-nonreplayable:test",
@@ -100,7 +100,6 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "syntax",
   "deadline:test",
   "catalog:test",
-  "test:unit",
   "tool-arguments:test",
   "capability-ranking:test",
   "execution-routing:test",

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FAST_CHECK_TASKS, SERIAL_FAST_CHECK_TASKS, TASK_EXECUTION_COMMANDS, checkTasks } from "./check-plan.mjs";
+import { FAST_CHECK_TASKS, SERIAL_FAST_CHECK_TASKS, checkTasks } from "./check-plan.mjs";
 import { COVERAGE_FIXTURE_TESTS, directNodeInvocation, runVerificationPlan } from "./check-runner.mjs";
 import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { rerunVerificationUnderIdleSleepGuard } from "./verification-idle-sleep-guard.mjs";
@@ -23,8 +23,7 @@ if (guardedExitCode !== null) process.exit(guardedExitCode);
 
 const mode = process.argv[2] || "full";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const rawPackageScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts || {};
-const packageScripts = { ...TASK_EXECUTION_COMMANDS, ...rawPackageScripts };
+const packageScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts || {};
 const serialFastTasks = new Set(SERIAL_FAST_CHECK_TASKS);
 const parallelFastTasks = new Set(FAST_CHECK_TASKS.filter((task) => !serialFastTasks.has(task)));
 let tasks;
@@ -132,5 +131,5 @@ function checkConcurrency(value) {
     }
     return configured;
   }
-  return Math.max(1, Math.min(8, availableParallelism()));
+  return Math.max(1, Math.min(4, availableParallelism()));
 }

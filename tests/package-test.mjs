@@ -46,6 +46,7 @@ try {
     "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "GOVERNANCE.md",
     "native/macos/MachineBridgeBackgroundInputSmokeFixture.swift",
     "tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift",
+    "tests/fixtures/tool-output-contract.json", "src/shared/tool-output-contract.json",
     "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md",
   ]) {
     if (record.files.some((item) => item.path === repositoryOnly)) throw new Error(`npm package retained repository-only maintenance material ${repositoryOnly}`);
@@ -68,11 +69,6 @@ try {
     "src/local/cf-network-integrity.mjs",
     "cloudflare.config.ts",
     "wrangler.config.ts",
-    "scripts/accepted-candidate-tarball.mjs",
-    "scripts/consumer-package-security.mjs",
-    "scripts/global-package-installation.mjs",
-    "scripts/hardened-npm-session.mjs",
-    "scripts/npm-global-prefix.mjs",
     "scripts/release-diagnostic.mjs",
   ]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
@@ -142,7 +138,9 @@ try {
   }
   for (const module of [
     "mcp-protocol.mjs", "mcp-protocol.d.mts",
+    "mcp-task-contract.mjs", "mcp-task-contract.d.mts",
     "tool-argument-validation.mjs", "tool-argument-validation.d.mts",
+    "trusted-origin.mjs", "trusted-origin.d.mts",
   ]) {
     if (!record.files.some((item) => item.path === `src/shared/${module}`)) throw new Error(`npm package omitted shared MCP contract ${module}`);
   }
@@ -170,22 +168,28 @@ try {
   if (!record.files.some((item) => item.path === "src/local/secure-file.mjs")) throw new Error("npm package omitted the shared secure-file primitive");
   if (!record.files.some((item) => item.path === "src/local/service-definition.mjs")) throw new Error("npm package omitted identity-bound service-definition cleanup");
   if (record.files.some((item) => item.path === "src/local/daemon.mjs")) throw new Error("npm package retained the obsolete local daemon module name");
-  if (!record.files.some((item) => item.path === "scripts/privacy-check.mjs")) throw new Error("npm package omitted the privacy checker");
-  if (!record.files.some((item) => item.path === "scripts/sbom-check.mjs")) throw new Error("npm package omitted the SBOM validator");
-  if (!record.files.some((item) => item.path === "scripts/release-impact-check.mjs")) throw new Error("npm package omitted the release-impact checker");
-  if (!record.files.some((item) => item.path === "scripts/start-release-candidate.mjs")) throw new Error("npm package omitted the isolated candidate startup helper");
-  if (!record.files.some((item) => item.path === "scripts/network-retry.mjs")) throw new Error("npm package omitted the network retry helper");
-  if (!record.files.some((item) => item.path === "scripts/github-release.mjs")) throw new Error("npm package omitted the release helper referenced by package scripts");
-  if (!record.files.some((item) => item.path === "scripts/release-publication-guard.mjs")) throw new Error("npm package omitted the GitHub publication ownership guard");
-  for (const helper of ["release-acceptance.mjs", "local-release-acceptance.mjs", "github-push.mjs", "release-channel.mjs", "release-candidate-manifest.mjs", "promotion-digest.mjs", "prerelease-activation.mjs", "release-soak.mjs", "published-release.mjs", "npm-publication-policy.mjs", "publish-npm.mjs", "install-published-prerelease.mjs", "candidate-runtime-store.mjs"]) {
-    if (!record.files.some((item) => item.path === `scripts/${helper}`)) throw new Error(`npm package omitted release gate helper ${helper}`);
+  for (const helper of [
+    "prerelease-activation.mjs", "promotion-digest.mjs", "release-acceptance.mjs",
+    "release-candidate-manifest.mjs", "release-channel.mjs", "release-diagnostic.mjs",
+    "release-oauth-canary-core.mjs", "release-oauth-canary-evidence.mjs", "release-oauth-canary.mjs",
+  ]) {
+    if (!record.files.some((item) => item.path === `scripts/${helper}`)) throw new Error(`npm package omitted runtime canary helper ${helper}`);
   }
   for (const repositoryOnlyScript of [
-    "check-plan.mjs", "check-runner.mjs", "commit-message-check.mjs", "coverage-check.mjs", "generate-policy-reference.mjs",
-    "generate-tool-reference.mjs", "generate-worker-types.mjs", "macos-background-input-smoke.mjs", "markdown.mjs",
-    "official-mcp-conformance.mjs", "prepare-pinned-npm.mjs", "run-checks.mjs", "run-worker-dry-run.mjs", "sarif-security-gate.mjs",
-    "syntax-check.mjs", "verification-environment.mjs", "verification-generation-guard.mjs", "verification-idle-sleep-guard.mjs",
-    "wrangler-command-lifecycle.mjs",
+    "accepted-candidate-tarball.mjs", "candidate-runtime-store.mjs", "check-plan.mjs", "check-runner.mjs",
+    "commit-message-check.mjs", "consumer-package-security.mjs", "coverage-check.mjs", "coverage-generation.mjs",
+    "foreground-daemon-recovery.mjs", "generate-policy-reference.mjs", "generate-tool-output-schemas.mjs",
+    "generate-tool-reference.mjs", "generate-worker-types.mjs", "github-backlog.mjs", "github-push.mjs",
+    "github-release-asset.mjs", "github-release.mjs", "global-package-installation.mjs", "hardened-npm-session.mjs",
+    "install-published-prerelease.mjs", "local-release-acceptance.mjs", "macos-background-input-smoke.mjs",
+    "markdown.mjs", "network-retry.mjs", "npm-global-prefix.mjs", "npm-publication-policy.mjs",
+    "official-mcp-conformance.mjs", "persistent-activation-process.mjs", "prepare-pinned-npm.mjs",
+    "privacy-check.mjs", "publish-npm.mjs", "published-release.mjs", "release-browser-extension-store.mjs",
+    "release-ci.mjs", "release-impact-check.mjs", "release-publication-guard.mjs", "release-soak.mjs",
+    "release-state.mjs", "run-checks.mjs", "run-worker-dry-run.mjs", "sarif-security-gate.mjs",
+    "sbom-check.mjs", "source-dependency-tree.mjs", "start-release-candidate.mjs", "syntax-check.mjs",
+    "sync-worker-version.mjs", "verification-environment.mjs", "verification-generation-guard.mjs",
+    "verification-idle-sleep-guard.mjs", "verification-state.mjs", "wrangler-command-lifecycle.mjs",
   ]) {
     if (record.files.some((item) => item.path === `scripts/${repositoryOnlyScript}`)) {
       throw new Error(`npm package retained repository-only development script ${repositoryOnlyScript}`);

@@ -77,7 +77,7 @@ const controller = new McpController({
   supportedVersions: [MCP_PROTOCOL_VERSION],
   discoveryTtlMs: 1000,
   toolListTtlMs: 2000,
-  tools: (_auth, options) => options?.progressive ? (Array.isArray(options.groups) && options.groups.indexOf("git") !== -1 ? [serverInfoTool, ...workspaceTools.filter((t) => t.name === "git_diff")] : [serverInfoTool]) : [serverInfoTool, ...workspaceTools],
+  tools: () => [serverInfoTool, ...workspaceTools],
   recordError: (code) => errors.push(code),
   cancelClientRequest: async (key) => { cancellations.push(key); },
   callTool: async (input) => {
@@ -111,8 +111,8 @@ assert.equal(cancellations[0], undefined);
 assert.match(cancellations[1], /^stream:stream_/);
 
 const notification = await handle({ jsonrpc: "2.0", method: "tools/list", params: {} });
-assert.equal(notification.status, 202);
-assert.equal(await notification.text(), "");
+assert.equal(notification.status, 404);
+assert.equal((await notification.json()).error.code, -32601);
 const nullId = await handle(request("tools/list", {}, null));
 assert.equal(nullId.status, 400);
 assert.equal((await nullId.json()).error.code, -32600);
@@ -128,11 +128,6 @@ assert.equal(discover.result.cacheScope, "public");
 const listed = await jsonResult(await handle(request("tools/list", {})));
 assert.equal(listed.result.cacheScope, "private");
 assert(listed.result.tools.some((tool) => tool.name === "list_dir"));
-const progressiveListed = await jsonResult(await handle(request("tools/list", { progressive: true })));
-assert.equal(progressiveListed.result.tools.some((tool) => tool.name === "git_diff"), false);
-assert(progressiveListed.result.tools.some((tool) => tool.name === "server_info"));
-const groupListed = await jsonResult(await handle(request("tools/list", { progressive: true, groups: ["git"] })));
-assert(groupListed.result.tools.some((tool) => tool.name === "git_diff"));
 const resources = await jsonResult(await handle(request("resources/list", {})));
 assert.equal(resources.result.cacheScope, "public");
 assert.equal(resources.result.resources[0].uri, JOB_MONITOR_RESOURCE_URI);

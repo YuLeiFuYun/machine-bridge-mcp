@@ -108,8 +108,8 @@ async function testJsonRpcStreamProgress() {
   })();
   emitProgress?.({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "tok-1", progress: 50 } });
   await readPromise;
-  assert(frames.some((f) => f.includes("notifications/progress") && f.includes('"progress":50')), "progress frame omitted");
-  assert(frames.some((f) => f.includes('"success":true')), "terminal result omitted");
+  assert(frames.some((f) => /notifications\/progress/.test(f) && /"progress":50/.test(f)), "progress frame omitted");
+  assert(frames.some((f) => /"success":true/.test(f)), "terminal result omitted");
 }
 
 async function testPublicReaderCancellation() {
@@ -463,8 +463,8 @@ async function testHeartbeatFrameBoundarySafety() {
     if (chunk.done) break;
     fullOutput += decoder.decode(chunk.value);
   }
-  assert(!fullOutput.includes('{"jsonrpc":"2.0",: heartbeat'), "heartbeat interleaved with an incomplete SSE message chunk");
-  assert(fullOutput.includes('{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'), "reconstituted SSE message was corrupted");
+  assert(!/\{"jsonrpc":"2\.0",: heartbeat/.test(fullOutput), "heartbeat interleaved with an incomplete SSE message chunk");
+  assert(/\{"jsonrpc":"2\.0","id":1,"result":\{"ok":true\}\}/.test(fullOutput), "reconstituted SSE message was corrupted");
 }
 
 function currentRequest(signal, accept = "application/json, text/event-stream") {

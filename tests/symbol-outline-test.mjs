@@ -196,4 +196,24 @@ const runtimeReportingCode = readFileSync(join(root, "src", "local", "runtime-re
 const runtimeReportingNames = extractFileSymbols(runtimeReportingCode, "runtime-reporting.mjs").symbols.map((s) => s.name);
 assert(runtimeReportingNames.includes("buildRuntimeInfo"), "buildRuntimeInfo must survive a multi-line parameter list");
 
+// 9. Regression: zero-parameter, async, default-exported, and default-param arrow functions
+const arrowEdgeCases = [
+  "export const zeroParam = () => { return 1; };",
+  "export const asyncZero = async () => 2;",
+  "export const defaultParam = (a = 1) => a;",
+  "export default () => true;",
+  "const internalZero = () => { const nested = () => 0; return nested(); };",
+].join("\n");
+const arrowSymbols = extractFileSymbols(arrowEdgeCases, "arrows.mjs", { includeInternal: true }).symbols;
+assert.deepEqual(
+  arrowSymbols.map((s) => ({ name: s.name, async: s.async, params: s.params, isExported: s.isExported })),
+  [
+    { name: "zeroParam", async: false, params: "", isExported: true },
+    { name: "asyncZero", async: true, params: "", isExported: true },
+    { name: "defaultParam", async: false, params: "a = 1", isExported: true },
+    { name: "default", async: false, params: "", isExported: true },
+    { name: "internalZero", async: false, params: "", isExported: false },
+  ],
+);
+
 console.log("symbol outline test ok");

@@ -1021,9 +1021,9 @@ async function testConcurrentSessionCapacity() {
   const redacted = redactSensitiveProcessOutput(rawOutput);
   assert(typeof redacted === "string");
   assert.equal(/RSA PRIVATE KEY/.test(redacted), false, "private key was not redacted");
-  assert.equal(redacted.indexOf(fakeToken) !== -1, false, "github token was not redacted");
-  assert.equal(redacted.indexOf(fakeAws) !== -1, false, "aws key was not redacted");
-  assert.equal(redacted.indexOf("/dev/tcp") !== -1, false, "reverse shell was not redacted");
+  assert.doesNotMatch(redacted, new RegExp(fakeToken), "github token was not redacted");
+  assert.doesNotMatch(redacted, new RegExp(fakeAws), "aws key was not redacted");
+  assert.doesNotMatch(redacted, /\/dev\/tcp/, "reverse shell was not redacted");
   assert.match(redacted, /<redacted:private_key>/, "missing private key placeholder");
   assert.match(redacted, /<redacted:github_token>/, "missing github token placeholder");
   assert.match(redacted, /<redacted:aws_key>/, "missing aws key placeholder");
@@ -1039,12 +1039,12 @@ async function testConcurrentSessionCapacity() {
   });
   assert.equal(/PRIVATE KEY/.test(projected.stdout), false);
   assert.match(projected.stdout, /<redacted:private_key>/);
-  assert.equal(projected.stderr.indexOf(fakeToken) !== -1, false);
+  assert.doesNotMatch(projected.stderr, new RegExp(fakeToken));
   assert.match(projected.stderr, /<redacted:github_token>/);
   assert.equal(projected.code, 0);
 
   const failureMsg = processFailureMessage({ code: 1, stderr: `auth error: ${fakeToken}` });
-  assert.equal(failureMsg.indexOf(fakeToken) !== -1, false);
+  assert.doesNotMatch(failureMsg, new RegExp(fakeToken));
   assert.match(failureMsg, /<redacted:github_token>/);
   assert(refusalPreventionAdvisory("SSL certificate problem", "", 1).length > 0);
 
