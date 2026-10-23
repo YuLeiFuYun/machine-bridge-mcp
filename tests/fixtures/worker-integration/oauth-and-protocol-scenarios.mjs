@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { runOfficialMcpConformance } from "../../../scripts/official-mcp-conformance.mjs";
+import serverMetadata from "../../../src/shared/server-metadata.json" with { type: "json" };
 import { workerToolsForRole } from "../../../src/worker/worker-tool-authority.ts";
 import {
   registerTestClient, issueAccountToken, waitForWorker, fetchJson, stableFetch,
@@ -499,7 +500,7 @@ export async function runOAuthAndProtocolScenarios(context) {
   "current discovery omitted resultType or advertised a removed protocol version");
   assert(currentDiscovery.body.result?.cacheScope === "public"
     && currentDiscovery.body.result?.ttlMs === 0
-    && String(currentDiscovery.body.result?.instructions || "").includes("Do not infer or preempt a host/tool deadline from elapsed wall-clock time")
+    && currentDiscovery.body.result?.instructions === serverMetadata.instructions.join("\n")
     && currentDiscovery.body.result?._meta?.["io.modelcontextprotocol/serverInfo"]?.version === pkg.version,
   "current discovery omitted non-cacheable continuation instructions or server identity metadata");
   assert(currentDiscovery.response.headers.get("mcp-session-id") === null, "current discovery minted a protocol session");
