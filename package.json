@@ -268,14 +268,14 @@
     "ws": "8.22.0"
   },
   "devDependencies": {
-    "@babel/parser": "8.0.7",
+    "@babel/parser": "8.0.8",
     "@types/node": "26.6.5",
-    "cf": "1.0.0-beta.20",
+    "cf": "1.0.0-beta.23",
     "eslint": "10.13.0",
     "fast-check": "4.10.2",
     "globals": "17.13.0",
     "typescript": "7.0.2",
-    "wrangler": "4.151.3"
+    "wrangler": "4.153.0"
   },
   "keywords": [
     "mcp",
