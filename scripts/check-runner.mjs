@@ -20,6 +20,7 @@ const TASK_TIMEOUT_OVERRIDES = new Map([
   ["browser-bridge:test", 300_000],
   ["browser-page-automation:test", 300_000],
   ["oauth-browser:test", 300_000],
+  ["managed-jobs:test", 300_000],
 ]);
 const DIRECT_NODE_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SPARSE_PROGRESS_TASKS = new Map([
