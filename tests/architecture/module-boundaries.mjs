@@ -455,6 +455,7 @@ const lineBudget = Object.freeze({
 // Only a module whose split is itself a contract asserted elsewhere keeps a fixed ceiling.
 const structuralPins = Object.freeze({
   "src/local/managed-job-transient-recovery-capacity.mjs": 180,
+  "src/worker/index.ts": 640,
 });
 
 function sourceFilesUnder(directory) {
@@ -1423,6 +1424,7 @@ if (!localPolicySource.includes('policy-contract.json') || !workerPolicySource.i
   throw new Error("local and Worker policy enforcement do not share the generated policy contract");
 }
 const workerIndexBoundary = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
+const daemonWebSocketControllerBoundary = readFileSync(join(root, "src", "worker", "daemon-websocket-controller.ts"), "utf8");
 const workerEntryBoundary = readFileSync(join(root, "src", "worker", "worker-entry.ts"), "utf8");
 const workerHttpBoundary = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
 for (const removedHeader of ["mcp-session-id", "last-event-id"]) {
@@ -1460,13 +1462,14 @@ for (const duplicate of [
 ]) {
   if (workerIndexBoundary.includes(duplicate)) throw new Error(`Worker index regained extracted responsibility: ${duplicate}`);
 }
+const workerCompositionBoundary = `${workerIndexBoundary}\n${daemonWebSocketControllerBoundary}`;
 for (const module of [
   "pending-calls", "policy", "errors", "http", "oauth-state", "oauth-controller",
   "observability", "mcp-access", "mcp-controller", "mcp-stream-proxy-contract", "server-info",
   "worker-entry", "tool-timeout", "daemon-liveness", "daemon-registry", "daemon-channel", "daemon-status",
-  "daemon-http-controller", "daemon-ready-messages",
+  "daemon-http-controller", "daemon-ready-messages", "daemon-websocket-controller",
 ]) {
-  if (!workerIndexBoundary.includes(`./${module}`)) throw new Error(`Worker index lost boundary module: ${module}`);
+  if (!workerCompositionBoundary.includes(`./${module}`)) throw new Error(`Worker composition lost boundary module: ${module}`);
 }
 for (const module of ["worker-static-routes", "worker-edge-guard", "worker-edge-log", "worker-rate-limit-key", "mcp-response-proxy", "mcp-stream-proxy-contract"]) {
   if (!workerEntryBoundary.includes(`./${module}`)) throw new Error(`outer Worker entry lost boundary module: ${module}`);
@@ -1559,7 +1562,7 @@ for (const forbidden of ["streamJsonRpcResponse(", "resumeJsonRpcResponse(", ".r
 if (!workerIndexBoundary.includes("this.invalidateDaemonSocket(socket, message, closeReason, errorCode, false)")) {
   throw new Error("runtime alarm invalidation regained recursive alarm scheduling");
 }
-const daemonCleanupBoundary = /private cleanupDaemonSocket[\s\S]*?private async handleMcp/.exec(workerIndexBoundary)?.[0] || "";
+const daemonCleanupBoundary = /cleanupDaemonSocket[\s\S]*?async invalidateDaemonSocket/.exec(daemonWebSocketControllerBoundary)?.[0] || "";
 if (!daemonCleanupBoundary.includes("beginCleanup") || daemonCleanupBoundary.includes("scheduleRuntimeAlarm")) {
   throw new Error("daemon socket cleanup must remain idempotent and scheduling-free");
 }
@@ -1567,13 +1570,13 @@ const daemonDetachBoundary = /private async detachDaemonSocketCalls[\s\S]*?priva
 if (!daemonDetachBoundary.includes("this.pending.rejectSocket(socket, (record) => dispatchedDaemonDisconnectError(message, record.recovery))")) {
   throw new Error("identity-damaged daemon socket cleanup regained retryable settlement for already-dispatched calls");
 }
-const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?private cleanupDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
+const daemonWebSocketErrorBoundary = /async webSocketError[\s\S]*?\n  cleanupDaemonSocket\(/.exec(daemonWebSocketControllerBoundary)?.[0] || "";
 const daemonErrorCleanupAt = daemonWebSocketErrorBoundary.indexOf("const cleanup = this.cleanupDaemonSocket");
 const daemonErrorLogAt = daemonWebSocketErrorBoundary.indexOf("daemon.websocket.error");
 if (daemonErrorCleanupAt < 0 || daemonErrorLogAt < 0 || daemonErrorCleanupAt > daemonErrorLogAt) {
   throw new Error("daemon WebSocket error logging occurs before cleanup ownership is claimed");
 }
-const daemonWebSocketCloseBoundary = /async webSocketClose[\s\S]*?async webSocketError/.exec(workerIndexBoundary)?.[0] || "";
+const daemonWebSocketCloseBoundary = /async webSocketClose[\s\S]*?async webSocketError/.exec(daemonWebSocketControllerBoundary)?.[0] || "";
 if (!daemonWebSocketCloseBoundary.includes('daemon.websocket.closed')
     || !daemonWebSocketCloseBoundary.includes("was_clean")
     || !daemonWebSocketCloseBoundary.includes("close_code")
@@ -1581,16 +1584,16 @@ if (!daemonWebSocketCloseBoundary.includes('daemon.websocket.closed')
     || daemonWebSocketCloseBoundary.includes("String(_reason")) {
   throw new Error("daemon WebSocket close diagnostics lost bounded code/clean metadata or started logging close reasons");
 }
-const daemonHeartbeatBoundary = /if \(body\.type === "heartbeat"[\s\S]*?if \(socketAttachment\.role === "probing"\)/.exec(workerIndexBoundary)?.[0] || "";
-if (!/trySendWebSocket[\s\S]*scheduleRuntimeAlarm/.test(daemonHeartbeatBoundary)) {
+const daemonHeartbeatBoundary = /if \(body\.type === "heartbeat"[\s\S]*?if \(socketAttachment\.role === "probing"\)/.exec(daemonWebSocketControllerBoundary)?.[0] || "";
+if (!/trySendWebSocket[\s\S]*scheduleAlarm/.test(daemonHeartbeatBoundary)) {
   throw new Error("daemon heartbeat acknowledgement is delayed behind alarm scheduling");
 }
-const daemonTouchBoundary = /private touchDaemonSocket[\s\S]*?private async invalidateDaemonSocket/.exec(workerIndexBoundary)?.[0] || "";
-if (daemonTouchBoundary.includes("scheduleRuntimeAlarm")) {
+const daemonTouchBoundary = /private touchDaemonSocket[\s\S]*?return Boolean/.exec(daemonWebSocketControllerBoundary)?.[0] || "";
+if (daemonTouchBoundary.includes("scheduleAlarm")) {
   throw new Error("daemon activity touch regained implicit alarm scheduling");
 }
-const daemonResultBoundary = /handleReadyDaemonMessage\(\{[\s\S]*?async webSocketClose/.exec(workerIndexBoundary)?.[0] || "";
-if ((daemonResultBoundary.match(/scheduleRuntimeAlarm/g) || []).length !== 1) {
+const daemonResultBoundary = /this\.options\.handleReadyMessage\(\{[\s\S]*?async webSocketClose/.exec(daemonWebSocketControllerBoundary)?.[0] || "";
+if ((daemonResultBoundary.match(/scheduleAlarm/g) || []).length !== 1) {
   throw new Error("daemon terminal result must coalesce liveness and pending-call alarm scheduling");
 }
 const eventExpiryBoundary = /private async expireOverdueCalls[\s\S]*?private async scheduleRuntimeAlarm/.exec(workerIndexBoundary)?.[0] || "";
@@ -1731,13 +1734,13 @@ for (const required of [
   "daemonToolTimeoutBudgetAfterDelay",
   "cancelReadyDaemonAuthority(this.daemonRegistry, revocation)",
   "pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry))",
-  "notifyReadyDaemon(this.daemonRegistry)",
+  "notifyReadyDaemon(",
 ]) {
-  if (!workerIndexBoundary.includes(required)) throw new Error(`Worker composition lost shared-capacity deadline-bounded daemon recovery: ${required}`);
+  if (!workerCompositionBoundary.includes(required)) throw new Error(`Worker composition lost shared-capacity deadline-bounded daemon recovery: ${required}`);
 }
-const readyAckSend = workerIndexBoundary.indexOf('ws.send(JSON.stringify({ type: "ready_ack"');
-const readyWaiterNotify = workerIndexBoundary.indexOf("notifyReadyDaemon(this.daemonRegistry)");
-const readinessAlarmBeforeNotify = workerIndexBoundary.lastIndexOf("await this.scheduleRuntimeAlarm()", readyWaiterNotify);
+const readyAckSend = daemonWebSocketControllerBoundary.indexOf('ws.send(JSON.stringify({ type: "ready_ack"');
+const readyWaiterNotify = daemonWebSocketControllerBoundary.indexOf("notifyReadyDaemon(this.options.registry)");
+const readinessAlarmBeforeNotify = daemonWebSocketControllerBoundary.lastIndexOf("await this.options.scheduleAlarm()", readyWaiterNotify);
 if (readyAckSend < 0 || readyWaiterNotify < readyAckSend || readinessAlarmBeforeNotify < readyAckSend) {
   throw new Error("new daemon calls may be released before verified handover cleanup/alarm settlement reaches its final no-await point");
 }

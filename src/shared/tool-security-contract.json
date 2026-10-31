@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "server_info": {
+      "family": "automatic",
+      "effect": "read-only"
+    },
+    "project_overview": {
+      "family": "automatic",
+      "effect": "read-only"
+    },
+    "session_bootstrap": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "resolve_task_capabilities": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "list_local_applications": {
+      "family": "automatic",
+      "effect": "read-only"
+    },
+    "open_local_application": {
+      "family": "application-control",
+      "effect": "side-effecting"
+    },
+    "inspect_local_application": {
+      "family": "application-control",
+      "effect": "read-only"
+    },
+    "operate_local_application": {
+      "family": "application-control",
+      "effect": "side-effecting"
+    },
+    "computer_observe": {
+      "family": "computer-use",
+      "effect": "side-effecting"
+    },
+    "computer_act": {
+      "family": "computer-use",
+      "effect": "side-effecting"
+    },
+    "browser_status": {
+      "family": "automatic",
+      "effect": "side-effecting"
+    },
+    "pair_browser_extension": {
+      "family": "browser-session",
+      "effect": "side-effecting"
+    },
+    "browser_list_tabs": {
+      "family": "browser-session",
+      "effect": "read-only"
+    },
+    "browser_manage_tabs": {
+      "family": "browser-session",
+      "effect": "side-effecting"
+    },
+    "browser_get_source": {
+      "family": "browser-session",
+      "effect": "read-only"
+    },
+    "browser_inspect_page": {
+      "family": "browser-session",
+      "effect": "read-only"
+    },
+    "browser_wait": {
+      "family": "browser-session",
+      "effect": "read-only"
+    },
+    "browser_action": {
+      "family": "browser-session",
+      "effect": "side-effecting"
+    },
+    "browser_fill_form": {
+      "family": "browser-session",
+      "effect": "side-effecting"
+    },
+    "browser_screenshot": {
+      "family": "browser-session",
+      "effect": "side-effecting"
+    },
+    "browser_upload_files": {
+      "family": "browser-upload",
+      "effect": "side-effecting"
+    },
+    "agent_context": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "list_local_skills": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "load_local_skill": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "list_local_commands": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "run_local_command": {
+      "family": "shell",
+      "effect": "side-effecting"
+    },
+    "list_roots": {
+      "family": "automatic",
+      "effect": "read-only"
+    },
+    "list_dir": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "list_files": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "read_file": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "view_image": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "write_file": {
+      "family": "file-write",
+      "effect": "side-effecting"
+    },
+    "edit_file": {
+      "family": "file-write",
+      "effect": "side-effecting"
+    },
+    "apply_patch": {
+      "family": "patch",
+      "effect": "side-effecting"
+    },
+    "search_text": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "git_status": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "git_diff": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "git_log": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "git_show": {
+      "family": "file-read",
+      "effect": "read-only"
+    },
+    "git_commit": {
+      "family": "file-write",
+      "effect": "side-effecting"
+    },
+    "run_process": {
+      "family": "shell",
+      "effect": "side-effecting"
+    },
+    "start_process": {
+      "family": "shell",
+      "effect": "side-effecting"
+    },
+    "read_process": {
+      "family": "shell",
+      "effect": "read-only"
+    },
+    "write_process": {
+      "family": "shell",
+      "effect": "side-effecting"
+    },
+    "kill_process": {
+      "family": "shell",
+      "effect": "side-effecting"
+    },
+    "diagnose_runtime": {
+      "family": "automatic",
+      "effect": "read-only"
+    },
+    "list_local_resources": {
+      "family": "protected-resource-inventory",
+      "effect": "read-only"
+    },
+    "generate_ssh_key_resource": {
+      "family": "credential-operation",
+      "effect": "side-effecting"
+    },
+    "stage_job": {
+      "family": "persistent-job",
+      "effect": "side-effecting"
+    },
+    "start_job": {
+      "family": "persistent-job",
+      "effect": "side-effecting"
+    },
+    "list_jobs": {
+      "family": "persistent-job",
+      "effect": "read-only"
+    },
+    "read_job": {
+      "family": "persistent-job",
+      "effect": "read-only"
+    },
+    "cancel_job": {
+      "family": "persistent-job",
+      "effect": "side-effecting"
+    },
+    "exec_command": {
+      "family": "shell",
+      "effect": "side-effecting"
+    }
+  }
+}

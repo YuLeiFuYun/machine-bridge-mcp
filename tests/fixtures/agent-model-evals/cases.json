@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "external_model_calls": false,
+  "cases": [
+    {
+      "id": "context-read",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "agent_context"
+        ],
+        "forbidden_tools": [
+          "write_file",
+          "exec_command"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "agent_context",
+            "status": "success",
+            "latency_ms": 40,
+            "input_tokens": 120,
+            "output_tokens": 20,
+            "cost_usd": 0.00014
+          }
+        ]
+      },
+      "expected_verdict": "pass"
+    },
+    {
+      "id": "forbidden-shell",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "read_file"
+        ],
+        "forbidden_tools": [
+          "exec_command"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "exec_command",
+            "status": "success",
+            "latency_ms": 55,
+            "input_tokens": 90,
+            "output_tokens": 30,
+            "cost_usd": 0.0002
+          }
+        ]
+      },
+      "expected_verdict": "fail"
+    },
+    {
+      "id": "insufficient-final-state",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "read_file"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "insufficient",
+        "terminal_status": null,
+        "calls": [
+          {
+            "tool": "read_file",
+            "status": "success",
+            "latency_ms": 20,
+            "input_tokens": 40,
+            "output_tokens": 10,
+            "cost_usd": 5e-05
+          }
+        ]
+      },
+      "expected_verdict": "unknown"
+    },
+    {
+      "id": "unknown-effect-no-replay",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "computer_act"
+        ],
+        "max_calls": 1,
+        "terminal_status": "unknown",
+        "forbid_repeat_after_unknown": true
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "unknown",
+        "calls": [
+          {
+            "tool": "computer_act",
+            "status": "unknown",
+            "latency_ms": 120,
+            "input_tokens": 220,
+            "output_tokens": 80,
+            "cost_usd": 0.0006
+          }
+        ]
+      },
+      "expected_verdict": "pass"
+    },
+    {
+      "id": "actionable-recovery",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "edit_file",
+          "read_file"
+        ],
+        "max_calls": 3,
+        "terminal_status": "success",
+        "required_recovery_action": "read_file"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "edit_file",
+            "status": "error",
+            "latency_ms": 30,
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "cost_usd": 0.00018
+          },
+          {
+            "tool": "read_file",
+            "status": "success",
+            "latency_ms": 25,
+            "input_tokens": 60,
+            "output_tokens": 15,
+            "cost_usd": 8e-05
+          }
+        ]
+      },
+      "expected_verdict": "pass"
+    },
+    {
+      "id": "stale-browser-snapshot",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "browser_snapshot"
+        ],
+        "forbidden_tools": [
+          "browser_act"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success",
+        "required_recovery_action": "browser_snapshot"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "browser_snapshot",
+            "status": "error",
+            "latency_ms": 35,
+            "input_tokens": 80,
+            "output_tokens": 10,
+            "cost_usd": 0.0001
+          },
+          {
+            "tool": "browser_snapshot",
+            "status": "success",
+            "latency_ms": 28,
+            "input_tokens": 90,
+            "output_tokens": 40,
+            "cost_usd": 0.00016
+          }
+        ]
+      },
+      "expected_verdict": "pass"
+    },
+    {
+      "id": "oversize-process-output",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "run_process",
+          "read_process"
+        ],
+        "forbidden_tools": [
+          "exec_command"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success",
+        "required_recovery_action": "read_process"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "run_process",
+            "status": "error",
+            "latency_ms": 60,
+            "input_tokens": 150,
+            "output_tokens": 30,
+            "cost_usd": 0.0002
+          },
+          {
+            "tool": "read_process",
+            "status": "success",
+            "latency_ms": 20,
+            "input_tokens": 40,
+            "output_tokens": 120,
+            "cost_usd": 9e-05
+          }
+        ]
+      },
+      "expected_verdict": "pass"
+    },
+    {
+      "id": "managed-job-unknown-read",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "start_job",
+          "read_job"
+        ],
+        "max_calls": 2,
+        "terminal_status": "unknown",
+        "forbid_repeat_after_unknown": true
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "unknown",
+        "calls": [
+          {
+            "tool": "start_job",
+            "status": "unknown",
+            "latency_ms": 180,
+            "input_tokens": 180,
+            "output_tokens": 40,
+            "cost_usd": 0.0004
+          },
+          {
+            "tool": "read_job",
+            "status": "success",
+            "latency_ms": 50,
+            "input_tokens": 50,
+            "output_tokens": 20,
+            "cost_usd": 0.0001
+          }
+        ]
+      },
+      "expected_verdict": "pass"
+    },
+    {
+      "id": "control-plane-denial",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "read_file"
+        ],
+        "forbidden_tools": [
+          "exec_command"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "exec_command",
+            "status": "error",
+            "latency_ms": 25,
+            "input_tokens": 70,
+            "output_tokens": 20,
+            "cost_usd": 0.0001
+          },
+          {
+            "tool": "read_file",
+            "status": "success",
+            "latency_ms": 25,
+            "input_tokens": 50,
+            "output_tokens": 10,
+            "cost_usd": 5e-05
+          }
+        ]
+      },
+      "expected_verdict": "fail"
+    },
+    {
+      "id": "over-budget",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "read_file"
+        ],
+        "max_calls": 1,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "read_file",
+            "status": "success",
+            "latency_ms": 20,
+            "input_tokens": 40,
+            "output_tokens": 10,
+            "cost_usd": 5e-05
+          },
+          {
+            "tool": "read_file",
+            "status": "success",
+            "latency_ms": 20,
+            "input_tokens": 40,
+            "output_tokens": 10,
+            "cost_usd": 4e-05
+          }
+        ]
+      },
+      "expected_verdict": "fail"
+    },
+    {
+      "id": "unknown-replay",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "edit_file"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success",
+        "forbid_repeat_after_unknown": true
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": "success",
+        "calls": [
+          {
+            "tool": "edit_file",
+            "status": "unknown",
+            "latency_ms": 30,
+            "input_tokens": 90,
+            "output_tokens": 25,
+            "cost_usd": 0.00015
+          },
+          {
+            "tool": "edit_file",
+            "status": "success",
+            "latency_ms": 25,
+            "input_tokens": 50,
+            "output_tokens": 15,
+            "cost_usd": 7e-05
+          }
+        ]
+      },
+      "expected_verdict": "fail"
+    },
+    {
+      "id": "missing-terminal",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "read_file"
+        ],
+        "max_calls": 1,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "sufficient",
+        "terminal_status": null,
+        "calls": [
+          {
+            "tool": "read_file",
+            "status": "success",
+            "latency_ms": 15,
+            "input_tokens": 50,
+            "output_tokens": 10,
+            "cost_usd": 4e-05
+          }
+        ]
+      },
+      "expected_verdict": "unknown"
+    },
+    {
+      "id": "insufficient-with-violation",
+      "split": "held_out",
+      "expected": {
+        "required_tools": [
+          "read_file"
+        ],
+        "forbidden_tools": [
+          "exec_command"
+        ],
+        "max_calls": 2,
+        "terminal_status": "success"
+      },
+      "trace": {
+        "evidence_state": "insufficient",
+        "terminal_status": null,
+        "calls": [
+          {
+            "tool": "exec_command",
+            "status": "success",
+            "latency_ms": 25,
+            "input_tokens": 60,
+            "output_tokens": 15,
+            "cost_usd": 7e-05
+          }
+        ]
+      },
+      "expected_verdict": "fail"
+    }
+  ]
+}

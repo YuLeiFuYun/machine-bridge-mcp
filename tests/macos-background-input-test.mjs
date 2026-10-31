@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BridgeError } from "../src/local/errors.mjs";
+import { APPLICATION_OPERATION_REASON } from "../src/local/computer-use-dispatch-settlement.mjs";
 import { MacosBackgroundInputService, applicationBackgroundInputConfiguration } from "../src/local/macos-background-input.mjs";
 
 await buildsOnceAndProjectsSuccessfulClick();
@@ -385,10 +386,13 @@ async function classifiesPreDispatchAndUnknownFailures() {
   };
   try {
     const service = new MacosBackgroundInputService({ runProcess, cacheRoot, platform: "darwin", sourceRoot: path.resolve(".") });
-    await assert.rejects(() => service.click(args), /unavailable before dispatch: front_window_changed_before_dispatch/);
+    await assert.rejects(() => service.click(args), (error) => error instanceof BridgeError
+      && error.details?.reason === APPLICATION_OPERATION_REASON.INPUT_PREFLIGHT_UNAVAILABLE
+      && /unavailable before dispatch: front_window_changed_before_dispatch/.test(error.message));
     mode = "generation";
-    await assert.rejects(() => service.click(args), /unavailable before dispatch: process_generation_changed_before_dispatch/,
-      "generation mismatch lost its definite pre-dispatch settlement");
+    await assert.rejects(() => service.click(args), (error) => error instanceof BridgeError
+      && error.details?.reason === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED,
+    "generation mismatch lost its typed definite pre-dispatch settlement");
     mode = "frontmost";
     await assert.rejects(() => service.click(args), /unavailable before dispatch: frontmost_changed_before_input/,
       "pre-input frontmost drift was incorrectly promoted to an unknown mutation before focus/input started");
@@ -420,7 +424,9 @@ async function classifiesPreDispatchAndUnknownFailures() {
     await assert.rejects(() => service.click(args), /partially dispatched.*outcome is unknown/i,
       "incomplete but valid click-helper JSON was incorrectly accepted as a pre-dispatch failure");
     mode = "unknown";
-    await assert.rejects(() => service.click(args), /partially dispatched.*outcome is unknown/i);
+    await assert.rejects(() => service.click(args), (error) => error instanceof BridgeError
+      && error.details?.reason === APPLICATION_OPERATION_REASON.INPUT_OUTCOME_UNKNOWN
+      && /partially dispatched.*outcome is unknown/i.test(error.message));
     assert.equal(mutationOptions.length, 13, "failure settlement fixture did not execute every expected mutation attempt");
     assert.equal(mutationOptions.every((value) => value?.nonReplayableMutation === true), true,
       "macOS helper mutation did not request process-level non-replayable settlement");

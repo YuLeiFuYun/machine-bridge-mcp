@@ -1,19 +1,22 @@
 # Changelog
 
-## 3.0.0-beta.209 - 2026-10-23
+## 3.0.0-beta.210 - 2026-10-26
 
-- Preserve the nearest project instructions when the shared context budget is exhausted, and report omitted guidance with policy-projected paths.
-- Load persistent project memory only on demand (`agent_context` remains strictly read-only), validating versioned metadata, expiry timestamps, and canonical path containment without exposing unreferenced memory-mutation exports.
-- Bound asynchronous symbol-outline traversal, file reads, cancellation, rendered lines, and 16 KiB UTF-8 byte ceiling; omit default parameter values, fix zero-parameter arrow function signature parsing (`() =>`), and enforce per-file policy checks.
-- Require exact editing and patch contexts; add `with_line_numbers` read support, 1-based line-numbered `near_miss` edit candidates, and bounded `conflict_hint` line candidates on `apply_patch` conflicts.
-- Share typed instruction, Git-diff, and skill projections across stdio and Worker prompts. Preserve failures, truncation, and sensitive-file omissions instead of reporting missing data as empty results.
-- Make optional progressive stdio discovery reachable through nine initial tools, canonical groups, and bounded request-scoped catalog subscriptions. Add compact Code Mode TypeScript SDK signature projection (`projectToolCatalogAsTypeScript`) across shared catalog helpers.
-- Share reason-level remedies across transports, surface underlying error reasons in managed-job runner failures (`error_reason`), and add interactive prompt stall detection (`[y/N]`, `Password:`) to process failure advisories.
-- Gate Worker SSE heartbeat comments on complete frame boundaries (`\n\n` / `\r\n\r\n`) via O(1) tail-byte inspection while keeping heartbeats active across multi-step streams.
-- Advance the tool schema generation and bind the catalog digest to its contract (40 verified output schemas and 14 environment-dependent interactive tools across 54 tools).
-- Unify MCP Tasks active/terminal/successful job status sets in `src/shared/mcp-task-contract.mjs`, deduplicate resource-request normalization in `src/local/resource-request-contract.mjs`, and centralize loopback origin parsing in `src/shared/trusted-origin.mjs`.
-- Remove dead barrel re-exports and unused development scripts, enforce static dead-export detection in `tests/architecture/module-boundaries.mjs`, and exempt generated reference documents (`docs/TOOL_REFERENCE.md`, `docs/POLICY.md`) from the hand-written documentation file count cap.
-- Move the native development smoke fixture and tool output-schema contract baseline out of the consumer package; verify nested and deduplicated Wrangler 4.151.3 dependencies at their exact locked locations.
+- Pin development minimatch 11.0.1 to fix GHSA-g3hv-75wg-m249 without downgrading ESLint; regenerate the lock and clean installed-tree verification evidence.
+
+- Candidate review: verification timeout/cancellation now supervises the owned process tree through forced escalation, even after the direct child closes.
+- Reject malformed static security families/effects before building authorization dispatch sets; preserve closed/connecting relay lifecycle invariants.
+- Remove connection-history-dependent stdio tool exposure. Legacy progressive mode fails with migration guidance; full-policy tools remain stable and directly callable.
+- Add final local/hosted catalog projection budgets and causal regressions. Candidate acceptance still requires source-matching full verification and live acceptance evidence.
+
+- Replace application Computer Use cross-layer English-message settlement classification with stable typed operation reasons, including native-input unknown outcomes, while preserving fail-closed retry semantics.
+- Reduce the Worker composition root by extracting daemon WebSocket protocol orchestration and enforce architecture headroom with a machine-checked line budget.
+- Centralize static non-model-facing tool security classification, isolate deterministic ranking from long operational prose, and ratchet tool-description growth without shrinking the public contract blindly.
+- Add a thirteen-case synthetic Agent/MCP trace fixture set with deterministic pass/fail/unknown scoring plus tool-call, latency, token, and cost accounting; this is a scorer contract test, not a live model benchmark.
+- Make the local relay lifecycle a discriminated state owner instead of an independent boolean cluster while preserving existing public status and reconnect behavior.
+- Reconcile the comparative-review inventory at 51 pinned projects and 19 papers, separate reproducible pinned snapshots from dated rolling-current maintenance observations, and keep deterministic trace scoring distinct from live-model success claims.
+- Align the documented install channel with the 3.0 beta line, ship a runtime-aware `npm test` entrypoint, and keep the published package's test entrypoint independent of repository-only test files.
+- Add per-task verification timeouts, move the Cloudflare project suite to the full-only plan, use the strict patch envelope for operation classification, quote systemd log paths, and resolve transitive `undici`/`zod` advisories with bounded overrides.
 
 ## Historical releases
 

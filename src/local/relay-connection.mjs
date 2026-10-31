@@ -71,11 +71,8 @@ export class RelayConnection {
       boundedPositiveInteger(options.outageWarnMaxRepeatMs, DEFAULT_OUTAGE_WARN_MAX_REPEAT_MS),
     );
 
-    this.closed = true;
+    this.lifecycle = relayLifecycleState("closed");
     this.socket = null;
-    this.authenticated = false;
-    this.ready = false;
-    this.readinessProbeDelivered = false;
     this.hasConnected = false;
     this.connectedAt = 0;
     this.lastReadyInboundSilenceMs = 0;
@@ -112,8 +109,6 @@ export class RelayConnection {
     this.connectedOnceResolve = null;
     this.connectedOnceReject = null;
     this.sessionGeneration = 0;
-    this.activeSessionId = 0;
-    this.workerConnectionId = "";
     this.lastDisconnectedWorkerConnectionId = "";
     this.liveness = new RelayLiveness({
       ...options,
@@ -128,6 +123,39 @@ export class RelayConnection {
         this.sendOnSocket(socket, { type: "heartbeat", ts: this.wallNow() }, onDispatched),
       ...relayLivenessActions(this),
     });
+  }
+
+  get closed() { return this.lifecycle.phase === "closed"; }
+  set closed(value) {
+    if (value) this.lifecycle = relayLifecycleState("closed");
+    else if (this.lifecycle.phase === "closed") this.lifecycle = relayLifecycleState("connecting", this.lifecycle);
+  }
+
+  get authenticated() { return this.lifecycle.phase === "authenticated" || this.lifecycle.phase === "ready"; }
+  set authenticated(value) {
+    if (value && !this.closed) this.lifecycle = relayLifecycleState(this.ready ? "ready" : "authenticated", this.lifecycle);
+    else if (!this.closed) this.lifecycle = relayLifecycleState("connecting", this.lifecycle);
+  }
+
+  get ready() { return this.lifecycle.phase === "ready"; }
+  set ready(value) {
+    if (value && this.authenticated) this.lifecycle = relayLifecycleState("ready", this.lifecycle);
+    else if (this.lifecycle.phase === "ready") this.lifecycle = relayLifecycleState("authenticated", this.lifecycle);
+  }
+
+  get readinessProbeDelivered() { return this.lifecycle.readinessProbeDelivered; }
+  set readinessProbeDelivered(value) {
+    this.lifecycle = relayLifecycleState(this.lifecycle.phase, { ...this.lifecycle, readinessProbeDelivered: value === true });
+  }
+
+  get activeSessionId() { return this.lifecycle.sessionId; }
+  set activeSessionId(value) {
+    this.lifecycle = relayLifecycleState(this.lifecycle.phase, { ...this.lifecycle, sessionId: Math.max(0, Number(value) || 0) });
+  }
+
+  get workerConnectionId() { return this.lifecycle.workerConnectionId; }
+  set workerConnectionId(value) {
+    this.lifecycle = relayLifecycleState(this.lifecycle.phase, { ...this.lifecycle, workerConnectionId: String(value || "") });
   }
 
   status() {
@@ -667,4 +695,16 @@ export class RelayConnection {
     return Boolean(socket && socket.readyState === this.WebSocketClass.OPEN);
   }
 
+}
+
+function relayLifecycleState(phase, current = {}) {
+  const normalizedPhase = ["closed", "connecting", "authenticated", "ready"].includes(phase) ? phase : "closed";
+  const closed = normalizedPhase === "closed";
+  const connecting = normalizedPhase === "connecting";
+  return Object.freeze({
+    phase: normalizedPhase,
+    readinessProbeDelivered: closed || connecting ? false : current.readinessProbeDelivered === true,
+    sessionId: closed || connecting ? 0 : Math.max(0, Number(current.sessionId) || 0),
+    workerConnectionId: closed ? "" : String(current.workerConnectionId || ""),
+  });
 }

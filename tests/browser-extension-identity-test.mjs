@@ -19,6 +19,11 @@ import { isAllowedExtensionOrigin } from "../src/local/browser-pairing-http.mjs"
 import { loadOrCreatePairing, savePairing } from "../src/local/browser-pairing-store.mjs";
 
 const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.json", import.meta.url), "utf8"));
+const packageManifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+assert.equal(manifest.version, "3.0.0",
+  "numeric extension version must stay Chromium-compatible; the candidate identity belongs in version_name");
+assert.equal(manifest.version_name, packageManifest.version,
+  "extension version_name drifted from the synchronized package version");
 assert.equal(manifest.key, EXPECTED_EXTENSION_PUBLIC_KEY);
 assert.equal(EXPECTED_EXTENSION_ID, "jciakkdfpdmdpbfegbjiddknpiepambo");
 assert.equal(extensionIdFromPublicKey(manifest.key), EXPECTED_EXTENSION_ID);

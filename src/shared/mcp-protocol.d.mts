@@ -21,6 +21,7 @@ export function validateRequestMetadata(value: unknown, supportedVersions?: read
   logLevel: unknown;
 };
 export function serverImplementation(input: { name: unknown; version: unknown; title?: unknown; description?: unknown }): Record<string, unknown>;
+export function tagToolSchemaGeneration(tool: Record<string, unknown>, generation: unknown): Record<string, unknown>;
 export function completeResult(fields?: Record<string, unknown>, serverInfo?: Record<string, unknown>): Record<string, unknown>;
 export function taskCreatedResult(fields?: Record<string, unknown>, serverInfo?: Record<string, unknown>): Record<string, unknown>;
 export function cacheableResult(fields: Record<string, unknown>, options: { ttlMs: number; cacheScope: "public" | "private"; serverInfo?: Record<string, unknown> }): Record<string, unknown>;

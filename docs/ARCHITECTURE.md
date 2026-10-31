@@ -84,7 +84,7 @@ The Worker sends a random `relay_probe` over the daemon control plane; the local
 This readiness exchange is below MCP and has no protocol-session identity.
 9. `tools/list` is a stable package-and-account-role discovery catalog; a brief relay interruption does not mutate it.
 Current MCP `2026-07-28` discovery declares `listChanged: true` so long-lived hosts can subscribe to a level-trigger tool-list freshness edge and re-fetch the catalog after a package/Worker generation change.
-Default full stdio retains `listChanged: false`; progressive mode advertises its actual list-change support.
+Stdio retains `listChanged: false` and a stable policy-visible tool catalog independent of request history; host-side definition discovery can reduce model context.
 `server_info.authorization.effective_tools` is the live daemon/account intersection and is the authority diagnostic.
 10. A `tools/call` receives a random relay call ID only after role-visible name and raw arguments pass the shared schema gate.
 A JSON response remains in the initiating Durable Object event.
@@ -372,7 +372,7 @@ Hosted Claude remote connectors originate from Anthropic infrastructure and Copi
 
 Public health exposes only server identity and version.
 Worker daemon status is projected by `daemon-status.ts`; `BridgeRoom` first reclaims stale sockets and then delegates the pure ready-socket/attachment mapping, keeping Durable Object lifecycle ownership separate from status formatting.
-The Worker composition-root architecture ceiling is 830 lines.
+Daemon WebSocket admission, authentication/readiness, verified handover, message dispatch, and close/error handling are owned by `daemon-websocket-controller.ts`. The Worker composition root remains the Durable Object authority owner and `index.ts` is pinned to a 640-line ceiling so protocol state-machine growth cannot silently return to the root.
 `worker-tool-authority.ts` owns the pure role-visible tool catalog and effective-tool/authority projection so `BridgeRoom` does not duplicate that policy while orchestrating Durable Object lifecycle.
 Authenticated `server_info` has an explicit post-authorization projection boundary.
 The owner account may request the full diagnostic graph, including exact daemon/effective tool membership, bounded Worker and local runtime activity, resource alias names without paths or values, managed-job aggregates, the current daemon connection plus its sanitized preceding-reconnect summary, local execution guardrails, and privacy-preserving capability-routing evidence.

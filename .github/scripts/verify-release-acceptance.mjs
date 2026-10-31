@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ACCEPTANCE_CONFIRMATION, ACCEPTANCE_SCHEMA_VERSION } from "../../scripts/release-acceptance.mjs";
 import { computePromotionContentDigest } from "../../scripts/promotion-digest.mjs";
 import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
+import { publishedPackageJsonText } from "../../src/shared/published-package.mjs";
 import { releaseDiagnostic } from "../../scripts/release-diagnostic.mjs";
 
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
@@ -30,8 +31,15 @@ export function canonicalPackageDigest(projectRoot, packValue) {
       throw new Error(`npm pack metadata contains duplicate path: ${entries[indexPosition].path}`);
     }
   }
+  const packageEntry = entries.find((entry) => entry.path === "package.json");
+  if (!packageEntry) throw new Error("npm pack metadata omitted package.json");
+  const publishedManifest = Buffer.from(publishedPackageJsonText(pkg), "utf8");
+  const publishedOid = gitBlobOid(publishedManifest, packageEntry.oid.length === 64 ? "sha256" : "sha1");
+  packageEntry.oid = publishedOid;
 
-  const blobs = readGitBlobs(projectRoot, [...new Set(entries.map((entry) => entry.oid))]);
+  const objectIds = [...new Set(entries.map((entry) => entry.oid))].filter((oid) => oid !== publishedOid);
+  const blobs = readGitBlobs(projectRoot, objectIds);
+  blobs.set(publishedOid, publishedManifest);
   const hash = createHash("sha256");
   addField(hash, "machine-bridge-mcp-package-content-v1");
   addField(hash, pkg.name);
@@ -81,6 +89,10 @@ export function verifyPortableAcceptance(projectRoot, packValue) {
     throw new Error(`local candidate promotion digest does not match the current npm package (expected ${promotionDigest})`);
   }
   return { acceptance, digest: expectedDigest, pack };
+}
+
+function gitBlobOid(bytes, algorithm) {
+  return createHash(algorithm).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
 function normalizeEntry(entry, index) {

@@ -179,7 +179,7 @@ if (!localToolResultBoundarySource.includes("MAX_TOOL_RESULT_BYTES = 7 * 1024 * 
 }
 if (!browserOperationContractSource.includes("browser mutation may have completed; the action outcome is unknown because its result could not be delivered")
     || !browserOperationsSource.includes("__machineBridgeBrowserOperationContract")
-    || !browserRequestSettlementSource.includes('message.startsWith("browser mutation may have completed;")')) {
+    || !/MUTATION_PARTIAL_PREFIXES[\s\S]*"browser mutation may have completed;"/.test(browserRequestSettlementSource)) {
   throw new Error("browser mutation result-undeliverable settlement drifted across extension and broker layers");
 }
 for (const obsolete of ["func: inspectDocument", "func: performAction", "func: performFormFill", "func: performFileUpload"]) {

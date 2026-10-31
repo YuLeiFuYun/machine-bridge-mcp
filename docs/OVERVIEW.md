@@ -55,11 +55,13 @@ The MCP host launches the package as a subprocess. There is no remote OAuth laye
 
 ## Shared contracts
 
-The main protocol and policy single sources of truth are:
+The core protocol and policy single sources of truth are:
 
-- `src/shared/tool-catalog.json` — tool names, schemas, policy requirements, and annotations;
+- `src/shared/tool-catalog.json` — tool names, schemas, policy requirements, and model-visible annotations;
 - `src/shared/policy-contract.json` — canonical profiles and capability composition;
 - `src/shared/server-metadata.json` — server identity and protocol metadata.
+
+Additional bounded contracts are `access-contract.json` (roles and owner-only tools), `relay-contract.json` (relay timing and reconnect budgets), `result-projection.json` (result mirroring limits), and `tool-security-contract.json` (non-model-facing tool family/effect classification). The last one is intentionally separate from the model-visible catalog: security classification must not become prompt content.
 
 Local and Worker code consume these contracts. Generated references and drift tests prevent documentation and implementation from silently diverging.
 
@@ -108,7 +110,7 @@ The repository uses several complementary layers:
 - architecture/import/line-budget checks;
 - privacy, package, release-impact, interactive-candidate-acceptance, CodeQL, dependency, and Scorecard gates.
 
-`npm run check:fast` is the development feedback loop. `npm run check` runs the complete release-relevant suite.
+`npm run check:quick` is the small developer feedback loop. `npm run check:fast` is the release gate, and `npm run check` runs the complete release-relevant suite.
 
 ## Canonical contract ownership
 

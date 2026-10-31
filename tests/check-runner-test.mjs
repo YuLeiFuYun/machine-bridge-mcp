@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveNpmCli } from "../src/local/npm-cli.mjs";
 import { runVerificationPlan } from "../scripts/check-runner.mjs";
+import { assertHostCapabilities } from "../scripts/verification-capabilities.mjs";
 import { verificationChildEnvironment } from "../scripts/verification-environment.mjs";
 import {
   rerunVerificationUnderIdleSleepGuard,
@@ -83,12 +85,17 @@ if (task === "noisy-success") {
   process.stdout.write("S".repeat(200000));
   process.stderr.write("W".repeat(200000));
   process.exitCode = 0;
+} else if (task === "explicit-skip") {
+  process.stdout.write("MBM_TEST_SKIP: host lacks /proc" + nl);
+  process.exitCode = 0;
 } else if (task === "self-test") {
   process.stdout.write("hidden self-test chatter" + nl);
   process.stdout.write("local self-test phase started: resource CLI" + nl);
   process.stdout.write("more hidden self-test chatter" + nl);
   process.stdout.write("local self-test phase completed: resource CLI" + nl);
   process.exitCode = 0;
+} else if (task === "hang") {
+  setInterval(() => {}, 1000);
 } else {
   process.stdout.write("BEGIN-STDOUT" + nl + "O".repeat(200000) + nl + "END-STDOUT" + nl);
   process.stderr.write("BEGIN-STDERR" + nl + privatePath + nl + "E".repeat(200000) + nl + "END-STDERR" + nl);
@@ -109,6 +116,37 @@ if (task === "noisy-success") {
   assert(!successOut.value.includes("SSSS") && !successErr.value.includes("WWWW"), "successful task output was not suppressed");
   assert(successOut.value.includes("completed noisy-success"), "successful task progress was omitted");
   assert(successOut.value.length < 1024, "successful plan output remained too verbose");
+
+  const skipOut = sink();
+  const skipResult = await runVerificationPlan({
+    mode: "test",
+    tasks: ["explicit-skip"],
+    npmCli: fakeNpm,
+    cwd: root,
+    stdout: skipOut,
+    stderr: sink(),
+  });
+  assert.match(skipOut.value, /skipped explicit-skip: host lacks \/proc/,
+    "an explicitly requested verification skip was not surfaced");
+  assert.doesNotMatch(skipOut.value, /completed explicit-skip/,
+    "an explicitly requested verification skip was reported as a completed task");
+  assert.match(skipOut.value, /test verification plan passed in .*\(0 passed, 1 skipped\)/,
+    "the plan summary did not distinguish a skipped task from a passing one");
+  assert.deepEqual(skipResult?.skipped, [{ task: "explicit-skip", reason: "host lacks /proc" }],
+    "the plan did not return its skipped tasks to the caller that persists evidence");
+
+  const timeoutOut = sink();
+  const timeoutErr = sink();
+  await assert.rejects(() => runVerificationPlan({
+    mode: "test",
+    tasks: ["hang"],
+    npmCli: fakeNpm,
+    cwd: root,
+    stdout: timeoutOut,
+    stderr: timeoutErr,
+    taskTimeouts: new Map([["hang", 250]]),
+  }), /timed out/, "a hung verification task did not hit the per-task timeout");
+  assert(timeoutOut.value.match(/completed hang/) === null, "a timed-out task was reported as completed");
 
   const progressOut = sink();
   await runVerificationPlan({
@@ -370,6 +408,79 @@ if (task === "noisy-success") {
     "verification silently continued after failing to establish its macOS idle-sleep guard",
   );
 
+  // Capability preflight: a host that cannot provide a process start time must fail in
+  // one probe instead of after the rest of the plan has already run.
+  assert.doesNotThrow(() => assertHostCapabilities(["privacy:check"], { platform: "linux", probe: () => null }),
+    "capability preflight rejected a plan that never runs agent-workflows");
+  assert.doesNotThrow(() => assertHostCapabilities(["agent-workflows:test"], { platform: "win32", probe: () => null }),
+    "capability preflight rejected Windows, where the process-start-time probe is not required");
+  assert.doesNotThrow(() => assertHostCapabilities(["agent-workflows:test"], { platform: "linux", env: { MBM_ALLOW_AGENT_WORKFLOW_SKIP: "1" }, probe: () => null }),
+    "capability preflight ignored an explicit skip opt-in");
+  assert.doesNotThrow(() => assertHostCapabilities(["agent-workflows:test"], { platform: "linux", env: {}, probe: () => 1 }),
+    "capability preflight rejected a host that can provide a process start time");
+  assert.throws(() => assertHostCapabilities(["agent-workflows:test"], { platform: "linux", env: {}, probe: () => null }),
+    /requires a host process start time/,
+    "capability preflight did not fail fast on a host without /proc or ps");
+  assert.throws(() => assertHostCapabilities(["self-test"], { platform: "linux", env: {}, probe: () => null }),
+    /self-test requires a host process start time/,
+    "capability preflight let the self-test run into an unrecoverable durable-job failure");
+  assert.throws(() => assertHostCapabilities(["agent-workflows:test", "self-test"], {
+    platform: "linux", env: { MBM_ALLOW_AGENT_WORKFLOW_SKIP: "1" }, probe: () => null,
+  }), /self-test requires a host process start time/,
+  "the agent-workflows skip also excused the self-test's process-identity requirement");
+  assert.doesNotThrow(() => assertHostCapabilities(["self-test"], { platform: "linux", env: {}, probe: () => 1 }),
+    "capability preflight rejected a host that can provide a process start time");
+
+  // A parent exits on TERM while its descendant ignores TERM and holds a TCP
+  // port. Checking the port also avoids confusing a dead zombie with a leak.
+  const fixture = join(root, "tree-fixture.mjs");
+  await writeFile(fixture, `
+    import { spawn } from "node:child_process";
+    import { writeFileSync } from "node:fs";
+    import net from "node:net";
+    const [role, readyFile] = process.argv.slice(2);
+    if (role === "descendant") {
+      process.on("SIGTERM", () => {});
+      const server = net.createServer();
+      server.listen(0, "127.0.0.1", () => writeFileSync(readyFile, JSON.stringify({ pid: process.pid, port: server.address().port })));
+      setTimeout(() => process.exit(0), 20000).unref();
+    } else {
+      spawn(process.execPath, [process.argv[1], "descendant", readyFile], { stdio: "ignore" });
+      setInterval(() => {}, 1000);
+    }
+  `);
+  for (const cancelled of [false, true]) {
+    const readyFile = join(root, cancelled ? "cancel-ready.json" : "timeout-ready.json");
+    const controller = new AbortController();
+    const run = runVerificationPlan({
+      mode: "tree-regression", tasks: ["tree", "must-not-launch"], npmCli: fakeNpm,
+      cwd: root, stdout: sink(), stderr: sink(), signal: controller.signal,
+      packageScripts: { tree: `node tree-fixture.mjs parent ${cancelled ? "cancel-ready.json" : "timeout-ready.json"}` },
+      taskTimeouts: { tree: 5000 },
+    });
+    // Register rejection handling immediately while waiting for child readiness.
+    const outcome = run.then(() => null, (error) => error);
+    let owned;
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      try { owned = JSON.parse(await readFile(readyFile, "utf8")); break; } catch {}
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
+    }
+    assert(owned, "process-tree regression fixture did not become ready");
+    if (cancelled) controller.abort("SIGTERM");
+    const error = await outcome;
+    assert.equal(error?.exitCode, cancelled ? 143 : 124);
+    // Signal delivery is asynchronous; allow a bounded scheduling turn after KILL.
+    await new Promise((resolvePromise) => { setTimeout(resolvePromise, 100); });
+    const listening = await new Promise((resolvePromise) => {
+      const socket = createConnection({ host: "127.0.0.1", port: owned.port });
+      socket.once("connect", () => { socket.destroy(); resolvePromise(true); });
+      socket.once("error", () => resolvePromise(false));
+      socket.setTimeout(1000, () => { socket.destroy(); resolvePromise(true); });
+    });
+    if (listening) { try { process.kill(owned.pid, "SIGKILL"); } catch {} }
+    assert(!listening, "verification settled while a TERM-resistant descendant retained its port");
+  }
   console.log("bounded parallel check runner test ok");
 } finally {
   await rm(root, { recursive: true, force: true });

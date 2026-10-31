@@ -83,6 +83,26 @@ const ordinary = browserRequestResponseError("ordinary browser failure", mutatio
 assert.equal(ordinary.code, "execution_failed");
 assert.equal(ordinary.details, undefined);
 
+// Structured settlement from the extension is authoritative; the text table is only a
+// fallback for extensions that predate the field.
+const typedUnknown = browserRequestResponseError("browser result could not be serialized", mutation, { settlement: "unknown" });
+assert.equal(typedUnknown.code, "execution_failed");
+assert.equal(typedUnknown.retryable, false);
+assert.equal(typedUnknown.details.side_effects_started, true);
+assert.equal(typedUnknown.details.effect_settlement, "unknown");
+const typedNotStarted = browserRequestResponseError("browser action may have been dispatched", mutation, { settlement: "not_started" });
+assert.equal(typedNotStarted.details, undefined, "an explicit not_started settlement did not override the legacy text heuristic");
+const typedReadOnly = browserRequestResponseError("browser result could not be serialized", readOnly, { settlement: "unknown" });
+assert.equal(typedReadOnly.details, undefined, "a read-only request claimed side effects from an unknown settlement");
+const typedApplied = browserRequestResponseError("browser action reported success after the response was lost", mutation, { settlement: "applied" });
+assert.equal(typedApplied.code, "execution_failed");
+assert.equal(typedApplied.retryable, false);
+assert.equal(typedApplied.details.side_effects_started, true);
+assert.equal(typedApplied.details.effect_settlement, "applied",
+  "a declared applied settlement was flattened into an anonymous failure");
+const unknownEnvelopeValue = browserRequestResponseError("browser result could not be serialized", mutation, { settlement: "not-a-real-value" });
+assert.equal(unknownEnvelopeValue.details, undefined, "an unrecognised settlement value was treated as a partial mutation");
+
 const malformedMutation = invalidBrowserResponseSettlement(mutation);
 assert.equal(malformedMutation.code, "execution_failed");
 assert.equal(malformedMutation.retryable, false);

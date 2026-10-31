@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { publishedPackageJsonText, publishedPackageManifest } from "../src/shared/published-package.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -46,7 +47,7 @@ try {
     "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "GOVERNANCE.md",
     "native/macos/MachineBridgeBackgroundInputSmokeFixture.swift",
     "tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift",
-    "tests/fixtures/tool-output-contract.json", "src/shared/tool-output-contract.json",
+    "tests/fixtures/tool-output-contract.json",
     "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md",
   ]) {
     if (record.files.some((item) => item.path === repositoryOnly)) throw new Error(`npm package retained repository-only maintenance material ${repositoryOnly}`);
@@ -70,8 +71,37 @@ try {
     "cloudflare.config.ts",
     "wrangler.config.ts",
     "scripts/release-diagnostic.mjs",
+    "scripts/test-entry.mjs",
+    "src/shared/published-package.mjs",
   ]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
+  }
+  if (packageJson.scripts?.test !== "node scripts/test-entry.mjs") {
+    throw new Error("published npm test must use the shipped source/packaged test entrypoint");
+  }
+  const publishedManifest = publishedPackageManifest(packageJson);
+  const publishedScriptNames = Object.keys(publishedManifest.scripts || {});
+  if (publishedScriptNames.join(",") !== "test,start,doctor") {
+    throw new Error(`published package exposed repository-only scripts: ${publishedScriptNames.join(", ")}`);
+  }
+  if ((packageJson.scripts && Object.keys(packageJson.scripts).length) <= publishedScriptNames.length) {
+    throw new Error("source package.json no longer carries repository-only scripts");
+  }
+  for (const [name, command] of Object.entries(publishedManifest.scripts)) {
+    const match = /^node ([A-Za-z0-9_./@+-]+)(?: [A-Za-z0-9_./@+-]+)*$/.exec(command);
+    if (!match) throw new Error(`published script ${name} is not a direct shipped Node entrypoint: ${command}`);
+    if (!record.files.some((item) => item.path === match[1])) {
+      throw new Error(`published script ${name} references a file omitted from the tarball: ${match[1]}`);
+    }
+  }
+  const publishedText = publishedPackageJsonText(packageJson);
+  if (!publishedText.endsWith("\n")) throw new Error("published package manifest must end with a newline");
+  const reparsed = JSON.parse(publishedText);
+  if (reparsed.version !== packageJson.version || Object.keys(reparsed.scripts || {}).join(",") !== "test,start,doctor") {
+    throw new Error("published package manifest changed package identity or script scope");
+  }
+  if (Object.keys(packageJson.scripts || {}).length <= 3) {
+    throw new Error("source package.json was mutated while building the published manifest");
   }
   const privateManifest = JSON.parse(readFileSync(join(root, "src/local/wrangler-toolchain/package.json"), "utf8"));
   const privateLock = JSON.parse(readFileSync(join(root, "src/local/wrangler-toolchain/package-lock.json"), "utf8"));
@@ -85,8 +115,10 @@ try {
       throw new Error(`The packaged private ${tool} toolchain must retain its exact source development and lockfile pin`);
     }
   }
-  if (Object.hasOwn(privateManifest.dependencies, "undici") || privateLock.packages["node_modules/undici"].version !== "7.29.1") {
-    throw new Error("The private toolchain must verify transitive Undici without a redundant direct dependency");
+  if (Object.hasOwn(privateManifest.dependencies, "undici")
+      || privateLock.packages["node_modules/undici"].version !== "7.30.1"
+      || privateLock.packages["node_modules/zod"].version !== "4.6.7") {
+    throw new Error("The private toolchain must verify transitive Undici/Zod without a redundant direct dependency");
   }
   if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [

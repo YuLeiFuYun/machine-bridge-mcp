@@ -5,6 +5,7 @@ import { LocalRuntime, runtimeToolHandlerNames } from "../src/local/runtime.mjs"
 import { bindRuntimeToolHandlers } from "../src/local/runtime-tool-handlers.mjs";
 import { normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { policyProfile } from "../src/local/tools.mjs";
+import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-runtime-handler-matrix-"));
 const runtime = new LocalRuntime({
@@ -161,7 +162,7 @@ try {
       readProgress() { return { status: "succeeded", current_phase: null, current_step: null }; },
     },
   });
-  const hostedStart = await hostedHandlers.start_job({}, { origin: "relay", authority: { origin: "relay" } });
+  const hostedStart = await hostedHandlers.start_job({}, relayOwnerContext());
   assert(hostedStart.status === "succeeded" && hostedStart.initial_settlement_terminal === true
     && hostedStart.follow_up_read_required === false && hostedStart.result?.ok === true
     && hostedStart.recovery === accepted.recovery,

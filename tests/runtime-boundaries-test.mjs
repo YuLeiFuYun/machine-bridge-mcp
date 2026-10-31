@@ -1,4 +1,5 @@
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 import { LifecycleController } from "../src/local/lifecycle.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -236,7 +237,7 @@ async function testDurableProcessInitialSettlement() {
     async readHosted() { return { job_id: jobId, status: "succeeded", current_phase: null, current_step: null, result: { status: "succeeded" } }; },
     readProgress() { throw new Error("terminal initial read should not poll progress"); },
   };
-  const settled = await settleDurableProcessAcceptance(manager, accepted, { origin: "relay", authority: { origin: "relay" } });
+  const settled = await settleDurableProcessAcceptance(manager, accepted, relayOwnerContext());
   assert(settled.status === "succeeded" && settled.initial_settlement_terminal === true
     && settled.follow_up_read_required === false && settled.result?.status === "succeeded"
     && settled.recovery === accepted.recovery,
@@ -245,7 +246,7 @@ async function testDurableProcessInitialSettlement() {
   assert(local === accepted, "local durable process delivery gained an unnecessary initial settlement wait");
   const unavailable = await settleDurableProcessAcceptance({
     async readHosted() { throw new Error("synthetic read failure"); }, readProgress() { return {}; },
-  }, accepted, { origin: "relay", authority: { origin: "relay" } });
+  }, accepted, relayOwnerContext());
   assert(unavailable.status === "queued" && unavailable.initial_settlement_unavailable === true
     && unavailable.follow_up_read_required === true && unavailable.recovery === accepted.recovery,
   "optional initial settlement failure replaced the durable acceptance recovery envelope");

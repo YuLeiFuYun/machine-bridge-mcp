@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { publishedPackageJsonText } from "../src/shared/published-package.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";
@@ -55,50 +61,145 @@ export function packProject(root, destination, options = {}) {
   if (!npmCli) {
     throw new Error("release acceptance commands must run through npm so npm_execpath is available");
   }
-  const result = spawnSync(process.execPath, [
-    npmCli,
+  const pkg = readPackage(root);
+  const env = options.env || process.env;
+  const inventory = packageInventory(root, npmCli, env, pkg.name);
+  const staging = mkdtempSync(join(tmpdir(), "mbm-published-package-"));
+  try {
+    materializePublishedPackage(root, staging, inventory, pkg);
+    const result = runNpmPack(staging, npmCli, env, [
+      "pack",
+      "--dry-run=false",
+      "--workspaces=false",
+      "--global=false",
+      "--prefix", staging,
+      "--ignore-scripts",
+      "--silent",
+      "--json",
+      "--pack-destination",
+      destination,
+    ]);
+    let value;
+    try {
+      value = JSON.parse(result.stdout);
+    } catch {
+      throw new Error("npm pack did not return valid JSON");
+    }
+    const record = normalizePackRecord(value, pkg.name);
+    if (!record) throw new Error("npm pack did not return package metadata");
+    if (typeof record.filename !== "string" || typeof record.shasum !== "string" || typeof record.integrity !== "string") {
+      throw new Error("npm pack returned package metadata with invalid field types");
+    }
+    verifyPublishedInventory(record.files, inventory);
+    const metadata = {
+      package_name: pkg.name,
+      package_version: pkg.version,
+      filename: record.filename,
+      shasum: record.shasum,
+      integrity: record.integrity,
+    };
+    validatePackMetadata(metadata);
+    verifyTarball(join(destination, metadata.filename), metadata);
+    return metadata;
+  } finally {
+    rmSync(staging, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+}
+
+function packageInventory(root, npmCli, env, packageName) {
+  const result = runNpmPack(root, npmCli, env, [
     "pack",
-    "--dry-run=false",
+    "--dry-run",
     "--workspaces=false",
     "--global=false",
     "--prefix", root,
     "--ignore-scripts",
     "--silent",
     "--json",
-    "--pack-destination",
-    destination,
-  ], {
-    cwd: root,
+  ]);
+  let value;
+  try {
+    value = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("npm pack dry-run did not return valid JSON");
+  }
+  const record = normalizePackRecord(value, packageName);
+  if (!Array.isArray(record?.files) || !record.files.length) {
+    throw new Error("npm pack dry-run omitted the package file inventory");
+  }
+  return record.files.map((item) => {
+    const path = validatePackagePath(item?.path);
+    const mode = normalizePackMode(item?.mode);
+    return { path, mode };
+  });
+}
+
+function materializePublishedPackage(root, staging, inventory, pkg) {
+  let sawManifest = false;
+  for (const entry of inventory) {
+    if (entry.path === "package.json") {
+      sawManifest = true;
+      continue;
+    }
+    const source = join(root, entry.path);
+    const info = lstatSync(source);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error(`npm package path is not a regular file: ${entry.path}`);
+    }
+    const target = join(staging, entry.path);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(source, target);
+    chmodSync(target, entry.mode);
+  }
+  if (!sawManifest) throw new Error("npm pack dry-run omitted package.json");
+  const manifestEntry = inventory.find((entry) => entry.path === "package.json");
+  const manifest = join(staging, "package.json");
+  writeFileSync(manifest, publishedPackageJsonText(pkg), { mode: manifestEntry.mode });
+  chmodSync(manifest, manifestEntry.mode);
+}
+
+function verifyPublishedInventory(files, inventory) {
+  if (!Array.isArray(files)) throw new Error("staged npm pack omitted the package file inventory");
+  const actual = new Map(files.map((item) => [validatePackagePath(item?.path), normalizePackMode(item?.mode)]));
+  const expected = new Map(inventory.map((entry) => [entry.path, entry.mode]));
+  if (actual.size !== expected.size) {
+    throw new Error("staged published package inventory changed size");
+  }
+  for (const [path, mode] of expected) {
+    if (actual.get(path) !== mode) {
+      throw new Error(`staged published package inventory drifted: ${path}`);
+    }
+  }
+}
+
+function validatePackagePath(value) {
+  if (typeof value !== "string" || !value || value.startsWith("/") || value.includes("\\")
+      || value.split("/").includes("..")) {
+    throw new Error("npm pack returned an invalid package path");
+  }
+  return value;
+}
+
+function normalizePackMode(value) {
+  const mode = Number.isSafeInteger(value) ? value & 0o777 : NaN;
+  if (![0o644, 0o755].includes(mode)) {
+    throw new Error(`npm pack returned an invalid file mode: ${String(value)}`);
+  }
+  return mode;
+}
+
+function runNpmPack(cwd, npmCli, env, args) {
+  const result = spawnSync(process.execPath, [npmCli, ...args], {
+    cwd,
     encoding: "utf8",
-    env: nestedNpmEnvironment(options.env || process.env),
+    env: nestedNpmEnvironment(env),
     timeout: 5 * 60 * 1000,
     killSignal: "SIGKILL",
     maxBuffer: 8 * 1024 * 1024,
     windowsHide: true,
   });
-  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("npm", ["pack"], result));
-  let value;
-  try {
-    value = JSON.parse(result.stdout);
-  } catch {
-    throw new Error("npm pack did not return valid JSON");
-  }
-  const pkg = readPackage(root);
-  const record = normalizePackRecord(value, pkg.name);
-  if (!record) throw new Error("npm pack did not return package metadata");
-  if (typeof record.filename !== "string" || typeof record.shasum !== "string" || typeof record.integrity !== "string") {
-    throw new Error("npm pack returned package metadata with invalid field types");
-  }
-  const metadata = {
-    package_name: pkg.name,
-    package_version: pkg.version,
-    filename: record.filename,
-    shasum: record.shasum,
-    integrity: record.integrity,
-  };
-  validatePackMetadata(metadata);
-  verifyTarball(join(destination, metadata.filename), metadata);
-  return metadata;
+  if (result.error || result.status !== 0) throw new Error(releaseCommandFailure("npm", args, result));
+  return result;
 }
 
 export function readAcceptance(root, version) {

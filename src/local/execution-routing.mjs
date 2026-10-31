@@ -1,12 +1,27 @@
 // @ts-check
 
 import { relevanceScore } from "./capability-ranking.mjs";
+import { findToolGroup } from "../shared/tool-groups.mjs";
 import { toolDefinition, toolNamesForPolicy } from "./policy.mjs";
 import {
   buildContinuationContract, compoundExecutionIntent, durableExecutionIntent, existingManagedJobContinuationIntent,
   interactiveProcessIntent, interruptionContinuityIntent, keepWorkingIntent, managedJobCommandExecutionIntent,
   managedJobCreationIntent, nonExecutionIntent, readOnlyDiagnosticIntent,
 } from "./execution-routing-intent.mjs";
+
+export const MAX_TOOL_SELECTION_TEXT_CHARACTERS = 160;
+
+/**
+ * Stable bounded ranking text. Operational descriptions are excluded so safety/settlement prose
+ * can evolve without silently changing deterministic tool selection.
+ * @param {{name?: string, title?: string} | null | undefined} tool
+ */
+export function toolSelectionText(tool) {
+  const name = String(tool?.name || "").trim();
+  const title = String(tool?.title || "").replace(/\s+/g, " ").trim();
+  const group = findToolGroup(name) || "";
+  return [name, title, group].filter(Boolean).join(" ").slice(0, MAX_TOOL_SELECTION_TEXT_CHARACTERS);
+}
 
 const MAX_ROUTES = 6;
 const MAX_RANKED_TOOLS = 12;
@@ -118,7 +133,7 @@ export function buildExecutionRouting(task, options = {}) {
     .filter((tool) => tool !== null)
     .map((tool) => ({
       tool: String(tool.name),
-      score: relevanceScore(text, `${tool.title || ""} ${tool.description || ""}`, tool.name),
+      score: relevanceScore(text, toolSelectionText(tool), tool.name),
     }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score || left.tool.localeCompare(right.tool));

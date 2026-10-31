@@ -1,18 +1,39 @@
 import strictAssert from "node:assert/strict";
+import { serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool, workspaceTools } from "../src/worker/tool-catalog.ts";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toolCatalogDigest, assertToolSchemaContract, readToolSchemaBaselines } from "../scripts/tool-schema-contract.mjs";
 import { CORE_CORNERSTONE_TOOL_NAMES, PROGRESSIVE_TOOL_GROUPS } from "../src/shared/tool-groups.mjs";
+import { MAX_TOOL_SELECTION_TEXT_CHARACTERS, toolSelectionText } from "../src/local/execution-routing.mjs";
+import toolSecurityContract from "../src/shared/tool-security-contract.json" with { type: "json" };
 import { readFile, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
-import { allToolNames, MCP_INSTRUCTIONS, toolResult, toolsForPolicy } from "../src/local/tools.mjs";
+import { allToolNames, MCP_INSTRUCTIONS, toolResult, policyProfile, toolsForPolicy } from "../src/local/tools.mjs";
 import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
+import { tagToolSchemaGeneration } from "../src/shared/mcp-protocol.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
+const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
+// Budget the final, tagged projections; raw JSON alone misses Worker augmentation.
+const hostedTools = [serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool, ...workspaceTools];
+const finalLocalTools = toolsForPolicy(policyProfile("full")).map((tool) => tagToolSchemaGeneration(tool, Number(metadata.toolSchemaGeneration)));
+assert(Buffer.byteLength(JSON.stringify(finalLocalTools)) <= 111419, "final local catalog exceeded its byte budget");
+assert(Buffer.byteLength(JSON.stringify(hostedTools)) <= 137948, "final hosted catalog exceeded its byte budget");
+assert(hostedTools.reduce((sum, tool) => sum + tool.description.length, 0) <= 61482,
+  "final hosted descriptions exceeded their character budget");
+assert(hostedTools.every((tool) => tool.description.length <= 5709), "one hosted description exceeded its character budget");
+const appOnly = hostedTools.filter((tool) => {
+  const visibility = tool._meta?.ui?.visibility;
+  return Array.isArray(visibility) && new Set(visibility).has("app") && !new Set(visibility).has("model");
+});
+strictAssert.deepEqual(appOnly.map((tool) => tool.name).sort(), ["claim_job_monitor", "read_job_monitor"],
+  "app-only job-monitor visibility drifted");
 const outputContract = JSON.parse(await readFile(new URL("./fixtures/tool-output-contract.json", import.meta.url), "utf8"));
 const JSON_SCHEMA_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
-const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadata.json", import.meta.url), "utf8"));
+const taggedTool = tagToolSchemaGeneration({ description: "Example tool." }, 49);
+assert(taggedTool.description === "Example tool. Tool schema generation 49.", "tool schema generation marker is missing or malformed");
+assert(tagToolSchemaGeneration(taggedTool, 49) === taggedTool, "tool schema generation tagging is not idempotent");
 const activationSchema = catalog.find((tool) => tool.name === "resolve_task_capabilities").inputSchema.properties.activate_tool_groups.items;
 assert(JSON.stringify([...activationSchema.enum].sort()) === JSON.stringify(Object.keys(PROGRESSIVE_TOOL_GROUPS).sort()), "progressive group schema drifted from implementation");
 assert(CORE_CORNERSTONE_TOOL_NAMES.has("resolve_task_capabilities"), "progressive discovery entry point is hidden");
@@ -64,6 +85,12 @@ assert(!workerSource.includes('const MCP_PROTOCOL_VERSION = "'), "Worker retains
 const names = catalog.map((tool) => tool.name);
 const unique = new Set(names);
 assert(names.length === unique.size, "tool catalog contains duplicate names");
+const securityNames = Object.keys(toolSecurityContract.tools || {});
+assert(JSON.stringify([...securityNames].sort()) === JSON.stringify([...names].sort()), "static tool security contract must have exact catalog parity");
+const descriptionCharacters = catalog.reduce((sum, tool) => sum + tool.description.length, 0);
+const longestDescription = Math.max(...catalog.map((tool) => tool.description.length));
+assert(descriptionCharacters <= 37_747, `tool descriptions grew to ${descriptionCharacters} characters; reduce prose or deliberately re-baseline the 37,747-character budget`);
+assert(longestDescription <= 3_300, `one tool description grew to ${longestDescription} characters; the per-tool budget is 3,300`);
 assert(names[0] === "server_info", "server_info must remain the first catalog tool");
 assert(JSON.stringify(names) === JSON.stringify(allToolNames()), "runtime tool inventory differs from catalog");
 assert(JSON.stringify([...runtimeToolHandlerNames()].sort()) === JSON.stringify([...names].sort()), "local runtime handler inventory differs from catalog");
@@ -81,6 +108,12 @@ for (const tool of catalog) {
   assert(typeof tool.name === "string" && /^[a-z][a-z0-9_]*$/.test(tool.name), `invalid tool name: ${tool.name}`);
   assert(typeof tool.title === "string" && tool.title.length > 0, `${tool.name} is missing title`);
   assert(typeof tool.description === "string" && tool.description.length > 20, `${tool.name} has an insufficient description`);
+  const staticSecurity = toolSecurityContract.tools?.[tool.name];
+  assert(staticSecurity && ["read-only", "side-effecting"].includes(staticSecurity.effect), `${tool.name} is missing static security effect classification`);
+  assert(typeof staticSecurity.family === "string" && staticSecurity.family.length > 0, `${tool.name} is missing static security family classification`);
+  const selectionText = toolSelectionText(tool);
+  assert(selectionText.length > 0 && selectionText.length <= MAX_TOOL_SELECTION_TEXT_CHARACTERS, `${tool.name} selection text is unbounded`);
+  assert(selectionText === toolSelectionText({ ...tool, description: tool.description + " injected-routing-only-token" }), `${tool.name} deterministic ranking still depends on operational description prose`);
   if (DURABLE_PROCESS_TOOLS.has(tool.name)) {
     assert(Array.isArray(tool.inputSchema?.required), `${tool.name} durable schema must declare its required fields statically`);
   }
@@ -217,6 +250,31 @@ assert(!workerCatalogSource.includes('const workspaceTools = ['), "Worker contai
     git(["tag", "-d", "v3.0.0-beta.206"]);
     strictAssert.throws(() => readToolSchemaBaselines(fixture, "3.0.0-beta.207"), /complete release tags/);
   } finally { await rm(fixture, { recursive: true, force: true }); }
+}
+
+// The catalog's readOnlyHint and the security contract's effect describe the same fact. If
+// they disagree, a client can be told a tool is safe to run without approval while the
+// runtime classifies it as side-effecting (or the reverse).
+for (const tool of catalog) {
+  const effect = toolSecurityContract.tools?.[tool.name]?.effect;
+  strictAssert.ok(effect === "read-only" || effect === "side-effecting",
+    `tool ${tool.name} has no security-contract effect`);
+  strictAssert.equal(tool.annotations?.readOnlyHint === true, effect === "read-only",
+    `tool ${tool.name} disagrees about read-only semantics between the catalog and the security contract`);
+  strictAssert.ok(!(effect === "read-only" && tool.annotations?.destructiveHint === true),
+    `read-only tool ${tool.name} claims destructive side effects`);
+}
+
+// Progressive sessions start with the cornerstone set and can only reach tools that belong
+// to a group. A tool in neither place is invisible to every progressive client.
+const groupedToolNames = new Set(Object.values(PROGRESSIVE_TOOL_GROUPS).flat());
+const catalogToolNames = new Set(catalog.map((tool) => tool.name));
+for (const tool of catalog) {
+  strictAssert.ok(CORE_CORNERSTONE_TOOL_NAMES.has(tool.name) || groupedToolNames.has(tool.name),
+    `tool ${tool.name} is unreachable in progressive mode: it is neither core nor in a tool group`);
+}
+for (const name of groupedToolNames) {
+  strictAssert.ok(catalogToolNames.has(name), `a progressive tool group lists unknown tool ${name}`);
 }
 
 console.log("shared tool catalog test ok");

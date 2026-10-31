@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { packProject } from "../scripts/release-acceptance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let npmCli;
@@ -15,13 +16,8 @@ try {
   npmCli = String(process.env.npm_execpath || "").trim();
   if (!npmCli) throw new Error("install smoke test must run through an npm lifecycle so npm_execpath is available");
   npmCli = realpathSync(npmCli);
-  const packed = runNpm(["pack", "--dry-run=false", "--workspaces=false", "--global=false", "--prefix", root, "--silent", "--json", "--pack-destination", temp], root);
-  let metadata;
-  try { metadata = JSON.parse(packed.stdout); } catch {
-    throw new Error(`npm pack did not return clean JSON: ${packed.stdout.slice(0, 500)}`);
-  }
-  const record = normalizePackRecord(metadata);
-  if (!record?.filename) throw new Error("npm pack did not report the tarball filename");
+  const metadata = packProject(root, temp, { npmCli, env: process.env });
+  const record = { filename: metadata.filename, version: metadata.package_version };
   const tarball = join(temp, record.filename);
   const productionClosure = packOfflineProductionClosure(join(temp, "production-closure"));
 
@@ -35,7 +31,7 @@ try {
     "--omit=optional",
     "--include=prod",
     "--package-lock-only=false",
-    "--allow-scripts=esbuild,workerd,sharp,fsevents",
+    "--allow-scripts=esbuild,workerd,sharp",
     "--offline",
     "--no-audit",
     "--no-fund",
@@ -56,6 +52,9 @@ try {
   const pkg = JSON.parse(readFileSync(join(installedPackage, "package.json"), "utf8"));
   if (pkg.version !== record.version) throw new Error(`installed version ${pkg.version} did not match packed version ${record.version}`);
   if (pkg.engines?.npm !== ">=12.0.0") throw new Error("installed package omitted the npm 12 runtime requirement");
+  if (Object.keys(pkg.scripts || {}).sort().join(",") !== "doctor,start,test") {
+    throw new Error(`installed package retained repository-only scripts: ${Object.keys(pkg.scripts || {}).join(", ")}`);
+  }
   if (containsNamedEntry(installedPackage, "fsevents")) throw new Error("optional fsevents package remained in the documented runtime installation");
   for (const name of ["wrangler", "miniflare"]) {
     if (containsNamedEntry(installedPackage, name)) throw new Error(`published runtime package retained private control-plane dependency ${name}`);
@@ -73,9 +72,19 @@ try {
     throw new Error(`installed CLI failed: ${cli.stderr || cli.stdout}`);
   }
 
+  const installedTest = spawnNpm(["test", "--workspaces=false", "--ignore-scripts=false"], installedPackage);
+  if (installedTest.error) throw installedTest.error;
+  const installedTestOutput = `${installedTest.stdout || ""}\n${installedTest.stderr || ""}`;
+  if (installedTest.status !== 0) {
+    throw new Error(`installed package npm test failed (${installedTest.status}): ${installedTestOutput.slice(0, 2000)}`);
+  }
+  if (!/installed package smoke passed/.test(installedTestOutput)) {
+    throw new Error(`installed package npm test did not exercise the stdio runtime: ${installedTestOutput.slice(0, 2000)}`);
+  }
+
   await assertInstalledDefaultStartup(installedPackage, temp);
 
-  console.log(`global install smoke test ok (${pkg.version}; offline production closure installed; default startup reached controlled external boundary; optional fsevents omitted)`);
+  console.log(`global install smoke test ok (${pkg.version}; offline production closure installed; installed npm test passed a real stdio round-trip; default startup reached controlled external boundary; optional fsevents omitted)`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }

@@ -13,7 +13,7 @@ const FAMILY_ID = /^mcp_family_[A-Za-z0-9_-]{43}$/;
 /** @typedef {ReturnType<typeof normalizePolicy>} NormalizedPolicy */
 /** @typedef {{origin: "local" | "relay", principal: AuthorityPrincipal, daemonPolicy: NormalizedPolicy, accountPolicy: NormalizedPolicy, effectivePolicy: NormalizedPolicy, owner: boolean}} AuthorityContext */
 /** @typedef {{authorization?: RelayAuthorization, daemonPolicy?: unknown, origin?: "local" | "relay"}} BuildAuthorityOptions */
-/** @typedef {{authority?: {principal?: AuthorityPrincipal, effectivePolicy?: NormalizedPolicy}}} OperationContext */
+/** @typedef {{origin?: string, authority?: {principal?: AuthorityPrincipal, effectivePolicy?: NormalizedPolicy}}} OperationContext */
 /** @typedef {{owner_kind?: unknown, owner_account_id?: unknown, owner_account_version?: unknown, owner_client_id?: unknown, owner_family_id?: unknown}} OwnedRecord */
 
 /** @param {BuildAuthorityOptions} [options] */
@@ -82,11 +82,25 @@ export function policyForContext(context, fallbackPolicy) {
   return normalizePolicy(context?.authority?.effectivePolicy || fallbackPolicy || {});
 }
 
-/** @param {OperationContext | null | undefined} context */
+const LOCAL_OWNER_PRINCIPAL = Object.freeze({ kind: "local", role: "owner" });
+
+/**
+ * Resolve the principal that owns an operation. A context that carries an authority
+ * object must carry an authenticated principal; only a context with no authority
+ * object at all is treated as the local owner (the default for internal local APIs).
+ * A relay-marked context without a principal is always denied, never upgraded to
+ * local-owner authority.
+ * @param {OperationContext | null | undefined} context
+ */
 export function principalForContext(context) {
-  const principal = context?.authority?.principal;
+  const authority = context?.authority;
+  const principal = authority?.principal;
   if (principal?.kind === "account") return principal;
-  return Object.freeze({ kind: "local", role: "owner" });
+  if (principal?.kind === "local" && principal.role === "owner") return principal;
+  if (authority !== undefined || context?.origin === "relay") {
+    throw new BridgeError("authorization_denied", "operation is missing explicit authenticated authority context");
+  }
+  return LOCAL_OWNER_PRINCIPAL;
 }
 
 /** @param {OperationContext | null | undefined} context */

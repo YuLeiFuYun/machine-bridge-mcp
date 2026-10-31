@@ -39,15 +39,17 @@ The npm CLI resolver used inside the canary has separate tests for lifecycle-pat
 Arbitrary shell commands have no generic zero-resource bypass.
 
 ```sh
-npm run check:fast      # static, unit, contract, and architecture feedback
+npm run check:quick     # small developer feedback loop
+npm run check:fast      # release gate: static, unit, contract, and architecture feedback
 npm run check:platform  # fast plan plus cross-platform behavior and real-machine tests
 npm run check           # complete suite; equivalent to check:full
 ```
 
 The explicit task lists live in `scripts/check-plan.mjs`.
+The runner applies a per-task timeout (180s default; 400s for `cf-project:test`; 300s for `self-test`, `worker-integration-test`, and `stdio:integration-test`) and escalates `SIGTERM` to `SIGKILL` after five seconds. `cf-project:test` is full-only; the fast plan no longer carries the Cloudflare project suite.
 The fast plan retains static analysis, policy, architecture, contracts, and focused unit behavior.
 The platform plan adds process, service, browser/application, state, managed-job, cryptographic, and real-machine behavior tests needed on macOS and Windows.
-The full-only plan adds coverage, browser-broker integration, package/install, stdio, Worker/OAuth, and real-browser navigation suites.
+The full-only plan adds the Cloudflare project suite, coverage, browser-broker integration, package/install, stdio, Worker/OAuth, and real-browser navigation suites.
 In particular, a green fast plan is not evidence that the npm tarball has correct 0644/0755 modes or installability; `package:test` builds the actual manifest and rejects unexpected packaged file modes, and the install suite validates the consumer artifact.
 `npm run check` remains the authoritative complete gate.
 
@@ -525,9 +527,9 @@ Authentication tests cover TTL minus one, exact TTL, TTL plus one, and expiry be
 
 `npm run check:changed -- --plan` reports selected and unselected fast checks using transitive static imports, literal require calls and file URLs. Omitting `--plan` runs that advisory selection. Configuration changes, parsing failures and source changes with no reachable test entry point fall back to the full fast plan. Dynamic paths remain outside its proof; it never writes a full-verification receipt or replaces platform, packaging, deployed-edge or release checks.
 
-`affected-checks:test` covers transitive and deleted dependencies, unrelated tests, documentation selection and conservative fallback. `agent-audit:test` covers nearest-rule budgeting, memory/link/read limits, cancellation, lexical bounds and exact indentation. `agent-workflows:test` follows the real runtime through context discovery, a hash-guarded edit and stale-write rejection, then replaces the caller of an accepted durable job and verifies one final side effect. It also checks recovery ordering and unknown effect evidence. These deterministic trajectories complement the small `agent-evals:test` contract suite; none measures general model reasoning or reproduces an upstream agent benchmark.
+`affected-checks:test` covers transitive and deleted dependencies, unrelated tests, documentation selection and conservative fallback. `agent-audit:test` covers nearest-rule budgeting, memory/link/read limits, cancellation, lexical bounds and exact indentation. `agent-workflows:test` follows the real runtime through context discovery, a hash-guarded edit and stale-write rejection, then replaces the caller of an accepted durable job and verifies one final side effect. It also checks recovery ordering and unknown effect evidence. `agent-evals:test` now combines those production-backed contract checks with a generic scorer over a thirteen-case synthetic fixture set covering context discovery, forbidden routes, stale browser snapshots, bounded process-output continuation, managed-job unknown outcomes, budget exhaustion, missing terminal state, and no-replay recovery. The scorer returns `pass`, `fail`, or `unknown`, enforces required/forbidden tool use and no-replay-after-unknown rules, and aggregates tool calls, latency, input/output tokens, and USD cost from prerecorded traces. Deterministic CI never invokes an external model; therefore these results validate the trace oracle and fixture set, not general model reasoning, live provider quality, or an upstream benchmark score.
 
-The shared development parser in `scripts/source-syntax.mjs` feeds both semantic architecture inspection and dependency analysis. Tool catalog identity is hash-bound and must advance generation when changed from either HEAD or the previous reachable release tag. A real temporary Git repository covers committed changes, excludes the candidate tag, and rejects missing release history. Real stdio fixtures verify project instructions, Git stdout, a listed progressive resolver and subscription-bound changes, rather than mocks with incompatible result fields.
+The shared development parser in `scripts/source-syntax.mjs` feeds both semantic architecture inspection and dependency analysis. Tool catalog identity is hash-bound and must advance generation when changed from either HEAD or the previous reachable release tag. A real temporary Git repository covers committed changes, excludes the candidate tag, and rejects missing release history. Real stdio fixtures verify project instructions, Git stdout, stable policy-visible catalogs before and after advisory resolution, directly callable non-core tools, and immediate subscription completion, rather than mocks with incompatible result fields.
 
 ## Comparative-maintenance regressions
 

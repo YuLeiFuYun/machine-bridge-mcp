@@ -130,5 +130,5 @@
     "tests/workspace-search-security-test.mjs": 8,
     "tests/wrangler-toolchain-test.mjs": 4
   },
-  "nodeTestFiles": 1
+  "nodeTestFiles": 2
 }

@@ -88,13 +88,13 @@ try {
     dependencies: {
       cf: { version: "1.0.0-beta.20" },
       wrangler: { version: "4.151.3", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
-      undici: { version: "7.29.1" },
+      undici: { version: "7.30.1" },
       sharp: { version: "0.35.5" },
       esbuild: { version: "0.28.2" },
       workerd: { version: "1.20261019.1" },
     },
   }, {
-    cf: "1.0.0-beta.20", wrangler: "4.151.3", undici: "7.29.1", sharp: "0.35.5",
+    cf: "1.0.0-beta.20", wrangler: "4.151.3", undici: "7.30.1", sharp: "0.35.5",
     esbuild: "0.28.2", workerd: "1.20261019.1",
   }),
   /invalid dependency node/,
@@ -371,7 +371,7 @@ function createFakeNpmRunner(options = {}) {
   const versions = {
     cf: options.cf || "1.0.0-beta.20",
     wrangler: options.wrangler || "4.151.3",
-    undici: options.undici || "7.29.1",
+    undici: options.undici || "7.30.1",
     sharp: options.sharp || "0.35.5",
     esbuild: options.esbuild || "0.28.2",
     workerd: options.workerd || "1.20261019.1",

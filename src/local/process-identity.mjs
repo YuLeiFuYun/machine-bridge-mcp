@@ -1,9 +1,13 @@
 import { execFile, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 
 const COMMAND_TIMEOUT_MS = 3000;
 const COMMAND_OUTPUT_BYTES = 256 * 1024;
 const START_TIME_TOLERANCE_MS = 15_000;
+// Linux USER_HZ is 100 on the supported architectures. The 15s identity tolerance
+// makes the 10ms tick resolution irrelevant; /proc avoids a hard `ps` dependency.
+const LINUX_CLOCK_TICKS_PER_SECOND = 100;
 
 export function isPidAlive(pid) {
   const parsed = normalizePid(pid);
@@ -25,6 +29,10 @@ export function processStartTimeMs(pid) {
   const parsed = normalizePid(pid);
   if (!parsed) return null;
   if (parsed === process.pid) return currentProcessStartTimeMs();
+  if (process.platform === "linux") {
+    const linuxStart = linuxProcessStartTimeMs(parsed);
+    if (linuxStart !== null) return linuxStart;
+  }
   const [command, args] = processStartCommand(parsed);
   const result = runBounded(command, args);
   return result.ok ? parseTime(result.stdout) : null;
@@ -34,9 +42,55 @@ export async function processStartTimeMsAsync(pid) {
   const parsed = normalizePid(pid);
   if (!parsed) return null;
   if (parsed === process.pid) return currentProcessStartTimeMs();
+  if (process.platform === "linux") {
+    const linuxStart = linuxProcessStartTimeMs(parsed);
+    if (linuxStart !== null) return linuxStart;
+  }
   const [command, args] = processStartCommand(parsed);
   const result = await runBoundedAsync(command, args);
   return result.ok ? parseTime(result.stdout) : null;
+}
+
+function linuxProcessStartTimeMs(pid) {
+  try {
+    return parseLinuxProcessStartTime(
+      readFileSync(`/proc/${pid}/stat`, "utf8"),
+      readFileSync("/proc/stat", "utf8"),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {unknown} stat
+ * @param {unknown} procStat
+ * @returns {number | null}
+ */
+export function parseLinuxProcessStartTime(stat, procStat) {
+  const startTicks = parseLinuxProcessStartTicks(stat);
+  const bootTimeMs = parseLinuxBootTimeMs(procStat);
+  if (startTicks === null || bootTimeMs === null) return null;
+  return bootTimeMs + Math.round(startTicks * (1000 / LINUX_CLOCK_TICKS_PER_SECOND));
+}
+
+/** @param {unknown} stat */
+export function parseLinuxProcessStartTicks(stat) {
+  const text = String(stat || "");
+  const close = text.lastIndexOf(")");
+  if (close < 0) return null;
+  const fields = text.slice(close + 1).trim().split(/\s+/);
+  // Field 22 (starttime) is token 19 after the parenthesized comm field.
+  const value = Number(fields[19]);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** @param {unknown} procStat */
+export function parseLinuxBootTimeMs(procStat) {
+  const match = /^btime\s+(\d+)\s*$/m.exec(String(procStat || ""));
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isSafeInteger(seconds) && seconds > 0 ? seconds * 1000 : null;
 }
 
 export async function sampleProcessStartTimesAsync(options = {}) {

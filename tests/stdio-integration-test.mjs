@@ -209,7 +209,7 @@ rl.on("line", (line) => {
 try {
   const modernMeta = currentMeta;
   send({ jsonrpc: "2.0", id: 900, method: "server/discover", params: { _meta: modernMeta } });
-  const discovered = await responseFor(900);
+  const discovered = await responseFor(900, 20_000);
   assert(discovered.result?.resultType === "complete", "modern stdio discovery omitted resultType");
   assert(JSON.stringify(discovered.result?.supportedVersions) === JSON.stringify(["2026-07-28"]), "modern stdio discovery advertised a legacy retry version");
   assert(discovered.result?.cacheScope === "public" && discovered.result?.ttlMs >= 0, "modern stdio discovery omitted cache policy");
@@ -219,6 +219,8 @@ try {
   const modernTools = await responseFor(901);
   assert(modernTools.result?.resultType === "complete", "modern stdio tools/list omitted resultType");
   assert(modernTools.result?.cacheScope === "private" && Array.isArray(modernTools.result?.tools), "modern stdio tools/list omitted private cache semantics");
+  assert(modernTools.result.tools.every((tool) => /Tool schema generation \d+\./.test(String(tool.description || ""))),
+    "stdio tools/list omitted the host-visible schema-generation marker");
 
   send({ jsonrpc: "2.0", id: 902, method: "subscriptions/listen", params: {
     _meta: modernMeta,
@@ -684,12 +686,17 @@ try {
   assert(resourcesListed.result?.resources.some((r) => r.uri === "machine-bridge://help/managed-jobs"), "resources/list omitted help resources");
 
   send({ jsonrpc: "2.0", id: 698, method: "resources/read", params: { uri: "diag://runtime/status" } });
-  const resourceRead = await responseFor(698);
+  const resourceRead = await responseFor(698, 20_000);
   assert(resourceRead.result?.contents?.[0]?.mimeType === "application/json", "resources/read did not return resource contents");
 
   send({ jsonrpc: "2.0", id: 699, method: "resources/read", params: { uri: "machine-bridge://help/managed-jobs" } });
   const helpRead = await responseFor(699);
   assert(helpRead.result?.contents?.[0]?.mimeType === "text/markdown" && helpRead.result?.contents?.[0]?.text?.length > 100, "resources/read did not return help resource contents");
+
+  send({ jsonrpc: "2.0", id: 6991, method: "resources/read", params: { uri: "unsupported://resource" } });
+  const unsupportedRead = await responseFor(6991);
+  assert(unsupportedRead.error?.code === -32602 && unsupportedRead.result === undefined,
+    `resources/read returned a success envelope for an unsupported URI: ${JSON.stringify(unsupportedRead)}`);
 
   const detachedMarker = join(workspace, "detached-job-marker.txt");
   const detachedCleanup = join(workspace, "detached-job-cleanup.txt");
@@ -805,93 +812,52 @@ try {
   }
 
   {
-    let progressiveStderr = "";
-    const progressiveChild = spawn(process.execPath, [
-      join(root, "bin", "machine-mcp.mjs"),
-      "stdio",
-      "--workspace", workspace,
-      "--state-dir", stateDir,
-    ], {
-      cwd: root,
-      env: { ...childEnvironment, MBM_PROGRESSIVE_TOOLS: "1" },
-      stdio: ["pipe", "pipe", "pipe"],
+    const rejected = spawnSync(process.execPath, [join(root, "bin", "machine-mcp.mjs"), "stdio", "--progressive"], {
+      cwd: root, env: childEnvironment, encoding: "utf8", timeout: 5000,
     });
-    progressiveChild.stderr.on("data", (chunk) => { progressiveStderr = appendBounded(progressiveStderr, chunk); });
+    assert(rejected.status !== 0 && /host-side tool discovery/.test(rejected.stderr),
+      "legacy progressive flag was not rejected with migration guidance");
+    let catalogStderr = "";
+    const catalogChild = spawn(process.execPath, [join(root, "bin", "machine-mcp.mjs"), "stdio",
+      "--workspace", workspace, "--state-dir", stateDir, "--all-tools"], {
+      cwd: root, env: { ...childEnvironment, MBM_PROGRESSIVE_TOOLS: "1" }, stdio: ["pipe", "pipe", "pipe"],
+    });
+    catalogChild.stderr.on("data", (chunk) => { catalogStderr = appendBounded(catalogStderr, chunk); });
+    const catalogRl = readline.createInterface({ input: catalogChild.stdout, crlfDelay: Infinity });
+    const messages = [];
+    catalogRl.on("line", (line) => { try { messages.push(JSON.parse(line)); } catch {} });
+    const request = async (id, method, params = {}) => {
+      catalogChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params: { ...params, _meta: modernMeta } }) + "\n");
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline && !messages.some((m) => m.id === id && (m.result || m.error))) {
+        await new Promise((resolvePromise) => { setTimeout(resolvePromise, 25); });
+      }
+      const response = messages.find((m) => m.id === id && (m.result || m.error));
+      assert(response, `stable-catalog request ${id} did not settle: ${catalogStderr}`);
+      return response;
+    };
     try {
-      const progRl = readline.createInterface({ input: progressiveChild.stdout, crlfDelay: Infinity });
-      const progResponses = [];
-      const notifications = [];
-      progRl.on("line", (line) => {
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed.id) progResponses.push(parsed);
-          else if (parsed.method) notifications.push(parsed);
-        } catch { /* best-effort parse */ }
-      });
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 201, method: "tools/list", params: { _meta: modernMeta } }) + "\n");
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline && !progResponses.some((r) => r.id === 201)) {
-        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
-      }
-      const toolsResp = progResponses.find((r) => r.id === 201);
-      assert(toolsResp?.result?.tools?.length === 9, `progressive tools/list did not return 9 cornerstone tools: got ${toolsResp?.result?.tools?.length}; stderr=${progressiveStderr}`);
-
-      assert(toolsResp.result.tools.some((tool) => tool.name === "resolve_task_capabilities"), "progressive catalog omitted its discovery entry point");
-      assert(toolsResp.result.ttlMs >= 60_000 && toolsResp.result.ttlMs <= 300_000,
-        `progressive tools/list advertised a cache TTL that its own list mutations cannot honour: ${toolsResp.result.ttlMs}`);
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 200, method: "server/discover", params: { _meta: modernMeta } }) + "\n");
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2001, method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: modernMeta } }) + "\n");
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 202, method: "tools/call", params: { name: "resolve_task_capabilities", arguments: { task: "review git changes", activate_tool_groups: ["git"] }, _meta: modernMeta } }) + "\n");
-      const deadline2 = Date.now() + 5000;
-      while (Date.now() < deadline2 && !progResponses.some((r) => r.id === 202)) {
-        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
-      }
-      assert(progResponses.find((r) => r.id === 200)?.result?.capabilities?.tools?.listChanged === true, "progressive discovery did not advertise list changes");
-      assert(notifications.some((n) => n.method === "notifications/tools/list_changed" && n.params?._meta?.["io.modelcontextprotocol/subscriptionId"] === 2001), "progressive update lacked its accepted subscription id");
-      assert(!progResponses.some((r) => r.id === 2001), "active subscription completed before its updates");
-
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 203, method: "tools/list", params: { _meta: modernMeta } }) + "\n");
-      const deadline3 = Date.now() + 5000;
-      while (Date.now() < deadline3 && !progResponses.some((r) => r.id === 203)) {
-        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
-      }
-      const expandedResp = progResponses.find((r) => r.id === 203);
-      assert(expandedResp?.result?.tools?.some((tool) => tool.name === "git_diff"), `progressive tools/list after JIT did not expose git_diff through the listed resolver: got ${expandedResp?.result?.tools?.length}`);
-
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 2001 } }) + "\n");
-      const cancelDeadline = Date.now() + 5000;
-      while (Date.now() < cancelDeadline && !progResponses.some((r) => r.id === 2001)) {
-        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
-      }
-      assert(progResponses.find((r) => r.id === 2001)?.result?.resultType === "complete", "cancelled catalog subscription did not complete");
-      const updatesBeforeCancel = notifications.filter((n) => n.method === "notifications/tools/list_changed").length;
-      const oversizedSubscriptionId = "s".repeat(1025);
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: oversizedSubscriptionId, method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: modernMeta } }) + "\n");
-
-      // Test explicit activate_tool_groups in resolve_task_capabilities
-      progressiveChild.stdin.write(JSON.stringify({
-        jsonrpc: "2.0", id: 204, method: "tools/call",
-        params: { name: "resolve_task_capabilities", arguments: { task: "browser automation", activate_tool_groups: ["browser"] }, _meta: modernMeta },
-      }) + "\n");
-      const deadline4 = Date.now() + 5000;
-      while (Date.now() < deadline4 && !progResponses.some((r) => r.id === 204)) {
-        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
-      }
-      progressiveChild.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 205, method: "tools/list", params: { _meta: modernMeta } }) + "\n");
-      const deadline5 = Date.now() + 5000;
-      while (Date.now() < deadline5 && !progResponses.some((r) => r.id === 205)) {
-        await new Promise((resolveTimeout) => { setTimeout(resolveTimeout, 50); });
-      }
-      const browserExpandedResp = progResponses.find((r) => r.id === 205);
-      assert(browserExpandedResp?.result?.tools?.some((t) => t.name === "browser_action"), "browser tools were not dynamically activated");
-      assert(progResponses.find((r) => r.id === oversizedSubscriptionId)?.error?.code === -31900, "unbounded subscription request id was retained");
-      assert(notifications.filter((n) => n.method === "notifications/tools/list_changed").length === updatesBeforeCancel, "catalog emitted an update without an active subscription");
-
-      progRl.close();
-      progressiveChild.stdin.end();
-      await waitForExit(progressiveChild, 5000);
+      const before = await request(201, "tools/list");
+      assert(before.result.tools.length > 9 && before.result.tools.some((t) => t.name === "list_files"),
+        "stable catalog withheld tools until a resolver call");
+      const discovery = await request(200, "server/discover");
+      assert(discovery.result.capabilities.tools.listChanged === false, "static catalog advertised per-session changes");
+      const subscription = await request(2001, "subscriptions/listen", { notifications: { toolsListChanged: true } });
+      assert(subscription.result.resultType === "complete", "unsupported subscription retained session state");
+      const listing = await request(202, "tools/call", { name: "list_files", arguments: { path: workspace } });
+      assert(!listing.error && !listing.result.isError, "non-core tool required prior resolver activation");
+      const resolved = await request(203, "tools/call", { name: "resolve_task_capabilities",
+        arguments: { task: "review git changes", activate_tool_groups: ["git"] } });
+      assert(!resolved.error && !resolved.result.isError, "advisory capability resolver failed");
+      const after = await request(204, "tools/list");
+      assert(JSON.stringify(before.result.tools) === JSON.stringify(after.result.tools),
+        "tools/list changed as a side effect of a resolver request");
+      assert(!messages.some((m) => m.method === "notifications/tools/list_changed"), "static catalog emitted a session update");
+      catalogChild.stdin.end();
+      await waitForExit(catalogChild, 5000);
     } finally {
-      if (progressiveChild.exitCode === null) progressiveChild.kill("SIGKILL");
+      catalogRl.close();
+      if (catalogChild.exitCode === null) catalogChild.kill("SIGKILL");
     }
   }
 
@@ -928,7 +894,7 @@ function responseFor(id, timeoutMs = 5_000) {
     const timer = setTimeout(() => {
       const index = waiters.indexOf(waiter);
       if (index >= 0) waiters.splice(index, 1);
-      rejectPromise(new Error(`timed out waiting for JSON-RPC id ${id}; stderr=${stderr}`));
+      rejectPromise(new Error(`timed out waiting for JSON-RPC id ${id}; pid=${child.pid}; exit=${child.exitCode}; signal=${child.signalCode}; stderr=${stderr}`));
     }, timeoutMs);
     const waiter = { id, resolve(value) { clearTimeout(timer); resolvePromise(value); } };
     waiters.push(waiter);

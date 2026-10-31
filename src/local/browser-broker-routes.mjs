@@ -110,7 +110,13 @@ export class BrowserBrokerRoutes {
     if (message.ok === true && message.result && typeof message.result === "object" && !Array.isArray(message.result)) {
       safeSocketSend(route.socket, { type: "response", id: route.id, ok: true, result: message.result });
     } else if (message.ok === false && typeof message.error === "string" && message.error && !message.error.includes("\0") && message.error.length <= 2000) {
-      safeSocketSend(route.socket, { type: "response", id: route.id, ok: false, error: message.error });
+      // The extension's structured settlement must survive the broker hop; without it the
+      // client falls back to re-parsing the English message.
+      const settlement = validSettlement(message.settlement);
+      safeSocketSend(route.socket, {
+        type: "response", id: route.id, ok: false, error: message.error,
+        ...(settlement ? { settlement } : {}),
+      });
     } else {
       safeSocketSend(route.socket, {
         type: "response", id: route.id, ok: false,
@@ -176,4 +182,9 @@ function postDispatchRouteFailure(route, fallback) {
   return route?.dispatchAttempted
     ? browserPostDispatchTransportFailure(route.method, fallback)
     : String(fallback || "browser transport failed");
+}
+
+const SETTLEMENT_VALUES = new Set(["not_started", "unknown", "applied", "unchanged"]);
+function validSettlement(value) {
+  return typeof value === "string" && SETTLEMENT_VALUES.has(value) ? value : "";
 }

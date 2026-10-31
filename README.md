@@ -67,6 +67,18 @@ The Worker validates the actual `/mcp` Origin, mirrored headers, role-filtered t
 
 The project intentionally follows one current runtime baseline rather than carrying compatibility branches for older Node/npm behavior. Node 26 provides the tested process, module, permission, and platform semantics used by the release gates; npm 12 provides the installation-script controls used by the documented global install. `.node-version`, `.nvmrc`, `packageManager`, published `engines`, and `.npmrc engine-strict=true` keep that baseline consistent; `devEngines` is advisory (`onFail: warn`) so dependency automation can still refresh the lockfile on a newer Node.
 
+## Release channels
+
+This README documents the 3.0 beta line. `machine-bridge-mcp@latest` currently resolves to the previous 2.x stable and is **not** compatible with this documentation. Until 3.0 is promoted:
+
+| Channel | Meaning | Use with this README |
+|---|---|---|
+| `latest` | highest stable release | **no** (currently 2.x) |
+| `beta` | current 3.0 candidate | **yes** |
+| `next`/`rc` | future prerelease experiments | only when announced |
+
+Confirm the live mapping with `npm view machine-bridge-mcp dist-tags` before installing.
+
 ## Install
 
 Use an empty temporary directory so an unrelated nearby project cannot affect npm bootstrap parsing.
@@ -78,7 +90,7 @@ install_dir="$(mktemp -d)"
 (
   cd "$install_dir"
   npx --yes npm@12.0.2 install --global npm@12.0.2
-  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta
 )
 rm -rf "$install_dir"
 npm --version
@@ -92,16 +104,16 @@ set "MBM_INSTALL_DIR=%TEMP%\machine-bridge-mcp-install-%RANDOM%-%RANDOM%"
 mkdir "%MBM_INSTALL_DIR%"
 pushd "%MBM_INSTALL_DIR%"
 npx --yes npm@12.0.2 install --global npm@12.0.2
-npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta
 popd
 rmdir /s /q "%MBM_INSTALL_DIR%"
 npm --version
 machine-mcp doctor
 ```
 
-`Unknown cli config "--allow-scripts"` means the package installation ran under npm 11 or older. `Invalid property "node"` or `Invalid property "devEngines.node"` means an older npm parser inspected incompatible nearby project metadata. Repeat the empty-directory procedure and reopen the terminal if `npm --version` still resolves to an older executable.
+`Unknown cli config "--allow-scripts"` means the package installation ran under npm 11 or older. `Invalid property "node"` or `Invalid property "devEngines.node"` means an older npm parser inspected incompatible nearby project metadata. Repeat the empty-directory procedure and reopen the terminal if `npm --version` still resolves to an older executable. The published package declares no install scripts, so the allowlist above is a defensive whitelist for future transitive dependencies rather than a requirement of the current consumer tree.
 
-The consumer runtime has three direct dependencies. Deployment tooling is installed and audited separately; its upstream cf bundle is verified without rewriting third-party code.
+The consumer runtime has three direct dependencies. Deployment tooling is installed and audited separately; its upstream cf bundle is verified without rewriting third-party code. The published package ships the runtime, not the repository test harness: `npm test` runs a runtime smoke in an installed package and the full fast plan in a source checkout. Repository-only `check:*` and test scripts are intentionally unavailable after installation.
 
 For a source checkout:
 
@@ -270,7 +282,8 @@ Major groups include:
 
 ```sh
 npm ci
-npm run check:fast       # quiet-success local feedback; set MBM_CHECK_VERBOSE=1 only for live child logs
+npm run check:quick      # small developer feedback loop
+npm run check:fast       # quiet-success release gate; set MBM_CHECK_VERBOSE=1 only for live child logs
 npm run check            # complete suite, equivalent to check:full
 npm run worker:dry-run
 npm audit --audit-level=high

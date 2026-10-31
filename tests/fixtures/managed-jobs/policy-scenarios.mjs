@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { runFixtureChild } from "../child-fixture.mjs";
+import { relayDelegatedContext, relayOwnerContext } from "../authority-context.mjs";
 import { createHash } from "node:crypto";
 
 import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -195,7 +196,7 @@ async function testTransientRecoveryMarkerBoundaries() {
     const staged = manager.createJob({
       name: "transient recovery warning",
       steps: [{ argv: [process.execPath, "-e", ""] }],
-    }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
+    }, { launch: false, retentionClass: "transient_process" }, relayOwnerContext());
     manager.cancel({ job_id: staged.job_id });
     const originalRead = manager.read.bind(manager);
     manager.read = (...args) => {
@@ -358,7 +359,7 @@ async function testManagedJobDependencyReadRecoveryPolicy() {
 }
 
 function testHostedManagedJobStatusProjection() {
-  const relayContext = { authority: { origin: "relay" } };
+  const relayContext = relayOwnerContext();
   for (const status of ["queued", "running", "cleaning", "interrupted"]) {
     const projected = hostedManagedJobStatus({ status }, relayContext);
     assert(projected.host_turn_handoff_recommended === false && projected.status_polling_mode === "bounded_followup"
@@ -387,7 +388,7 @@ function testHostedManagedJobStatusProjection() {
 }
 
 async function testManagedJobReadWaitPacing() {
-  const relayContext = { authority: { origin: "relay" } };
+  const relayContext = relayOwnerContext();
   assert(managedJobReadWaitMs({}, relayContext) === 40_000, "hosted read_job did not default to the host-safe server-side long-poll interval");
   assert(Math.ceil((100 * 60 * 1000) / managedJobReadWaitMs({}, relayContext)) <= 150,
     "the default hosted wait interval regained the prior high-density read_job amplification; this arithmetic is a density guard, not aggregate host-lifetime evidence");
@@ -1168,7 +1169,7 @@ async function testManagedJobCapacityBoundary() {
     const transient = terminalManager.createJob({
       name: `recent transient recovery result ${index}`,
       steps: [{ argv: [process.execPath, "-e", ""] }],
-    }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
+    }, { launch: false, retentionClass: "transient_process" }, relayOwnerContext());
     terminalManager.cancel({ job_id: transient.job_id });
     if (index !== 0) clearTransientProcessRecoveryPending(join(terminalRoot, transient.job_id));
     recentTransientIds.push(transient.job_id);
@@ -1187,7 +1188,7 @@ async function testManagedJobCapacityBoundary() {
   const overflowTransient = terminalManager.createJob({
     name: "recent transient recovery overflow",
     steps: [{ argv: [process.execPath, "-e", ""] }],
-  }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
+  }, { launch: false, retentionClass: "transient_process" }, relayOwnerContext());
   terminalManager.cancel({ job_id: overflowTransient.job_id });
   const overflowRecoveryCapacity = terminalManager.list({ limit: MAX_LISTED_JOBS }).capacity;
   assert((await Promise.all(recentTransientIds.map((id) => exists(join(terminalRoot, id))))).every(Boolean)
@@ -1199,7 +1200,7 @@ async function testManagedJobCapacityBoundary() {
   const secondOverflow = terminalManager.createJob({
     name: "recent transient delivery reserve overflow",
     steps: [{ argv: [process.execPath, "-e", ""] }],
-  }, { launch: false, retentionClass: "transient_process" }, { authority: { origin: "relay" } });
+  }, { launch: false, retentionClass: "transient_process" }, relayOwnerContext());
   terminalManager.cancel({ job_id: secondOverflow.job_id });
   clearTransientProcessRecoveryPending(join(terminalRoot, secondOverflow.job_id));
   const secondRecoveryList = terminalManager.list({ limit: MAX_LISTED_JOBS });
@@ -1286,7 +1287,7 @@ async function testManagedJobCapacityBoundary() {
     argv: [process.execPath, "-e", ""],
     cwd: workspace,
     timeoutSeconds: 30,
-  }, { authority: { origin: "relay" } });
+  }, relayOwnerContext());
   await waitForJob(durableHelperManager, durableHelper.job_id);
   const durableHelperPrivateStatus = JSON.parse(await readFile(join(durableHelperRoot, durableHelper.job_id, "status.json"), "utf8"));
   assert(durableHelperPrivateStatus.retention_class === "transient_process"
@@ -1380,7 +1381,7 @@ async function testManagedJobCapacityBoundary() {
     && recoveryVisibilityList.capacity?.durable_terminal >= 1
     && recoveryVisibilityList.capacity?.transient_terminal >= MAX_LISTED_JOBS + 10,
   "managed-job listing did not expose bounded recent helper-churn diagnostics");
-  const delegatedRecoveryList = recoveryVisibilityManager.list({ limit: 10 }, { authority: { owner: false } });
+  const delegatedRecoveryList = recoveryVisibilityManager.list({ limit: 10 }, relayDelegatedContext());
   assert(!Object.hasOwn(delegatedRecoveryList, "recent_activity") && !Object.hasOwn(delegatedRecoveryList, "capacity")
     && Array.isArray(delegatedRecoveryList.recent_process_recovery)
     && delegatedRecoveryList.recent_process_recovery.every((job) => !Object.hasOwn(job, "retention_class")),
@@ -1474,7 +1475,7 @@ async function testManagedJobCapacityBoundary() {
     && ownerCapacityList.capacity?.retired_state === 1
     && ownerCapacityList.capacity?.retired_unreadable === 1,
   "unreadable retired managed-job state escaped the hard retained-state capacity boundary or owner diagnostics");
-  const delegatedCapacityList = stagedManager.list({ limit: MAX_LISTED_JOBS }, { authority: { owner: false } });
+  const delegatedCapacityList = stagedManager.list({ limit: MAX_LISTED_JOBS }, relayDelegatedContext());
   assert(!("capacity" in delegatedCapacityList), "non-owner list_jobs exposed global retained-state capacity diagnostics");
   await rm(retiredCapacityDir, { recursive: true, force: true });
 
@@ -1494,7 +1495,7 @@ async function testManagedJobCapacityBoundary() {
     && wrongTypeList.capacity?.retained_state === MAX_JOBS && wrongTypeList.capacity?.job_state_unreadable === 1
     && activeManagedJobs(stagedRoot).some((job) => job.job_id === wrongTypeId && job.status === "unreadable"),
   "wrong-type public managed-job state escaped retained-state capacity or destructive inventory");
-  const delegatedWrongTypeList = stagedManager.list({ limit: MAX_LISTED_JOBS }, { authority: { owner: false } });
+  const delegatedWrongTypeList = stagedManager.list({ limit: MAX_LISTED_JOBS }, relayDelegatedContext());
   assert(!delegatedWrongTypeList.jobs.some((job) => job.job_id === wrongTypeId) && !("capacity" in delegatedWrongTypeList),
     "non-owner list_jobs exposed wrong-type global job state or capacity diagnostics");
   await rm(wrongTypePath, { force: true });

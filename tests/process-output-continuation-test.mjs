@@ -19,6 +19,7 @@ import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
 import { toolResult } from "../src/local/tools.mjs";
 import { textToolResult } from "../src/worker/mcp-jsonrpc.ts";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
+import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 
 const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 const root = await mkdtemp(join(tmpdir(), "mbm-process-output-test-"));
@@ -175,7 +176,7 @@ async function testRemoteSessionAdmissionIsFailFast() {
     },
   });
   await assert.rejects(
-    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { origin: "relay", authority: { origin: "relay" } }),
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, relayOwnerContext()),
     (error) => {
       assert(error instanceof BridgeError, "remote resource pressure did not cross the process boundary as a BridgeError");
       assert.equal(error.code, "unavailable", "remote resource pressure lost its retryable unavailable classification");
@@ -200,7 +201,7 @@ async function testRemoteSessionAdmissionIsFailFast() {
     throw new ResourceAdmissionError({ state: "green", reason: "cpu_request_exceeds_launch_window" });
   };
   await assert.rejects(
-    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, { origin: "relay", authority: { origin: "relay" } }),
+    () => manager.start({ argv: [process.execPath, "-e", "process.exit(0)"] }, relayOwnerContext()),
     (error) => error instanceof BridgeError
       && error.code === "unavailable"
       && error.retryable === false
@@ -285,7 +286,7 @@ async function testSessionCancellationAfterAdmissionBeforeSpawn() {
   });
   await assert.rejects(
     () => manager.start({ argv: [process.execPath, "-e", ""] }, {
-      origin: "relay", authority: { origin: "relay" }, signal: controller.signal,
+      ...relayOwnerContext(), signal: controller.signal,
     }),
     (error) => error === cancellation,
     "process-session cancellation after resource admission lost its definite pre-spawn result",
@@ -300,7 +301,7 @@ async function testRemoteBlockingPollCooldown() {
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {},
   });
-  const remoteContext = { origin: "relay", authority: { origin: "relay" } };
+  const remoteContext = relayOwnerContext();
   try {
     const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 30000)"] }, remoteContext);
     const immediate = await manager.read({ session_id: started.session_id, wait_ms: 0 }, remoteContext);
@@ -346,7 +347,7 @@ async function testHostedProcessReadByteCeiling() {
   const session = syntheticReadSession(1_000, 200_000);
   session.stdout.append("x".repeat(100_000));
   const remote = await readProcessSession({
-    args: { wait_ms: 0, max_bytes: 256 * 1024 }, context: { authority: { origin: "relay" } }, session,
+    args: { wait_ms: 0, max_bytes: 256 * 1024 }, context: relayOwnerContext(), session,
     throwIfCancelled() {}, now: () => 1_100,
   });
   assert.equal(Buffer.byteLength(remote.stdout.data), 32 * 1024,
@@ -359,7 +360,7 @@ async function testHostedProcessReadByteCeiling() {
 }
 
 async function testRemoteCooldownStateMachine() {
-  const remoteContext = { origin: "relay", authority: { origin: "relay" } };
+  const remoteContext = relayOwnerContext();
   const session = syntheticReadSession(1_000);
   let now = 1_100;
   const outputWake = readProcessSession({
@@ -442,7 +443,7 @@ async function testRemoteSessionActivityLifetime() {
     workspace: root, policy, authorizeTool() {}, runtimeDir: root, processTracker: tracker,
     resolveCwd: async () => root, displayPath: (value) => value, throwIfCancelled() {}, remoteActivityGuard: guard,
   });
-  const remoteContext = { origin: "relay", authority: { origin: "relay" } };
+  const remoteContext = relayOwnerContext();
   try {
     const started = await manager.start({ argv: [process.execPath, "-e", "setTimeout(() => {}, 150)"] }, remoteContext);
     assert.deepEqual({ starts, ends }, { starts: 1, ends: 0 },

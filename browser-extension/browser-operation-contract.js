@@ -65,18 +65,26 @@
     return output;
   }
   function methodMayMutate(method) { return typeof method === "string" && MUTATING_METHODS.has(method); }
-  function responsePayload({ id, ok, result, error = "", method = "", maxBytes }) {
+  const SETTLEMENT_VALUES = new Set(["not_started", "unknown", "applied", "unchanged"]);
+  function exactSettlement(value) { return typeof value === "string" && SETTLEMENT_VALUES.has(value) ? value : ""; }
+  function responsePayload({ id, ok, result, error = "", method = "", maxBytes, settlement = "" }) {
     const mutatingSuccess = ok === true && methodMayMutate(method);
+    const declared = exactSettlement(settlement);
     let payload;
-    try { payload = JSON.stringify({ type: "response", id, ok, ...(ok ? { result } : { error }) }); }
+    try {
+      payload = JSON.stringify({ type: "response", id, ok,
+        ...(ok ? { result } : { error, ...(declared ? { settlement: declared } : {}) }) });
+    }
     catch {
       payload = JSON.stringify({ type: "response", id, ok: false,
-        error: mutatingSuccess ? MUTATION_RESULT_SETTLEMENT_UNKNOWN : "browser result could not be serialized" });
+        error: mutatingSuccess ? MUTATION_RESULT_SETTLEMENT_UNKNOWN : "browser result could not be serialized",
+        ...(mutatingSuccess ? { settlement: "unknown" } : declared ? { settlement: declared } : {}) });
     }
     const resultLimit = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : 0;
     if (resultLimit === 0 || new TextEncoder().encode(payload).byteLength > resultLimit) {
       payload = JSON.stringify({ type: "response", id, ok: false,
-        error: mutatingSuccess ? MUTATION_RESULT_SETTLEMENT_UNKNOWN : "browser result exceeds maximum size" });
+        error: mutatingSuccess ? MUTATION_RESULT_SETTLEMENT_UNKNOWN : "browser result exceeds maximum size",
+        ...(mutatingSuccess ? { settlement: "unknown" } : declared ? { settlement: declared } : {}) });
     }
     return payload;
   }

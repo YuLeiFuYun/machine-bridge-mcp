@@ -1,6 +1,7 @@
 import toolCatalog from "../shared/tool-catalog.json" with { type: "json" };
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 import { compileToolArgumentValidators } from "../shared/tool-argument-validation.mjs";
+import { tagToolSchemaGeneration } from "../shared/mcp-protocol.mjs";
 import { toolParameterHeaderNames } from "./mcp-http-contract.ts";
 import {
   isConfigurableForegroundTool,
@@ -85,6 +86,5 @@ function workerServerInfoTool(tool: WorkerToolDefinition): WorkerToolDefinition 
 }
 function schemaProperty(schema: JsonSchema, name: string): Record<string, unknown> { const property = schema.properties[name]; if (property === undefined) throw new Error(`hosted tool schema is missing the ${name} property`); return property; }
 function schemaTaggedTool(tool: WorkerToolDefinition): WorkerToolDefinition {
-  tool.description = `${tool.description} Tool schema generation ${workerToolSchemaGeneration}.`;
-  return tool;
+  return tagToolSchemaGeneration(tool, workerToolSchemaGeneration) as WorkerToolDefinition;
 }

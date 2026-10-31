@@ -409,7 +409,9 @@ async function stdioCommand(args) {
     browserStateRoot: state.paths.stateRoot,
     serviceControlRoot: machineServiceControlRoot(),
     deviceRootStatus: state.worker?.deviceIdentity ? deviceRootProviderStatus(state.worker.deviceIdentity) : null,
-    progressiveTools: Boolean(args.progressive) || process.env.MBM_PROGRESSIVE_TOOLS === "1",
+    // Stable catalogs are required by MCP 2026-07-28. --all-tools also
+    // overrides a legacy MBM_PROGRESSIVE_TOOLS environment setting.
+    progressiveTools: !args.allTools && (Boolean(args.progressive) || process.env.MBM_PROGRESSIVE_TOOLS === "1"),
   });
 }
 
@@ -422,7 +424,7 @@ async function clientConfigCommand(args) {
   if (!["all", "claude", "cursor", "codex", "generic"].includes(requested)) throw new Error("client must be all, claude, cursor, codex, or generic");
   const command = process.execPath;
   const argsList = [resolve(process.argv[1]), "stdio", "--workspace", workspace, "--profile", profile];
-  if (args.progressive) argsList.push("--progressive");
+  if (args.allTools) argsList.push("--all-tools");
   const jsonConfig = { mcpServers: { "machine-bridge": { command, args: argsList } } };
   const codex = `[mcp_servers.machine_bridge]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(argsList)}\n`;
   if (args.json) {
@@ -793,10 +795,10 @@ function usage() {
   console.log(`machine-bridge-mcp
 
 Installation (run from a package-free temporary directory; Node.js >=26):
-  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest && machine-mcp
+  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta && machine-mcp
 
 Usage:
-  npx machine-bridge-mcp@latest                  # no global install; autostart may rely on npm cache
+  npx machine-bridge-mcp@beta                    # no global install; autostart may rely on npm cache
   ./mbm                                          # from source checkout
   .\\mbm.cmd                                      # from source checkout on Windows cmd
 

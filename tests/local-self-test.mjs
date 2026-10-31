@@ -1623,7 +1623,7 @@ async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
     "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
-    "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-refresh-persistence.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "authority-revocations.ts", "observability.ts", "tool-timeout.ts", "daemon-liveness.ts",
+    "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-refresh-persistence.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "authority-revocations.ts", "observability.ts", "tool-timeout.ts", "daemon-liveness.ts", "daemon-websocket-controller.ts",
     "daemon-sockets.ts", "daemon-socket-attachment.ts", "runtime-alarm.ts", "runtime-alarm-storage.ts",
     "mcp-jsonrpc.ts", "mcp-http-contract.ts", "mcp-controller.ts",
     "mcp-response-stream.ts", "mcp-response-proxy.ts", "mcp-http-accept.ts", "mcp-removed-protocol.ts",

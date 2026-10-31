@@ -4,21 +4,17 @@ import { MCP_REMOVED_PROTOCOL_MESSAGE } from "../shared/mcp-protocol.mjs";
 import { PendingCallRegistrationError } from "./pending-call-contract.ts";
 import { PendingCallRegistry } from "./pending-calls.ts";
 import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./pending-call-capacity.ts";
-import { daemonLivenessDeadlineMs, isFreshDaemonCandidate } from "./daemon-liveness.ts";
+import { daemonLivenessDeadlineMs } from "./daemon-liveness.ts";
 import { DaemonRegistry } from "./daemon-registry.ts";
 import type { DaemonChannel } from "./daemon-channel.ts";
 import { trySendDaemonChannel } from "./daemon-channel.ts";
-import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
+import { cancelReadyDaemonAuthority, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
+import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
 import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
 import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
 import { daemonStatusSnapshot } from "./daemon-status.ts";
-import { sanitizeDaemonInstanceId } from "./daemon-socket-attachment.ts";
-import { sanitizeDaemonRelayDiagnostics } from "./daemon-relay-diagnostics.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
-import { consumeDaemonPreflightNonce, createDaemonChallenge, verifyDaemonAuthentication, verifyDaemonPreflight } from "./daemon-auth.ts";
 import { handleDaemonHttpRelay } from "./daemon-http-controller.ts";
-import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
-import { beginDaemonResumeReconciliation } from "./daemon-resume-reconciliation.ts";
 import { McpController } from "./mcp-controller.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { removedProtocolResponse } from "./mcp-removed-protocol.ts";
@@ -30,10 +26,9 @@ import { daemonToolRecovery } from "./tool-call-recovery.ts";
 import { WorkerObservability } from "./observability.ts";
 import { readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerSocketDisconnect } from "./worker-continuity-evidence.ts";
 import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
-import { sanitizeDaemonPolicy, sanitizeDaemonTools } from "./policy.ts";
 import { accountRoleAllowsTool, type AuthorizedToken } from "./access.ts";
 import { OAuthController } from "./oauth-controller.ts";
-import { authorityRevocations, authorityRevocationWireMessage, deliverAuthorityRevocations } from "./authority-revocations.ts";
+import { authorityRevocations, deliverAuthorityRevocations } from "./authority-revocations.ts";
 import { decorateProjectOverview } from "./authority.ts";
 import { validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
 import { workerAuthorityContext, workerToolsForRole } from "./worker-tool-authority.ts";
@@ -57,16 +52,17 @@ import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "
 import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
 import { McpTaskService } from "./mcp-task-service.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
-import { closeWebSocketQuietly, daemonErrorCloseCode, isObjectRecord, rejectDaemonMessage, sendWebSocketQuietly, trySendWebSocket } from "./websocket-protocol.ts";
-const SERVER_VERSION = "3.0.0-beta.209";
+import { closeWebSocketQuietly } from "./websocket-protocol.ts";
+import { DaemonWebSocketController } from "./daemon-websocket-controller.ts";
+const SERVER_VERSION = "3.0.0-beta.210";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
-const MAX_DAEMON_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS);
   private readonly observability = new WorkerObservability();
   private readonly oauth: OAuthController;
   private readonly daemonRegistry: DaemonRegistry;
+  private readonly daemonWebSocket: DaemonWebSocketController;
   private readonly mcp: McpController; private readonly jobMonitorClaims: ManagedJobMonitorClaimStore; private readonly mcpTaskService: McpTaskService;
   constructor(ctx: DurableObjectState, env: BridgeEnv) {
     super(ctx, env); this.jobMonitorClaims = new ManagedJobMonitorClaimStore(ctx.storage);
@@ -76,6 +72,18 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     );
     this.mcpTaskService = new McpTaskService(ctx.storage, () => this.oauth.identityKey());
     this.daemonRegistry = new DaemonRegistry(ctx);
+    this.daemonWebSocket = new DaemonWebSocketController({
+      storage: ctx.storage, registry: this.daemonRegistry, pending: this.pending, observability: this.observability,
+      server: SERVER_NAME, version: SERVER_VERSION, publicKey: () => this.env.DAEMON_DEVICE_PUBLIC_KEY,
+      acceptWebSocket: (socket) => this.ctx.acceptWebSocket(socket),
+      expireOverdueCalls: () => this.expireOverdueCalls(), scheduleAlarm: () => this.scheduleRuntimeAlarm(),
+      detachSocketCalls: (socket, message, attachment) => this.detachDaemonSocketCalls(socket, message, attachment),
+      detachChannelCalls: (channel, message) => this.detachDaemonChannelCalls(channel, message),
+      handleReadyMessage: handleReadyDaemonMessage,
+      recordSocketDisconnect: async (cleanup, input) => {
+        if (cleanup.first) await recordWorkerSocketDisconnect(ctx.storage, input);
+      },
+    });
     this.mcp = new McpController({
       capabilities: MCP_SERVER_CAPABILITIES,
       serverInfo: MCP_SERVER_INFO,
@@ -125,7 +133,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       }
       if (url.pathname === "/daemon/ws") {
         if (request.method !== "GET") return methodNotAllowed("GET");
-        return await this.acceptDaemonWebSocket(request);
+        return await this.daemonWebSocket.acceptDaemonWebSocket(request);
       }
       if (url.pathname === "/daemon/http") {
         if (request.method !== "POST") return methodNotAllowed("POST");
@@ -184,241 +192,16 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    await this.expireOverdueCalls();
-    const size = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
-    if (size > MAX_DAEMON_MESSAGE_BYTES) {
-      closeWebSocketQuietly(ws, 1009, "message too large");
-      return;
-    }
-    let text: string;
-    try {
-      text = typeof message === "string" ? message : new TextDecoder("utf-8", { fatal: true }).decode(message);
-    } catch {
-      closeWebSocketQuietly(ws, 1007, "invalid UTF-8");
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      rejectDaemonMessage(ws, "invalid_json", 1007, "invalid JSON");
-      return;
-    }
-    if (!isObjectRecord(parsed)) {
-      rejectDaemonMessage(ws, "invalid_message", 1002, "daemon message must be an object");
-      return;
-    }
-    const body = parsed;
-
-    const socketAttachment = this.daemonRegistry.attachment(ws);
-    if (!socketAttachment) {
-      closeWebSocketQuietly(ws, 1008, "missing daemon attachment");
-      return;
-    }
-
-    if (socketAttachment.role === "expired") {
-      closeWebSocketQuietly(ws, 1008, "expired daemon candidate");
-      return;
-    }
-
-    if (body.type === "hello") {
-      if (socketAttachment.role !== "candidate") {
-        rejectDaemonMessage(ws, "duplicate_hello", 1002, "duplicate daemon hello");
-        return;
-      }
-      if (!isFreshDaemonCandidate(socketAttachment.connectedAt)) {
-        closeWebSocketQuietly(ws, 1008, "stale daemon candidate");
-        await this.scheduleRuntimeAlarm();
-        return;
-      }
-      const instanceId = sanitizeDaemonInstanceId(body.instance_id) ?? "";
-      if (!instanceId) {
-        rejectDaemonMessage(ws, "invalid_daemon_instance", 1002, "daemon instance id required");
-        return;
-      }
-      if (
-        !socketAttachment.authChallenge
-        || !socketAttachment.authIssuedAt
-        || !socketAttachment.authExpiresAt
-        || !socketAttachment.workerOrigin
-        || !socketAttachment.authSessionPublicKeyJson
-        || !socketAttachment.authSessionKeyId
-        || !socketAttachment.authCertificateExpiresAt
-      ) {
-        rejectDaemonMessage(ws, "missing_daemon_challenge", 1008, "daemon challenge missing");
-        return;
-      }
-      const authenticated = await verifyDaemonAuthentication({
-        publicKeyJson: socketAttachment.authSessionPublicKeyJson,
-        authentication: body.authentication,
-        challenge: {
-          scheme: "device-signature-v1",
-          challenge: socketAttachment.authChallenge,
-          issuedAt: socketAttachment.authIssuedAt,
-          expiresAt: socketAttachment.authExpiresAt,
-          workerOrigin: socketAttachment.workerOrigin,
-        },
-        server: SERVER_NAME,
-        version: SERVER_VERSION,
-        instanceId,
-        certificateExpiresAt: socketAttachment.authCertificateExpiresAt,
-      });
-      if (!authenticated) {
-        rejectDaemonMessage(ws, "daemon_authentication_failed", 1008, "daemon authentication failed");
-        return;
-      }
-      const daemonPolicy = sanitizeDaemonPolicy(body.policy);
-      const authenticatedAt = new Date().toISOString();
-      const probeId = randomToken("probe");
-      const connectionId = socketAttachment.connectionId ?? "";
-      if (!connectionId) {
-        rejectDaemonMessage(ws, "missing_daemon_connection_identity", 1008, "daemon connection identity missing");
-        return;
-      }
-      this.daemonRegistry.beginProbe(ws, {
-        connectedAt: authenticatedAt,
-        probeId,
-        instanceId,
-        connectionId,
-        policy: daemonPolicy,
-        tools: sanitizeDaemonTools(body.tools, daemonPolicy),
-        relayDiagnostics: sanitizeDaemonRelayDiagnostics(body.relay_diagnostics),
-      });
-      this.observability.socketAuthenticated();
-      try {
-        ws.send(JSON.stringify({ type: "hello_ack", server: SERVER_NAME, version: SERVER_VERSION }));
-        ws.send(JSON.stringify({ type: "relay_probe", id: probeId }));
-      } catch {
-        await this.invalidateDaemonSocket(
-          ws, "daemon readiness probe failed", "daemon readiness probe failed", "daemon_transport_error",
-        );
-        return;
-      }
-      await this.scheduleRuntimeAlarm();
-      return;
-    }
-
-    if (socketAttachment.role === "candidate") {
-      closeWebSocketQuietly(ws, 1008, "daemon hello required");
-      return;
-    }
-
-    if (body.type === "heartbeat" || body.type === "ping") {
-      if (!this.touchDaemonSocket(ws)) return;
-      if (!trySendWebSocket(ws, { type: "pong", ts: body.ts ?? Date.now() })) {
-        await this.invalidateDaemonSocket(ws, "failed to acknowledge daemon heartbeat", "daemon pong failed", "daemon_transport_error");
-        return;
-      }
-      await this.scheduleRuntimeAlarm();
-      return;
-    }
-
-    if (socketAttachment.role === "probing") {
-      if (body.type !== "relay_probe_result" || typeof body.id !== "string" || body.id !== socketAttachment.probeId) {
-        rejectDaemonMessage(ws, "invalid_relay_probe_result", 1002, "invalid daemon readiness result");
-        return;
-      }
-      const queuedRevocations = await authorityRevocations(this.ctx.storage);
-      const readyAt = new Date().toISOString();
-      const readyAttachment = this.daemonRegistry.promote(ws, readyAt);
-      if (!readyAttachment) {
-        rejectDaemonMessage(ws, "invalid_relay_readiness_state", 1002, "invalid daemon readiness state");
-        return;
-      }
-      const daemonInstanceId = readyAttachment.instanceId ?? "";
-      const connectionId = readyAttachment.connectionId ?? "";
-      if (!daemonInstanceId || !connectionId) {
-        await this.invalidateDaemonSocket(ws, "daemon readiness identity is incomplete", "daemon ready timeout", "daemon_ready_timeout");
-        return;
-      }
-      const previousSockets = this.daemonRegistry.readyRoleSockets().filter((socket) => socket !== ws);
-      const previousHttpChannels = this.daemonRegistry.httpReadyChannels();
-      const fallbackSocket = previousSockets.find((socket) => this.daemonRegistry.readyAttachment(socket)?.instanceId === daemonInstanceId);
-      const fallbackHttp = previousHttpChannels.find((channel) => this.daemonRegistry.readyAttachment(channel)?.instanceId === daemonInstanceId);
-      const reboundCallIds = this.pending.rebindInstance(daemonInstanceId, ws);
-      beginDaemonResumeReconciliation(ws, reboundCallIds);
-      if (reboundCallIds.length > 0) {
-        this.observability.event("info", "daemon.calls.rebound", { rebound_calls: reboundCallIds.length });
-      }
-      try {
-        ws.send(JSON.stringify({ type: "resume_calls", ids: reboundCallIds }));
-        for (const revocation of queuedRevocations) ws.send(JSON.stringify(authorityRevocationWireMessage(revocation)));
-        ws.send(JSON.stringify({ type: "ready_ack", server: SERVER_NAME, version: SERVER_VERSION }));
-      } catch {
-        await this.invalidateDaemonSocket(ws, "daemon readiness acknowledgement failed", "daemon ready timeout", "daemon_ready_timeout");
-        if (fallbackSocket?.readyState === WebSocket.OPEN) {
-          this.pending.rebindInstance(daemonInstanceId, fallbackSocket);
-        } else if (fallbackHttp?.readyState === 1) {
-          this.pending.rebindInstance(daemonInstanceId, fallbackHttp);
-        }
-        await this.scheduleRuntimeAlarm();
-        return;
-      }
-      this.observability.socketReady();
-      for (const previous of previousSockets) {
-        const cleanup = this.cleanupDaemonSocket(previous, "daemon connection replaced after verified handover");
-        closeWebSocketQuietly(previous, 1012, "replaced by verified daemon");
-        if (cleanup) await cleanup.task;
-      }
-      for (const previous of previousHttpChannels) {
-        await this.detachDaemonChannelCalls(previous, "HTTPS fallback replaced by verified WebSocket");
-        this.daemonRegistry.http.close(previous);
-      }
-      await this.scheduleRuntimeAlarm();
-      notifyReadyDaemon(this.daemonRegistry);
-      return;
-    }
-
-    if (socketAttachment.role !== "daemon") {
-      closeWebSocketQuietly(ws, 1008, "daemon readiness required");
-      return;
-    }
-
-    if (!this.touchDaemonSocket(ws)) return;
-    const handled = await handleReadyDaemonMessage({
-      channel: ws, body, pending: this.pending, storage: this.ctx.storage, observability: this.observability,
-      beginDrain: (channel) => this.daemonRegistry.beginDrain(channel),
-    });
-    if (!handled.ok) {
-      this.observability.socketProtocolError(handled.errorCode ?? "unknown_message_type");
-      rejectDaemonMessage(ws, handled.errorCode ?? "unknown_message_type", 1002, handled.errorMessage ?? "invalid daemon message");
-      return;
-    }
-    await this.scheduleRuntimeAlarm();
+    await this.daemonWebSocket.webSocketMessage(ws, message);
   }
-
-  async webSocketClose(ws: WebSocket, code: number, _reason: string, wasClean: boolean): Promise<void> {
-    const attachment = this.daemonRegistry.attachment(ws);
-    const planned = this.daemonRegistry.isDraining(ws);
-    const cleanup = this.cleanupDaemonSocket(ws, "daemon disconnected");
-    if (cleanup?.first) this.observability.event("info", "daemon.websocket.closed", {
-      close_code: Number.isInteger(code) && code >= 1000 && code <= 4999 ? code : 0,
-      was_clean: wasClean === true,
-    });
-    if (cleanup) {
-      await cleanup.task;
-      if (cleanup.first) await recordWorkerSocketDisconnect(this.ctx.storage, {
-        planned, kind: "close", closeCode: code, wasClean, role: attachment?.role, connectedAt: attachment?.connectedAt,
-      });
-      await this.scheduleRuntimeAlarm();
-    }
+  async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
+    await this.daemonWebSocket.webSocketClose(ws, code, reason, wasClean);
   }
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-    const attachment = this.daemonRegistry.attachment(ws);
-    const planned = this.daemonRegistry.isDraining(ws);
-    const cleanup = this.cleanupDaemonSocket(ws, "daemon transport error");
-    if (!cleanup) return;
-    if (cleanup.first) this.observability.event("warn", "daemon.websocket.error", { error_class: workerErrorClass(error) });
-    await cleanup.task;
-    if (cleanup.first) await recordWorkerSocketDisconnect(this.ctx.storage, {
-      planned, kind: "error", role: attachment?.role, connectedAt: attachment?.connectedAt,
-    });
-    await this.scheduleRuntimeAlarm();
+    await this.daemonWebSocket.webSocketError(ws, error);
   }
   private cleanupDaemonSocket(ws: WebSocket, message: string) {
-    const cleanup = this.daemonRegistry.beginCleanup(ws, (attachment) => this.detachDaemonSocketCalls(ws, message, attachment));
-    if (cleanup?.first) this.observability.socketDisconnected();
-    return cleanup;
+    return this.daemonWebSocket.cleanupDaemonSocket(ws, message);
   }
   private async handleMcp(request: Request, base: string): Promise<Response> {
     const originRejection = mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "");
@@ -663,52 +446,6 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       },
     });
   }
-  private async acceptDaemonWebSocket(request: Request): Promise<Response> {
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected Upgrade: websocket", { status: 426 });
-    if (!this.env.DAEMON_DEVICE_PUBLIC_KEY) return new Response("Daemon device identity is not configured", { status: 503 });
-    const workerOrigin = new URL(request.url).origin;
-    const preflight = await verifyDaemonPreflight({
-      publicKeyJson: this.env.DAEMON_DEVICE_PUBLIC_KEY,
-      headers: request.headers,
-      workerOrigin,
-      server: SERVER_NAME,
-      version: SERVER_VERSION,
-    });
-    if (!preflight || !(await consumeDaemonPreflightNonce(this.ctx.storage, preflight))) {
-      return new Response("Unauthorized daemon device", { status: 401 });
-    }
-    const challenge = createDaemonChallenge(workerOrigin);
-
-    for (const socket of this.daemonRegistry.nonReadySockets()) {
-      closeWebSocketQuietly(socket, 1012, "replaced by newer daemon candidate");
-    }
-
-    const connectionId = randomToken("connection");
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-    this.ctx.acceptWebSocket(server);
-    this.observability.socketCandidate();
-    this.daemonRegistry.beginCandidate(server, challenge, preflight, connectionId);
-    await this.scheduleRuntimeAlarm();
-    const welcomed = trySendWebSocket(server, {
-      type: "welcome",
-      server: SERVER_NAME,
-      version: SERVER_VERSION,
-      connection_id: connectionId,
-      worker_origin: workerOrigin,
-      authentication: {
-        scheme: challenge.scheme,
-        challenge: challenge.challenge,
-        issued_at: challenge.issuedAt,
-        expires_at: challenge.expiresAt,
-      },
-    });
-    if (!welcomed) {
-      await this.invalidateDaemonSocket(server, "daemon welcome failed", "daemon welcome failed", "daemon_transport_error");
-    }
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
   private authorityContext(authorized: AuthorizedToken) {
     return workerAuthorityContext({
       authorized, daemonStatus: this.daemonStatus(true), daemonTools: this.daemonAdvertisedTools(),
@@ -723,15 +460,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     return new Set(attachment.tools);
   }
 
-  private touchDaemonSocket(ws: WebSocket): boolean { return Boolean(this.daemonRegistry.touch(ws)); }
   private async invalidateDaemonSocket(
     ws: WebSocket, message: string, closeReason: string,
     errorCode = "daemon_liveness_timeout", scheduleAlarm = true,
   ): Promise<void> {
-    const cleanup = this.cleanupDaemonSocket(ws, message);
-    sendWebSocketQuietly(ws, { type: "error", error: errorCode });
-    closeWebSocketQuietly(ws, daemonErrorCloseCode(errorCode), closeReason);
-    if (cleanup) { await cleanup.task; if (scheduleAlarm) await this.scheduleRuntimeAlarm(); }
+    await this.daemonWebSocket.invalidateDaemonSocket(ws, message, closeReason, errorCode, scheduleAlarm);
   }
 
   private async detachDaemonSocketCalls(

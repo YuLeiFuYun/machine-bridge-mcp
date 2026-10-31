@@ -66,6 +66,8 @@ Do not continue with an older runtime. This repository intentionally rejects uns
 
 ## 4. Install the released package
 
+This guide documents the 3.0 beta line. `machine-bridge-mcp@latest` currently resolves to the previous 2.x stable and is not compatible with this guide; install `@beta` until 3.0 is promoted. Confirm the live mapping with `npm view machine-bridge-mcp dist-tags`.
+
 Use a temporary package-free directory. An older npm front-end can inspect metadata in the current directory before it launches npm 12; the isolated bootstrap prevents an unrelated project configuration from breaking installation.
 
 ### macOS and Linux
@@ -75,7 +77,7 @@ install_dir="$(mktemp -d)"
 (
   cd "$install_dir"
   npx --yes npm@12.0.2 install --global npm@12.0.2
-  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+  npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta
 )
 rm -rf "$install_dir"
 
@@ -90,7 +92,7 @@ set "MBM_INSTALL_DIR=%TEMP%\machine-bridge-mcp-install-%RANDOM%-%RANDOM%"
 mkdir "%MBM_INSTALL_DIR%"
 pushd "%MBM_INSTALL_DIR%"
 npx --yes npm@12.0.2 install --global npm@12.0.2
-npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta
 popd
 rmdir /s /q "%MBM_INSTALL_DIR%"
 

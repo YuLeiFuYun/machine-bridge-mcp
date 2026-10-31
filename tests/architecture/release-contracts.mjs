@@ -213,6 +213,12 @@ for (const [cfProperty, wranglerProperty] of [
   ["BridgeRoom", "\"class_name\": \"BridgeRoom\""],
   ["4301702", "\"namespace_id\": \"4301702\""],
   ["4301701", "\"namespace_id\": \"4301701\""],
+  // Rate-limit budgets, observability sampling and the request-body ceiling are duplicated
+  // in both files; a value change in one without the other changes production behaviour.
+  ["simple: { limit: 1200, period: 60 }", "\"simple\": { \"limit\": 1200, \"period\": 60 }"],
+  ["simple: { limit: 120, period: 60 }", "\"simple\": { \"limit\": 120, \"period\": 60 }"],
+  ["headSamplingRate: 0.1", "\"head_sampling_rate\": 0.1"],
+  ["MBM_WORKER_MAX_BODY_BYTES: bindings.text(\"8388608\")", "\"MBM_WORKER_MAX_BODY_BYTES\": \"8388608\""],
 ]) {
   if (!cloudflareConfigSource.includes(cfProperty) || !wranglerConfigSource.includes(wranglerProperty)) {
     throw new Error(`Deployment config parity drift between cloudflare.config.ts and wrangler.jsonc: ${cfProperty} vs ${wranglerProperty}`);
@@ -239,10 +245,15 @@ if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangl
     || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
     || Object.hasOwn(packageJson.devDependencies || {}, "undici")
     || toolchainManifest.overrides?.miniflare !== "5.20261019.1-beta"
+    || toolchainManifest.overrides?.undici !== "7.30.1"
+    || toolchainManifest.overrides?.zod !== "4.6.7"
+    || packageJson.overrides?.undici !== "7.30.1"
+    || packageJson.overrides?.zod !== "4.6.7"
     || toolchainManifest.overrides?.ws !== "8.22.0"
     || toolchainManifest.overrides?.sharp !== "0.35.5"
     || toolchainLock.packages?.["node_modules/wrangler"]?.version !== "4.151.3"
-    || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.29.1"
+    || toolchainLock.packages?.["node_modules/undici"]?.version !== "7.30.1"
+    || toolchainLock.packages?.["node_modules/zod"]?.version !== "4.6.7"
     || toolchainLock.packages?.["node_modules/cf"]?.version !== "1.0.0-beta.20"
     || toolchainLock.packages?.["node_modules/sharp"]?.version !== "0.35.5"
     || toolchainManifest.allowScripts?.["sharp@0.35.5"] !== true) {
@@ -292,7 +303,8 @@ for (const file of ["generate-worker-types.mjs", "run-worker-dry-run.mjs", "wran
 const workerTypesGeneratorSource = readFileSync(join(root, "scripts", "generate-worker-types.mjs"), "utf8");
 const workerToolCatalogSource = readFileSync(join(root, "src", "worker", "tool-catalog.ts"), "utf8");
 const workerHostedManagedJobSchemaSource = readFileSync(join(root, "src", "worker", "managed-job-hosted-schema.ts"), "utf8");
-const workerToolGuidanceSource = `${workerToolCatalogSource}\n${workerHostedManagedJobSchemaSource}`;
+const sharedProtocolSource = readFileSync(join(root, "src", "shared", "mcp-protocol.mjs"), "utf8");
+const workerToolGuidanceSource = `${workerToolCatalogSource}\n${workerHostedManagedJobSchemaSource}\n${sharedProtocolSource}`;
 if (workerToolCatalogSource.includes("use process sessions or managed jobs for longer work")
     || !workerToolCatalogSource.includes("split longer browser/application workflows into independently terminal calls")
     || !workerToolCatalogSource.includes("start_process only when interactive stdin or incremental process output is actually required")) {
@@ -301,7 +313,7 @@ if (workerToolCatalogSource.includes("use process sessions or managed jobs for l
 for (const stale of ["host response/execution budget", "host budget is nearly exhausted", "continue only while the host", "read an active job at most once", "stop polling until a later user turn"]) {
   if (workerToolGuidanceSource.includes(stale)) throw new Error(`Worker tool guidance can still trigger speculative or forced hosted handoff: ${stale}`);
 }
-for (const required of ["HOSTED_CONTINUATION_RULE", "Do not infer or preempt a host/tool deadline from elapsed wall-clock time", "server-side long-poll", "defaultManagedJobReadWaitMs", "maximumManagedJobReadWaitMs", "same MCP call", "cooldown boundary", "Tool schema generation", "workerToolSchemaGeneration"]) {
+for (const required of ["HOSTED_CONTINUATION_RULE", "Do not infer or preempt a host/tool deadline from elapsed wall-clock time", "server-side long-poll", "defaultManagedJobReadWaitMs", "maximumManagedJobReadWaitMs", "same MCP call", "cooldown boundary", "Tool schema generation", "workerToolSchemaGeneration", "tagToolSchemaGeneration"]) {
   if (!workerToolGuidanceSource.includes(required)) throw new Error(`Worker tool catalog/guidance lost autonomous/paced/schema-freshness guidance: ${required}`);
 }
 if (workerToolCatalogSource.indexOf("const HOSTED_CONTINUATION_RULE") > workerToolCatalogSource.indexOf("export const workspaceTools")) {
@@ -1136,7 +1148,7 @@ if ([pushAcceptance, pushNpmDispose, pushRemoteMutation].some((value) => value <
   throw new Error("guarded GitHub push no longer verifies accepted bytes through hardened npm and disposes it before remote mutation");
 }
 const candidateStartSource = readFileSync(join(root, "scripts", "start-release-candidate.mjs"), "utf8");
-for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "resolveNpmCli", "allowLifecycleNpmCli: false", "allowFallbackLocations: false", "sourceNpmCli", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp,fsevents", "--allow-worker-deploy", "--activate-service", "--install-only", "createCandidateRuntimePrefix", "publishReleaseBrowserExtension", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
+for (const required of ["verifyTarball", ".release-candidate", "resolveNpmGlobalPrefix", "resolveNpmCli", "allowLifecycleNpmCli: false", "allowFallbackLocations: false", "sourceNpmCli", "createHardenedNpmSession", "nestedNpmEnvironment", "--dry-run=false", "--workspaces=false", "--global", "--prefix", "--omit=optional", "--allow-scripts=esbuild,workerd,sharp", "--allow-worker-deploy", "--activate-service", "--install-only", "createCandidateRuntimePrefix", "publishReleaseBrowserExtension", "pruneInactiveCandidateRuntimes", "writePrereleaseActivation", "validateActivationRecoveryPayload", "activation_recovery_detail", "temporary runtime was removed", '"activate"', 'stdio: "inherit"', "withReleaseRuntimeLock"]) {
   if (!candidateStartSource.includes(required)) throw new Error(`candidate startup helper lost required boundary: ${required}`);
 }
 const candidateSourceGuard = candidateStartSource.indexOf("assertCandidateMatchesCurrentSource(manifest");
@@ -1981,7 +1993,7 @@ for (const required of [
 }
 
 
-const pinnedInstallCommand = "npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest";
+const pinnedInstallCommand = "npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta";
 if (packageJson.engines?.npm !== ">=12.0.0") throw new Error("package metadata no longer declares the npm 12 runtime requirement");
 const installSmokeSource = readFileSync(join(root, "tests", "install-smoke-test.mjs"), "utf8");
 if (!installSmokeSource.includes("package-free-cwd") || !installSmokeSource.includes('pkg.engines?.npm !== ">=12.0.0"')) {

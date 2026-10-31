@@ -21,8 +21,28 @@ export function browserRequestTransportError({ pending, code, fallback, terminat
     } : {}),
   });
 }
-/** @param {string} message @param {BrowserPendingSettlement | null | undefined} pending */
-export function browserRequestResponseError(message, pending) {
+// Messages the extension uses when a mutation may already have taken effect. Kept as a
+// fallback for extensions that predate the structured `settlement` field; new extensions
+// send `settlement: "unknown"` and never rely on this table.
+const MUTATION_PARTIAL_PREFIXES = Object.freeze([
+  "browser mutation may have completed;",
+  "trusted browser input may have been partially dispatched",
+  "form submission failed after partial changes",
+  "browser action may have been dispatched",
+  "browser tab mutation may have been dispatched",
+  "browser screenshot temporary tab activation may have been dispatched",
+  "browser screenshot restoration may have been dispatched",
+]);
+/** @param {string} message */
+function textClaimsPartialMutation(message) {
+  return MUTATION_PARTIAL_PREFIXES.some((prefix) => message.startsWith(prefix));
+}
+/**
+ * @param {string} message
+ * @param {BrowserPendingSettlement | null | undefined} pending
+ * @param {{settlement?: unknown} | null} [envelope] structured response from the extension
+ */
+export function browserRequestResponseError(message, pending, envelope = null) {
   const mutation = pending?.dispatchAttempted === true && browserMethodMayMutate(pending.method);
   if (message === "browser broker is busy") return new BridgeError("limit_exceeded", message, { retryable: true });
   if (["browser extension is not connected", "browser extension send failed"].includes(message)) return new BridgeError("unavailable", message, { retryable: true });
@@ -40,14 +60,19 @@ export function browserRequestResponseError(message, pending) {
   if (message.startsWith("browser connection changed after request dispatch")) {
     return browserRequestTransportError({ pending, code: "unavailable", fallback: message });
   }
+  const declared = typeof envelope?.settlement === "string" ? envelope.settlement : "";
+  if (declared === "applied") {
+    // The extension is telling us the mutation landed; say so instead of returning a bare
+    // failure that a caller might retry.
+    return new BridgeError("execution_failed", message, {
+      expose: true,
+      retryable: false,
+      details: { side_effects_started: true, termination_requested: false, effect_settlement: "applied" },
+    });
+  }
   const partial = mutation && (
-    message.startsWith("browser mutation may have completed;")
-    || message.startsWith("trusted browser input may have been partially dispatched")
-    || message.startsWith("form submission failed after partial changes")
-    || message.startsWith("browser action may have been dispatched")
-    || message.startsWith("browser tab mutation may have been dispatched")
-    || message.startsWith("browser screenshot temporary tab activation may have been dispatched")
-    || message.startsWith("browser screenshot restoration may have been dispatched")
+    declared === "unknown"
+    || (declared !== "not_started" && textClaimsPartialMutation(message))
   );
   return partial
     ? new BridgeError("execution_failed", message, {

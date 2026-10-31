@@ -6,6 +6,11 @@ import { performance } from "node:perf_hooks";
 import { createToolAuthorizer } from "./policy.mjs";
 import { classifyOperationalError } from "./log.mjs";
 import { BridgeError } from "./errors.mjs";
+import {
+  APPLICATION_OPERATION_REASON, applicationAutomationBoundaryError, applicationInputOutcomeUnknown,
+  applicationOperationReason, applicationProcessIdentityChanged, applicationVisualPreflightUnavailable,
+  applicationVisualSnapshotChanged,
+} from "./computer-use-dispatch-settlement.mjs";
 import { MACOS_UI_JXA } from "./app-automation-macos-jxa.mjs";
 
 const MAX_APPLICATIONS = 1000;
@@ -195,8 +200,8 @@ export class AppAutomationManager {
     const processGeneration = optionalProcessGeneration(result?.process_generation, "application process generation");
     const machineWindow = includeWindowState ? safeSelectedMacWindow(result?.window_state) : null;
     const { process_id: _processId, process_generation: _processGeneration, window_state: _windowState, ...publicResult } = result || {};
-    if (expectedProcessId && processId !== expectedProcessId) throw new Error("application process changed before operation");
-    if (expectedProcessGeneration && processGeneration !== expectedProcessGeneration) throw new Error("application process generation changed before operation");
+    if (expectedProcessId && processId !== expectedProcessId) throw applicationProcessIdentityChanged("application process changed before operation");
+    if (expectedProcessGeneration && processGeneration !== expectedProcessGeneration) throw applicationProcessIdentityChanged("application process generation changed before operation");
     if (includeProcessId && !processGeneration) throw new Error("application process generation is unavailable during Accessibility inspection");
     return {
       application,
@@ -388,15 +393,14 @@ export class AppAutomationManager {
     let captured;
     try { captured = await this.captureMacWindow(processName, timeoutSeconds, context, expectedProcessId, expectedProcessGeneration); }
     catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes("application process changed before operation") || message.includes("application process generation changed before operation")) throw error;
-      throw new Error("application visual snapshot unavailable before dispatch");
+      if (applicationOperationReason(error) === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED) throw error;
+      throw applicationVisualPreflightUnavailable("application visual snapshot unavailable before dispatch", error);
     }
     const actualSha256 = createHash("sha256").update(captured.bytes).digest("hex");
     if (captured.window.window_id !== target.expectedWindowId
         || !sameWindowBoundsNode(captured.window.bounds, target.expectedBounds)
         || actualSha256 !== target.expectedScreenshotSha256) {
-      throw new Error("application visual snapshot changed before dispatch");
+      throw applicationVisualSnapshotChanged("application visual snapshot changed before dispatch");
     }
     this.throwIfCancelled(context);
     return captured;
@@ -407,12 +411,15 @@ export class AppAutomationManager {
     try { result = await this.backgroundInputService[operation](input, context); }
     catch (error) {
       if (error instanceof BridgeError && error.code === "cancelled") throw error;
-      const message = String(error?.message || error);
-      if (message.includes("outcome is unknown") || message.includes("partially dispatched")) {
-        throw applicationVisualInputOutcomeUnknown(error);
+      const reason = applicationOperationReason(error);
+      if (reason === APPLICATION_OPERATION_REASON.INPUT_OUTCOME_UNKNOWN) throw applicationVisualInputOutcomeUnknown(error);
+      if (reason === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED) {
+        throw applicationProcessIdentityChanged("application process generation changed before operation", error);
       }
-      if (message.includes("process_generation_changed_before_dispatch")) throw new Error("application process generation changed before operation");
-      if (message.includes("before dispatch") || message.includes("unavailable")) throw new Error("application visual input unavailable before dispatch");
+      if (reason === APPLICATION_OPERATION_REASON.INPUT_PREFLIGHT_UNAVAILABLE
+          || reason === APPLICATION_OPERATION_REASON.VISUAL_PREFLIGHT_UNAVAILABLE) {
+        throw applicationVisualPreflightUnavailable("application visual input unavailable before dispatch", error);
+      }
       throw applicationVisualInputOutcomeUnknown(error);
     }
     return {
@@ -457,9 +464,9 @@ export class AppAutomationManager {
       includeProcessGeneration: true,
     }, timeoutSeconds, context);
     const window = selectMacWindow(windowState);
-    if (expectedProcessId && window.process_id !== expectedProcessId) throw new Error("application process changed before operation");
+    if (expectedProcessId && window.process_id !== expectedProcessId) throw applicationProcessIdentityChanged("application process changed before operation");
     if (expectedProcessGeneration && window.process_generation !== expectedProcessGeneration) {
-      throw new Error("application process generation changed before operation");
+      throw applicationProcessIdentityChanged("application process generation changed before operation");
     }
     if (!window.process_generation) throw new Error("application process generation is unavailable during window selection");
     return window;
@@ -567,11 +574,11 @@ export class AppAutomationManager {
       return { input_transport: keyboardResult.input_transport, focus_prepared: true };
     } catch (error) {
       if (error instanceof BridgeError && error.code === "cancelled") throw error;
-      const message = String(error?.message || error);
-      if (message.includes("process generation changed before dispatch")) {
-        throw new Error("application process generation changed before operation");
+      const reason = applicationOperationReason(error);
+      if (reason === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED) {
+        throw applicationProcessIdentityChanged("application process generation changed before operation", error);
       }
-      if (message.includes("outcome is unknown") || message.includes("partially dispatched")) {
+      if (reason === APPLICATION_OPERATION_REASON.INPUT_OUTCOME_UNKNOWN) {
         throw applicationKeyboardOutcomeUnknown(input.action, error);
       }
       throw error;
@@ -727,6 +734,8 @@ export class AppAutomationManager {
           retryable: false, details: { reason: "macos_system_events_automation_permission_required" },
         });
       }
+      const boundaryError = applicationAutomationBoundaryError(message);
+      if (boundaryError) throw boundaryError;
       throw new Error(message);
     }
     if (mutating && parsed.ok !== true) throw applicationAccessibilityOutcomeUnknown();
@@ -755,9 +764,10 @@ function applicationVisualInputOutcomeUnknown(cause = null) {
 function exposedApplicationSettlement(message, cause = null) {
   const terminationRequested = cause?.details?.termination_requested === true;
   const sideEffectsStarted = cause?.details?.side_effects_started ?? "unknown";
-  return new BridgeError("execution_failed", message, {
-    expose: true, retryable: false, cause: cause instanceof Error ? cause : undefined,
-    details: { side_effects_started: sideEffectsStarted, termination_requested: terminationRequested, effect_settlement: terminationRequested ? "pending" : "unknown" },
+  return applicationInputOutcomeUnknown(message, cause, {
+    side_effects_started: sideEffectsStarted,
+    termination_requested: terminationRequested,
+    effect_settlement: terminationRequested ? "pending" : "unknown",
   });
 }
 

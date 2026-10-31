@@ -125,7 +125,7 @@ Claude Desktop, Cursor, and many generic clients use a shape similar to:
 }
 ```
 
-Setting `MBM_PROGRESSIVE_TOOLS: "1"` selects opt-in progressive stdio discovery at startup. The initial nine tools include `resolve_task_capabilities`; use its validated `activate_tool_groups` names (`browser`, `app`, `jobs`, `git`, `process`, `diagnostics`, `skills`, `files`) to expose relevant policy-visible groups. Discovery advertises `tools.listChanged=true`. A client requesting `subscriptions/listen` with `notifications.toolsListChanged=true` receives an acknowledgement and subsequent `notifications/tools/list_changed` messages bound to that subscription ID; cancel the request to complete it. Without a subscription no unsolicited change notification is sent. The default full catalog remains static. Token savings depend on client formatting and tokenizer; no fixed savings claim is made.
+MCP 2026-07-28 stdio discovery exposes a stable policy-visible catalog. `--progressive` and `MBM_PROGRESSIVE_TOOLS=1` are rejected before runtime creation; remove the legacy setting or use `--all-tools` to override the environment. Capability resolution is advisory, and legacy activation arguments do not mutate `tools/list`. Tool-definition discovery for model context belongs to the host. Stdio advertises `tools.listChanged=false` and completes validated subscription requests immediately.
 
 Use the exact output of `client-config`; application-specific configuration locations and UI flows can change.
 

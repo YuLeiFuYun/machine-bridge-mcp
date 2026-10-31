@@ -7,6 +7,7 @@ import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_
 import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
 import { createDeviceIdentity } from "../src/local/device-identity.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
+import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 
 // Test-harness-only success budget: loaded hosted Windows runners can exceed 30s without changing production process deadlines.
 // run_process.timeout_seconds is schema-bounded to 60, so the Windows fixture uses that maximum rather than an invalid larger value.
@@ -451,7 +452,7 @@ export async function runtimeSelfTest() {
     }
     const hostedText = Array.from({ length: 700 }, (_, index) => `${String(index).padStart(4, "0")}:${'"'.repeat(72)}\n`).join("");
     await restricted.writeFile({ path: "nested/hosted-pages.txt", content: hostedText, create_only: true });
-    const hostedContext = { origin: "relay", authority: { origin: "relay" } };
+    const hostedContext = relayOwnerContext();
     const hostedPage = await restricted.readFile({ path: "nested/hosted-pages.txt" }, hostedContext);
     if (Buffer.byteLength(JSON.stringify(hostedPage)) > 64 * 1024 || hostedPage.complete !== false
       || !Number.isInteger(hostedPage.next_start_line) || hostedPage.next_start_line !== hostedPage.end_line + 1) {

@@ -149,6 +149,44 @@ class FirstPingFailSocket extends FakeSocket {
   connection.stop();
 }
 
+{
+  const connection = new RelayConnection({ workerUrl: "https://relay.example.invalid", WebSocketClass: FakeSocket });
+  assert(connection.lifecycle.phase === "closed", "relay lifecycle did not start closed");
+  connection.authenticated = true;
+  connection.ready = true;
+  connection.readinessProbeDelivered = true;
+  connection.activeSessionId = 42;
+  connection.workerConnectionId = "stale";
+  assert(connection.closed && !connection.authenticated && !connection.ready
+    && !connection.readinessProbeDelivered && connection.activeSessionId === 0 && connection.workerConnectionId === "",
+    "closed relay accepted stale authentication or readiness metadata");
+  assert(!Object.hasOwn(connection, "closed"), "relay kept an independent closed field");
+  assert(!Object.hasOwn(connection, "authenticated"), "relay kept an independent authenticated field");
+  assert(!Object.hasOwn(connection, "ready"), "relay kept an independent ready field");
+  connection.closed = false;
+  assert(connection.lifecycle.phase === "connecting", "relay lifecycle did not enter connecting");
+  connection.ready = true;
+  connection.readinessProbeDelivered = true;
+  connection.activeSessionId = 42;
+  assert(!connection.ready && !connection.readinessProbeDelivered && connection.activeSessionId === 0,
+    "connecting relay acquired readiness without authentication");
+  connection.authenticated = true;
+  connection.activeSessionId = 17;
+  connection.readinessProbeDelivered = true;
+  assert(connection.lifecycle.phase === "authenticated", "relay lifecycle did not enter authenticated");
+  assert(connection.currentSessionId() === 17, "relay lifecycle lost its authenticated session id");
+  connection.ready = true;
+  assert(connection.lifecycle.phase === "ready", "relay lifecycle did not enter ready");
+  connection.ready = false;
+  assert(connection.lifecycle.phase === "authenticated", "relay lifecycle lost authenticated state when leaving ready");
+  connection.authenticated = false;
+  assert(connection.lifecycle.phase === "connecting", "relay lifecycle did not return to connecting");
+  assert(connection.activeSessionId === 0, "relay lifecycle retained a session after authentication ended");
+  assert(connection.readinessProbeDelivered === false, "relay lifecycle retained readiness proof after authentication ended");
+  connection.stop();
+  assert(connection.lifecycle.phase === "closed", "relay lifecycle did not close on stop");
+}
+
 class ManualScheduler {
   constructor() {
     this.now = 1;
