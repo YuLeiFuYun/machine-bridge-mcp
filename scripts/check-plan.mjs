@@ -77,8 +77,9 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "git-structured-boundary:test",
   "runtime-self:test",
   "state-redaction:test",
+  "coverage-generation:test",
+  "coverage-range-merge:test",
   "progress-reporter:test",
-  "cf-project:test",
   "runtime-handlers:test",
   "cli-entrypoint:test",
   "cli-service:test",
@@ -103,6 +104,7 @@ export const FAST_CHECK_TASKS = Object.freeze([
   "execution-routing:test",
   "agent-boundaries:test",
   "agent-evals:test",
+  "agent-modern-capabilities:test",
   "agent-workflows:test",
   "agent-audit:test",
   "affected-checks:test",
@@ -141,6 +143,32 @@ export const SERIAL_FAST_CHECK_TASKS = Object.freeze([
   "syntax",
 ]);
 
+// Developer feedback loop. The release gate remains check:fast; this plan is
+// intentionally small enough to run before every edit.
+export const QUICK_CHECK_TASKS = Object.freeze([
+  "privacy:check",
+  "policy:test",
+  "catalog:test",
+  "tool-arguments:test",
+  "architecture:test",
+  "lint",
+  "typecheck",
+  "local-typecheck-coverage:test",
+  "syntax",
+  "runtime-handlers:test",
+  "mcp-protocol:test",
+  "mcp-controller:test",
+  "workspace-search-security:test",
+  "secure-file:test",
+  "numbers:test",
+  "records:test",
+  "markdown:test",
+  "project-metadata:test",
+  "check-plan:test",
+  "execution-routing:test",
+  "capability-ranking:test",
+]);
+
 export const PLATFORM_ONLY_CHECK_TASKS = Object.freeze([
   "privacy:test",
   "release-impact:test",
@@ -168,6 +196,7 @@ export const FULL_PREFLIGHT_CHECK_TASKS = Object.freeze([
 ]);
 
 export const FULL_POST_PLATFORM_CHECK_TASKS = Object.freeze([
+  "cf-project:test",
   "coverage:test",
   "browser-bridge:test",
   "package:test",
@@ -195,6 +224,7 @@ export const FULL_CHECK_TASKS = Object.freeze([
 ]);
 
 export function checkTasks(mode) {
+  if (mode === "quick") return QUICK_CHECK_TASKS;
   if (mode === "fast") return FAST_CHECK_TASKS;
   if (mode === "platform") return PLATFORM_CHECK_TASKS;
   if (mode === "full") return FULL_CHECK_TASKS;

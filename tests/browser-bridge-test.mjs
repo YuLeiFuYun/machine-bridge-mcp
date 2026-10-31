@@ -83,6 +83,8 @@ try {
   const html = await response.text();
   assert(response.status === 200 && !html.includes(pairing.extensionToken), "sanitized local pairing page exposed the long-lived extension token");
   assert(html.includes("Expected extension build") && html.includes(PACKAGE_VERSION), "local pairing page omitted extension reload diagnostics");
+  assert(/id="pair"[^>]*>Pair this browser extension<\/button>/i.test(html),
+    "local pairing page omitted the explicit user-confirmation control");
   assert(html.includes("Expected extension ID") && html.includes(EXPECTED_EXTENSION_ID), "local pairing page omitted the pinned extension identity");
   assert(response.headers.get("cache-control") === "no-store", "pairing page is cacheable");
   assert(!html.includes(pairing.runtimeToken), "local pairing page exposed the owner-only runtime credential");
@@ -493,6 +495,33 @@ async function testBrowserRequestSettlementEvidence() {
   const brokerRequest = (id, method, extra = {}) => Buffer.from(JSON.stringify({
     type: "request", id, method, params: {}, timeout_ms: 30000, ...extra,
   }));
+
+  // The extension's structured settlement has to survive the broker hop; without it the
+  // client is back to re-parsing the English message.
+  const settledClient = {
+    readyState: 1,
+    responses: [],
+    send(value) { this.responses.push(JSON.parse(value)); },
+    close() {},
+    on() {},
+  };
+  const settledExtension = { readyState: 1, sent: [], send(value) { this.sent.push(JSON.parse(value)); } };
+  const settledRoutes = brokerRoutes(settledExtension);
+  settledRoutes.acceptClient(settledClient);
+  settledRoutes.handleClientMessage(settledClient, brokerRequest("settle-1", "action"));
+  const routedId = settledExtension.sent.at(-1)?.id;
+  assert(typeof routedId === "string" && routedId.startsWith("proxy_"),
+    "browser broker did not route the settlement probe request to the extension");
+  assert(settledRoutes.settleExtensionResponse({
+    id: routedId, ok: false, error: "browser action may have been dispatched; the action outcome is unknown", settlement: "unknown",
+  }), "browser broker did not settle the routed extension response");
+  assert(settledClient.responses.at(-1)?.settlement === "unknown",
+    "browser broker dropped the extension's structured mutation settlement");
+  settledRoutes.handleClientMessage(settledClient, brokerRequest("settle-2", "action"));
+  const secondRoutedId = settledExtension.sent.at(-1)?.id;
+  settledRoutes.settleExtensionResponse({ id: secondRoutedId, ok: false, error: "ordinary failure", settlement: "not-a-real-value" });
+  assert(!Object.hasOwn(settledClient.responses.at(-1) || {}, "settlement"),
+    "browser broker forwarded an unrecognised settlement value");
 
   const preSendClient = brokerClient();
   brokerRoutes({ readyState: 3, send() { throw new Error("must not send"); } })

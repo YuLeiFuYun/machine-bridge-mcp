@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { bundleTaskTimeouts } from "../scripts/workflow-bundle-timeouts.mjs";
 import {
   FAST_CHECK_TASKS,
   FULL_CHECK_TASKS,
@@ -9,6 +10,7 @@ import {
   FULL_PREFLIGHT_CHECK_TASKS,
   PLATFORM_CHECK_TASKS,
   PLATFORM_ONLY_CHECK_TASKS,
+  QUICK_CHECK_TASKS,
   SERIAL_FAST_CHECK_TASKS,
   checkTasks,
 } from "../scripts/check-plan.mjs";
@@ -16,11 +18,15 @@ import {
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const scripts = packageJson.scripts || {};
 
+assert.deepEqual(checkTasks("quick"), QUICK_CHECK_TASKS);
 assert.deepEqual(checkTasks("fast"), FAST_CHECK_TASKS);
 assert.deepEqual(checkTasks("platform"), PLATFORM_CHECK_TASKS);
 assert.deepEqual(checkTasks("full"), FULL_CHECK_TASKS);
 assert.throws(() => checkTasks("unknown"), /unknown check mode/);
+const fullTaskSet = new Set(FULL_CHECK_TASKS);
+assert(QUICK_CHECK_TASKS.every((task) => fullTaskSet.has(task)), "quick plan contains a task outside the complete gate");
 for (const [name, tasks] of Object.entries({
+  quick: QUICK_CHECK_TASKS,
   fast: FAST_CHECK_TASKS,
   platform_only: PLATFORM_ONLY_CHECK_TASKS,
   platform: PLATFORM_CHECK_TASKS,
@@ -37,7 +43,7 @@ for (const task of FULL_CHECK_TASKS) assert.equal(typeof scripts[task], "string"
 const plannedCommands = FULL_CHECK_TASKS.map((task) => String(scripts[task] || ""));
 const runnerSource = await readFile(new URL("../scripts/check-runner.mjs", import.meta.url), "utf8");
 for (const name of readdirSync(new URL("../tests", import.meta.url))) {
-  if (!/-test\.(?:mjs|js)$/.test(name)) continue;
+  if (!/(?:-|\.)test\.(?:mjs|js)$/.test(name)) continue;
   const reachable = plannedCommands.some((command) => command.includes(`tests/${name}`)) || runnerSource.includes(`tests/${name}`);
   assert(reachable, `test file is not reachable from any check plan task: tests/${name}`);
 }
@@ -61,5 +67,21 @@ assert.equal(scripts.check, "npm run check:full");
 assert.equal(scripts["check:fast"], "node scripts/run-checks.mjs fast");
 assert.equal(scripts["check:platform"], "node scripts/run-checks.mjs platform");
 assert.equal(scripts["check:full"], "node scripts/run-checks.mjs full");
+
+// The workflow bundle is the declared lifecycle authority; the runner must actually read
+// its per-task budgets instead of keeping a second, silent copy.
+const bundle = JSON.parse(await readFile(new URL("../workflow-bundle.json", import.meta.url), "utf8"));
+const bundleTimeouts = bundleTaskTimeouts(bundle, scripts);
+for (const [task, milliseconds] of [
+  ["cf-network:test", 300_000],
+  ["wrangler-toolchain:test", 300_000],
+  ["cf-project:test", 600_000],
+]) {
+  assert.equal(bundleTimeouts.get(task), milliseconds, `workflow bundle budget for ${task} is not wired to the plan`);
+}
+const plannedTasks = new Set([...FAST_CHECK_TASKS, ...FULL_CHECK_TASKS, "test", "check:fast", "check:full"]);
+for (const task of bundleTimeouts.keys()) {
+  assert(plannedTasks.has(task), `workflow bundle declares a budget for a task no plan runs: ${task}`);
+}
 
 console.log(`check plan test ok (${FAST_CHECK_TASKS.length} fast, ${PLATFORM_CHECK_TASKS.length} platform, ${FULL_CHECK_TASKS.length} full tasks)`);

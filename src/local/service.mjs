@@ -724,8 +724,8 @@ ExecStart=${execArgs}
 Environment=${systemdQuote(`PATH=${spec.pathEnv}`)}
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:${spec.stdout}
-StandardError=append:${spec.stderr}
+StandardOutput=append:${systemdQuote(spec.stdout)}
+StandardError=append:${systemdQuote(spec.stderr)}
 
 [Install]
 WantedBy=default.target

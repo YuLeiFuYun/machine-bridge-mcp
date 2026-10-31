@@ -7,8 +7,6 @@ import accessContract from "../shared/access-contract.json" with { type: "json" 
 import { BridgeError } from "./errors.mjs";
 import { OPERATION_APPROVAL_SCOPES, classifyOperation } from "./operation-risk.mjs";
 
-export { OPERATION_APPROVAL_SCOPES, classifyOperation };
-
 const OWNER_ONLY_TOOLS = new Set((accessContract.ownerOnlyTools || []).map(String));
 
 /** @typedef {ReturnType<typeof import("./authority-context.mjs").buildAuthorityContext>} AuthorityContext */
@@ -80,7 +78,6 @@ export class OperationAuthorizer {
   }
 }
 
-/** @param {OperationRequirement | null} requirement @param {AuthorityContext} authority @param {Uint8Array} auditTargetKey */
 /** @param {OperationRequirement | null} requirement @param {AuthorityContext} authority @param {Uint8Array} auditTargetKey @returns {OperationAuthorizationBaseDecision} */
 function operationDecision(requirement, authority, auditTargetKey) {
   return {

@@ -30,16 +30,36 @@
     if (message?.type === "machine_bridge_pairing_status") { updateStatus(String(message.text || "")); return false; }
     return false;
   });
-  chrome.runtime.sendMessage({ type: "pair_bootstrap", port: brokerPort, grant }, (response) => {
-    if (chrome.runtime.lastError || response?.ok !== true) {
-      const manualRepair = response?.requires_manual_repair === true;
-      if (!manualRepair) grant = "";
-      updateStatus(manualRepair
-        ? "This extension is already paired to different local state. Click the Machine Bridge extension icon while this page is active to confirm re-pairing."
-        : "Pairing failed. Run pair_browser_extension with opening enabled again.");
+
+  const pair = () => {
+    if (!grant) return;
+    const button = document.getElementById("pair");
+    if (button) button.disabled = true;
+    updateStatus("Pairing...");
+    chrome.runtime.sendMessage({ type: "pair_bootstrap", port: brokerPort, grant }, (response) => {
+      if (chrome.runtime.lastError || response?.ok !== true) {
+        const manualRepair = response?.requires_manual_repair === true;
+        if (!manualRepair) grant = "";
+        if (button) button.disabled = true;
+        updateStatus(manualRepair
+          ? "This extension is already paired to different local state. Click the Machine Bridge extension icon while this page is active to confirm re-pairing."
+          : "Pairing failed. Run pair_browser_extension with opening enabled again.");
+        return;
+      }
+      grant = "";
+      updateStatus("Paired. You may close this tab.");
+    });
+  };
+  const arm = () => {
+    const button = document.getElementById("pair");
+    if (!button || typeof button.addEventListener !== "function") {
+      updateStatus("Pairing requires the Machine Bridge local pairing page; no confirmation control is available.");
       return;
     }
-    grant = "";
-    updateStatus("Paired. You may close this tab.");
-  });
+    button.disabled = false;
+    button.addEventListener("click", pair, { once: true });
+    updateStatus("Confirm pairing in this page, or click the Machine Bridge extension icon while this page is active.");
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", arm, { once: true });
+  else arm();
 })();

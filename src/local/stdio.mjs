@@ -9,18 +9,16 @@ import { publicError } from "./errors.mjs";
 import {
   MCP_INSTRUCTIONS,
   SERVER_NAME,
+  TOOL_SCHEMA_GENERATION,
   rpcError,
   rpcResult,
   toolResult,
   toolsForPolicy,
-  CORE_CORNERSTONE_TOOL_NAMES,
-  PROGRESSIVE_TOOL_GROUPS,
-  findToolGroup,
 } from "./tools.mjs";
 import {
-  MCP_PROTOCOL_VERSIONS, MCP_PROGRESSIVE_TOOL_LIST_TTL_MS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
+  MCP_PROTOCOL_VERSIONS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
   completeResult, discoverResult, emptySubscriptionAcknowledgement, progressNotification, serverImplementation, subscriptionCompleteResult,
-  validateRequestMetadata, validateSubscriptionRequest, subscriptionAcknowledgement, toolsListChangedNotification,
+  tagToolSchemaGeneration, validateRequestMetadata, validateSubscriptionRequest,
 } from "../shared/mcp-protocol.mjs";
 import { createProgressReporter } from "../shared/progress-reporter.mjs";
 import { MCP_TASK_EXTENSION_ID, supportsMcpTasks, taskClientCapabilities } from "../shared/mcp-task-contract.mjs";
@@ -56,9 +54,13 @@ export async function runStdioServer({
   serviceControlRoot = "", verboseErrors = process.env.MBM_VERBOSE_ERRORS === "1",
   progressiveTools = process.env.MBM_PROGRESSIVE_TOOLS === "1",
 }) {
+  if (progressiveTools) {
+    throw new Error("--progressive / MBM_PROGRESSIVE_TOOLS is unsupported by MCP 2026-07-28; use host-side tool discovery or --all-tools");
+  }
   const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
   const runtime = new LocalRuntime({ workspace, policy, logger, jobRoot, resources, resourceStatePath, browserStateRoot, serviceControlRoot });
   const pending = new Map();
+  const auxiliaryPending = new Set();
   const requestHandlers = new Set();
   const inputState = { closed: false };
   const outputWriter = createBoundedStdioWriter({
@@ -77,26 +79,9 @@ export async function runStdioServer({
     },
   });
   const send = outputWriter.send;
-  const progressiveEnabled = Boolean(progressiveTools);
-  const sessionProgressive = progressiveEnabled;
-  const capabilities = { ...MCP_SERVER_CAPABILITIES, tools: { listChanged: sessionProgressive } };
   const subscriptions = new Map();
-  const activeToolNames = new Set(sessionProgressive ? CORE_CORNERSTONE_TOOL_NAMES : toolsForPolicy(policy).map((tool) => tool.name));
-
-  function activateToolGroupFor(toolNames, { expandGroups = true } = {}) {
-    if (!sessionProgressive) return [];
-    const allowed = new Set(toolsForPolicy(policy).map((tool) => tool.name));
-    const activated = [];
-    for (const toolName of toolNames) {
-      const group = expandGroups ? findToolGroup(toolName) : null;
-      const names = group ? PROGRESSIVE_TOOL_GROUPS[group] : [toolName];
-      for (const name of names) {
-        if (allowed.has(name) && !activeToolNames.has(name)) { activeToolNames.add(name); activated.push(name); }
-      }
-    }
-    if (activated.length) for (const requestId of subscriptions.values()) send(toolsListChangedNotification(requestId));
-    return activated;
-  }
+  const runAuxiliaryRequest = createAuxiliaryRequestRunner({ inputState, pending, subscriptions, auxiliaryPending, send });
+  const capabilities = MCP_SERVER_CAPABILITIES;
 
   await consumeBoundedJsonLines(process.stdin, {
     maxLineBytes: MAX_LINE_BYTES,
@@ -175,32 +160,20 @@ export async function runStdioServer({
       return;
     }
     if (message.method === "tools/list") {
-      const isProgressive = sessionProgressive;
-      const allTools = toolsForPolicy(policy);
-      const exposed = isProgressive
-        ? allTools.filter((tool) => activeToolNames.has(tool.name))
-        : allTools;
-      const ttlMs = isProgressive ? MCP_PROGRESSIVE_TOOL_LIST_TTL_MS : MCP_TOOL_LIST_TTL_MS;
-      send(rpcResult(message.id, cacheableResult({ tools: exposed }, { ttlMs, cacheScope: "private", serverInfo: MCP_SERVER_INFO })));
+      const tools = toolsForPolicy(policy).map((tool) => tagToolSchemaGeneration(tool, TOOL_SCHEMA_GENERATION));
+      send(rpcResult(message.id, cacheableResult({ tools }, { ttlMs: MCP_TOOL_LIST_TTL_MS, cacheScope: "private", serverInfo: MCP_SERVER_INFO })));
       return;
     }
     if (message.method === "subscriptions/listen") {
       try {
-        const filter = validateSubscriptionRequest(message);
+        validateSubscriptionRequest(message);
         const key = jsonRpcIdKey(message.id);
         if (pending.has(key) || subscriptions.has(key)) {
           send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
           return;
         }
-        if (sessionProgressive && filter.toolsListChanged) {
-          if (Buffer.byteLength(key, "utf8") > 1024) { send(rpcError(message.id, MCP_LIMIT_EXCEEDED, "Subscription request id exceeds 1024 bytes")); return; }
-          if (subscriptions.size >= MAX_PENDING_TOOL_CALLS) { send(rpcError(message.id, MCP_LIMIT_EXCEEDED, "Too many active subscriptions")); return; }
-          subscriptions.set(key, message.id);
-          send(subscriptionAcknowledgement(message.id, { toolsListChanged: true }));
-        } else {
-          send(emptySubscriptionAcknowledgement(message.id));
-          send(rpcResult(message.id, subscriptionCompleteResult(message.id, MCP_SERVER_INFO)));
-        }
+        send(emptySubscriptionAcknowledgement(message.id));
+        send(rpcResult(message.id, subscriptionCompleteResult(message.id, MCP_SERVER_INFO)));
       } catch (error) {
         if (error instanceof McpProtocolError) send(rpcError(message.id, error.code, error.message, error.data));
         else throw error;
@@ -210,12 +183,12 @@ export async function runStdioServer({
     if (message.method === "tools/call") {
       await handleStdioToolCall({
         message, progressToken: metadata?.progressToken, policy, pending, runtime, send,
-        verboseErrors, inputState, activateToolGroupFor, progressiveEnabled: sessionProgressive, activeToolNames, subscriptions,
+        verboseErrors, inputState, subscriptions,
       });
       return;
     }
     if (message.method === "prompts/list" || message.method === "prompts/get") {
-      await executePromptOperation(runtime, message.method, message, send, verboseErrors);
+      await runAuxiliaryRequest(message, () => executePromptOperation(runtime, message.method, message, send, verboseErrors));
       return;
     }
     if (message.method === "tasks/get" || message.method === "tasks/list" || message.method === "tasks/cancel" || message.method === "tasks/update" || message.method === "tasks/result") {
@@ -223,18 +196,18 @@ export async function runStdioServer({
         send(rpcError(message.id, -32601, "Method not found"));
         return;
       }
-      await executeTaskOperation(runtime, message.method, message, send, verboseErrors);
+      await runAuxiliaryRequest(message, () => executeTaskOperation(runtime, message.method, message, send, verboseErrors));
       return;
     }
     if (message.method === "resources/list" || message.method === "resources/templates/list" || message.method === "resources/read") {
-      await executeResourceOperation(runtime, message.method, message, send, verboseErrors);
+      await runAuxiliaryRequest(message, () => executeResourceOperation(runtime, message.method, message, send, verboseErrors));
       return;
     }
     send(rpcError(message.id, -32601, "Method not found"));
   }
 }
 
-async function handleStdioToolCall({ message, progressToken, policy, pending, runtime, send, verboseErrors, inputState, activateToolGroupFor = null, progressiveEnabled = false, activeToolNames = null, subscriptions = null }) {
+async function handleStdioToolCall({ message, progressToken, policy, pending, runtime, send, verboseErrors, inputState, subscriptions = null }) {
   // EOF can race a request handler that has not registered its call ID yet. Do not
   // start a side effect after the input transport has closed.
   if (inputState.closed) return;
@@ -244,7 +217,7 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
     send(rpcError(message.id, -32602, "tools/call requires a tool name"));
     return;
   }
-  if (!toolsForPolicy(policy).some((tool) => tool.name === name) || (progressiveEnabled && !activeToolNames?.has(name))) {
+  if (!toolsForPolicy(policy).some((tool) => tool.name === name)) {
     send(rpcError(message.id, -32602, "Unknown or unavailable tool"));
     return;
   }
@@ -271,19 +244,7 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
   if (key) pending.set(key, callId);
   try {
     const result = await withProgress(progressToken, name, send, () => runtime.executeTool(name, rawArgs, { callId, origin: "stdio" }));
-    let payload = result;
-    if (progressiveEnabled && name === "resolve_task_capabilities" && typeof activateToolGroupFor === "function") {
-      const requestedGroups = Array.isArray(rawArgs?.activate_tool_groups) ? rawArgs.activate_tool_groups : [];
-      const recommended = Array.isArray(result?.recommended_tools) ? result.recommended_tools : [];
-      const activated = [
-        ...activateToolGroupFor(requestedGroups.flatMap((group) => PROGRESSIVE_TOOL_GROUPS[group] || []), { expandGroups: false }),
-        ...activateToolGroupFor(recommended, { expandGroups: rawArgs?.activate_recommended_groups === true }),
-      ];
-      if (activated.length && result && typeof result === "object" && !Array.isArray(result)) {
-        payload = { ...result, activated_tools: activated };
-      }
-    }
-    send(rpcResult(message.id, toolResult(payload, false, MCP_SERVER_INFO)));
+    send(rpcResult(message.id, toolResult(result, false, MCP_SERVER_INFO)));
   } catch (error) {
     const errorObject = publicError(error, { verbose: verboseErrors });
     send(rpcResult(message.id, toolResult({ error: errorObject }, true, MCP_SERVER_INFO)));
@@ -459,7 +420,7 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
       return;
     }
   } catch (error) {
-    send(rpcResult(message.id, { error: publicError(error, { verbose: verboseErrors }) }));
+    send(rpcError(message.id, -32603, "Resource read failed", publicError(error, { verbose: verboseErrors })));
   }
 }
 
@@ -806,6 +767,27 @@ function isJsonRpcMessage(value) {
 
 function isJsonRpcId(value) {
   return value === null || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
+}
+
+function createAuxiliaryRequestRunner({ inputState, pending, subscriptions, auxiliaryPending, send }) {
+  return async function runAuxiliaryRequest(message, operation) {
+    if (inputState.closed) return;
+    const key = jsonRpcIdKey(message.id);
+    if (key && (pending.has(key) || subscriptions.has(key) || auxiliaryPending.has(key))) {
+      send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
+      return;
+    }
+    if (auxiliaryPending.size >= MAX_PENDING_TOOL_CALLS) {
+      send(rpcError(message.id, MCP_LIMIT_EXCEEDED, "Too many concurrent requests"));
+      return;
+    }
+    if (key) auxiliaryPending.add(key);
+    try {
+      await operation();
+    } finally {
+      if (key) auxiliaryPending.delete(key);
+    }
+  };
 }
 
 function jsonRpcIdKey(value) {

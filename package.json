@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.209",
+  "version": "3.0.0-beta.210",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "scripts/release-candidate-manifest.mjs",
     "scripts/release-channel.mjs",
     "scripts/release-diagnostic.mjs",
+    "scripts/test-entry.mjs",
     "scripts/release-oauth-canary-core.mjs",
     "scripts/release-oauth-canary-evidence.mjs",
     "scripts/release-oauth-canary.mjs",
@@ -60,7 +61,7 @@
     "wrangler.config.ts"
   ],
   "scripts": {
-    "test": "npm run check:fast",
+    "test": "node scripts/test-entry.mjs",
     "start": "node bin/machine-mcp.mjs start",
     "doctor": "node bin/machine-mcp.mjs doctor",
     "self-test": "node tests/local-self-test.mjs",
@@ -68,7 +69,7 @@
     "version:check": "node scripts/sync-worker-version.mjs --check",
     "version": "node scripts/sync-worker-version.mjs && git add package.json package-lock.json src/worker/index.ts browser-extension/manifest.json",
     "prepack": "npm run version:check && npm run privacy:check && npm run release-impact:check",
-    "prepublishOnly": "npm run publication:check && npm run check && npm run version:check && npm run release:check",
+    "prepublishOnly": "node scripts/assert-publishable-manifest.mjs && npm run publication:check && npm run check && npm run version:check && npm run release:check",
     "worker:types": "node scripts/generate-worker-types.mjs",
     "typecheck": "npm run worker:types && tsc -p tsconfig.json --noEmit && npm run typecheck:local",
     "syntax": "node scripts/syntax-check.mjs",
@@ -114,6 +115,7 @@
     "agent-context:test": "node tests/agent-context-test.mjs",
     "agent-boundaries:test": "node tests/agent-boundaries-test.mjs",
     "agent-evals:test": "node tests/agent-evals-test.mjs",
+    "agent-modern-capabilities:test": "node --test tests/agent-modern-capabilities-test.mjs",
     "browser-bridge:test": "node tests/browser-bridge-test.mjs",
     "app-automation:test": "node tests/app-automation-test.mjs",
     "app-screenshot:test": "node tests/app-screenshot-test.mjs",
@@ -186,6 +188,7 @@
     "release:accept": "node scripts/local-release-acceptance.mjs --record",
     "release:acceptance:verify": "node scripts/local-release-acceptance.mjs --verify",
     "github:push": "node scripts/github-push.mjs",
+    "check:quick": "node scripts/run-checks.mjs quick",
     "check:fast": "node scripts/run-checks.mjs fast",
     "check:full": "node scripts/run-checks.mjs full",
     "check-plan:test": "node tests/check-plan-test.mjs",
@@ -326,6 +329,9 @@
     "sharp": "0.35.5",
     "brace-expansion": "5.0.12",
     "miniflare": "5.20261019.1-beta",
-    "ws": "$ws"
+    "undici": "7.30.1",
+    "zod": "4.6.7",
+    "ws": "$ws",
+    "minimatch": "11.0.1"
   }
 }

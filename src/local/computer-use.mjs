@@ -12,7 +12,7 @@ import {
 import { applicationStateActionTargetSupported, applicationVerificationTarget, normalizeExpectation, validateApplicationStateActionTarget, validateExpectationPrerequisites } from "./computer-use-expectation.mjs";
 import { ComputerUseSnapshotStore } from "./computer-use-snapshot-store.mjs";
 import { computerActPostObservationTimeoutError, computerActRemainingTimeoutSeconds, computerActVerificationTimeoutProbe, publicPostObservationError, requiredComputerActRemainingTimeoutSeconds, requiredComputerObserveRemainingTimeoutSeconds } from "./computer-use-deadline.mjs";
-import { settleComputerUseDispatch } from "./computer-use-dispatch-settlement.mjs";
+import { APPLICATION_OPERATION_REASON, applicationOperationReason, settleComputerUseDispatch } from "./computer-use-dispatch-settlement.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
 import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "./computer-use-observation.mjs";
 import { buildRetryGuidance } from "./computer-use-recovery.mjs";
@@ -952,19 +952,11 @@ export class ComputerUseManager {
             timeout_seconds: clampInt(args.timeout_seconds, 30, 1, 60),
           }, context);
         } catch (error) {
-          const message = String(error?.message || error);
-          if (message.includes("application visual snapshot is stale") || message.includes("application visual snapshot changed before dispatch")) {
-            throw staleSnapshot("application window identity, bounds, or screenshot changed immediately before visual drag");
-          }
-          if (applicationProcessIdentityError(error)) {
-            throw staleSnapshot("application process changed immediately before visual drag");
-          }
-          if (message.includes("application visual snapshot unavailable before dispatch") || message.includes("application visual input unavailable before dispatch")) {
-            throw new BridgeError("unavailable", "application visual drag could not be validated before dispatch", {
-              details: { reason: "application_visual_preflight_unavailable" },
-            });
-          }
-          throw error;
+          throw applicationVisualDispatchError(error, {
+            staleDetail: "application window identity, bounds, or screenshot changed immediately before visual drag",
+            processDetail: "application process changed immediately before visual drag",
+            unavailableMessage: "application visual drag could not be validated before dispatch",
+          });
         }
       }
       if (action === "scroll") {
@@ -983,19 +975,11 @@ export class ComputerUseManager {
             timeout_seconds: clampInt(args.timeout_seconds, 30, 1, 60),
           }, context);
         } catch (error) {
-          const message = String(error?.message || error);
-          if (message.includes("application visual snapshot is stale") || message.includes("application visual snapshot changed before dispatch")) {
-            throw staleSnapshot("application window identity, bounds, or screenshot changed immediately before visual scroll");
-          }
-          if (applicationProcessIdentityError(error)) {
-            throw staleSnapshot("application process changed immediately before visual scroll");
-          }
-          if (message.includes("application visual snapshot unavailable before dispatch") || message.includes("application visual input unavailable before dispatch")) {
-            throw new BridgeError("unavailable", "application visual scroll could not be validated before dispatch", {
-              details: { reason: "application_visual_preflight_unavailable" },
-            });
-          }
-          throw error;
+          throw applicationVisualDispatchError(error, {
+            staleDetail: "application window identity, bounds, or screenshot changed immediately before visual scroll",
+            processDetail: "application process changed immediately before visual scroll",
+            unavailableMessage: "application visual scroll could not be validated before dispatch",
+          });
         }
       }
       if (target.semantic_delivery) {
@@ -1037,19 +1021,11 @@ export class ComputerUseManager {
         }, context);
         return { ...result, semantic_point_candidates: target.semantic_point_candidates };
       } catch (error) {
-        const message = String(error?.message || error);
-        if (message.includes("application visual snapshot is stale") || message.includes("application visual snapshot changed before dispatch")) {
-          throw staleSnapshot("application window identity, bounds, or screenshot changed immediately before visual dispatch");
-        }
-        if (applicationProcessIdentityError(error)) {
-          throw staleSnapshot("application process changed immediately before visual dispatch");
-        }
-        if (message.includes("application visual snapshot unavailable before dispatch") || message.includes("application visual input unavailable before dispatch")) {
-          throw new BridgeError("unavailable", "application visual input could not be validated before dispatch", {
-            details: { reason: "application_visual_preflight_unavailable" },
-          });
-        }
-        throw error;
+        throw applicationVisualDispatchError(error, {
+          staleDetail: "application window identity, bounds, or screenshot changed immediately before visual dispatch",
+          processDetail: "application process changed immediately before visual dispatch",
+          unavailableMessage: "application visual input could not be validated before dispatch",
+        });
       }
     }
     const inspection = applicationTargetInspection(target);
@@ -1076,18 +1052,15 @@ export class ComputerUseManager {
     try {
       return await this.applications.operateApplication(call, context);
     } catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes("application target window changed before dispatch")
-          || message.includes("application target geometry changed before dispatch")
-          || applicationProcessIdentityError(error)) {
+      const reason = applicationOperationReason(error);
+      if (reason === APPLICATION_OPERATION_REASON.TARGET_GEOMETRY_CHANGED
+          || reason === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED) {
         throw staleSnapshot("application target window or geometry changed immediately before Accessibility dispatch");
       }
-      if (message.includes("application target checked state is unavailable before dispatch")
-          || message.includes("application check target is not an Accessibility checkbox or radio button")
-          || message.includes("application uncheck target is not an Accessibility checkbox")) {
+      if (reason === APPLICATION_OPERATION_REASON.CHECKED_STATE_CHANGED) {
         throw staleSnapshot("application checked-state target changed immediately before Accessibility dispatch");
       }
-      if (message.includes("application target does not expose AXPress before checked-state dispatch")) {
+      if (reason === APPLICATION_OPERATION_REASON.CHECKED_STATE_INPUT_UNAVAILABLE) {
         throw new BridgeError("unavailable", "application checked-state input is unavailable before dispatch", {
           details: { reason: "application_checked_state_input_unavailable" },
         });
@@ -1566,9 +1539,21 @@ function applicationProcessChanged(beforePrivateState, afterPrivateState) {
 }
 
 function applicationProcessIdentityError(error) {
-  const message = String(error?.message || error);
-  return message.includes("application process changed before operation")
-    || message.includes("application process generation changed before operation");
+  return applicationOperationReason(error) === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED;
+}
+
+function applicationVisualDispatchError(error, { staleDetail, processDetail, unavailableMessage }) {
+  const reason = applicationOperationReason(error);
+  if (reason === APPLICATION_OPERATION_REASON.VISUAL_SNAPSHOT_CHANGED) throw staleSnapshot(staleDetail);
+  if (reason === APPLICATION_OPERATION_REASON.PROCESS_IDENTITY_CHANGED) throw staleSnapshot(processDetail);
+  if (reason === APPLICATION_OPERATION_REASON.VISUAL_PREFLIGHT_UNAVAILABLE
+      || reason === APPLICATION_OPERATION_REASON.INPUT_PREFLIGHT_UNAVAILABLE) {
+    throw new BridgeError("unavailable", unavailableMessage, {
+      cause: error instanceof Error ? error : undefined,
+      details: { reason: "application_visual_preflight_unavailable" },
+    });
+  }
+  return error;
 }
 
 function applicationProcessIdentityMatches(value, expectedProcessId, expectedProcessGeneration) {

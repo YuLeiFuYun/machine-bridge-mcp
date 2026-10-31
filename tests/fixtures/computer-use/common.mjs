@@ -1,4 +1,5 @@
 import { ComputerUseManager } from "../../../src/local/computer-use.mjs";
+import { applicationProcessIdentityChanged } from "../../../src/local/computer-use-dispatch-settlement.mjs";
 
 export const PNG_A_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 export const PNG_B_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z7WQAAAAASUVORK5CYII=";
@@ -212,10 +213,10 @@ export function appStub({ inspectQueue, inspectErrors = null, repeatLastInspect 
   let lastCapture = null;
   const assertExpectedIdentity = (args, processId, processGeneration) => {
     if (args.expected_process_id !== undefined && Number(args.expected_process_id) !== Number(processId)) {
-      throw new Error("application process changed before operation");
+      throw applicationProcessIdentityChanged("application process changed before operation");
     }
     if (args.expected_process_generation !== undefined && String(args.expected_process_generation) !== String(processGeneration)) {
-      throw new Error("application process generation changed before operation");
+      throw applicationProcessIdentityChanged("application process generation changed before operation");
     }
   };
   const stub = {
@@ -243,10 +244,10 @@ export function appStub({ inspectQueue, inspectErrors = null, repeatLastInspect 
         ? String(generationQueue.length > 1 ? generationQueue.shift() : generationQueue[0])
         : `gen-${processId}`;
       if (args.expected_process_id !== undefined && Number(args.expected_process_id) !== processId) {
-        throw new Error("application process changed before operation");
+        throw applicationProcessIdentityChanged("application process changed before operation");
       }
       if (args.expected_process_generation !== undefined && String(args.expected_process_generation) !== processGeneration) {
-        throw new Error("application process generation changed before operation");
+        throw applicationProcessIdentityChanged("application process generation changed before operation");
       }
       if (args.include_process_id === true) {
         result._machine_process_id = processId;

@@ -127,6 +127,22 @@ function testBrowserOperationScalarExactness() {
   }));
   assert(malformedLimit.error === "browser result exceeds maximum size",
     "coercible response-size budget was accepted as an extension transport limit");
+  const settledFailure = JSON.parse(browserOperationHelpers.responsePayload({
+    id: "settled", ok: false, error: "browser action may have been dispatched; the action outcome is unknown",
+    method: "action", maxBytes: 100000, settlement: "unknown",
+  }));
+  assert(settledFailure.settlement === "unknown",
+    "a declared mutation settlement was dropped from the response envelope");
+  const unsettledRead = JSON.parse(browserOperationHelpers.responsePayload({
+    id: "settled-read", ok: false, error: "ordinary failure", method: "inspect_page", maxBytes: 100000,
+  }));
+  assert(!("settlement" in unsettledRead),
+    "a response without a declared settlement gained one");
+  const bogusSettlement = JSON.parse(browserOperationHelpers.responsePayload({
+    id: "bogus", ok: false, error: "ordinary failure", method: "action", maxBytes: 100000, settlement: "not-a-real-value",
+  }));
+  assert(!("settlement" in bogusSettlement),
+    "an unrecognised settlement value was forwarded onto the wire");
 }
 
 async function testHandshakeReadiness() {
@@ -516,6 +532,21 @@ async function testBrowserErrorRedaction() {
   assert(context.__machineBridgeBrowserErrorBoundary.publicError(new Error("browser screenshot active tab changed before temporary activation"))
     === "browser screenshot active tab changed before temporary activation",
   "pre-activation concurrent tab switch lost its fixed safe error");
+  for (const message of [
+    "browser action may have been dispatched; the action outcome is unknown",
+    "browser tab mutation may have been dispatched; the outcome is unknown",
+    "browser screenshot temporary tab activation may have been dispatched; the outcome is unknown",
+    "browser screenshot restoration may have been dispatched; the active-tab outcome is unknown",
+    "form submission failed after partial changes",
+    "trusted browser input may have been partially dispatched",
+  ]) {
+    assert(context.__machineBridgeBrowserErrorBoundary.publicSettlement(new Error(message)) === "unknown",
+      "a mutation that may already have taken effect did not declare an unknown settlement");
+  }
+  for (const message of ["no active browser tab", "invalid CSS selector: body", "browser wait timed out"]) {
+    assert(context.__machineBridgeBrowserErrorBoundary.publicSettlement(new Error(message)) === "",
+      "a pre-dispatch failure claimed an unknown mutation settlement");
+  }
 }
 
 async function testExtensionConcurrencyLimit() {

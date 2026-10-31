@@ -308,7 +308,9 @@ async function handleMessage(ws, raw, onReady = () => {}) {
       closeSocketQuietly(ws, 1011, "browser response delivery failed");
     }
   } catch (error) {
-    if (!state.cancelled && !sendResponse(ws, message.id, false, null, globalThis.__machineBridgeBrowserErrorBoundary.publicError(error))) {
+    const boundary = globalThis.__machineBridgeBrowserErrorBoundary;
+    const settlement = typeof boundary?.publicSettlement === "function" ? boundary.publicSettlement(error) : "";
+    if (!state.cancelled && !sendResponse(ws, message.id, false, null, boundary.publicError(error), "", settlement)) {
       closeSocketQuietly(ws, 1011, "browser error delivery failed");
     }
   } finally {
@@ -326,9 +328,9 @@ function throwIfCancelled(state) {
   if (state.cancelled) throw new Error("browser request cancelled");
 }
 
-function sendResponse(ws, id, ok, result, error = "", method = "") {
+function sendResponse(ws, id, ok, result, error = "", method = "", settlement = "") {
   if (ws.readyState !== WebSocket.OPEN) return false;
-  const payload = browserOperations().responsePayload({ id, ok, result, error, method, maxBytes: MAX_RESULT_BYTES });
+  const payload = browserOperations().responsePayload({ id, ok, result, error, method, maxBytes: MAX_RESULT_BYTES, settlement });
   return sendSocketQuietly(ws, payload);
 }
 

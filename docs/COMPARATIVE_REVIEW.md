@@ -1,17 +1,21 @@
 # Comparative review — 2026-10-21
 
-This snapshot covers **51 distinct agent projects** and **19 foundational/recent papers** at the exact sources linked below. Coverage is repository documentation and the previously recorded selected entrypoints, not an exhaustive source/security audit of every upstream. Archived projects are labelled. Marketing scores are not project benchmarks. No upstream code or new production dependency is required by these decisions.
+This snapshot covers **51 distinct agent projects** and **19 foundational/recent papers** at the exact sources linked below. The project table is reproducibility evidence at pinned commits; separately dated rolling status observations describe later maintenance state and do not retroactively change what those commits established. Coverage is repository documentation and the previously recorded selected entrypoints, not an exhaustive source/security audit of every upstream. Archived projects are labelled. Marketing scores are not project benchmarks. No upstream code or new production dependency is required by these decisions.
+
+**Rolling maintenance observation — 2026-10-26.** AutoGen's current upstream README marks the project archived and no longer maintained by Microsoft and directs new users to Microsoft Agent Framework. This observation records maintenance status only; the table below remains pinned to exact revisions.
 
 The bridge remains an execution and authority boundary. It does not acquire a model loop, vector database, distributed queue, continuous screen recorder or automatic self-modification merely because an upstream framework offers one. Its three direct runtime dependencies remain purposeful: `ws`, `https-proxy-agent` and `proxy-from-env`. Managed-job records are bounded JSON, not CBOR.
 
 ## Pinned project comparison
+
+The Decision column records design intent, not implementation status. Only `AGENTS.override.md`/`AGENTS.md` are discovered by default; other instruction files require `instruction_files`.
 
 | Project snapshot | Documentation signal | Decision for Machine Bridge |
 | --- | --- | --- |
 | [openai/codex](https://github.com/openai/codex/tree/c7234c1174b27d9c55199fba0d546dc27d1b0415) | Hierarchical `AGENTS.md` and V4A patch envelopes | Adopt nearest-directory `AGENTS.md` precedence and V4A `apply_patch`; leave model loops to host CLIs. |
 | [anthropics/claude-code](https://github.com/anthropics/claude-code/tree/d014fc0fa64280540728772fc84063918ed185cc) | `CLAUDE.md` instruction trees and command permissions | Discover `CLAUDE.md` with byte budgets and explicit omission reporting; enforce permissions in policy gates. |
 | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli/tree/c1740d29301a73a47dc3501c1aecc7eb00c0ee58) | `GEMINI.md` hierarchy and workspace checkpointing | Support `GEMINI.md` discovery and `expected_sha256` atomic writes; omit shadow Git checkpoint repos. |
-| [aaif-goose/goose](https://github.com/aaif-goose/goose/tree/7143dddf732be1b259f2fde83f225b44d10caf71) | Modular MCP extensions and `.goosehints` | Read `.goosehints` and support group-based progressive stdio tool activation; keep provider routing host-owned. |
+| [aaif-goose/goose](https://github.com/aaif-goose/goose/tree/7143dddf732be1b259f2fde83f225b44d10caf71) | Modular MCP extensions and `.goosehints` | Read `.goosehints` and keep server catalogs stable and leave progressive definition loading to the host; keep provider routing host-owned. |
 | [cline/cline](https://github.com/cline/cline/tree/627e51e54622177d0e1a25a2e78aacdd83704d11) | `.clinerules` guidance and reviewable plans | Read `.clinerules` in project context and expose `stage_job` for inspectable plans before `start_job`. |
 | [RooCodeInc/Roo-Code (archived)](https://github.com/RooCodeInc/Roo-Code/tree/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16) | `.roorules` mode rules; archived snapshot | Include `.roorules` in bounded instruction discovery; avoid embedding IDE-specific persona modes. |
 | [Aider-AI/aider](https://github.com/Aider-AI/aider/tree/5dc9490bb35f9729ef2c95d00a19ccd30c26339c) | Repository maps and search/replace diagnostics | Provide lexical `symbol-outline` and line-numbered `near_miss` edit hints without Tree-sitter or PageRank. |
@@ -25,7 +29,7 @@ The bridge remains an execution and authority boundary. It does not acquire a mo
 | [MoonshotAI/kimi-cli (archived)](https://github.com/MoonshotAI/kimi-cli/tree/9ab1286b8fe4e6bcd116949a27ce5e0ac3389c82) | On-demand skill loading; archived CLI | Return skill metadata in `agent_context` and load full `SKILL.md` bodies only via `load_local_skill`. |
 | [langchain-ai/langgraph](https://github.com/langchain-ai/langgraph/tree/a24fc97778fca67cfac4cd3fc63e508ee1d29f59) | Checkpointed state machines and interrupt/resume | Persist durable job state and idempotency keys across disconnects; leave graph orchestration to hosts. |
 | [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents/tree/4f8a6566d1c06c04f5d8d9614706f72ce64532e3) | Sub-agent handoffs via shared workspace files | Enforce canonical path containment and atomic file transactions so concurrent tasks cannot corrupt files. |
-| [microsoft/autogen](https://github.com/microsoft/autogen/tree/004749e6b7102c8fd317b9b1499ce5807223c278) | Multi-agent teams and isolated code execution | Provide isolated process execution and per-account `effective_policy`; leave team chat routing to callers. |
+| [microsoft/autogen (archived)](https://github.com/microsoft/autogen/tree/004749e6b7102c8fd317b9b1499ce5807223c278) | Archived/no-longer-maintained multi-agent framework; the pinned revision directs new users to Microsoft Agent Framework | Retain only the historical design comparison; prefer Agent Framework for current upstream signals and leave team chat routing to callers. |
 | [microsoft/agent-framework](https://github.com/microsoft/agent-framework/tree/08851e69d722b0e0961c08eecf8575db995f0172) | Enterprise workflow contracts and telemetry | Emit correlation IDs and hash-chained security audit logs without embedding a workflow engine. |
 | [crewAIInc/crewAI](https://github.com/crewAIInc/crewAI/tree/a8877f0cdfbca4fc4b95e3ce54aaa69aafca7688) | Schema-constrained task outputs | Publish verified `outputSchema` definitions in `tool-catalog.json` for deterministic output validation. |
 | [FoundationAgents/MetaGPT](https://github.com/FoundationAgents/MetaGPT/tree/11cdf466d042aece04fc6cfd13b28e1a70341b1f) | SOP role pipelines and artifact handoffs | Support structured `SKILL.md` workflows and staged multi-step jobs without fixed role personas. |
@@ -33,7 +37,7 @@ The bridge remains an execution and authority boundary. It does not acquire a mo
 | [openai/openai-agents-python](https://github.com/openai/openai-agents-python/tree/64cd5dfc5a1579870dcbed0ea42b27aa84033fee) | Input/output guardrails and tool handoffs | Validate all arguments against strict schemas (`additionalProperties: false`) and redact sensitive outputs. |
 | [google/adk-python](https://github.com/google/adk-python/tree/8fbcd42e1d3b08951231db6169aaf75af0a9dfa4) | Deterministic trajectory evaluation | Verify editing and job-recovery trajectories in `agent-workflows:test` by asserting final filesystem state. |
 | [pydantic/pydantic-ai](https://github.com/pydantic/pydantic-ai/tree/57d8610448b9a6b2b0d3f70a85bf134b59c4b7eb) | Strict schema validation and retry guidance | Bind `outputSchema.required` to `tool-output-contract.json` and return typed `actionable_remedy` on errors. |
-| [huggingface/smolagents](https://github.com/huggingface/smolagents/tree/96f33faaf028479119ec8d34507b47694cf14e34) | Minimal tool surface and execution boundaries | Start progressive stdio mode with 9 core tools and separate argv `run_process` from shell `exec_command`. |
+| [huggingface/smolagents](https://github.com/huggingface/smolagents/tree/96f33faaf028479119ec8d34507b47694cf14e34) | Minimal tool surface and execution boundaries | Keep full-policy stdio discovery stable and separate argv `run_process` from shell `exec_command`. |
 | [agno-agi/agno](https://github.com/agno-agi/agno/tree/d955124a89178b6bf8803a674d4489bd6a5104a3) | Fast instantiation and bounded context | Deduplicate unchanged static context in `session_bootstrap` and `resolve_task_capabilities` via fingerprints. |
 | [letta-ai/letta](https://github.com/letta-ai/letta/tree/8816d3a8516893bfdc0fa14bfb1235226012e295) | Tiered memory with read/write separation | Keep `agent_context` strictly read-only with bounded `.project-local/agent-memory.json` projection. |
 | [lastmile-ai/mcp-agent](https://github.com/lastmile-ai/mcp-agent/tree/f62d849350816588b1c6294e7914bbe4d8b84072) | MCP server composition and routing | Rank compatible tool groups and execution surfaces in `resolve_task_capabilities` without hiding allowed tools. |
@@ -60,12 +64,36 @@ The bridge remains an execution and authority boundary. It does not acquire a mo
 | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/tree/40cc180823d182826536416de2fc27be44b4ac57) | Long-horizon tool calling and scratchpads | Bound persistent memory to 64 KiB input / 16 KiB output with `untrusted-project-context` authority tags. |
 | [algorithmicsuperintelligence/openevolve](https://github.com/algorithmicsuperintelligence/openevolve/tree/59dfe764b5ab4478ac00214432fcac33bbe2bf4b) | Evolutionary loops and evaluator gates | Enforce ratcheted architecture, assertion, coverage, and doc budgets; forbid autonomous code mutation. |
 
+## Instruction-file decision status
+
+Only `AGENTS.override.md` and `AGENTS.md` are discovered. `CLAUDE.md`, `GEMINI.md`, `.goosehints`, `.clinerules`, `.roorules`, and `.continuerules` appear in the pinned table as design intent only and are not read by `agent_context`.
+
+## Rolling-current maintenance observations — 2026-10-26
+
+The 51-project table above is the reproducible **2026-10-21 pinned snapshot**. The notes below are rolling maintenance observations from official upstream pages as of 2026-10-26. They do **not** add to the 51-project count, replace the pinned SHAs, imply a fresh source/security audit, or transfer upstream benchmark results.
+
+- **Microsoft AutoGen:** the current repository README marks the project archived and no longer maintained by Microsoft, and directs new users to Microsoft Agent Framework. The pinned AutoGen row remains useful only as a historical design reference.
+- **Gemini CLI:** the current stable release is v0.65.0 (2026-10-20), with workspace-security and session-resilience changes including read-only settings in untrusted folders and stronger resumed-session integrity. Current nightly releases continue to change cancellation, sandbox/IDE bridging, and atomic-write behavior; these moving observations are not substituted for the pinned comparison.
+- **Pydantic AI:** v2.61.0 (2026-10-23) is the current listed release. Recent v2.58.0/v2.59.0 security fixes around MCP telemetry and attacker-controlled web-fetch processing reinforce the bridge's existing rule that observability and fetched/tool content are not authority and must remain privacy- and resource-bounded.
+
 ## Adopted changes and synthesis
 
-- **Instruction hierarchy and repo maps (Codex, Claude Code, Gemini CLI, Aider, SWE-agent).** Nearest-first instruction precedence, explicit omissions, on-demand memory, `with_line_numbers` windowed reads, numbered `near_miss` edit hints, and lexical `symbol-outline` are implemented without bundling an embedded LLM, Tree-sitter, or PageRank.
+- **Instruction hierarchy and repo maps (Codex, Claude Code, Gemini CLI, Aider, SWE-agent).** Nearest-first `AGENTS.md` precedence, explicit omissions, on-demand memory, `with_line_numbers` windowed reads, numbered `near_miss` edit hints, and lexical `symbol-outline` are implemented without bundling an embedded LLM, Tree-sitter, or PageRank.
 - **MCP extensions and durable workflows (Goose, Cline, LangGraph, Mastra, mcp-agent).** Progressive stdio discovery, `stage_job`/`start_job`/`read_job`, idempotency recovery keys, and MCP Tasks projections preserve state across disconnects while leaving planners and role graphs to the host.
 - **Browser and desktop grounding (browser-use, Stagehand, Playwright MCP, Agent-S, UFO).** Observations bind to the current tab, frame, snapshot, and capability; actions verify post-dispatch effects without bundling a browser engine or granting ambient screen authority.
-- **Memory, typed contracts, and evaluation gates (Letta, Pydantic AI, AgentLab, OpenEvolve).** Memory remains read-only in `agent_context`, output schemas are verified against `tool-output-contract.json`, and deterministic fixtures verify final state.
+- **Memory, typed contracts, and evaluation gates (Letta, Pydantic AI, AgentLab, OpenEvolve).** Memory remains read-only in `agent_context`, output schemas are verified against `tool-output-contract.json`, deterministic fixtures verify final state, and a thirteen-case synthetic scoring fixture exercises a generic `pass`/`fail`/`unknown` scorer with call/latency/token/cost accounting. The scorer consumes prerecorded traces and is not a live model benchmark.
+
+## MCP standards and extensions — 2026-10-27
+
+The core specification remains `2026-07-28`; the 2026 changes are extensions, listed separately from the 51 projects and 19 papers.
+
+| Standard | Status | Project decision |
+| --- | --- | --- |
+| Skills over MCP (`io.modelcontextprotocol/skills`) | Final (SEP-2640; 2026-09-13) | Implement `skills/list`/`skills/get` and `skill://` resources; keep `agent_context` as fallback. |
+| MCP Tasks (`io.modelcontextprotocol/tasks`) | Official extension | Polling/terminal only; document that `input_required` is unsupported. |
+| MCP Apps (`io.modelcontextprotocol/ui`) | Official extension | Worker-only Job Monitor; document the boundary. |
+| Progressive Disclosure WG | Active; no Final | Keep the thin adapter; do not add bespoke grouping before a Final. |
+| CIMD | Next-core direction; DCR deprecated | Plan before the next core release; keep DCR fallback. |
 
 ## Foundational and recent papers
 
@@ -93,4 +121,4 @@ The bridge remains an execution and authority boundary. It does not acquire a mo
 
 ## Verification boundary
 
-These are adaptation choices supported by local defects and contracts, not copied upstream implementations or reproduced paper benchmarks. Source inspection, offline regression, platform behavior, package integrity, deployed OAuth/MCP observation, external CI and owner-reported soak remain separate evidence under [RELEASING](RELEASING.md). Hosted SSE heartbeats are gated on complete frame boundaries (`\n\n` / `\r\n\r\n`), while idempotency-key job recovery remains the authoritative settlement path.
+These are adaptation choices supported by local defects and contracts, not copied upstream implementations or reproduced paper benchmarks. The pinned 2026-10-21 table is the reproducibility baseline; the 2026-10-26 rolling observations are maintenance signals only. Deterministic held-out Agent/MCP trace scoring is offline contract evidence, not a live-model success-rate claim. Source inspection, offline regression, platform behavior, package integrity, deployed OAuth/MCP observation, external CI and owner-reported soak remain separate evidence under [RELEASING](RELEASING.md). Hosted SSE heartbeats are gated on complete frame boundaries (`\n\n` / `\r\n\r\n`), while idempotency-key job recovery remains the authoritative settlement path.

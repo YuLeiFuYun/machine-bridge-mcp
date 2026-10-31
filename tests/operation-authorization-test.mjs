@@ -2,10 +2,13 @@ import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
-import { buildAuthorityContext } from "../src/local/authority-context.mjs";
-import { OperationAuthorizer, classifyOperation } from "../src/local/operation-authorization.mjs";
-import { reviewedOperationToolNames } from "../src/local/operation-risk.mjs";
+import toolSecurityContract from "../src/shared/tool-security-contract.json" with { type: "json" };
+import { assertOwnedByContext, buildAuthorityContext, principalBinding, principalForContext, visibleToContext } from "../src/local/authority-context.mjs";
+import { OperationAuthorizer } from "../src/local/operation-authorization.mjs";
+import { createToolSecurityIndex } from "../src/shared/tool-security.mjs";
+import { classifyOperation } from "../src/local/operation-risk.mjs";
 import { policyProfile } from "../src/local/policy.mjs";
+import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-authority-test-"));
 const workspace = path.join(root, "workspace");
@@ -27,12 +30,39 @@ const accountId = `acct_${"a".repeat(32)}`;
 const clientId = `mcp_client_${"b".repeat(43)}`;
 
 try {
+  for (const mutation of [
+    (c) => { c.tools.read_file.family = "file-raed"; },
+    (c) => { c.tools.read_file.family = "__proto__"; },
+    (c) => { c.tools.read_file.family = ["file-read"]; },
+    (c) => { c.tools.read_file.effect = "read-onyl"; },
+    (c) => { c.schema_version = 2; },
+    (c) => { c.tools = {}; },
+  ]) {
+    const contract = structuredClone(toolSecurityContract);
+    mutation(contract);
+    let rejected = false;
+    try { createToolSecurityIndex(contract); } catch { rejected = true; }
+    assert(rejected, "malformed static security metadata was admitted");
+  }
+  const isolatedContract = structuredClone(toolSecurityContract);
+  const index = createToolSecurityIndex(isolatedContract);
+  isolatedContract.tools.read_file.family = "automatic";
+  assert(index.get("read_file").family === "file-read" && Object.isFrozen(index.get("read_file")),
+    "validated classification remained mutable through its source object");
   const catalogNames = new Set(catalog.map((tool) => tool.name));
-  const reviewedNames = reviewedOperationToolNames();
-  assert(
-    [...catalogNames].every((name) => reviewedNames.has(name)) && [...reviewedNames].every((name) => catalogNames.has(name)),
-    `operation-risk review coverage drifted: missing=${[...catalogNames].filter((name) => !reviewedNames.has(name)).join(",")} stale=${[...reviewedNames].filter((name) => !catalogNames.has(name)).join(",")}`,
-  );
+  const handlerNames = new Set(runtimeToolHandlerNames());
+  const securityNames = new Set(Object.keys(toolSecurityContract.tools || {}));
+  assert([...handlerNames].every((name) => securityNames.has(name)) && [...securityNames].every((name) => handlerNames.has(name)),
+    `static security classification drifted from runtime handlers: unclassified=${[...handlerNames].filter((name) => !securityNames.has(name)).join(",")} stale=${[...securityNames].filter((name) => !handlerNames.has(name)).join(",")}`);
+  assert([...catalogNames].every((name) => handlerNames.has(name)) && [...handlerNames].every((name) => catalogNames.has(name)),
+    "runtime handler inventory drifted from the catalog");
+  let unclassifiedRejected = false;
+  try {
+    await classifyOperation("__unclassified_tool", {});
+  } catch (error) {
+    unclassifiedRejected = /no static security classification/.test(String(error?.message || ""));
+  }
+  assert(unclassifiedRejected, "an unclassified tool was admitted without a scope requirement");
 
   const authorizer = new OperationAuthorizer({
     workspace,
@@ -60,6 +90,39 @@ try {
     assert(denied?.code === "authorization_denied",
       `relay authority coerced non-scalar ${field} into authenticated principal identity`);
   }
+
+  const relayAuthority = buildAuthorityContext({
+    authorization: validRelayAuthorization,
+    daemonPolicy: policyProfile("full"),
+    origin: "relay",
+  });
+  const relayPrincipal = principalForContext({ authority: relayAuthority });
+  assert(relayPrincipal.kind === "account",
+    "authenticated relay authority did not resolve to its account principal");
+  const localPrincipal = principalForContext({});
+  assert(localPrincipal.kind === "local" && localPrincipal.role === "owner",
+    "unmarked internal local context stopped resolving to the local owner");
+  for (const context of [
+    { origin: "relay" },
+    { origin: "relay", authority: { origin: "relay" } },
+    { authority: { origin: "relay", owner: true } },
+    { authority: { owner: false } },
+  ]) {
+    let denied = null;
+    try { principalForContext(context); } catch (error) { denied = error; }
+    assert(denied?.code === "authorization_denied",
+      "a relay or delegated context without an authenticated principal was upgraded to local-owner authority");
+  }
+  let bindingDenied = null;
+  try { principalBinding({ authority: { origin: "relay" } }); } catch (error) { bindingDenied = error; }
+  assert(bindingDenied?.code === "authorization_denied",
+    "principal binding upgraded an unauthenticated relay context to a local principal");
+  assert(visibleToContext({ owner_kind: "local" }, { authority: { origin: "relay" } }) === false,
+    "relay context without a principal could see a local-owned record");
+  let ownershipDenied = null;
+  try { assertOwnedByContext({ owner_kind: "local" }, { origin: "relay" }); } catch (error) { ownershipDenied = error; }
+  assert(ownershipDenied?.code === "authorization_denied",
+    "relay context without a principal passed local-owner record ownership");
 
   const ownerShell = await authorizer.authorize(operation("exec_command", { command: "printf owner" }, "owner"));
   assert(ownerShell.source === "trusted-owner", "owner operation did not remain interruption-free");
@@ -210,11 +273,13 @@ try {
   });
   assert(gitConfigRead?.scopes.includes("sensitive-read"), "workspace Git configuration read bypassed the sensitive boundary");
 
-  const envWrite = await classifyOperation("apply_patch", { patch: "*** Add File: .env.local\n+SECRET=value" }, { workspace });
+  const envWrite = await classifyOperation("apply_patch", {
+    patch: "*** Begin Patch\n*** Add File: .env.local\n+SECRET=value\n*** End Patch",
+  }, { workspace });
   assert(envWrite?.scopes.includes("sensitive-write"), "workspace environment write bypassed the sensitive-write boundary");
 
   const moveOutside = await classifyOperation("apply_patch", {
-    patch: "*** Update File: README.md\n*** Move to: ../moved-outside.txt\n@@\n-ok\n+new",
+    patch: "*** Begin Patch\n*** Update File: README.md\n*** Move to: ../moved-outside.txt\n@@\n-ok\n+new\n*** End Patch",
   }, { workspace });
   assert(moveOutside?.scopes.includes("external-write"), "patch move target bypassed the external-write boundary");
 
@@ -223,7 +288,7 @@ try {
   const linkedOutside = path.join(workspace, "linked-outside");
   symlinkSync(outsideDirectory, linkedOutside, process.platform === "win32" ? "junction" : "dir");
   const symlinkPatch = await classifyOperation("apply_patch", {
-    patch: "*** Add File: linked-outside/escaped.txt\n+escaped",
+    patch: "*** Begin Patch\n*** Add File: linked-outside/escaped.txt\n+escaped\n*** End Patch",
   }, { workspace, resolveWritePath: canonicalWritePath });
   assert(symlinkPatch?.scopes.includes("external-write"), "patch through a workspace symlink bypassed canonical classification");
 

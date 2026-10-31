@@ -3,7 +3,7 @@ import { normalizeLogLevel } from "./log.mjs";
 const BOOLEAN_OPTIONS = new Set([
   "help", "version", "quiet", "json", "verbose", "rotateSecrets", "forceWorker",
   "daemonOnly", "noAutostart", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
-  "yes", "keepWorker", "allowInsecurePermissions", "showPaths", "repairResourceCoordinator", "progressive",
+  "yes", "keepWorker", "allowInsecurePermissions", "showPaths", "repairResourceCoordinator", "progressive", "allTools",
 ]);
 const VALUE_OPTIONS = new Set([
   "workspace", "stateDir", "workerName", "profile", "execMode", "client", "logLevel", "logFormat",
@@ -21,8 +21,8 @@ const COMMAND_OPTIONS = new Map(Object.entries({
     "workspace", "stateDir", "workerName", "quiet", "json", "verbose", "logLevel", "logFormat", "rotateSecrets", "forceWorker",
     "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths",
   ]),
-  stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat", "progressive"]),
-  "client-config": new Set(["workspace", "stateDir", "profile", "client", "json", "progressive"]),
+  stdio: new Set(["workspace", "stateDir", "profile", "execMode", "noWrite", "noExec", "fullEnv", "unrestrictedPaths", "absolutePaths", "verbose", "quiet", "logLevel", "logFormat", "progressive", "allTools"]),
+  "client-config": new Set(["workspace", "stateDir", "profile", "client", "json", "progressive", "allTools"]),
   status: new Set(["workspace", "stateDir"]),
   doctor: new Set(["workspace", "stateDir", "repairResourceCoordinator"]),
   "full-test": new Set(["workspace", "stateDir", "json"]),
@@ -116,6 +116,9 @@ export function parseArgs(argv) {
 }
 
 export function validateCommandOptions(command, args) {
+  if ((command === "stdio" || command === "client-config") && args.progressive) {
+    throw new Error("--progressive is unsupported by MCP 2026-07-28; use host-side tool discovery or --all-tools");
+  }
   const allowed = COMMAND_OPTIONS.get(command);
   if (!allowed) return;
   for (const key of Object.keys(args)) {

@@ -13,6 +13,7 @@ export {
   assertToolAllowed,
   intersectPolicies,
   isCanonicalFullPolicy,
+  matchingProfile,
   normalizePolicy,
   policyAllowsAvailability,
   policyAllowsTool,
@@ -27,6 +28,7 @@ export {
 } from "./policy.mjs";
 
 export const SERVER_NAME = String(serverMetadata.name);
+export const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 export const MCP_PROTOCOL_VERSION = String(serverMetadata.protocolVersion);
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(serverMetadata.supportedProtocolVersions.map((value) => String(value)));
 export const MCP_INSTRUCTIONS = Object.freeze(serverMetadata.instructions.map((value) => String(value))).join("\n");

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import toolSecurityContract from "../shared/tool-security-contract.json" with { type: "json" };
+import { BridgeError } from "./errors.mjs";
+import { createToolSecurityIndex } from "../shared/tool-security.mjs";
+import { parsePatchEnvelope } from "./patch.mjs";
 
 export const OPERATION_APPROVAL_SCOPES = Object.freeze([
   "shell",
@@ -15,33 +19,18 @@ export const OPERATION_APPROVAL_SCOPES = Object.freeze([
   "full",
 ]);
 
-const SHELL_TOOLS = new Set(["exec_command", "run_process", "start_process", "run_local_command", "read_process", "write_process", "kill_process"]);
-const PERSISTENT_TOOLS = new Set(["stage_job", "start_job", "list_jobs", "read_job", "cancel_job"]);
-const APPLICATION_CONTROL_TOOLS = new Set(["open_local_application", "inspect_local_application", "operate_local_application"]);
-const COMPUTER_USE_TOOLS = new Set(["computer_observe", "computer_act"]);
-const CREDENTIAL_TOOLS = new Set(["generate_ssh_key_resource"]);
-const BROWSER_PROFILE_TOOLS = new Set([
-  "pair_browser_extension", "browser_list_tabs", "browser_manage_tabs", "browser_get_source",
-  "browser_inspect_page", "browser_wait", "browser_action", "browser_fill_form", "browser_screenshot",
-]);
-const AUTOMATIC_TOOLS = new Set([
-  "server_info", "project_overview", "list_local_applications", "browser_status", "list_roots",
-  "diagnose_runtime", "list_local_resources",
-]);
-const READ_ONLY_OPERATION_TOOLS = new Set([
-  "server_info", "project_overview", "session_bootstrap", "resolve_task_capabilities",
-  "list_local_applications", "inspect_local_application", "browser_list_tabs", "browser_get_source",
-  "browser_inspect_page", "browser_wait", "agent_context", "list_local_skills", "load_local_skill",
-  "list_local_commands", "list_roots", "list_dir", "list_files", "read_file", "view_image",
-  "search_text", "git_status", "git_diff", "git_log", "git_show", "read_process",
-  "diagnose_runtime", "list_local_resources", "list_jobs", "read_job",
-]);
-const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file", "git_commit"]);
-const FILE_READ_TOOLS = new Set([
-  "session_bootstrap", "resolve_task_capabilities", "agent_context", "list_local_skills", "load_local_skill", "list_local_commands",
-  "list_dir", "list_files", "read_file", "view_image", "search_text",
-  "git_status", "git_diff", "git_log", "git_show",
-]);
+const STATIC_TOOL_SECURITY = createToolSecurityIndex(toolSecurityContract);
+const SHELL_TOOLS = toolNamesForFamily("shell");
+const PERSISTENT_TOOLS = toolNamesForFamily("persistent-job");
+const APPLICATION_CONTROL_TOOLS = toolNamesForFamily("application-control");
+const COMPUTER_USE_TOOLS = toolNamesForFamily("computer-use");
+const CREDENTIAL_TOOLS = toolNamesForFamily("credential-operation");
+const BROWSER_PROFILE_TOOLS = toolNamesForFamily("browser-session");
+const BROWSER_UPLOAD_TOOLS = toolNamesForFamily("browser-upload");
+const PROTECTED_RESOURCE_INVENTORY_TOOLS = toolNamesForFamily("protected-resource-inventory");
+const FILE_WRITE_TOOLS = toolNamesForFamily("file-write");
+const FILE_READ_TOOLS = toolNamesForFamily("file-read");
+const PATCH_TOOLS = toolNamesForFamily("patch");
 const SENSITIVE_SEGMENTS = new Set([
   ".git", ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".npmrc", ".pypirc",
   "keychains", "cookies", "login data", "credentials", "secrets",
@@ -53,29 +42,22 @@ const SENSITIVE_STATE_BASENAME = /^(?:terraform\.tfstate(?:\.backup)?|.*\.tfstat
 const SENSITIVE_CREDENTIAL_BASENAME = /^(?:\.?netrc|_netrc|\.curlrc|(?:access|refresh|auth|oauth|api|client)[-_]?(?:token|key|secret)s?|service[-_]?account|(?:token|tokens|secret|secrets|credential|credentials))(?:\.(?:json|ya?ml|toml|ini|conf|cfg|txt|db|sqlite))?$/i;
 const RESOURCE_TOKEN = /\{\{resource:[a-z][a-z0-9._-]{0,63}\}\}/;
 
-export function reviewedOperationToolNames() {
-  return new Set([
-    ...AUTOMATIC_TOOLS,
-    ...SHELL_TOOLS,
-    ...PERSISTENT_TOOLS,
-    ...APPLICATION_CONTROL_TOOLS,
-    ...COMPUTER_USE_TOOLS,
-    ...CREDENTIAL_TOOLS,
-    ...BROWSER_PROFILE_TOOLS,
-    ...FILE_WRITE_TOOLS,
-    ...FILE_READ_TOOLS,
-    "browser_upload_files",
-    "apply_patch",
-  ]);
-}
-
 export function operationMayHaveSideEffects(tool) {
-  return typeof tool !== "string" || !READ_ONLY_OPERATION_TOOLS.has(tool);
+  const entry = typeof tool === "string" ? STATIC_TOOL_SECURITY.get(tool) : null;
+  return entry?.effect !== "read-only";
 }
 
 export async function classifyOperation(tool, args = {}, options = {}) {
   const name = String(tool || "");
-  if (name === "list_local_resources") return requirement("sensitive-read", "protected local resource inventory", name, {});
+  // Fail closed: an unclassified tool has no reviewed scope requirement, and treating that
+  // as "no approval needed" would silently widen remote authority. Catalog/contract parity is
+  // enforced by tests, but the runtime must not depend on a test to stay safe.
+  if (!STATIC_TOOL_SECURITY.has(name)) {
+    throw new BridgeError("invalid_request", `tool ${name || "(empty)"} has no static security classification`, {
+      details: { reason: "unclassified_tool" },
+    });
+  }
+  if (PROTECTED_RESOURCE_INVENTORY_TOOLS.has(name)) return requirement("sensitive-read", "protected local resource inventory", name, {});
   if (SHELL_TOOLS.has(name)) return requirement("shell", "remote shell or process control", name, args);
   if ((name === "stage_job" || name === "start_job") && jobUsesProtectedResources(args)) {
     return requirement(["persistent-job", "sensitive-read"], "managed job using protected local resources", name, protectedJobProjection(args));
@@ -102,7 +84,7 @@ export async function classifyOperation(tool, args = {}, options = {}) {
   }
   if (APPLICATION_CONTROL_TOOLS.has(name)) return requirement("application-control", "desktop application control", name, args);
   if (CREDENTIAL_TOOLS.has(name)) return requirement("credential-operation", "credential or key operation", name, args);
-  if (name === "browser_upload_files") {
+  if (BROWSER_UPLOAD_TOOLS.has(name)) {
     return requirement(["browser-session", "data-export"], "existing browser profile file upload", name, args);
   }
   if (name === "browser_action" && args.value_resource) {
@@ -132,8 +114,11 @@ export async function classifyOperation(tool, args = {}, options = {}) {
     const scopes = pathWriteScopes(options.workspace, target);
     if (scopes.length) return requirement(scopes, pathWriteCategory(scopes), name, { path: target });
   }
-  if (name === "apply_patch") {
-    const paths = patchPaths(args.patch);
+  if (PATCH_TOOLS.has(name)) {
+    // Use the same strict envelope parser as execution. A regex approximation can
+    // classify hunk text as a path and disagree with the operation that actually runs.
+    const paths = parsePatchEnvelope(args.patch)
+      .flatMap((operation) => [operation.path, operation.moveTo].filter(Boolean));
     const targets = [];
     for (const candidate of paths) targets.push(await canonicalWritePath(candidate, options));
     const scopes = normalizeScopes(targets.flatMap((target) => pathWriteScopes(options.workspace, target)));
@@ -276,13 +261,8 @@ function isSensitiveEnvironmentFile(base) {
   return ![".env.example", ".env.sample", ".env.template", ".env.defaults"].includes(base);
 }
 
-function patchPaths(patch) {
-  const paths = [];
-  for (const line of String(patch || "").split(/\r?\n/)) {
-    const match = /^(?:\*\*\* (?:Add|Update|Delete) File:|\*\*\* Move to:|\+\+\+|---)\s+(.+)$/.exec(line);
-    if (!match) continue;
-    const value = match[1].replace(/^[ab]\//, "").trim();
-    if (value && value !== "/dev/null") paths.push(value);
-  }
-  return paths;
+function toolNamesForFamily(family) {
+  return new Set([...STATIC_TOOL_SECURITY.entries()]
+    .filter(([, entry]) => entry?.family === family)
+    .map(([name]) => name));
 }

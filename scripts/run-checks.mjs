@@ -8,6 +8,8 @@ import { captureCoverageGeneration } from "./coverage-generation.mjs";
 import { rerunVerificationUnderIdleSleepGuard } from "./verification-idle-sleep-guard.mjs";
 import { runWithStableGeneration } from "./verification-generation-guard.mjs";
 import { releaseDiagnostic } from "./release-diagnostic.mjs";
+import { readBundleTaskTimeouts } from "./workflow-bundle-timeouts.mjs";
+import { assertHostCapabilities } from "./verification-capabilities.mjs";
 import {
   captureVerificationRunGeneration,
   captureVerifiedSourceGeneration,
@@ -24,6 +26,9 @@ if (guardedExitCode !== null) process.exit(guardedExitCode);
 const mode = process.argv[2] || "full";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const packageScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts || {};
+// The workflow bundle declares each gate's timeout; the runner's built-in table is only a
+// fallback for tasks the bundle does not cover.
+const bundleTimeouts = readBundleTaskTimeouts(root, packageScripts);
 const serialFastTasks = new Set(SERIAL_FAST_CHECK_TASKS);
 const parallelFastTasks = new Set(FAST_CHECK_TASKS.filter((task) => !serialFastTasks.has(task)));
 let tasks;
@@ -31,6 +36,7 @@ let coverageTaskNames;
 let fullCoverage = null;
 try {
   tasks = checkTasks(mode);
+  assertHostCapabilities(tasks);
   coverageTaskNames = mode === "full" ? coverageTasksForPlan(tasks, packageScripts) : new Set();
   if (mode === "full") {
     clearFullVerificationReceipt(root);
@@ -40,7 +46,7 @@ try {
   const taskEnvironments = fullCoverage
     ? createFullCoverageTaskEnvironments(fullCoverage, coverageTaskNames)
     : null;
-  await runWithStableGeneration({
+  const verification = await runWithStableGeneration({
     label: `${mode} verification inputs`,
     captureGeneration: () => captureVerificationRunGeneration(root),
     run: () => runVerificationPlan({
@@ -53,9 +59,10 @@ try {
       parallelTaskNames: parallelFastTasks,
       packageScripts,
       taskEnvironments,
+      taskTimeouts: bundleTimeouts,
     }),
   });
-  if (mode === "full") writeFullVerificationReceipt(root, captureVerifiedSourceGeneration(root));
+  if (mode === "full") writeFullVerificationReceipt(root, captureVerifiedSourceGeneration(root), { skipped: verification?.skipped || [] });
 } catch (error) {
   if (error?.message && !String(error.message).startsWith("verification task failed:")) {
     console.error(releaseDiagnostic(error.message, 1200));

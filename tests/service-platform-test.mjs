@@ -78,6 +78,13 @@ assert(launchdDefinition.includes("<key>ThrottleInterval</key><integer>10</integ
 const systemdDefinition = systemdUnit({ node: "/usr/bin/node", daemonArgs: ["/tmp/machine-mcp.mjs", "start"], pathEnv: "/usr/bin:/bin", stdout: "/tmp/daemon.out", stderr: "/tmp/daemon.err" });
 assert(systemdDefinition.includes("StartLimitIntervalSec=60") && systemdDefinition.includes("StartLimitBurst=5"),
   "systemd definition does not bound repeated daemon crashes");
+const quotedSystemdDefinition = systemdUnit({
+  node: "/usr/bin/node", daemonArgs: ["/tmp/machine-mcp.mjs", "start"], pathEnv: "/usr/bin:/bin",
+  stdout: "/tmp/daemon out/%value", stderr: "/tmp/daemon err/%value",
+});
+assert(quotedSystemdDefinition.match(/StandardOutput=append:"\/tmp\/daemon out\/%%value"/)
+  && quotedSystemdDefinition.match(/StandardError=append:"\/tmp\/daemon err\/%%value"/),
+  "systemd log paths are not quoted or percent-escaped");
 
 if (process.platform === "win32") windowsLauncherLiveTest();
 await serviceRestartabilityPreflightTest();

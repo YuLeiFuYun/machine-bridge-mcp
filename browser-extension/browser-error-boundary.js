@@ -45,6 +45,23 @@
     "browser tab became unavailable during computer observation",
   ]);
 
+  // Internal failures that mean a mutation may already have taken effect. The settlement
+  // travels with the response so the broker never has to re-parse the public wording.
+  const MUTATION_UNKNOWN_PREFIXES = Object.freeze([
+    "trusted browser input may have been partially dispatched",
+    "browser action may have been dispatched; the action outcome is unknown",
+    "browser tab mutation may have been dispatched; the outcome is unknown",
+    "browser screenshot temporary tab activation may have been dispatched; the outcome is unknown",
+    "browser screenshot restoration may have been dispatched; the active-tab outcome is unknown",
+    "form submission failed after",
+    "browser mutation may have completed;",
+  ]);
+
+  function publicSettlement(error) {
+    const message = String(error?.message || error || "");
+    return MUTATION_UNKNOWN_PREFIXES.some((prefix) => message.startsWith(prefix)) ? "unknown" : "";
+  }
+
   function publicError(error) {
     const message = String(error?.message || error || "");
     if (message.startsWith("unknown browser method:")) return "unknown browser method";
@@ -90,7 +107,7 @@
   }
 
   Object.defineProperty(globalThis, "__machineBridgeBrowserErrorBoundary", {
-    value: Object.freeze({ publicError }),
+    value: Object.freeze({ publicError, publicSettlement }),
     configurable: false,
   });
 })();

@@ -117,20 +117,45 @@ export function intersectPolicies(left, right, options = {}) {
   const b = normalizePolicy(right);
   const rank = { off: 0, direct: 1, shell: 2 };
   const execMode = rank[a.execMode] <= rank[b.execMode] ? a.execMode : b.execMode;
-  return Object.freeze({
-    profile: typeof options.profile === "string" && options.profile ? options.profile : "custom",
-    origin: typeof options.origin === "string" && options.origin ? options.origin : "custom",
-    revision: Math.max(a.revision, b.revision),
+  const capabilities = {
     allowWrite: a.allowWrite && b.allowWrite,
-    allowExec: execMode !== "off",
     execMode,
     unrestrictedPaths: a.unrestrictedPaths && b.unrestrictedPaths,
     minimalEnv: a.minimalEnv || b.minimalEnv,
     exposeAbsolutePaths: a.exposeAbsolutePaths && b.exposeAbsolutePaths,
+  };
+  return Object.freeze({
+    profile: typeof options.profile === "string" && options.profile
+      ? options.profile
+      : matchingProfile(capabilities),
+    origin: typeof options.origin === "string" && options.origin ? options.origin : "custom",
+    revision: Math.max(a.revision, b.revision),
+    allowWrite: capabilities.allowWrite,
+    allowExec: execMode !== "off",
+    execMode,
+    unrestrictedPaths: capabilities.unrestrictedPaths,
+    minimalEnv: capabilities.minimalEnv,
+    exposeAbsolutePaths: capabilities.exposeAbsolutePaths,
   });
 }
 
-/** @param {PolicyCapabilities} left @param {PolicyCapabilities} right */
+/**
+ * Return the canonical profile name whose capabilities exactly match, or "custom".
+ * An intersection is a real policy, not an unnamed one: callers that report the
+ * effective policy must not lose the named profile when the result is canonical.
+ * @param {{allowWrite: boolean, execMode: ExecMode, unrestrictedPaths: boolean, minimalEnv: boolean, exposeAbsolutePaths: boolean}} capabilities
+ */
+export function matchingProfile(capabilities) {
+  for (const [name, profile] of Object.entries(POLICY_PROFILES)) {
+    if (policyCapabilitiesEqual(capabilities, profile)) return name;
+  }
+  return "custom";
+}
+
+/**
+ * @param {{allowWrite: boolean, execMode: ExecMode, unrestrictedPaths: boolean, minimalEnv: boolean, exposeAbsolutePaths: boolean}} left
+ * @param {{allowWrite: boolean, execMode: ExecMode, unrestrictedPaths: boolean, minimalEnv: boolean, exposeAbsolutePaths: boolean}} right
+ */
 export function policyCapabilitiesEqual(left, right) {
   return left.allowWrite === right.allowWrite
     && left.execMode === right.execMode

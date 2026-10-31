@@ -3,6 +3,7 @@ import { ComputerUseManager } from "../../../src/local/computer-use.mjs";
 import { ComputerUseSnapshotStore } from "../../../src/local/computer-use-snapshot-store.mjs";
 import { computerActRemainingTimeoutSeconds } from "../../../src/local/computer-use-deadline.mjs";
 import { BridgeError } from "../../../src/local/errors.mjs";
+import { applicationCheckedStateChanged, applicationInputOutcomeUnknown, applicationTargetGeometryChanged, applicationVisualSnapshotChanged } from "../../../src/local/computer-use-dispatch-settlement.mjs";
 import {
   PNG_A_BASE64, PNG_B_BASE64, PNG_A_SHA256,
   managerWith, browserStub, browserSnapshot,
@@ -23,6 +24,7 @@ export async function runApplicationComputerUseTests() {
   await applicationVisualPointRejectsCoercibleSnapshotAuthority();
   await applicationVisualDoubleClickIsSingleWindowBoundSettlement();
   await applicationVisualDoubleClickUnknownSettlementIsNotReplayed();
+  await applicationEnglishUnknownTextDoesNotEstablishSettlement();
   await applicationVisualDoubleClickRejectsSemanticTarget();
   await applicationHoverIsRejectedFailClosed();
   await applicationVisualDragIsWindowAndScreenshotBound();
@@ -490,7 +492,7 @@ async function applicationVisualDoubleClickUnknownSettlementIsNotReplayed() {
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false)],
     calls,
     screenshotResults: [shot, shot],
-    pointApplicationError: new Error("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    pointApplicationError: applicationInputOutcomeUnknown("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -506,6 +508,24 @@ async function applicationVisualDoubleClickUnknownSettlementIsNotReplayed() {
   assert.equal(calls.find((entry) => entry.kind === "point-app").args.click_count, 2);
   assert.equal(calls.some((entry) => entry.kind === "operate"), false,
     "ambiguous application double click fell back to Accessibility after native settlement became unknown");
+}
+
+async function applicationEnglishUnknownTextDoesNotEstablishSettlement() {
+  const calls = [];
+  const shot = {
+    screenshot: { mime_type: "image/png", data: PNG_A_BASE64, source: "macos_window", bounds: { x: 10, y: 20, width: 640, height: 480 } },
+    window: { id: 323, bounds: { x: 10, y: 20, width: 640, height: 480 } },
+  };
+  const untyped = new Error("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying.");
+  const applications = appStub({ inspectQueue: [appSnapshot(false, false)], calls, screenshotResults: [shot], pointApplicationError: untyped });
+  const manager = managerWith({ applications });
+  const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
+  await assert.rejects(
+    () => manager.act({ surface: "application", snapshot_id: observed.snapshot_id, action: "click", target: { point: { x: 0.35, y: 0.4 } } }),
+    (error) => error === untyped,
+    "human-readable application text was incorrectly treated as settlement authority",
+  );
+  assert.equal(calls.filter((entry) => entry.kind === "point-app").length, 1);
 }
 
 async function applicationVisualDoubleClickRejectsSemanticTarget() {
@@ -608,7 +628,7 @@ async function applicationVisualDragUnknownDispatchReturnsEvidence() {
   const calls = [];
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false)], screenshotResults: [before, after], calls,
-    dragApplicationError: new Error("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    dragApplicationError: applicationInputOutcomeUnknown("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -633,7 +653,7 @@ async function staleApplicationVisualDragIsRejectedBeforeDispatch() {
   };
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false)], screenshotResults: [shot], calls,
-    dragApplicationError: new Error("application visual snapshot changed before dispatch"),
+    dragApplicationError: applicationVisualSnapshotChanged("application visual snapshot changed before dispatch"),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -740,7 +760,7 @@ async function applicationVisualScrollUnknownDispatchReturnsEvidence() {
   const calls = [];
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false)], screenshotResults: [before, after], calls,
-    scrollApplicationError: new Error("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    scrollApplicationError: applicationInputOutcomeUnknown("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -765,7 +785,7 @@ async function staleApplicationVisualScrollIsRejectedBeforeDispatch() {
   };
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false)], screenshotResults: [shot], calls,
-    scrollApplicationError: new Error("application visual snapshot changed before dispatch"),
+    scrollApplicationError: applicationVisualSnapshotChanged("application visual snapshot changed before dispatch"),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -865,7 +885,7 @@ async function applicationVisualUnknownDispatchReturnsEvidence() {
   };
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false)], screenshotResults: [before, after],
-    pointApplicationError: new Error("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    pointApplicationError: applicationInputOutcomeUnknown("application visual input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -890,7 +910,7 @@ async function staleApplicationVisualPointIsRejectedBeforeDispatch() {
   };
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false)], calls, screenshotResults: [before],
-    pointApplicationError: new Error("application visual snapshot changed before dispatch"),
+    pointApplicationError: applicationVisualSnapshotChanged("application visual snapshot changed before dispatch"),
   });
   const manager = managerWith({ applications });
   const observed = (await manager.observe({ surface: "application", application: "Notes" })).$mcp.structuredContent;
@@ -1638,7 +1658,7 @@ async function applicationStateActionLiveCapabilityDriftIsStale() {
 async function applicationStateActionPartialDispatchStaysUnknown() {
   const applications = appStub({
     inspectQueue: [appCheckboxSnapshot(false), appCheckboxSnapshot(false), appCheckboxSnapshot(false)],
-    operateApplicationError: new Error("application checked-state input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    operateApplicationError: applicationInputOutcomeUnknown("application checked-state input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
@@ -1654,7 +1674,7 @@ async function applicationStateActionPartialDispatchStaysUnknown() {
 async function applicationStateActionLastHopCapabilityLossIsStale() {
   const applications = appStub({
     inspectQueue: [appCheckboxSnapshot(false), appCheckboxSnapshot(false)],
-    operateApplicationError: new Error("application target checked state is unavailable before dispatch"),
+    operateApplicationError: applicationCheckedStateChanged("application target checked state is unavailable before dispatch"),
   });
   const manager = managerWith({ applications });
   const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
@@ -1667,7 +1687,7 @@ async function applicationStateActionLastHopCapabilityLossIsStale() {
 async function applicationFocusUnknownDispatchCanStillBeConfirmed() {
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false), appSnapshot(false, true)],
-    operateApplicationError: new Error("application Accessibility input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    operateApplicationError: applicationInputOutcomeUnknown("application Accessibility input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
@@ -1769,7 +1789,7 @@ async function applicationKeyPressUsesPidScopedSpecialKeyTransport() {
 async function applicationKeyPressUnknownDispatchIsNonReplayable() {
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false), appSnapshot(false, false)],
-    operateApplicationError: new Error("application key_press may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    operateApplicationError: applicationInputOutcomeUnknown("application key_press may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
   });
   const manager = managerWith({ applications });
   const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });
@@ -1965,7 +1985,7 @@ async function applicationSetValueUnavailableReadbackIsUnknown() {
 async function applicationDirectSetValueUnknownDispatchCanStillBeConfirmed() {
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false), appSnapshot(false, false)],
-    operateApplicationError: new Error("application value input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    operateApplicationError: applicationInputOutcomeUnknown("application value input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
     verifyApplicationValueResult: { supported: true, matched: true, matched_count: 1, selected_index: 0, reason: "compared" },
   });
   const manager = managerWith({ applications });
@@ -1983,7 +2003,7 @@ async function applicationResourceSetValueUnknownDispatchDoesNotReresolveAlias()
   const applications = appStub({
     inspectQueue: [appSnapshot(false, false), appSnapshot(false, false), appSnapshot(false, false)],
     calls,
-    operateApplicationError: new Error("application value input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
+    operateApplicationError: applicationInputOutcomeUnknown("application value input may have been partially dispatched; the action outcome is unknown. Inspect the application before retrying."),
     verifyApplicationValueResult: { supported: true, matched: true, matched_count: 1, selected_index: 0, reason: "compared" },
   });
   const manager = managerWith({ applications });
@@ -2482,7 +2502,7 @@ async function applicationDispatchGeometryGuardMapsToStale() {
   const applications = appStub({
     inspectQueue: [initial, structuredClone(initial)],
     calls,
-    operateApplicationError: new Error("application target geometry changed before dispatch"),
+    operateApplicationError: applicationTargetGeometryChanged("application target geometry changed before dispatch"),
   });
   const manager = managerWith({ applications });
   const observed = await manager.observe({ surface: "application", application: "Notes", include_screenshot: false });

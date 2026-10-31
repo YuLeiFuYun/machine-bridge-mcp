@@ -52,7 +52,7 @@ export class BrowserRequestRegistry {
       if (typeof message.error !== "string" || !message.error || message.error.includes("\0") || message.error.length > 2000) {
         pending.reject(invalidBrowserResponseSettlement(pending));
       } else {
-        pending.reject(browserRequestResponseError(message.error, pending));
+        pending.reject(browserRequestResponseError(message.error, pending, message));
       }
     } else if (message.ok === true && message.result && typeof message.result === "object" && !Array.isArray(message.result)) {
       pending.resolve(message.result);

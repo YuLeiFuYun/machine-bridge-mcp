@@ -45,6 +45,7 @@ export function writeFullVerificationReceipt(root, generation, options = {}) {
   const pkg = readPackage(root);
   const verifiedAtMs = Number(options.now ?? Date.now());
   if (!Number.isFinite(verifiedAtMs)) throw new TypeError("full verification receipt timestamp must be finite");
+  const skipped = Array.isArray(options.skipped) ? options.skipped : [];
   const receipt = {
     schema_version: RECEIPT_SCHEMA_VERSION,
     mode: "full",
@@ -55,6 +56,10 @@ export function writeFullVerificationReceipt(root, generation, options = {}) {
     platform: process.platform,
     arch: process.arch,
     verified_at: new Date(verifiedAtMs).toISOString(),
+    skipped_tasks: skipped.map((entry) => ({
+      task: String(entry?.task || ""),
+      reason: String(entry?.reason || ""),
+    })),
   };
   const path = fullVerificationReceiptPath(root);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

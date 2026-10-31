@@ -172,7 +172,7 @@ function validateTemplate(manifest, lock) {
   if (manifest.overrides?.sharp !== "0.35.5"
       || manifest.overrides?.miniflare !== "5.20261019.1-beta"
       || manifest.overrides?.ws !== "8.22.0"
-      || Object.keys(manifest.overrides).length !== 3) {
+      || Object.keys(manifest.overrides).length !== 5) {
     throw new Error("Cloudflare toolchain manifest lost its security and deduplication overrides");
   }
   const expectedScripts = { "esbuild@0.28.2": true, fsevents: false, "sharp@0.35.5": true, "workerd@1.20261019.1": true };
@@ -190,7 +190,7 @@ function validateTemplate(manifest, lock) {
       throw new Error("Cloudflare toolchain lockfile lost a security or deduplication override");
     }
   }
-  if (lock.packages?.["node_modules/undici"]?.version !== "7.29.1"
+  if (lock.packages?.["node_modules/undici"]?.version !== "7.30.1"
       || lock.packages?.["node_modules/esbuild"]?.version !== "0.28.2"
       || lock.packages?.["node_modules/workerd"]?.version !== "1.20261019.1") {
     throw new Error("Cloudflare toolchain lockfile lost an installed dependency pin");

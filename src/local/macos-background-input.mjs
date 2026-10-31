@@ -2,6 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { errorCode } from "./errors.mjs";
+import {
+  applicationInputOutcomeUnknown, applicationInputPreflightUnavailable, applicationProcessIdentityChanged,
+} from "./computer-use-dispatch-settlement.mjs";
 import { packageRoot } from "./package-identity.mjs";
 
 const SOURCE_RELATIVE = path.join("native", "macos", "MachineBridgeBackgroundInput.swift");
@@ -51,9 +54,9 @@ export class MacosBackgroundInputService {
   }
 
   async click(args = {}, context = {}) {
-    if (!this.configured()) throw new Error("macOS SkyLight background input unavailable before dispatch");
+    if (!this.configured()) throw applicationInputPreflightUnavailable("macOS SkyLight background input unavailable before dispatch");
     const probe = await this.probe(context);
-    if (probe.ok !== true) throw new Error(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(probe.error) || "probe_failed"}`);
+    if (probe.ok !== true) throw applicationInputPreflightUnavailable(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(probe.error) || "probe_failed"}`);
     const clickCount = args.click_count === undefined ? 1 : positiveInteger(args.click_count, "click_count");
     if (clickCount > 2) throw new Error("macOS background click_count must be 1 or 2");
     const payload = {
@@ -72,17 +75,13 @@ export class MacosBackgroundInputService {
       window_height: positiveFinite(args.window_height, "window_height"),
     };
     const result = await this.runHelper(payload, boundedTimeout(args.timeout_seconds), context, { mutating: true });
-    if (result.ok === true) return result;
-    if (result.dispatch_started === true || result.error === "dispatch_outcome_unknown") {
-      throw new Error("macOS SkyLight background input may have been partially dispatched; the action outcome is unknown");
-    }
-    throw new Error(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(result.error)}`);
+    return requireVisualSettlement(result);
   }
 
   async drag(args = {}, context = {}) {
-    if (!this.configured()) throw new Error("macOS SkyLight background input unavailable before dispatch");
+    if (!this.configured()) throw applicationInputPreflightUnavailable("macOS SkyLight background input unavailable before dispatch");
     const probe = await this.probe(context);
-    if (probe.ok !== true) throw new Error(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(probe.error) || "probe_failed"}`);
+    if (probe.ok !== true) throw applicationInputPreflightUnavailable(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(probe.error) || "probe_failed"}`);
     const payload = {
       operation: "drag",
       pid: positiveInteger(args.pid, "pid"),
@@ -102,17 +101,13 @@ export class MacosBackgroundInputService {
       window_height: positiveFinite(args.window_height, "window_height"),
     };
     const result = await this.runHelper(payload, boundedTimeout(args.timeout_seconds), context, { mutating: true });
-    if (result.ok === true) return result;
-    if (result.dispatch_started === true || result.error === "dispatch_outcome_unknown") {
-      throw new Error("macOS SkyLight background input may have been partially dispatched; the action outcome is unknown");
-    }
-    throw new Error(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(result.error)}`);
+    return requireVisualSettlement(result);
   }
 
   async scroll(args = {}, context = {}) {
-    if (!this.configured()) throw new Error("macOS SkyLight background input unavailable before dispatch");
+    if (!this.configured()) throw applicationInputPreflightUnavailable("macOS SkyLight background input unavailable before dispatch");
     const probe = await this.probe(context);
-    if (probe.ok !== true) throw new Error(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(probe.error) || "probe_failed"}`);
+    if (probe.ok !== true) throw applicationInputPreflightUnavailable(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(probe.error) || "probe_failed"}`);
     const deltaX = scrollDelta(args.delta_x, "delta_x");
     const deltaY = scrollDelta(args.delta_y, "delta_y");
     if (deltaX === 0 && deltaY === 0) throw new Error("macOS background scroll requires a non-zero delta_x or delta_y");
@@ -133,11 +128,7 @@ export class MacosBackgroundInputService {
       window_height: positiveFinite(args.window_height, "window_height"),
     };
     const result = await this.runHelper(payload, boundedTimeout(args.timeout_seconds), context, { mutating: true });
-    if (result.ok === true) return result;
-    if (result.dispatch_started === true || result.error === "dispatch_outcome_unknown") {
-      throw new Error("macOS SkyLight background input may have been partially dispatched; the action outcome is unknown");
-    }
-    throw new Error(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(result.error)}`);
+    return requireVisualSettlement(result);
   }
 
   async keystroke(args = {}, context = {}) {
@@ -180,9 +171,9 @@ export class MacosBackgroundInputService {
         mutating ? { nonReplayableMutation: true } : {},
       );
     } catch (error) {
-      if (mutating && error?.details?.reason === "process_outcome_unknown_after_spawn") throw backgroundInputOutcomeUnknown();
+      if (mutating && error?.details?.reason === "process_outcome_unknown_after_spawn") throw backgroundInputOutcomeUnknown(error);
       if (mutating && errorCode(error) !== "cancelled") {
-        throw new Error(`macOS native input helper unavailable before dispatch: ${safeErrorCode(errorCode(error))}`);
+        throw applicationInputPreflightUnavailable(`macOS native input helper unavailable before dispatch: ${safeErrorCode(errorCode(error))}`, error);
       }
       throw error;
     }
@@ -372,12 +363,23 @@ function requiredSpecialKey(value) {
 function requireKeyboardSettlement(result) {
   if (result.ok === true && result.dispatch_started === true && result.input_transport === "public-cgevent-pid") return result;
   if (result.dispatch_started === true || result.error === "dispatch_outcome_unknown") {
-    throw new Error("macOS PID keyboard input may have been partially dispatched; the action outcome is unknown");
+    throw applicationInputOutcomeUnknown("macOS PID keyboard input may have been partially dispatched; the action outcome is unknown");
   }
   if (result.error === "process_generation_changed_before_dispatch") {
-    throw new Error("macOS PID keyboard process generation changed before dispatch");
+    throw applicationProcessIdentityChanged("macOS PID keyboard process generation changed before dispatch");
   }
-  throw new Error(`macOS PID keyboard input unavailable before dispatch: ${safeErrorCode(result.error)}`);
+  throw applicationInputPreflightUnavailable(`macOS PID keyboard input unavailable before dispatch: ${safeErrorCode(result.error)}`);
+}
+
+function requireVisualSettlement(result) {
+  if (result.ok === true) return result;
+  if (result.dispatch_started === true || result.error === "dispatch_outcome_unknown") {
+    throw applicationInputOutcomeUnknown("macOS SkyLight background input may have been partially dispatched; the action outcome is unknown");
+  }
+  if (result.error === "process_generation_changed_before_dispatch") {
+    throw applicationProcessIdentityChanged("macOS SkyLight background input process generation changed before dispatch");
+  }
+  throw applicationInputPreflightUnavailable(`macOS SkyLight background input unavailable before dispatch: ${safeErrorCode(result.error)}`);
 }
 
 function boundedTimeout(value) {
@@ -386,8 +388,8 @@ function boundedTimeout(value) {
   return value;
 }
 
-function backgroundInputOutcomeUnknown() {
-  return new Error("macOS native background input may have been partially dispatched; the action outcome is unknown");
+function backgroundInputOutcomeUnknown(cause = null) {
+  return applicationInputOutcomeUnknown("macOS native background input may have been partially dispatched; the action outcome is unknown", cause);
 }
 
 function safeErrorCode(value) {

@@ -521,7 +521,7 @@ For installation or upgrade, use the current cross-platform pinned npm 12 proced
 From its documented empty temporary directory, the package command is:
 
 ```sh
-npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp,fsevents machine-bridge-mcp@latest
+npx --yes npm@12.0.2 install --global --omit=optional --allow-scripts=esbuild,workerd,sharp machine-bridge-mcp@beta
 ```
 
 Then verify foreground and service convergence below.
@@ -782,6 +782,8 @@ Local paths are omitted unless `--show-paths` or `expose_paths=true` is explicit
 They do not install the public key in Google, modify `authorized_keys`, or grant remote `sudo`; those remain explicit managed-job/local-operator operations.
 
 ## Managed jobs and local recovery
+
+Managed jobs require the host to expose process start time. macOS and Windows use the platform process APIs; Linux reads `/proc/<pid>/stat` plus `/proc/stat` and falls back to `ps`. A container without `/proc` or `ps` fails closed with `child_identity_unverified`; run `machine-mcp doctor` before relying on durable jobs there.
 
 Register local-only resources from the terminal:
 

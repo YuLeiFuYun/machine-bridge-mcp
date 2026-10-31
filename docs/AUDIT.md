@@ -2,6 +2,8 @@
 
 The source dependency override and private hardened npm bootstrap pin brace-expansion 5.0.12 with the registry SHA-512 artifact integrity, addressing GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, and GHSA-6j4f-fj2g-mc7p. Consumer packages have no postinstall hook. The original upstream cf bundle must pass its pinned integrity check before private CLI execution. Real private builds declare the exact audited Wrangler provider and receive the executable runner.
 
+Both the source and private toolchains also pin transitive `undici 7.30.1` and `zod 4.6.7` through bounded overrides, closing GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472, GHSA-xjj6-f33q-929c, and GHSA-mrhx-c7xc-m3w5 without changing the audited cf/Wrangler providers. Both lockfiles pass `npm audit --audit-level=high`.
+
 Source and private Cloudflare toolchain pin Sharp 0.35.5 (GHSA-wq5f-xc86-pv6w). Integrity checks reject older installs; consumer trees require 0.35.5 or newer. Audit each lock separately.
 
 This file is a compact statement of current cross-cutting audit conclusions and residual limits. It is intentionally version-agnostic: release identity, candidate acceptance, publication state, and soak state are authoritative only in package metadata, release records, Git history/tags, and the external release systems they describe. This file is not a release-state authority.
@@ -49,26 +51,8 @@ The fast SARIF regression now loads both real checked-in exception documents aga
 
 Historical incidents, closed hypotheses, release-by-release evidence, and superseded candidate details belong in Git history/tags and the [changelog](../CHANGELOG.md), not in this current summary. Inspect the file at the corresponding historical revision when reconstructing an old incident or release decision.
 
-## 2026-10-21 follow-up dispositions
+## Historical dispositions
 
-The follow-up rechecked 31 findings against the dirty development tree and the deployed runtime boundary. These are implementation dispositions, not a claim of published or live release acceptance. The numbered evidence remains traceable to the retained audit report; native verification and live acceptance have separate records.
+The 2026-10-21 follow-up dispositions (findings 01–31) are historical and remain in the tagged revision that produced them; they are not current audit evidence. Use Git history/tags for the numbered findings and the [changelog](../CHANGELOG.md) for release-by-release changes.
 
-| Findings | Disposition and executable evidence |
-| --- | --- |
-| 01 | Nearest instruction precedence and explicit omission reasons; `agent-audit:test`, `agent-context:test`. |
-| 02–03, 14–16 | On-demand protected memory reads, strict entries, bounded input/text/result, no duplicate scores; memory boundary and budget fixtures in `agent-audit:test`. |
-| 04–06 | Asynchronous bounded outline traversal, per-file policy and path projection, complete rendering budget; `symbol-outline:test`, `agent-audit:test`. |
-| 07 | Exact-only editing and patch contexts; negative indentation/CRLF cases in `atomic-fs:test`. |
-| 08–09 | Shared typed projections use real producer fields; real Git/stdin integration and `worker-prompts:test`. |
-| 10–11 | Reachable resolver, canonical groups, advertised bounded subscriptions with cancellation; `catalog:test`, `stdio:integration-test`. |
-| 12–13 | Shared reason guidance gives recovery and unknown settlement priority; `agent-audit:test`. |
-| 17–20 | Remove unused configuration duplicate; correct obsolete compatibility, JSON storage, concurrency, Linux isolation, and pinned comparison claims. |
-| 21–22 | Consumer link points to source testing guide; native fixture is repository-only; `package:test`, `macos-native-build:test`. |
-| 23 | Monotonic tool generation plus actual catalog digest; `architecture:test`, `catalog:test`. |
-| 24–26 | Shared strict parser, selected behavioral replacements, cohesive helper merges, pure effect verification; existing architecture and Computer Use trajectory fixtures remain required. Further source-string replacements and browser-domain decomposition are incremental maintenance, not proof of existing runtime defects. |
-| 27–28 | Short automation entry point, corrected topic contracts, advisory dependency-aware `check:changed`; `affected-checks:test` verifies conservative fallback and reports uncovered evidence classes. Large specialist references remain for operational detail. |
-| 29 | Wrangler 4.151.3 in both locked toolchains. Registry, signatures, package, private-toolchain and Worker dry-run evidence must pass before release; used production dependencies remain. |
-| 30 | Deterministic final-state workflows cover stale edits and accepted-job continuity; `agent-workflows:test`. These fixtures do not measure model task success rates. |
-| 31 | **Delivery-boundary hardening.** `mcp-response-proxy.ts` gates SSE heartbeat comments on complete frame boundaries (`\n\n` / `\r\n\r\n`) so heartbeats cannot split partial upstream chunks; idempotency-key job recovery remains the authoritative settlement path (`mcp-response-proxy:test`). |
-
-The research comparison records 51 unique pinned upstreams and seven primary papers in [COMPARATIVE_REVIEW.md](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/COMPARATIVE_REVIEW.md). This is selected design/documentation evidence with explicit adoption boundaries, not an exhaustive source audit or transferred benchmark score.
+The research comparison records 51 distinct pinned upstream project snapshots and 19 foundational/recent papers in [COMPARATIVE_REVIEW.md](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/COMPARATIVE_REVIEW.md). The pinned commits are the reproducibility evidence; separately dated rolling-maintenance notes may record later upstream status without rewriting what a pinned revision proved. This is selected design/documentation evidence with explicit adoption boundaries, not an exhaustive source audit, live model evaluation, or transferred benchmark score.

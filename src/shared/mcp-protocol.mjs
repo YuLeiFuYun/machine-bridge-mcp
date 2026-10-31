@@ -93,6 +93,22 @@ export function serverImplementation({ name, version, title, description }) {
   return implementation;
 }
 
+/**
+ * Add the schema-generation marker to a host-visible tool description. The marker
+ * must be idempotent because Worker and stdio projections may be composed.
+ * @param {Record<string, unknown>} tool
+ * @param {unknown} generation
+ */
+export function tagToolSchemaGeneration(tool, generation) {
+  const value = Number(generation);
+  if (!Number.isSafeInteger(value) || value < 0) return tool;
+  const suffix = `Tool schema generation ${value}.`;
+  const description = typeof tool?.description === "string" ? tool.description.trim() : "";
+  if (!description) return { ...tool, description: suffix };
+  if (description.endsWith(suffix)) return tool;
+  return { ...tool, description: `${description} ${suffix}` };
+}
+
 export function completeResult(fields = {}, serverInfo) {
   return result(MCP_RESULT_COMPLETE, fields, serverInfo);
 }

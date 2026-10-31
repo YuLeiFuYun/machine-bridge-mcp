@@ -7,7 +7,17 @@ import { LocalRuntime } from "../src/local/runtime.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 import { managedJobRecentActivity, managedJobRecoveryPriority, recentProcessRecoveryJobs } from "../src/local/managed-job-listing.mjs";
 import { classifyEffectStatus } from "../src/local/computer-use-verification.mjs";
+import { processStartTimeMs } from "../src/local/process-identity.mjs";
 import { spawnManagedJobTestRunnerWithoutCoverage } from "./fixtures/managed-jobs/common.mjs";
+
+if (process.platform !== "win32" && processStartTimeMs(process.ppid) === null) {
+  if (process.env.MBM_ALLOW_AGENT_WORKFLOW_SKIP === "1") {
+    console.log("MBM_TEST_SKIP: host process start time is unavailable; durable jobs require /proc or ps (explicit MBM_ALLOW_AGENT_WORKFLOW_SKIP=1)");
+    process.exit(0);
+  }
+  console.error("agent workflows require a host process start time from /proc or ps; refusing to report a silent skip (set MBM_ALLOW_AGENT_WORKFLOW_SKIP=1 only on a host where durable-job recovery cannot be exercised)");
+  process.exit(1);
+}
 
 const root = await realpath(await mkdtemp(join(tmpdir(), "mbm-agent-workflow-")));
 const workspace = join(root, "workspace");
@@ -47,7 +57,8 @@ try {
     if (status.status === "succeeded") break;
     await delay(50);
   } while (Date.now() < deadline);
-  assert.equal(status.status, "succeeded");
+  assert.equal(status.status, "succeeded",
+    `job ${accepted.job_id} status=${status.status} error_reason=${status.result?.error_reason || ""}`);
   assert.equal(await readFile(counter, "utf8"), "1", "recovery repeated the business side effect");
 
   const now = Date.now();
@@ -69,4 +80,4 @@ try {
   console.log("agent workflows passed: conflict final state, invalid memory, durable recovery and unsettled effects");
 } finally { await runtime.stop(); await rm(root, { recursive: true, force: true }); }
 
-await import("./agent-modern-capabilities.test.mjs");
+await import("./agent-modern-capabilities-test.mjs");

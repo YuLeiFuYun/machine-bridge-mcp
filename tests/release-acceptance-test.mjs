@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import {
   ACCEPTANCE_CONFIRMATION,
   ACCEPTANCE_SCHEMA_VERSION,
@@ -40,6 +41,11 @@ try {
   git(["add", "package.json", "index.js"]);
 
   const metadata = packProject(root, output);
+  const publishedManifest = JSON.parse(readTarEntry(join(output, metadata.filename), "package/package.json").toString("utf8"));
+  assert(Object.keys(publishedManifest.scripts || {}).join(",") === "test,start,doctor",
+    "published tarball retained repository-only package scripts");
+  assert(publishedManifest.scripts.test === "node scripts/test-entry.mjs",
+    "published tarball changed the supported test entrypoint");
   const inheritedDryRunOutput = join(root, "inherited-dry-run-output");
   mkdirSync(inheritedDryRunOutput, { recursive: true });
   const previousDryRun = process.env.npm_config_dry_run;
@@ -154,12 +160,40 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
+function readTarEntry(tarball, wanted) {
+  const archive = gunzipSync(readFileSync(tarball));
+  let offset = 0;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = readTarString(header, 0, 100);
+    const prefix = readTarString(header, 345, 155);
+    const path = prefix ? `${prefix}/${name}` : name;
+    const size = Number.parseInt(readTarString(header, 124, 12).trim(), 8);
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error(`invalid tar size for ${path}`);
+    const start = offset + 512;
+    if (path === wanted) return archive.subarray(start, start + size);
+    offset = start + Math.ceil(size / 512) * 512;
+  }
+  throw new Error(`tarball omitted ${wanted}`);
+}
+
+function readTarString(buffer, offset, length) {
+  return buffer.subarray(offset, offset + length).toString("utf8").replace(/\0.*$/s, "");
+}
+
 function writePackage(version) {
   writeFileSync(join(root, "package.json"), `${JSON.stringify({
     name: "machine-bridge-mcp",
     version,
     type: "module",
     files: ["index.js"],
+    scripts: {
+      test: "node scripts/test-entry.mjs",
+      start: "node bin/machine-mcp.mjs start",
+      doctor: "node bin/machine-mcp.mjs doctor",
+      "check:fast": "node scripts/run-checks.mjs fast",
+    },
   }, null, 2)}\n`);
 }
 
@@ -175,9 +209,7 @@ function packFixtureMetadata() {
       mode: 0o644,
     })),
   }];
-}
-
-function git(args) {
+}function git(args) {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);

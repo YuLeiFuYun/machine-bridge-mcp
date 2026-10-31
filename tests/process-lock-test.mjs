@@ -9,13 +9,19 @@ import { runFixtureChild, stopFixtureChild, waitForFixtureReady } from "./fixtur
 import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
 import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
 import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { currentProcessStartTimeMs, inspectProcessInstance } from "../src/local/process-identity.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance, parseLinuxBootTimeMs, parseLinuxProcessStartTicks, parseLinuxProcessStartTime } from "../src/local/process-identity.mjs";
 import { retryProcessLockIdentityReadSync } from "../src/local/process-lock-read-retry.mjs";
 import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const MAINTENANCE_HOLDER_READY_MS = 30_000;
 const EXCLUSIVE_CONTENDER_COUNT = 4;
+
+const syntheticLinuxStat = "1234 (node worker) S 1 1234 1234 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 12345 0 0";
+assert(parseLinuxProcessStartTicks(syntheticLinuxStat) === 12345, "Linux /proc stat starttime parser drifted");
+assert(parseLinuxBootTimeMs("cpu 1 2 3\nbtime 1700000000\nprocesses 9\n") === 1_700_000_000_000, "Linux /proc/stat btime parser drifted");
+assert(parseLinuxProcessStartTime(syntheticLinuxStat, "btime 1700000000\n") === 1_700_000_123_450, "Linux /proc start-time composition drifted");
+assert(parseLinuxProcessStartTicks("not a stat line") === null, "malformed Linux /proc stat was accepted");
 
 function spawnFixtureNode(args, options = {}) {
   const environment = { ...process.env, NODE_V8_COVERAGE: "" };

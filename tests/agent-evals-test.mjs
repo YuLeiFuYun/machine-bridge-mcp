@@ -11,6 +11,7 @@ import { validateToolArguments } from "../src/local/tool-executor.mjs";
 import { projectMcpResult } from "../src/shared/result-projection.mjs";
 import { MCP_PROTOCOL_VERSION, McpProtocolError, validateRequestMetadata } from "../src/shared/mcp-protocol.mjs";
 import { dispatchWorkerPromptOperation } from "../src/worker/mcp-prompts.ts";
+import { aggregateAgentModelEvalResults, scoreAgentModelTraceCase } from "./agent-model-eval-harness.mjs";
 
 const results = [];
 function verify(name, run) {
@@ -129,6 +130,36 @@ await verify("atomic text mutation commits through the production transaction", 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+await verify("held-out Agent/MCP trace scoring is deterministic and tri-state", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/agent-model-evals/cases.json", import.meta.url), "utf8"));
+  assert.equal(fixture.schema_version, 1);
+  assert.equal(fixture.external_model_calls, false);
+  assert(fixture.cases.every((testCase) => testCase.split === "held_out"));
+  const scored = fixture.cases.map(scoreAgentModelTraceCase);
+  assert.deepEqual(
+    scored.map((result) => ({ id: result.id, verdict: result.verdict })),
+    fixture.cases.map((testCase) => ({ id: testCase.id, verdict: testCase.expected_verdict })),
+  );
+  assert(fixture.cases.length >= 12, "held-out Agent/MCP trace fixture lost coverage breadth");
+  const aggregate = aggregateAgentModelEvalResults(scored);
+  assert.deepEqual(aggregate.counts, { pass: 6, fail: 5, unknown: 2 });
+  assert.equal(aggregate.known_pass_rate, 6 / 11);
+  assert.deepEqual(aggregate.metrics, {
+    calls: 20, latency_ms: 848, input_tokens: 1670, output_tokens: 555, total_tokens: 2225, cost_usd: 0.00287,
+  });
+  const unknown = scored.find((result) => result.id === "insufficient-final-state");
+  assert.equal(unknown?.verdict, "unknown");
+  assert.deepEqual(unknown?.violations, []);
+  const noReplay = scored.find((result) => result.id === "unknown-effect-no-replay");
+  assert.equal(noReplay?.verdict, "pass");
+  assert.equal(scored.find((result) => result.id === "unknown-replay")?.verdict, "fail",
+    "a replayed unknown effect was not rejected");
+  assert.equal(scored.find((result) => result.id === "oversize-process-output")?.verdict, "pass",
+    "a bounded output continuation was not credited as recovery");
+  assert.equal(scored.find((result) => result.id === "control-plane-denial")?.verdict, "fail",
+    "a forbidden control-plane route was not rejected");
 });
 
 const failed = results.filter((result) => !result.passed);

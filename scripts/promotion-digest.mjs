@@ -6,6 +6,7 @@ import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
 import { normalizePackRecord } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { publishedPackageManifest } from "../src/shared/published-package.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -85,7 +86,7 @@ function packageDryRun(root, packageName, npmCli = process.env.npm_execpath) {
 
 function normalizeReleaseMetadata(relative, bytes, version) {
   if (relative === "package.json") {
-    const value = parseJson(bytes, relative);
+    const value = publishedPackageManifest(parseJson(bytes, relative));
     value.version = VERSION_PLACEHOLDER;
     return canonicalJson(value);
   }

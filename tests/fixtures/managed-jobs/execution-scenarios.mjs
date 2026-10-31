@@ -1,6 +1,7 @@
 import { closeSync, fstatSync, rmSync, symlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { runFixtureChild } from "../child-fixture.mjs";
+import { relayOwnerContext } from "../authority-context.mjs";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
@@ -458,7 +459,7 @@ export async function runManagedJobExecutionScenarios(context = {}) {
     const delayedStatus = manager.read({ job_id: delayedId });
     assert(delayedStatus.status === "queued" && Number(delayedStatus.recovery_attempts || 0) === 0,
       `an active provisional runner was mistaken for an interrupted job after the recovery grace period: status=${JSON.stringify(delayedStatus)} claim=${await readFile(join(delayedDir, "runner.pid"), "utf8").catch(() => "missing")}`);
-    const remoteDelayedStatus = manager.read({ job_id: delayedId }, { authority: { origin: "relay", owner: true } });
+    const remoteDelayedStatus = manager.read({ job_id: delayedId }, relayOwnerContext());
     assert(remoteDelayedStatus.host_turn_handoff_recommended === false && remoteDelayedStatus.status_polling_mode === "bounded_followup",
       "remote active read_job did not preserve bounded same-turn follow-up");
     assert(!("host_turn_handoff_recommended" in delayedStatus) && !("status_polling_mode" in delayedStatus),
@@ -474,7 +475,7 @@ export async function runManagedJobExecutionScenarios(context = {}) {
       && coherentTerminalRead.result_persisted === true
       && coherentTerminalRead.artifact_cleanup_pending === true,
     "read_job combined an active status generation with a newer terminal result generation");
-    const remoteTerminalRead = manager.read({ job_id: delayedId }, { authority: { origin: "relay", owner: true } });
+    const remoteTerminalRead = manager.read({ job_id: delayedId }, relayOwnerContext());
     assert(remoteTerminalRead.host_turn_handoff_recommended === false && remoteTerminalRead.status_polling_mode === "terminal",
       "remote terminal read_job retained active follow-up semantics");
     await writeFile(join(delayedDir, "result.json"), `${JSON.stringify({

@@ -4,6 +4,8 @@ import {
   DEFAULT_POLICY_REVISION,
   PolicyGate,
   assertToolAllowed,
+  intersectPolicies,
+  matchingProfile,
   normalizePolicy,
   policyAllowsAvailability,
   policyProfile,
@@ -26,7 +28,18 @@ for (const name of Object.keys(contract.profiles)) {
   const policy = policyProfile(name);
   assert(policy.profile === name, `${name} profile identity drifted`);
   assert(Object.isFrozen(policy), `${name} normalized policy is mutable`);
+  assert(matchingProfile(policy) === name, `${name} profile is not recognized by capability matching`);
 }
+assert(matchingProfile({ allowWrite: true, execMode: "direct", unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true }) === "custom",
+  "an unnamed capability combination was reported as a canonical profile");
+assert(intersectPolicies(policyProfile("full"), policyProfile("full"), { origin: "effective" }).profile === "full",
+  "full ∩ full lost its canonical profile");
+assert(intersectPolicies(policyProfile("full"), policyProfile("agent"), { origin: "effective" }).profile === "agent",
+  "full ∩ agent did not resolve to the agent profile");
+assert(intersectPolicies(policyProfile("full"), policyProfile("edit"), { origin: "effective" }).profile === "edit",
+  "full ∩ edit did not resolve to the edit profile");
+assert(intersectPolicies(policyProfile("full"), policyProfile("review"), { origin: "effective" }).profile === "review",
+  "full ∩ review did not resolve to the review profile");
 
 const cliPolicy = resolvePolicy({}, {});
 const policyUpdatedAt = "2026-07-13T00:00:00.000Z";
