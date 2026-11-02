@@ -7,6 +7,7 @@ import { normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { atomicWriteText } from "../src/local/workspace-file-transaction.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
 import { LocalRuntime } from "../src/local/runtime.mjs";
+import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 import { toolDefinition, toolsForPolicy } from "../src/local/policy.mjs";
 import { policyProfile } from "../src/local/tools.mjs";
 import { validateToolArguments } from "../src/local/tool-executor.mjs";
@@ -137,10 +138,14 @@ await verify("atomic text mutation commits through the production transaction", 
 await verify("LocalRuntime executes end-to-end tool loop with deterministic final state", async () => {
   const root = await mkdtemp(join(tmpdir(), "mbm-runtime-eval-"));
   const jobRoot = join(root, "jobs");
+  let runtime;
   try {
-    const runtime = new LocalRuntime({
+    runtime = new LocalRuntime({
       workspace: root,
       jobRoot,
+      // Host-pressure admission has dedicated tests; isolate this real tool-loop fixture.
+      resourceCoordinatorRoot: join(root, "resource-coordinator"),
+      resourceCoordinatorOptions: { sampleHost: healthyResourceHost },
       policy: policyProfile("full"),
       recoverJobs: false,
     });
@@ -154,8 +159,8 @@ await verify("LocalRuntime executes end-to-end tool loop with deterministic fina
     });
     assert.equal(procRes.code, 0);
     assert.equal(procRes.stdout, "proc-ok");
-    await runtime.stop();
   } finally {
+    await runtime?.stop();
     await rm(root, { recursive: true, force: true });
   }
 });
