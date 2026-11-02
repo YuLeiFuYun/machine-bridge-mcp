@@ -1,23 +1,21 @@
 # Changelog
 
-## 3.0.0-beta.210 - 2026-10-26
+## 3.0.0-beta.212 - 2026-11-02
 
-- Pin development minimatch 11.0.1 to fix GHSA-g3hv-75wg-m249 without downgrading ESLint; regenerate the lock and clean installed-tree verification evidence.
+- Retry exclusive transaction-lock acquisition when a live owner releases between metadata inspection and the strict owner read; preserve permission and I/O failures and bound repeated disappearance by the original deadline.
+- Isolate the real runtime evaluation's resource sampler and coordinator state from shared CI host pressure while preserving file, process, and cleanup assertions.
 
-- Candidate review: verification timeout/cancellation now supervises the owned process tree through forced escalation, even after the direct child closes.
-- Reject malformed static security families/effects before building authorization dispatch sets; preserve closed/connecting relay lifecycle invariants.
-- Remove connection-history-dependent stdio tool exposure. Legacy progressive mode fails with migration guidance; full-policy tools remain stable and directly callable.
-- Add final local/hosted catalog projection budgets and causal regressions. Candidate acceptance still requires source-matching full verification and live acceptance evidence.
+- Encode remote progress as complete JSON-RPC notifications and bind producer-to-stream regression coverage to the shared envelope type.
+- Recover resource-bound jobs from a stable, principal-bound request intent while retaining the independent frozen execution-plan integrity check. Recovery no longer reopens current resources or cwd for newly accepted records.
+- Return non-repository Git queries and tool-specific argument validation through the tool-error channel; malformed request structures and unknown tools remain protocol errors.
+- Align supply-chain threat documentation with unchanged upstream artifact verification and keep source-only bootstrap wrappers out of consumer packages.
 
-- Replace application Computer Use cross-layer English-message settlement classification with stable typed operation reasons, including native-input unknown outcomes, while preserving fail-closed retry semantics.
-- Reduce the Worker composition root by extracting daemon WebSocket protocol orchestration and enforce architecture headroom with a machine-checked line budget.
-- Centralize static non-model-facing tool security classification, isolate deterministic ranking from long operational prose, and ratchet tool-description growth without shrinking the public contract blindly.
-- Add a thirteen-case synthetic Agent/MCP trace fixture set with deterministic pass/fail/unknown scoring plus tool-call, latency, token, and cost accounting; this is a scorer contract test, not a live model benchmark.
-- Make the local relay lifecycle a discriminated state owner instead of an independent boolean cluster while preserving existing public status and reconnect behavior.
-- Reconcile the comparative-review inventory at 51 pinned projects and 19 papers, separate reproducible pinned snapshots from dated rolling-current maintenance observations, and keep deterministic trace scoring distinct from live-model success claims.
-- Align the documented install channel with the 3.0 beta line, ship a runtime-aware `npm test` entrypoint, and keep the published package's test entrypoint independent of repository-only test files.
-- Add per-task verification timeouts, move the Cloudflare project suite to the full-only plan, use the strict patch envelope for operation classification, quote systemd log paths, and resolve transitive `undici`/`zod` advisories with bounded overrides.
-
+- Fix npm prepublication verification deadlock in assert-publishable-manifest guard and align publication test harness environments.
+- Consume structured browser effect_settlement in computer-use dispatch settlement and align unknown outcome classification.
+- Deduplicate in-flight JSON-RPC requests across tool and auxiliary handlers in stdio, propagate cancellation, and unify prompt dispatch.
+- Expose Code Mode TypeScript SDK signatures via machine-bridge://sdk/tools.d.ts help resource with typed application/typescript content.
+- Align task capability resolver schema and documentation with stable MCP 2026-07-28 catalog discovery.
+- Package macOS trust broker Swift source with native build artifacts and close unbudgeted documentation guardrails.
 ## Historical releases
 
 Historical prerelease entries remain available from Git tags and repository history. From a source checkout, inspect the changelog of a prior revision with `git show <revision>:CHANGELOG.md`. This current file intentionally describes only the active candidate and the history location.

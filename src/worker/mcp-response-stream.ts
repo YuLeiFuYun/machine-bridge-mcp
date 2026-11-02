@@ -1,9 +1,11 @@
+import type { ProgressNotification } from "../shared/mcp-protocol.mjs";
+
 export function jsonRpcResponseStream(
   result: Promise<Record<string, unknown>>,
   options: {
     onCancel: () => void;
     onError: (error: unknown) => Record<string, unknown>;
-    onProgress?: (emit: (event: unknown) => void) => void;
+    onProgress?: (emit: (event: ProgressNotification) => void) => void;
   },
 ): Response {
   const encoder = new TextEncoder();

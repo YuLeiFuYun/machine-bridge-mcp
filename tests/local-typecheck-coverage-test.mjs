@@ -30,5 +30,5 @@ for (const file of deferred) {
 for (const file of sourceFiles) {
   if (hasTsCheck(file)) assert(included.has(file) || deferred.has(file), `new @ts-check module bypasses strict checking and the explicit migration queue: ${file}`);
 }
-assert(included.size >= 111, "strict local typecheck coverage regressed below the current ratchet");
+assert(included.size >= 116, `strict local typecheck coverage regressed below the current ratchet (${included.size} < 116)`);
 console.log(`local typecheck coverage contract ok (${included.size} checked modules; ${deferred.size} explicitly deferred modules)`);

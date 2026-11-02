@@ -96,8 +96,8 @@ try {
 
   const nonRepo = join(root, "not-a-repository");
   await mkdir(nonRepo, { recursive: true });
-  const nonRepoStatus = await service.status({ path: nonRepo });
-  assert(nonRepoStatus.code === 128 && /not a Git repository/.test(nonRepoStatus.stderr),
+  const nonRepoStatus = await rejected(() => service.status({ path: nonRepo }));
+  assert(nonRepoStatus.code === "execution_failed" && /not a Git repository/.test(nonRepoStatus.message),
     "GitService did not report a non-repository target without starting Git");
 
   const emptyMessage = await rejected(() => service.commit({ path: repo, message: "" }));

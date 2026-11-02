@@ -1,5 +1,10 @@
 // @ts-check
 import serverMetadata from "./server-metadata.json" with { type: "json" };
+import toolCatalog from "./tool-catalog.json" with { type: "json" };
+import { projectToolTypeScriptDeclarations } from "./tool-groups.mjs";
+
+export const CODE_MODE_SDK_RESOURCE_URI = "machine-bridge://sdk/tools.d.ts";
+let cachedSdkDeclarations = "";
 
 export const HELP_RESOURCES = Object.freeze([
   {
@@ -26,7 +31,21 @@ export const HELP_RESOURCES = Object.freeze([
     description: "Guide for sensitive paths, execution policies, and secret file isolation",
     mimeType: "text/markdown",
   },
+  {
+    uri: CODE_MODE_SDK_RESOURCE_URI,
+    name: "Machine Bridge TypeScript SDK Declarations",
+    description: "Compact TypeScript SDK signatures for all Machine Bridge MCP tools (Code Mode)",
+    mimeType: "application/typescript",
+  },
 ]);
+
+/**
+ * @param {unknown} uri
+ * @returns {string}
+ */
+export function helpResourceMimeType(uri) {
+  return uri === CODE_MODE_SDK_RESOURCE_URI ? "application/typescript" : "text/markdown";
+}
 
 /**
  * @param {unknown} uri
@@ -34,6 +53,10 @@ export const HELP_RESOURCES = Object.freeze([
  */
 export function readHelpResource(uri) {
   if (typeof uri !== "string") return null;
+  if (uri === CODE_MODE_SDK_RESOURCE_URI) {
+    if (!cachedSdkDeclarations) cachedSdkDeclarations = projectToolTypeScriptDeclarations(toolCatalog);
+    return cachedSdkDeclarations;
+  }
   const helpMap = /** @type {Record<string, string> | undefined} */ (serverMetadata.helpResources);
   if (helpMap && Object.hasOwn(helpMap, uri)) {
     return helpMap[uri];

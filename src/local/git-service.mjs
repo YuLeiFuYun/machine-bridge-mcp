@@ -29,7 +29,7 @@ export class GitService {
 
   async status(args = {}, context = {}) {
     const git = await this.context(args.path || ".", context);
-    if (!git.ok) return git.result;
+    if (!git.ok) throw gitRepositoryError(git);
     await this.assertSafeConfig(git, context, true);
     const commandArgs = [...gitCommandPrefix(git), "-c", "status.submoduleSummary=false", "status", "--short", "--branch", "--ignore-submodules=all"];
     if (git.pathspec) commandArgs.push("--", git.pathspec);
@@ -41,7 +41,7 @@ export class GitService {
 
   async diff(args = {}, context = {}) {
     const git = await this.context(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
+    if (!git.ok) throw gitRepositoryError(git);
     await this.assertSafeConfig(git, context, args.staged !== true);
     return structuredGitDiff({
       args, context, git, maximumBytes: this.maximumBytes, displayPath: this.displayPath,
@@ -52,7 +52,7 @@ export class GitService {
 
   async log(args = {}, context = {}) {
     const git = await this.context(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
+    if (!git.ok) throw gitRepositoryError(git);
     await this.assertSafeConfig(git, context, false);
     const maxCount = clampInteger(args.max_count, 20, 1, 100);
     const format = "%H%x1f%h%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e";
@@ -67,7 +67,7 @@ export class GitService {
 
   async show(args = {}, context = {}) {
     const git = await this.context(args.path || ".", context);
-    if (!git.ok) return { ...git.result, path: this.displayPath(git.target, context) };
+    if (!git.ok) throw gitRepositoryError(git);
     await this.assertSafeConfig(git, context, false);
     return structuredGitShow({
       args, context, git, maximumBytes: this.maximumBytes, displayPath: this.displayPath,
@@ -172,6 +172,12 @@ export class GitService {
 
 function requiresMetadataTreeScan(context) {
   return Boolean(context?.authority) && context.authority.effectivePolicy?.unrestrictedPaths !== true;
+}
+
+function gitRepositoryError(git) {
+  return new BridgeError("execution_failed", git.result.stderr, {
+    details: { side_effects_started: false, execution_started: false },
+  });
 }
 function readGitPathFile(file, label, gitdirPrefix) {
   const buffer = readBoundedRegularFileSync(file, 4096, label, {

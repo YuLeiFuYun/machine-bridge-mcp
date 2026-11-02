@@ -198,9 +198,12 @@ export async function runDaemonAndTaskScenarios(context, authState) {
   const malformedCurrentTool = await currentMcpCall(base, ownerAccessToken, 9107, "tools/call", {
     name: "list_dir", arguments: { path: ".", unexpected: "must-not-dispatch" },
   });
-  assert(malformedCurrentTool.body.error?.code === -32602
-    && malformedCurrentTool.body.error?.data?.validation_issues?.[0]?.instancePath === "/unexpected",
-  "current malformed tool arguments were not returned as Invalid params");
+  assert(malformedCurrentTool.body.result?.isError === true
+    && malformedCurrentTool.body.result?.structuredContent?.error?.details?.side_effects_started === false
+    && malformedCurrentTool.body.result?.structuredContent?.error?.details?.validation_issues?.[0]?.instancePath === "/unexpected",
+  "known-tool argument validation was not returned as actionable tool feedback");
+  assert(JSON.parse(malformedCurrentTool.body.result.content[0].text).error.details.validation_issues[0].instancePath === "/unexpected",
+    "text-only clients could not read the tool argument correction");
   assert(!malformedMessages.stop().includes("tool_call"), "current malformed tool arguments reached the daemon");
   const unknownMessages = captureWsMessageTypes(candidateDaemon);
   const unknownCurrentTool = await currentMcpCall(base, ownerAccessToken, 9108, "tools/call", {
@@ -398,9 +401,9 @@ export async function runDaemonAndTaskScenarios(context, authState) {
   });
   assert(!malformedTimeoutMessages.stop().includes("tool_call"),
     "malformed JSON foreground timeout reached the daemon before rejection");
-  assert(malformedTimeout.error?.code === -32602
-    && malformedTimeout.error?.data?.side_effects_started === false
-    && malformedTimeout.error?.data?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "type"),
+  assert(malformedTimeout.result?.isError === true
+    && malformedTimeout.result?.structuredContent?.error?.details?.side_effects_started === false
+    && malformedTimeout.result?.structuredContent?.error?.details?.validation_issues?.some((issue) => issue.instancePath === "/timeout_seconds" && issue.keyword === "type"),
   "malformed foreground timeout omitted its pre-dispatch schema contract");
 
   const missingNameMessages = captureWsMessageTypes(candidateDaemon);

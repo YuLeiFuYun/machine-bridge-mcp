@@ -206,6 +206,19 @@ export function progressNotification({ progressToken, progress, total, message }
   return { jsonrpc: "2.0", method: "notifications/progress", params };
 }
 
+// A valid tools/call with invalid tool-specific arguments is actionable tool
+// feedback. Keep transport/request-shape errors on the JSON-RPC error channel.
+export function toolArgumentValidationError(issues) {
+  return {
+    error: {
+      code: "invalid_request",
+      message: "Tool arguments do not match the input schema",
+      retryable: false,
+      details: { side_effects_started: false, validation_issues: issues },
+    },
+  };
+}
+
 function serverInfoMeta(serverInfo) {
   return serverInfo ? { [SERVER_INFO_KEY]: structuredClone(serverInfo) } : undefined;
 }
@@ -327,7 +340,11 @@ function isIcon(value) {
 
 function isAbsoluteUri(value) {
   if (typeof value !== "string" || !value) return false;
-  try { return Boolean(new URL(value).protocol); } catch { return false; }
+  try {
+    return Boolean(new URL(value).protocol);
+  } catch {
+    return false;
+  }
 }
 
 function isPlainObject(value) {

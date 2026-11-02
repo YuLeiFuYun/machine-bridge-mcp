@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { runResourceTransactionLockRaceScenarios } from "./fixtures/resource-transaction-lock-race.mjs";
 import { spawn } from "node:child_process";
 import { waitForFixtureExit } from "./fixtures/child-fixture.mjs";
 import { closeSync, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -40,6 +41,8 @@ import { withResourceTransactionLock } from "../src/local/resource-transaction-l
 import { resourceChangeSignal, resourceRetryDelayMs, resourceSleep, signalResourceChange, waitForResourceChange } from "../src/local/resource-wait.mjs";
 import { createResourceWaiter, pruneAndReadResourceWaiters, resourceWaiterDrainActive, resourceWaiterProtected, resourceWaiterQueueSnapshot, resourceWaiterRank, selectedResourceWaiter } from "../src/local/resource-waiters.mjs";
 import { resourceWaiterDiagnostics } from "../src/local/resource-waiter-diagnostics.mjs";
+
+await runResourceTransactionLockRaceScenarios();
 
 const GIB = 1024 ** 3;
 let hostSampleReads = 0;

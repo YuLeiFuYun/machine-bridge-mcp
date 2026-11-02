@@ -273,10 +273,8 @@ export async function runtimeSelfTest() {
     if (compactEditorOverviewJson.length > 5000) {
       throw new Error(`compact local project_overview exceeded its hot-path output budget: ${compactEditorOverviewJson.length} chars`);
     }
-    const reviewerGitStatus = await fullAuthority.executeTool("git_status", {}, relayContext(reviewerAuthorization));
-    if (!Number.isInteger(reviewerGitStatus.code)) {
-      throw new Error("reviewer Git metadata did not use the fixed internal process boundary");
-    }
+    await expectReject(() => fullAuthority.executeTool("git_status", {}, relayContext(reviewerAuthorization)),
+      "not a Git repository", "execution_failed");
 
     await expectReject(
       () => fullAuthority.executeTool("read_file", { path: join(outside, "outside.txt") }, relayContext(reviewerAuthorization)),
@@ -543,6 +541,10 @@ export async function runtimeSelfTest() {
     await restricted.runProcess("git", ["-C", repo, "config", "user.name", "Machine Bridge Test"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
     await restricted.runProcess("git", ["-C", repo, "config", "user.email", "private-test@example.invalid"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
     await restricted.runProcess("git", ["-C", repo, "commit", "-qm", "initial"], RUNTIME_GIT_FIXTURE_TIMEOUT_MS);
+    const reviewerGitStatus = await fullAuthority.executeTool("git_status", { path: "nested-repo" }, relayContext(reviewerAuthorization));
+    if (reviewerGitStatus.code !== 0 || reviewerGitStatus.gitRoot !== "nested-repo") {
+      throw new Error("reviewer Git metadata did not use the fixed internal process boundary");
+    }
     const logWithoutEmail = await restricted.gitLog({ path: "nested-repo", max_count: 5 });
     if (logWithoutEmail.commits.length !== 1 || "author_email" in logWithoutEmail.commits[0]) throw new Error("git_log leaked author email by default");
     const logWithEmail = await restricted.gitLog({ path: "nested-repo", max_count: 5, include_author_email: true });

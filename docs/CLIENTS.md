@@ -116,11 +116,7 @@ Claude Desktop, Cursor, and many generic clients use a shape similar to:
         "/path/to/project",
         "--profile",
         "full"
-      ],
-      "env": {
-        "MBM_PROGRESSIVE_TOOLS": "1"
-      }
-    }
+      ]
   }
 }
 ```

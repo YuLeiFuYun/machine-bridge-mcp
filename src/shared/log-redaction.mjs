@@ -30,7 +30,11 @@ export function isSensitiveLogFieldName(value) {
 
 export function sanitizePortableLogText(value, options = {}) {
   let raw;
-  try { raw = String(value ?? ""); } catch { raw = "<unprintable>"; }
+  try {
+    raw = String(value ?? "");
+  } catch {
+    raw = "<unprintable>";
+  }
   let sanitized = raw
     .replace(SECRET_VALUE, "<redacted-secret>")
     .replace(BEARER_VALUE, "Bearer <redacted>")

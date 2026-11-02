@@ -168,8 +168,16 @@ const boundedMethod = await jsonResult(await handle(request("private-" + "x".rep
 assert.equal(boundedMethod.error.code, -32601);
 assert(JSON.stringify(boundedMethod).length < 1024);
 const malformed = await jsonResult(await handle(request("tools/call", { name: "list_dir", arguments: { unexpected: true } }), { accept: "application/json" }));
-assert.equal(malformed.error.code, -32602);
-assert.equal(malformed.error.data.validation_issues[0].keyword, "additionalProperties");
+assert.equal(malformed.result.isError, true);
+assert.equal(malformed.result.structuredContent.error.code, "invalid_request");
+assert.equal(malformed.result.structuredContent.error.details.side_effects_started, false);
+assert.equal(malformed.result.structuredContent.error.details.validation_issues[0].keyword, "additionalProperties");
+assert(JSON.parse(malformed.result.content[0].text).error.details.validation_issues.length > 0);
+for (const argumentsValue of [null, [], 42, "private-invalid-arguments"]) {
+  const invalidShape = await jsonResult(await handle(request("tools/call", { name: "list_dir", arguments: argumentsValue }), { accept: "application/json" }));
+  assert.equal(invalidShape.error.code, -32602);
+  assert.equal(invalidShape.error.message, "tools/call arguments must be an object");
+}
 const overDurableTimeoutSchema = await jsonResult(await handle(request("tools/call", {
   name: "run_process", arguments: { argv: ["must-not-run"], timeout_seconds: 601, idempotency_key: "over-durable-timeout" },
 }), { accept: "application/json" }));
@@ -257,8 +265,8 @@ assert(staleReadJobSchema.result.structuredContent.error.message.includes("refre
 const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: "5000" },
 }), { accept: "application/json" }));
-assert.equal(malformedReadPoll.error.code, -32602);
-assert.equal(malformedReadPoll.error.data.validation_issues[0].keyword, "type");
+assert.equal(malformedReadPoll.result.isError, true);
+assert.equal(malformedReadPoll.result.structuredContent.error.details.validation_issues[0].keyword, "type");
 assert.equal(calls.length, 0);
 const uiCapabilities = { extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_APP_MIME_TYPE] } } };
 await jsonResult(await handle(request("tools/call", {

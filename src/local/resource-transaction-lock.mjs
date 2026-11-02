@@ -27,10 +27,13 @@ export async function withResourceTransactionLock(root, callback, options = {}) 
     const acquired = tryAcquireFileLock(lockPath, owner);
     if (acquired) return runWithFileLock(lockPath, owner.token, callback);
     const observed = await inspectExistingLock(lockPath);
-    if (observed.kind === "missing") continue;
+    if (observed.kind === "missing") {
+      if (deadline.expired()) throw transactionBusyError();
+      continue;
+    }
     if (observed.reclaimable && typeof options.beforeReclaim === "function") await options.beforeReclaim(observed);
     if (observed.reclaimable && reclaimObservedLock(lockPath, observed)) continue;
-    if (deadline.expired()) throw Object.assign(new Error("resource coordinator transaction state is busy; retry after the current operation finishes"), { code: "MBM_RESOURCE_TRANSACTION_BUSY" });
+    if (deadline.expired()) throw transactionBusyError();
     await sleep(Math.min(25 + Math.floor(random() * 50), Math.max(1, deadline.remainingMs())));
   }
 }
@@ -67,7 +70,15 @@ async function inspectExistingLock(lockPath) {
   if (info.isDirectory()) {
     throw new Error("resource coordinator transaction lock uses an unsupported legacy directory format; preserve the state and upgrade through a supported transition");
   }
-  if (info.isFile()) return inspectFileLock(lockPath);
+  if (info.isFile()) {
+    try { return await inspectFileLock(lockPath); }
+    catch (error) {
+      // A live owner may release after lstat. Retry exclusive acquisition; a
+      // missing observation never authorizes reclaiming another owner's lock.
+      if (error?.code === "ENOENT" || error?.cause?.code === "ENOENT") return { kind: "missing", reclaimable: false };
+      throw error;
+    }
+  }
   throw new Error("resource coordinator transaction lock has an unsupported filesystem type");
 }
 
@@ -118,3 +129,7 @@ function readJson(file, maxBytes, label) {
 }
 
 function defaultSleep(milliseconds) { return new Promise((resolvePromise) => { setTimeout(resolvePromise, milliseconds); }); }
+
+function transactionBusyError() {
+  return Object.assign(new Error("resource coordinator transaction state is busy; retry after the current operation finishes"), { code: "MBM_RESOURCE_TRANSACTION_BUSY" });
+}

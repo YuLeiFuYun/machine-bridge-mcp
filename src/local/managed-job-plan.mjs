@@ -55,14 +55,24 @@ export function publicResourceRegistry(resources = {}, { includePaths = false } 
 }
 
 export function validatePlan(args, context) {
+  return parsePlan(args, context, true);
+}
+
+// Request identity must be computable after accepted external inputs disappear.
+// Only validatePlan produces an executable plan with inspected cwd/resources.
+export function validatePlanIntent(args, context) {
+  return parsePlan(args, context, false);
+}
+
+function parsePlan(args, context, inspectExternal) {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("job arguments must be an object");
   const allowed = new Set(["name", "continuation_mode", "depends_on", "steps", "finally_steps", "temporary_files"]);
   for (const key of Object.keys(args)) if (!allowed.has(key)) throw new Error(`job contains unknown field: ${key}`);
   const name = args.name === undefined ? "managed job" : boundedString(args.name, 128, "name").trim() || "managed job";
   const continuationMode = args.continuation_mode === undefined ? null : validateContinuationMode(args.continuation_mode);
   const dependsOn = args.depends_on === undefined ? null : validateDependencyIds(args.depends_on);
-  const steps = validateSteps(args.steps, "steps", context);
-  const finallySteps = validateSteps(args.finally_steps === undefined ? [] : args.finally_steps, "finally_steps", context, true);
+  const steps = validateSteps(args.steps, "steps", context, false, inspectExternal);
+  const finallySteps = validateSteps(args.finally_steps === undefined ? [] : args.finally_steps, "finally_steps", context, true, inspectExternal);
   const temporaryFiles = validateTemporaryFiles(args.temporary_files === undefined ? [] : args.temporary_files);
   if (!steps.length) throw new Error("steps must contain at least one step");
   return {
@@ -72,7 +82,7 @@ export function validatePlan(args, context) {
     ...(dependsOn === null ? {} : { depends_on: dependsOn }),
     workspace: context.workspace,
     full_env: context.fullEnv,
-    resources: referencedResources([...steps, ...finallySteps], context.resources),
+    resources: inspectExternal ? referencedResources([...steps, ...finallySteps], context.resources) : {},
     temporary_files: temporaryFiles,
     steps,
     finally_steps: finallySteps,
@@ -115,7 +125,7 @@ function validateTemporaryFiles(value) {
   });
 }
 
-function validateSteps(value, label, context, allowEmpty = false) {
+function validateSteps(value, label, context, allowEmpty = false, inspectExternal = true) {
   if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.length > 16) {
     throw new Error(`${label} must contain ${allowEmpty ? "0-16" : "1-16"} steps`);
   }
@@ -126,7 +136,7 @@ function validateSteps(value, label, context, allowEmpty = false) {
     if (!Array.isArray(input.argv) || !input.argv.length || input.argv.length > 256) throw new Error(`${label}[${index}].argv must contain 1-256 strings`);
     const argv = input.argv.map((item) => boundedString(item, 16 * 1024, `${label}[${index}].argv`));
     if (Buffer.byteLength(JSON.stringify(argv)) > 64 * 1024) throw new Error(`${label}[${index}].argv exceeds 64 KiB`);
-    const cwd = input.cwd === undefined ? context.workspace : resolveJobCwd(input.cwd, context.workspace, context.unrestrictedPaths);
+    const cwd = input.cwd === undefined ? context.workspace : resolveJobCwd(input.cwd, context.workspace, context.unrestrictedPaths, inspectExternal);
     const env = validateEnv(input.env, `${label}[${index}].env`);
     const envResources = validateEnvResources(input.env_resources, `${label}[${index}].env_resources`);
     for (const key of Object.keys(envResources)) if (Object.prototype.hasOwnProperty.call(env, key)) throw new Error(`${label}[${index}] duplicates ${key} in env and env_resources`);
@@ -258,9 +268,10 @@ function normalizeResourcePathAliases(values) {
   return aliases;
 }
 
-function resolveJobCwd(value, workspace, unrestrictedPaths) {
+function resolveJobCwd(value, workspace, unrestrictedPaths, inspectExternal) {
   const raw = boundedString(value, 4096, "cwd");
   const candidate = isAbsolute(raw) ? resolve(raw) : resolve(workspace, raw);
+  if (!inspectExternal) return candidate;
   const canonical = realpathSync.native ? realpathSync.native(candidate) : realpathSync(candidate);
   const info = statSync(canonical);
   if (!info.isDirectory()) throw new Error("managed job cwd is not a directory");

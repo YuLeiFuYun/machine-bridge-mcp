@@ -12,6 +12,24 @@ export function isPlainRecord(value) {
 }
 
 /**
+ * Return value as object record if it is a non-null non-array object, or an empty object.
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+export function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? /** @type {Record<string, unknown>} */ (value) : {};
+}
+
+/**
+ * Check that a value is a non-null non-array object record.
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+export function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+/**
  * Format a call ID compactly.
  * @param {unknown} value
  * @returns {string}
