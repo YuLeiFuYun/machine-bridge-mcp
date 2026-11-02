@@ -1,6 +1,9 @@
 # Changelog
 
-## 3.0.0-beta.211 - 2026-11-02
+## 3.0.0-beta.212 - 2026-11-02
+
+- Retry exclusive transaction-lock acquisition when a live owner releases between metadata inspection and the strict owner read; preserve permission and I/O failures and bound repeated disappearance by the original deadline.
+- Isolate the real runtime evaluation's resource sampler and coordinator state from shared CI host pressure while preserving file, process, and cleanup assertions.
 
 - Encode remote progress as complete JSON-RPC notifications and bind producer-to-stream regression coverage to the shared envelope type.
 - Recover resource-bound jobs from a stable, principal-bound request intent while retaining the independent frozen execution-plan integrity check. Recovery no longer reopens current resources or cwd for newly accepted records.
