@@ -74,11 +74,9 @@ The pinned upstream exposes a workspace/runtime/backend library rather than an M
 A future integration, if adopted, must be a separately named, default-off, non-authoritative scratch workspace/runtime with its own Durable Object namespace and read/write budgets; backend selection must be host-owned, local credentials/state must not be inherited, outbound capabilities must start closed, and the container backend must not be enabled until its authentication and resource-limit contracts are explicit and tested.
 It must never silently mirror or replace the real owner-machine workspace.
 
-### Progressive tool disclosure and dynamic tool groups
+### Stable catalog discovery and task capability resolution
 
-Opt-in stdio `MBM_PROGRESSIVE_TOOLS=1` starts with nine listed tools, including `resolve_task_capabilities`. The resolver activates validated policy-visible groups from `src/shared/tool-groups.mjs`: browser, app, jobs, git, process, diagnostics, skills and files. Only explicitly requested groups are expanded; `recommended_tools` is added as individual tool names, and `activate_recommended_groups: true` is the explicit opt-in that expands those recommendations to their groups. The result reports `activated_tools`. The resolver is reachable without calling a hidden tool. Default full discovery remains unchanged.
-
-Progressive stdio advertises `tools.listChanged=true` and a `ttlMs` of 120 s for `tools/list`, because this session's list mutates as groups activate: a cache entry has to exist for `notifications/tools/list_changed` to invalidate. The static full catalog keeps `ttlMs=0`, so it never advertises a reusable cross-release cache. Only an accepted `toolsListChanged` subscription receives a correlated notification, once per effective activation batch; cancellation and EOF complete its request. At most 32 subscriptions are retained. A hidden or unavailable tool is rejected before execution. Startup selects the mode; `tools/list` does not mutate it. [AGENT_CONTEXT](../AGENT_CONTEXT.md) owns the client-facing discovery and budgeting contract.
+In accordance with MCP 2026-07-28, both stdio and remote HTTP transports expose stable, policy-visible catalogs without mutating tools across requests based on connection history. Legacy `MBM_PROGRESSIVE_TOOLS=1` and `--progressive` are rejected at startup with migration guidance; `--all-tools` overrides a legacy environment setting. Capability resolution via `resolve_task_capabilities` provides deterministic, advisory ranking of skills, commands, and tools without mutating the server catalog. Static discovery advertises `tools.listChanged=false` and `ttlMs=0`. [AGENT_CONTEXT](../AGENT_CONTEXT.md) owns the client-facing discovery and budgeting contract.
 
 ### Bounded lexical outline
 

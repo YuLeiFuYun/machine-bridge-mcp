@@ -3,6 +3,7 @@ import { rpcError, asObject, type JsonRpcRequest } from "./mcp-jsonrpc.ts";
 import type { McpRequestCancellationRegistry } from "./mcp-request-cancellation.ts";
 import { streamedMcpToolResponse } from "./mcp-streamed-tool-response.ts";
 import { createProgressReporter } from "../shared/progress-reporter.mjs";
+import { progressNotification } from "../shared/mcp-protocol.mjs";
 import { isMcpTaskAugmentedTool, supportsMcpTasks, taskClientCapabilities } from "../shared/mcp-task-contract.mjs";
 
 export function createStreamedToolResponse(input: Readonly<{
@@ -27,7 +28,7 @@ export function createStreamedToolResponse(input: Readonly<{
       const progressToken = typeof input.progressToken === "string" || typeof input.progressToken === "number"
         ? input.progressToken : undefined;
       const stopProgress = !taskCapable && progressToken !== undefined && onProgress
-        ? createProgressReporter({ progressToken, label: toolName, emit: onProgress })
+        ? createProgressReporter({ progressToken, label: toolName, emit: (params) => onProgress(progressNotification(params)) })
         : () => {};
       try {
         return (await input.dispatch(signal, input.requestKey, input.progressToken)).message;

@@ -258,9 +258,22 @@ try {
     arguments: { path: "sample.txt", unexpected: "must-not-run" },
   } });
   const invalidModernArguments = await responseFor(906);
-  assert(invalidModernArguments.error?.code === -32602
-    && invalidModernArguments.error?.data?.validation_issues?.[0]?.instancePath === "/unexpected",
-  "modern stdio malformed tool arguments were not a protocol error");
+  assert(invalidModernArguments.result?.isError === true
+    && invalidModernArguments.result?.structuredContent?.error?.details?.side_effects_started === false
+    && invalidModernArguments.result?.structuredContent?.error?.details?.validation_issues?.[0]?.instancePath === "/unexpected",
+  "stdio tool argument validation did not return actionable tool feedback");
+  for (const [index, args] of [null, [], "invalid-arguments"].entries()) {
+    send({ jsonrpc: "2.0", id: 920 + index, method: "tools/call", params: { _meta: modernMeta, name: "read_file", arguments: args } });
+    assert((await responseFor(920 + index)).error?.code === -32602, "stdio accepted a malformed tools/call argument container");
+  }
+  for (const [index, name] of ["git_status", "git_diff", "git_log", "git_show"].entries()) {
+    send({ jsonrpc: "2.0", id: 930 + index, method: "tools/call", params: { _meta: modernMeta, name, arguments: {} } });
+    const nonRepository = await responseFor(930 + index);
+    assert(nonRepository.result?.isError === true
+      && nonRepository.result?.structuredContent?.error?.code === "execution_failed"
+      && nonRepository.result?.structuredContent?.error?.details?.side_effects_started === false,
+    "stdio returned a non-repository Git failure as a successful result with missing required fields");
+  }
   send({ jsonrpc: "2.0", id: 907, method: "tools/call", params: {
     _meta: modernMeta,
     name: "missing_tool",

@@ -27,7 +27,10 @@ if (totalWords > baseline.totalWords) {
 }
 for (const [file, words] of counts) {
   const allowed = baseline.files[file];
-  if (allowed !== undefined && words > allowed) {
+  if (allowed === undefined) {
+    throw new Error(`unbudgeted documentation file: ${file}; add it to documentation-budget.json with a reviewed word budget or remove it`);
+  }
+  if (words > allowed) {
     throw new Error(`documentation budget exceeded in ${file}: ${words} > ${allowed}`);
   }
 }

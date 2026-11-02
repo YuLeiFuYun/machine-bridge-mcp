@@ -1,6 +1,6 @@
 {
   "name": "machine-bridge-mcp",
-  "version": "3.0.0-beta.210",
+  "version": "3.0.0-beta.211",
   "description": "Cross-client MCP bridge for local agent context, structured browser and application automation, files, Git, processes, resources, and durable jobs over stdio or OAuth relay.",
   "type": "module",
   "license": "MIT",
@@ -14,8 +14,6 @@
     "mbm": "bin/machine-mcp.mjs"
   },
   "files": [
-    "mbm",
-    "mbm.cmd",
     "bin",
     "browser-extension",
     "src/local",
@@ -32,6 +30,7 @@
     "scripts/release-oauth-canary-evidence.mjs",
     "scripts/release-oauth-canary.mjs",
     "native/macos/MachineBridgeBackgroundInput.swift",
+    "native/macos/MachineBridgeTrustBroker.swift",
     "wrangler.jsonc",
     "tsconfig.json",
     "tsconfig.local.json",
@@ -82,7 +81,7 @@
     "catalog:test": "node tests/catalog-test.mjs",
     "tool-arguments:test": "node tests/tool-argument-validation-test.mjs",
     "managed-job-output-redaction:test": "node tests/managed-job-output-redaction-test.mjs",
-    "managed-jobs:test": "node tests/managed-jobs-test.mjs && node tests/managed-job-terminal-maintenance-test.mjs",
+    "managed-jobs:test": "node tests/managed-job-resource-idempotency-test.mjs && node tests/managed-jobs-test.mjs && node tests/managed-job-terminal-maintenance-test.mjs",
     "ssh-key:test": "node tests/ssh-key-test.mjs",
     "full-access:test": "node tests/full-access-test.mjs",
     "atomic-fs:test": "node tests/atomic-fs-test.mjs",

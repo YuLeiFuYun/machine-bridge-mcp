@@ -44,6 +44,7 @@ try {
   const auditEntry = record.files.find((item) => item.path === "docs/AUDIT.md");
   if (Number(auditEntry?.size || 0) > 32 * 1024) throw new Error("npm package audit summary regained historical bulk");
   for (const repositoryOnly of [
+    "mbm", "mbm.cmd",
     "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "GOVERNANCE.md",
     "native/macos/MachineBridgeBackgroundInputSmokeFixture.swift",
     "tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift",

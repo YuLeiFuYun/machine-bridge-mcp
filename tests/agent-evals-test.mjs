@@ -6,7 +6,9 @@ import { actionableGuidance, BridgeError } from "../src/local/errors.mjs";
 import { normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
 import { atomicWriteText } from "../src/local/workspace-file-transaction.mjs";
 import { BoundedOutput } from "../src/local/bounded-output.mjs";
+import { LocalRuntime } from "../src/local/runtime.mjs";
 import { toolDefinition, toolsForPolicy } from "../src/local/policy.mjs";
+import { policyProfile } from "../src/local/tools.mjs";
 import { validateToolArguments } from "../src/local/tool-executor.mjs";
 import { projectMcpResult } from "../src/shared/result-projection.mjs";
 import { MCP_PROTOCOL_VERSION, McpProtocolError, validateRequestMetadata } from "../src/shared/mcp-protocol.mjs";
@@ -127,6 +129,32 @@ await verify("atomic text mutation commits through the production transaction", 
     const settlement = await atomicWriteText(target, "committed value");
     assert.deepEqual(settlement.warnings, []);
     assert.equal(await readFile(target, "utf8"), "committed value");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("LocalRuntime executes end-to-end tool loop with deterministic final state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mbm-runtime-eval-"));
+  const jobRoot = join(root, "jobs");
+  try {
+    const runtime = new LocalRuntime({
+      workspace: root,
+      jobRoot,
+      policy: policyProfile("full"),
+      recoverJobs: false,
+    });
+    const writeRes = await runtime.executeTool("write_file", { path: "eval.txt", content: "hello runtime eval\n" });
+    assert.equal(writeRes.ok, true);
+    const readRes = await runtime.executeTool("read_file", { path: "eval.txt", start_line: 1, end_line: 1 });
+    assert.equal(readRes.content, "hello runtime eval\n");
+    const procRes = await runtime.executeTool("run_process", {
+      argv: [process.execPath, "-e", "process.stdout.write('proc-ok')"],
+      timeout_seconds: 10,
+    });
+    assert.equal(procRes.code, 0);
+    assert.equal(procRes.stdout, "proc-ok");
+    await runtime.stop();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

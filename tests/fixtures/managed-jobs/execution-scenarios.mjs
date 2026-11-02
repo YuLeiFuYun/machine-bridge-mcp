@@ -937,6 +937,17 @@ export async function runManagedJobExecutionScenarios(context = {}) {
   assert(idempotentResult.status === "succeeded",
     `idempotent managed-job fixture did not finish successfully: ${await managedJobFixtureDiagnostics(idempotentFirst.job_id, idempotentResult, jobRoot)}`);
 
+  const resourceIdempotentPlan = {
+    idempotency_key: "resource-idempotent-terminal-replay",
+    steps: [{ argv: [process.execPath, "-e", "process.stdin.resume()"], stdin_resource: "test-secret", timeout_seconds: MANAGED_JOB_SUCCESS_TIMEOUT_SECONDS }],
+  };
+  const resourceFirst = manager.start(resourceIdempotentPlan);
+  assert((await waitForJob(manager, resourceFirst.job_id)).status === "succeeded", "resource idempotency fixture failed");
+  assert(!(await exists(join(jobRoot, resourceFirst.job_id, "plan.json"))), "terminal resource fixture retained execution artifacts");
+  const resourceReplay = manager.start(resourceIdempotentPlan);
+  assert(resourceReplay.job_id === resourceFirst.job_id && resourceReplay.idempotency_replay === true && resourceReplay.status === "succeeded",
+    "terminal resource replay could not recover the original accepted job after plan cleanup");
+
   const resultFirstReplayKey = "managed-job-result-first-replay-001";
   const duplicateMarker = join(workspace, "idempotent-result-first-duplicate.txt");
   const resultFirstPlanArgs = {

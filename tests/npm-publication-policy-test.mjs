@@ -20,14 +20,18 @@ try {
   // direct `npm publish` must be refused before npm packs it.
   writeManifest({ test: "node scripts/test-entry.mjs", start: "node bin/machine-mcp.mjs start", doctor: "node bin/machine-mcp.mjs doctor", "check:fast": "node scripts/run-checks.mjs fast" });
   expectGuard(1);
+  expectGuard(1, { npm_command: "publish", npm_lifecycle_event: "prepublishOnly" });
+  expectGuard(0, { npm_command: "run-script", npm_lifecycle_event: "prepublishOnly" });
   writeManifest({ test: "node scripts/test-entry.mjs", start: "node bin/machine-mcp.mjs start", doctor: "node bin/machine-mcp.mjs doctor" });
   expectGuard(0);
+  expectGuard(0, { npm_command: "publish", npm_lifecycle_event: "prepublishOnly" });
   console.log("npm publication dist-tag policy test ok");
 } finally { rmSync(root, { recursive: true, force: true }); }
 function write(version) { writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", version })); }
 function writeManifest(scripts) { writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0", scripts })); }
-function expectGuard(status) {
-  const result = spawnSync(process.execPath, [manifestGuard], { cwd: root, encoding: "utf8", windowsHide: true });
+function expectGuard(status, envOverrides = {}) {
+  const env = { ...process.env, npm_command: "", npm_lifecycle_event: "", ...envOverrides };
+  const result = spawnSync(process.execPath, [manifestGuard], { cwd: root, encoding: "utf8", env, windowsHide: true });
   if (result.status !== status) throw new Error(`publishable-manifest guard expected ${status}, got ${result.status}: ${result.stderr || result.stdout}`);
 }
 function expect(status, tag) {

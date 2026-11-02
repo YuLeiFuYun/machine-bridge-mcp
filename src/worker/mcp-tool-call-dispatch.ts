@@ -6,7 +6,7 @@ import { createWorkerTaskSeed, type TaskCredentialResolver } from "./mcp-tasks.t
 import type { McpTaskStore } from "./mcp-task-store.ts";
 import { rpcError, rpcResult, textToolResult, type JsonRpcRequest } from "./mcp-jsonrpc.ts";
 import { staleSchemaGuidanceResult } from "./mcp-stale-schema-guidance.ts";
-import { taskCreatedResult } from "../shared/mcp-protocol.mjs";
+import { taskCreatedResult, toolArgumentValidationError } from "../shared/mcp-protocol.mjs";
 import { isMcpTaskAugmentedTool, supportsMcpTasks } from "../shared/mcp-task-contract.mjs";
 
 type WorkerToolCallConfig = Readonly<{
@@ -40,9 +40,13 @@ export async function dispatchWorkerToolCall(
   if (!inspected.ok) {
     const guidance = staleSchemaGuidanceResult(request, inspected.issues, config.serverInfo);
     if (guidance) return { status: 200, message: guidance };
+    if (inspected.reason === "invalid_arguments") {
+      return { status: 200, message: rpcResult(request.id,
+        textToolResult(toolArgumentValidationError(inspected.issues || []), true, config.serverInfo))! };
+    }
     const message = inspected.reason === "missing_name" ? "tools/call requires a tool name"
       : inspected.reason === "unknown_tool" ? "Unknown tool"
-        : "Tool arguments do not match the input schema";
+        : "tools/call arguments must be an object";
     return {
       status: 200,
       message: rpcError(request.id, -32602, message, inspected.issues

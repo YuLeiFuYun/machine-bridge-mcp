@@ -13,7 +13,7 @@ import { assertTransientProcessRecoveryAccountCapacity } from "./managed-job-tra
 import { acceptedManagedJobProjection } from "./managed-job-acceptance.mjs";
 import { managedJobActiveChildFile, managedJobActiveChildRecoveryState } from "./managed-job-active-child.mjs";
 import { resolveManagedJobDependencies } from "./managed-job-dependency-admission.mjs";
-import { inspectResourceFile, normalizeResourceRegistry, validatePlan } from "./managed-job-plan.mjs";
+import { inspectResourceFile, normalizeResourceRegistry, validatePlan, validatePlanIntent } from "./managed-job-plan.mjs";
 import { assertManagedJobPlanIntegrity, managedJobPlanSha256 } from "./managed-job-plan-integrity.mjs";
 export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./managed-job-plan.mjs";
 import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock } from "./managed-job-lock.mjs";
@@ -25,7 +25,7 @@ import { atomicWriteJson, readBoundedFile, readJson, readRequiredJson, resourceE
 import { launchRunner, runnerProcessIsCurrent } from "./managed-job-runner.mjs";
 import { createManagedJobRunnerExitRecovery } from "./managed-job-runner-exit-recovery.mjs";
 import { relaunchDependencyWaitManagedJob, relaunchInterruptedManagedJob } from "./managed-job-relaunch.mjs";
-import { managedJobIdempotencyDigest, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./managed-job-idempotency.mjs";
+import { inspectManagedJobReplayIntent, managedJobIdempotencyDigest, managedJobRequestSha256, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./managed-job-idempotency.mjs";
 import { assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity, managedJobTransitionConflict } from "./managed-job-state-validation.mjs";
 import { managedJobRecoveryAttempts, MAX_MANAGED_JOB_RECOVERY_ATTEMPTS } from "./managed-job-recovery-history.mjs";
 import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "./managed-job-directory.mjs";
@@ -150,18 +150,21 @@ export class ManagedJobManager {
     const effectivePolicy = this.policyForContext(context);
     const idempotencyKey = launch ? normalizeJobIdempotencyKey(args?.idempotency_key) : null;
     const planArgs = idempotencyKey === null ? args : omitJobIdempotencyKey(args);
-    const validatedPlan = validatePlan(planArgs, {
+    const planContext = {
       workspace: this.workspace,
-      resources: this.currentResources(),
       fullEnv: effectivePolicy.minimalEnv === false,
       unrestrictedPaths: effectivePolicy.unrestrictedPaths === true,
+    };
+    const intent = validatePlanIntent(planArgs, planContext);
+    const requestSha256 = managedJobRequestSha256(intent, {
+      executionPriority, delegatedProcess, retentionClass, unrestrictedPaths: planContext.unrestrictedPaths,
     });
-    const plan = {
-      ...validatedPlan,
+    let preparedPlan;
+    const preparePlan = () => preparedPlan ||= {
+      ...validatePlan(planArgs, { ...planContext, resources: this.currentResources() }),
       ...(executionPriority === "interactive" ? { execution_priority: "interactive" } : {}),
       ...(delegatedProcess === true ? { delegated_process: true } : {}),
     };
-    const planSha256 = managedJobPlanSha256(plan);
     const idempotencyDigest = idempotencyKey === null ? null : managedJobIdempotencyDigest(idempotencyKey, context);
     const id = idempotencyDigest === null ? `job_${randomBytes(24).toString("base64url")}` : `job_${idempotencyDigest}`;
     const dir = join(this.jobRoot, id);
@@ -179,6 +182,7 @@ export class ManagedJobManager {
       }
       const alreadyExists = Boolean(existingInfo);
       if (alreadyExists) ensureOwnerOnlyDir(dir);
+      if (!alreadyExists) preparePlan();
       const recoveryAccountCapacity = assertTransientProcessRecoveryAccountCapacity({
         jobRoot: this.jobRoot, retentionClass, context, currentJobId: id, currentDirectoryExists: alreadyExists,
         idempotencyReplayEligible: idempotencyDigest !== null,
@@ -187,12 +191,14 @@ export class ManagedJobManager {
         ? { witnesses: [], pending: 0 }
         : resolveManagedJobDependencies({
           jobRoot: this.jobRoot,
-          dependencyIds: plan.depends_on,
+          dependencyIds: intent.depends_on,
           currentJobId: id,
           context,
           reconcileStatus: (dependencyDir) => this.reconcileStatus(dependencyDir),
         });
-      const { snapshot: capacitySnapshot, pruned } = pruneManagedJobsAtCapacity(this.jobRoot, this.logger, { alreadyExists, recoveryAccountCapacity, plan, retentionClass });
+      const { snapshot: capacitySnapshot, pruned } = alreadyExists
+        ? { snapshot: null, pruned: false }
+        : pruneManagedJobsAtCapacity(this.jobRoot, this.logger, { alreadyExists, recoveryAccountCapacity, plan: intent, retentionClass });
       if (pruned) this.lastPruneAt = Date.now();
       if (!alreadyExists && capacitySnapshot.retained_state >= MAX_JOBS) {
         throw new BridgeError("limit_exceeded", `managed job capacity is fully occupied (${MAX_JOBS})`, {
@@ -212,28 +218,31 @@ export class ManagedJobManager {
         const statusFile = join(dir, "status.json");
         const statusEvidence = idempotencyDigest === null ? null : readJson(statusFile, 256 * 1024, "job status");
         if (statusEvidence !== null) {
+          let replayPlan = inspectManagedJobReplayIntent({
+            dir, status: statusEvidence, context, requestSha256, preparePlan, intent, maxPlanBytes: MAX_PLAN_BYTES,
+          });
           this.reconcileStatus(dir);
           const existing = readRequiredJson(statusFile, 256 * 1024, "job status");
           assertKnownManagedJobStatus(existing);
           assertOwnedByContext(existing, context, "managed job");
           assertManagedJobDirectoryIdentity(dir, existing);
-          if (existing.plan_sha256 !== planSha256) {
-            throw new BridgeError("conflict", "idempotency key is already bound to a different managed-job plan", {
-              retryable: false,
-              details: { existing_job_id: id },
-            });
+          if (ACTIVE_JOB_STATES.has(existing.status)) {
+            replayPlan = readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
+            assertManagedJobPlanIntegrity(replayPlan, existing);
           }
           if (existing.status === "queued" && !runnerProcessIsCurrent(existing, dir)) {
             try {
-              launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
+              launchRunner(dir, false, "", runnerLaunchOptions(replayPlan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
                 () => this.runnerExitRecovery.observe(dir), this.runnerSpawnProcess));
             } catch (error) {
               failRunnerLaunch(dir, existing, error);
               throw error;
             }
           }
-          return acceptedManagedJobProjection(existing, plan, { idempotencyReplay: true });
+          return acceptedManagedJobProjection(existing, replayPlan, { idempotencyReplay: true });
         }
+        const plan = preparePlan();
+        const planSha256 = managedJobPlanSha256(plan);
         atomicWriteJson(join(dir, "plan.json"), plan, MAX_PLAN_BYTES);
         const now = new Date().toISOString();
         const status = {
@@ -247,6 +256,7 @@ export class ManagedJobManager {
           runner_pid: null,
           approval: launch ? "mcp" : "review-only",
           plan_sha256: planSha256,
+          ...(idempotencyDigest === null ? {} : { request_sha256: requestSha256 }),
           cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
           recovery_attempts: 0,
           recovery_history: [],

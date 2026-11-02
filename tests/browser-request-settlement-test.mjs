@@ -4,6 +4,7 @@ import {
   browserRequestTransportError,
   invalidBrowserResponseSettlement,
 } from "../src/local/browser-request-settlement.mjs";
+import { settleComputerUseDispatch } from "../src/local/computer-use-dispatch-settlement.mjs";
 
 const mutation = { method: "action", dispatchAttempted: true };
 const readOnly = { method: "inspect_page", dispatchAttempted: true };
@@ -90,6 +91,12 @@ assert.equal(typedUnknown.code, "execution_failed");
 assert.equal(typedUnknown.retryable, false);
 assert.equal(typedUnknown.details.side_effects_started, true);
 assert.equal(typedUnknown.details.effect_settlement, "unknown");
+const settledTypedUnknown = await settleComputerUseDispatch("browser", async () => { throw typedUnknown; });
+assert.equal(settledTypedUnknown.dispatchStatus, "unknown",
+  "computer-use dispatch settlement ignored structured browser effect_settlement=unknown");
+const settledTerminated = await settleComputerUseDispatch("browser", async () => { throw terminated; });
+assert.equal(settledTerminated.dispatchStatus, "unknown",
+  "computer-use dispatch settlement ignored structured browser effect_settlement=pending");
 const typedNotStarted = browserRequestResponseError("browser action may have been dispatched", mutation, { settlement: "not_started" });
 assert.equal(typedNotStarted.details, undefined, "an explicit not_started settlement did not override the legacy text heuristic");
 const typedReadOnly = browserRequestResponseError("browser result could not be serialized", readOnly, { settlement: "unknown" });

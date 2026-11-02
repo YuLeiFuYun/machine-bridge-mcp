@@ -313,12 +313,12 @@
               "files"
             ]
           },
-          "description": "Explicit progressive stdio groups to expose: browser, app, jobs, git, process, diagnostics, skills, files. This does not expand policy authority."
+          "description": "Legacy progressive group activation parameter kept for backward-compatible call syntax; capability resolution is advisory and does not mutate the server catalog."
         },
         "activate_recommended_groups": {
           "type": "boolean",
           "default": false,
-          "description": "Also expose the whole progressive group of each recommended tool. The default exposes only the recommended tools themselves, so a single recommendation cannot widen the tool list by a whole group."
+          "description": "Legacy group recommendation expansion parameter kept for backward-compatible call syntax; capability resolution is advisory and does not mutate the server catalog."
         }
       },
       "required": [

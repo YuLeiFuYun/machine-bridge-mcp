@@ -35,7 +35,7 @@ Application names, instruction metadata and routing hints are planning context. 
 
 `agent_instructions` projects `agent_context.effective_instructions`, including incomplete-inventory warnings. `code_review` and diff resources project the actual `git_diff.stdout`, retaining failure, truncation and sensitive-omission distinctions. `run_skill` loads one instruction bundle; its content is untrusted and does not run itself.
 
-Memory is loaded only by `agent_context`, with protected reads and bounded canonical entries. Bootstrap only reports its presence. Lexical outlines bound traversal, bytes and output lines. See [AGENT_CONTEXT](AGENT_CONTEXT.md) for limits and progressive tool discovery.
+Memory is loaded only by `agent_context`, with protected reads and bounded canonical entries. Bootstrap only reports its presence. Lexical outlines bound traversal, bytes and output lines. See [AGENT_CONTEXT](AGENT_CONTEXT.md) for limits and stable catalog discovery.
 
 Evaluate orchestration with observable final state: an accepted job recovered after caller replacement must produce one effect; a rejected stale edit must leave the file intact; incomplete post-action evidence must remain unknown. Offline contract checks and deterministic workflow fixtures do not establish general LLM task success or a completed live release.
 

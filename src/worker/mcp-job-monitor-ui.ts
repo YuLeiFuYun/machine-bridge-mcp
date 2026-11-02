@@ -1,6 +1,6 @@
 import { cacheableResult, McpProtocolError } from "../shared/mcp-protocol.mjs";
 import { rpcError, rpcResult, type JsonRpcRequest } from "./mcp-jsonrpc.ts";
-import { HELP_RESOURCES, readHelpResource } from "../shared/help-resources.mjs";
+import { HELP_RESOURCES, helpResourceMimeType, readHelpResource } from "../shared/help-resources.mjs";
 
 export const MCP_UI_EXTENSION_ID = "io.modelcontextprotocol/ui";
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
@@ -69,7 +69,7 @@ export function managedJobMonitorResources(serverInfo: Record<string, unknown>, 
 export function managedJobMonitorResource(uri: unknown, serverInfo: Record<string, unknown>): Record<string, unknown> {
   const helpText = readHelpResource(uri);
   if (typeof uri === "string" && helpText !== null) {
-    return cacheableResult({ contents: [{ uri, mimeType: "text/markdown", text: helpText }] }, { ttlMs: 0, cacheScope: "public", serverInfo });
+    return cacheableResult({ contents: [{ uri, mimeType: helpResourceMimeType(uri), text: helpText }] }, { ttlMs: 0, cacheScope: "public", serverInfo });
   }
   if (uri !== JOB_MONITOR_RESOURCE_URI) throw new McpProtocolError(-32602, "Resource not found");
   return cacheableResult({

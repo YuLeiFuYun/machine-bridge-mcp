@@ -5,6 +5,8 @@
 
 The project treats transport, authorization, local authority, and state removal as separate failure domains.
 
+`mcp-response-proxy:test` connects the production progress reporter, dispatch adapter and SSE serializer with a controlled scheduler, including numeric-zero/no-token controls and cancellation. `managed-jobs:test` includes stable resource-intent recovery, changed/deleted resources and step cwd, lock contention, plan tampering, legacy evidence and terminal-plan cleanup; real-runner fixtures complement the deterministic acceptance test. Git boundary tests validate empty/normal/invalid-revision results against the advertised schemas and require non-repository reads to fail through tool results. Stdio and Worker integrations distinguish malformed request containers from known-tool argument validation and prove rejected arguments never reach the daemon. These regressions detect contract composition failures that static catalog fingerprints cannot establish.
+
 ## Independent privacy and deployment boundaries
 
 The managed-job redaction gate covers macOS temporary-path aliases and case-varied Windows capture tails.

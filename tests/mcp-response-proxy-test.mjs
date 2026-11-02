@@ -1,4 +1,7 @@
 import nodeAssert from "node:assert/strict";
+import { mock } from "node:test";
+import { createStreamedToolResponse } from "../src/worker/mcp-streamed-tool-dispatch.ts";
+import { McpRequestCancellationRegistry } from "../src/worker/mcp-request-cancellation.ts";
 import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
 import { jsonRpcResponseStream } from "../src/worker/mcp-response-stream.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
@@ -16,6 +19,7 @@ import {
 
 await testJsonRpcStreamSettlement();
 await testJsonRpcStreamProgress();
+await testProductionProgressEnvelope();
 await testPublicReaderCancellation();
 await testRequestSignalCancellation();
 await testAlreadyAbortedRequest();
@@ -122,6 +126,63 @@ async function testPublicReaderCancellation() {
   await reader.cancel("consumer closed response");
   await fixture.settle();
   assertCancellationPair(fixture.requests, "reader cancellation");
+}
+
+async function testProductionProgressEnvelope() {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    for (const token of ["synthetic-progress", 0, undefined]) {
+      let finish;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const terminal = { jsonrpc: "2.0", id: 71, result: { resultType: "complete", content: [] } };
+      const response = createStreamedToolResponse({
+        request: new Request("https://example.invalid/mcp", { method: "POST" }),
+        body: { jsonrpc: "2.0", id: 71, method: "tools/call", params: { name: "read_file", arguments: {} } },
+        base: "https://example.invalid", authorized: {}, progressToken: token,
+        cancellations: new McpRequestCancellationRegistry(),
+        dispatch: async () => { await pending; return { message: terminal }; },
+        recordError() { throw new Error("progress dispatch failed"); },
+      });
+      const wire = response.text();
+      await Promise.resolve();
+      mock.timers.tick(1000);
+      mock.timers.tick(2000);
+      finish();
+      const frames = (await wire).split("\n\n").filter((frame) => frame.startsWith("event: message\n"))
+        .map((frame) => JSON.parse(frame.split("\ndata: ")[1]));
+      nodeAssert.deepEqual(frames.at(-1), terminal);
+      nodeAssert.equal(frames.length, token === undefined ? 1 : 3);
+      for (const frame of frames.slice(0, -1)) {
+        nodeAssert.equal(frame.jsonrpc, "2.0");
+        nodeAssert.equal(frame.method, "notifications/progress");
+        nodeAssert.equal(frame.params.progressToken, token);
+        nodeAssert.equal(Object.hasOwn(frame, "id"), false);
+      }
+      if (token !== undefined) nodeAssert(frames[1].params.progress > frames[0].params.progress);
+      mock.timers.tick(30000);
+    }
+    const controller = new AbortController();
+    let signal;
+    let finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    const response = createStreamedToolResponse({
+      request: new Request("https://example.invalid/mcp", { method: "POST", signal: controller.signal }),
+      body: { jsonrpc: "2.0", id: 72, method: "tools/call", params: { name: "read_file" } },
+      base: "https://example.invalid", authorized: {}, progressToken: "cancelled-progress",
+      cancellations: new McpRequestCancellationRegistry(),
+      dispatch: async (value) => { signal = value; await pending; return { message: { jsonrpc: "2.0", id: 72, result: {} } }; },
+      recordError() {},
+    });
+    const reader = response.body.getReader();
+    await reader.read();
+    await Promise.resolve();
+    await reader.cancel();
+    nodeAssert.equal(signal.aborted, true);
+    finish();
+    await Promise.resolve();
+    mock.timers.tick(30000);
+    nodeAssert.equal((await reader.read()).done, true);
+  } finally { mock.timers.reset(); }
 }
 
 async function testRequestSignalCancellation() {

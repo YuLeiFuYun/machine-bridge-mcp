@@ -9,9 +9,10 @@ import { publicProcessToolResult } from "../src/local/process-result-projection.
 import { extractWorkspaceOutline } from "../src/local/symbol-outline.mjs";
 import { inspectSyntaxWarning, WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
 import { MCP_TEXT_PROJECTION_KEY } from "../src/shared/result-projection.mjs";
+import { CODE_MODE_SDK_RESOURCE_URI, HELP_RESOURCES, helpResourceMimeType, readHelpResource } from "../src/shared/help-resources.mjs";
 import { CORE_CORNERSTONE_TOOL_NAMES, projectToolTypeScriptDeclarations } from "../src/shared/tool-groups.mjs";
 
-test("projectToolTypeScriptDeclarations projects compact TypeScript SDK signatures for Code Mode", async () => {
+test("projectToolTypeScriptDeclarations projects compact TypeScript SDK signatures for Code Mode and exposes them as an MCP resource", async () => {
   const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
   const declarations = projectToolTypeScriptDeclarations(catalog, {
     toolNames: CORE_CORNERSTONE_TOOL_NAMES,
@@ -21,6 +22,11 @@ test("projectToolTypeScriptDeclarations projects compact TypeScript SDK signatur
   assert.match(declarations, /function read_file\(args: \{ path: string;/);
   assert.match(declarations, /function server_info\(args\?: \{ detail\?: "summary" \| "full" \}\): Promise<Record<string, unknown>>;/);
   assert.doesNotMatch(declarations, /function browser_action\(/);
+  assert.equal(HELP_RESOURCES.some((item) => item.uri === CODE_MODE_SDK_RESOURCE_URI), true);
+  assert.equal(helpResourceMimeType(CODE_MODE_SDK_RESOURCE_URI), "application/typescript");
+  const sdkResource = readHelpResource(CODE_MODE_SDK_RESOURCE_URI);
+  assert.match(String(sdkResource || ""), /^declare namespace mbm \{/);
+  assert.match(String(sdkResource || ""), /function browser_action\(/);
 });
 
 test("publicProcessToolResult provides SRE diagnostics and interactive prompt stall detection", () => {

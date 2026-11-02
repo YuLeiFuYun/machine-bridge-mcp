@@ -79,7 +79,7 @@ The 51-project table above is the reproducible **2026-10-21 pinned snapshot**. T
 ## Adopted changes and synthesis
 
 - **Instruction hierarchy and repo maps (Codex, Claude Code, Gemini CLI, Aider, SWE-agent).** Nearest-first `AGENTS.md` precedence, explicit omissions, on-demand memory, `with_line_numbers` windowed reads, numbered `near_miss` edit hints, and lexical `symbol-outline` are implemented without bundling an embedded LLM, Tree-sitter, or PageRank.
-- **MCP extensions and durable workflows (Goose, Cline, LangGraph, Mastra, mcp-agent).** Progressive stdio discovery, `stage_job`/`start_job`/`read_job`, idempotency recovery keys, and MCP Tasks projections preserve state across disconnects while leaving planners and role graphs to the host.
+- **MCP extensions and durable workflows (Goose, Cline, LangGraph, Mastra, mcp-agent).** Advisory task capability routing, `stage_job`/`start_job`/`read_job`, idempotency recovery keys, and MCP Tasks projections preserve state across disconnects while leaving planners and role graphs to the host.
 - **Browser and desktop grounding (browser-use, Stagehand, Playwright MCP, Agent-S, UFO).** Observations bind to the current tab, frame, snapshot, and capability; actions verify post-dispatch effects without bundling a browser engine or granting ambient screen authority.
 - **Memory, typed contracts, and evaluation gates (Letta, Pydantic AI, AgentLab, OpenEvolve).** Memory remains read-only in `agent_context`, output schemas are verified against `tool-output-contract.json`, deterministic fixtures verify final state, and a thirteen-case synthetic scoring fixture exercises a generic `pass`/`fail`/`unknown` scorer with call/latency/token/cost accounting. The scorer consumes prerecorded traces and is not a live model benchmark.
 
@@ -89,10 +89,10 @@ The core specification remains `2026-07-28`; the 2026 changes are extensions, li
 
 | Standard | Status | Project decision |
 | --- | --- | --- |
-| Skills over MCP (`io.modelcontextprotocol/skills`) | Final (SEP-2640; 2026-09-13) | Implement `skills/list`/`skills/get` and `skill://` resources; keep `agent_context` as fallback. |
+| Skills over MCP (`io.modelcontextprotocol/skills`) | Final (SEP-2640; 2026-09-13) | Planned; keep `agent_context` and skill tools until scheduled. |
 | MCP Tasks (`io.modelcontextprotocol/tasks`) | Official extension | Polling/terminal only; document that `input_required` is unsupported. |
 | MCP Apps (`io.modelcontextprotocol/ui`) | Official extension | Worker-only Job Monitor; document the boundary. |
-| Progressive Disclosure WG | Active; no Final | Keep the thin adapter; do not add bespoke grouping before a Final. |
+| Progressive Disclosure WG | Active; no Final | Catalogs stay stable per MCP 2026-07-28; definition discovery is host-owned. |
 | CIMD | Next-core direction; DCR deprecated | Plan before the next core release; keep DCR fallback. |
 
 ## Foundational and recent papers

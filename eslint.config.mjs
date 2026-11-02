@@ -50,6 +50,12 @@ export default [
     },
   },
   {
+    files: ["src/shared/**/*.{js,mjs}"],
+    rules: {
+      "max-statements-per-line": ["error", { max: 2 }],
+    },
+  },
+  {
     files: ["browser-extension/**/*.js"],
     languageOptions: {
       ecmaVersion: "latest",

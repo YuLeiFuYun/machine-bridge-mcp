@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitService } from "../src/local/git-service.mjs";
 import { structuredGitDiff, structuredGitShow } from "../src/local/git-content-service.mjs";
+import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
+import { compileToolArgumentValidators } from "../src/shared/tool-argument-validation.mjs";
+
+const gitQueryTools = new Set(["git_status", "git_diff", "git_log", "git_show"]);
+const gitOutputs = compileToolArgumentValidators(catalog.filter((tool) => gitQueryTools.has(tool.name))
+  .map((tool) => ({ name: tool.name, inputSchema: tool.outputSchema })));
 
 const root = await mkdtemp(join(tmpdir(), "mbm-structured-git-boundary-"));
 const home = join(root, "home");
@@ -54,16 +60,31 @@ async function testFileAndNonRepositoryInputs(service) {
   const repo = join(root, "file-input");
   await mkdir(repo, { recursive: true });
   initRepository(repo);
+  for (const [operation, args] of [["status", {}], ["diff", {}], ["diff", { staged: true }], ["log", {}], ["show", {}]]) {
+    const result = await service[operation]({ path: repo, ...args });
+    assert(gitOutputs.validate(`git_${operation}`, result).valid, "empty repository result violates the advertised Git output contract");
+  }
   const file = join(repo, "tracked.txt");
   await writeFile(file, "tracked\n");
   checkedGit(["add", "."], repo);
   checkedGit(["commit", "--quiet", "-m", "baseline"], repo);
   const status = await service.status({ path: file });
   assert(status.code === 0, "structured Git did not accept a regular-file target inside a repository");
+  for (const [operation, args] of [["status", {}], ["diff", {}], ["diff", { staged: true }], ["log", {}], ["show", {}], ["show", { revision: "refs/heads/missing-synthetic-revision" }]]) {
+    const result = await service[operation]({ path: file, ...args });
+    assert(gitOutputs.validate(`git_${operation}`, result).valid, "repository result violates the advertised Git output contract");
+  }
   const plain = join(root, "plain-directory");
   await mkdir(plain);
   const context = await service.context(plain);
   assert(context.ok === false && context.result.code === 128, "structured Git did not safely report a non-repository path");
+  const nonRepositoryService = gitService(async () => { throw new Error("non-repository query started a Git child"); });
+  for (const operation of ["status", "diff", "log", "show"]) {
+    const failure = await rejected(() => nonRepositoryService[operation]({ path: plain }));
+    assert(failure.code === "execution_failed" && failure.details?.execution_started === false
+      && failure.details?.side_effects_started === false,
+    "non-repository Git query returned an incomplete success result");
+  }
 }
 
 async function testSensitiveGitContentFiltering(service) {
@@ -202,7 +223,7 @@ async function runGitProcess(command, args, timeoutMs, _allowFailure, maxOutputB
     shell: false,
   });
   if (result.error) throw result.error;
-  return { code: Number.isInteger(result.status) ? result.status : 1, stdout: result.stdout || "", stderr: result.stderr || "" };
+  return { code: Number.isInteger(result.status) ? result.status : 1, stdout: result.stdout || "", stderr: result.stderr || "", stdout_truncated_bytes: 0, stderr_truncated_bytes: 0 };
 }
 
 function checkedGit(args, cwd) {

@@ -1,4 +1,4 @@
-import { instructionPromptText, diffPromptText, skillPromptText } from "../shared/prompt-projection.mjs";
+import { diffPromptText, resolveSharedPromptOperation } from "../shared/prompt-projection.mjs";
 import { randomBytes } from "node:crypto";
 import { MAX_TOOL_RESULT_BYTES } from "./tool-result-boundary.mjs";
 import { LocalRuntime } from "./runtime.mjs";
@@ -18,12 +18,12 @@ import {
 import {
   MCP_PROTOCOL_VERSIONS, MCP_REMOVED_PROTOCOL_MESSAGE, McpProtocolError, cacheableResult,
   completeResult, discoverResult, emptySubscriptionAcknowledgement, progressNotification, serverImplementation, subscriptionCompleteResult,
-  tagToolSchemaGeneration, validateRequestMetadata, validateSubscriptionRequest,
+  tagToolSchemaGeneration, toolArgumentValidationError, validateRequestMetadata, validateSubscriptionRequest,
 } from "../shared/mcp-protocol.mjs";
 import { createProgressReporter } from "../shared/progress-reporter.mjs";
 import { MCP_TASK_EXTENSION_ID, supportsMcpTasks, taskClientCapabilities } from "../shared/mcp-task-contract.mjs";
 import { taskToolResult, taskViewForJob } from "./stdio-task-projection.mjs";
-import { HELP_RESOURCES, readHelpResource } from "../shared/help-resources.mjs";
+import { HELP_RESOURCES, helpResourceMimeType, readHelpResource } from "../shared/help-resources.mjs";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_TOOL_CALLS = 32;
@@ -60,7 +60,7 @@ export async function runStdioServer({
   const logger = createLogger({ component: "stdio", level: logLevel, stderrOnly: true, color: false });
   const runtime = new LocalRuntime({ workspace, policy, logger, jobRoot, resources, resourceStatePath, browserStateRoot, serviceControlRoot });
   const pending = new Map();
-  const auxiliaryPending = new Set();
+  const auxiliaryPending = new Map();
   const requestHandlers = new Set();
   const inputState = { closed: false };
   const outputWriter = createBoundedStdioWriter({
@@ -79,8 +79,7 @@ export async function runStdioServer({
     },
   });
   const send = outputWriter.send;
-  const subscriptions = new Map();
-  const runAuxiliaryRequest = createAuxiliaryRequestRunner({ inputState, pending, subscriptions, auxiliaryPending, send });
+  const runAuxiliaryRequest = createAuxiliaryRequestRunner({ inputState, pending, auxiliaryPending, send });
   const capabilities = MCP_SERVER_CAPABILITIES;
 
   await consumeBoundedJsonLines(process.stdin, {
@@ -95,9 +94,7 @@ export async function runStdioServer({
     },
   });
   inputState.closed = true;
-  for (const requestId of subscriptions.values()) send(rpcResult(requestId, subscriptionCompleteResult(requestId, MCP_SERVER_INFO)));
-  subscriptions.clear();
-  for (const callId of pending.values()) runtime.cancelCall(callId, "stdio input closed");
+  for (const callId of [...pending.values(), ...auxiliaryPending.values()]) runtime.cancelCall(callId, "stdio input closed");
   while (requestHandlers.size) await Promise.allSettled([...requestHandlers]);
   await outputWriter.waitForPendingWrites();
   await runtime.stop();
@@ -133,12 +130,7 @@ export async function runStdioServer({
   function cancelRequest(message) {
     const requestId = asObject(message.params).requestId;
     const key = jsonRpcIdKey(requestId);
-    if (subscriptions.has(key)) {
-      subscriptions.delete(key);
-      send(rpcResult(requestId, subscriptionCompleteResult(requestId, MCP_SERVER_INFO)));
-      return;
-    }
-    const callId = pending.get(key);
+    const callId = pending.get(key) || auxiliaryPending.get(key);
     if (callId) runtime.cancelCall(callId, "MCP cancellation notification");
   }
 
@@ -168,7 +160,7 @@ export async function runStdioServer({
       try {
         validateSubscriptionRequest(message);
         const key = jsonRpcIdKey(message.id);
-        if (pending.has(key) || subscriptions.has(key)) {
+        if (pending.has(key) || auxiliaryPending.has(key)) {
           send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
           return;
         }
@@ -182,13 +174,13 @@ export async function runStdioServer({
     }
     if (message.method === "tools/call") {
       await handleStdioToolCall({
-        message, progressToken: metadata?.progressToken, policy, pending, runtime, send,
-        verboseErrors, inputState, subscriptions,
+        message, progressToken: metadata?.progressToken, policy, pending, auxiliaryPending, runtime, send,
+        verboseErrors, inputState,
       });
       return;
     }
     if (message.method === "prompts/list" || message.method === "prompts/get") {
-      await runAuxiliaryRequest(message, () => executePromptOperation(runtime, message.method, message, send, verboseErrors));
+      await runAuxiliaryRequest(message, (callId) => executePromptOperation(runtime, message.method, message, send, verboseErrors, callId));
       return;
     }
     if (message.method === "tasks/get" || message.method === "tasks/list" || message.method === "tasks/cancel" || message.method === "tasks/update" || message.method === "tasks/result") {
@@ -200,14 +192,14 @@ export async function runStdioServer({
       return;
     }
     if (message.method === "resources/list" || message.method === "resources/templates/list" || message.method === "resources/read") {
-      await runAuxiliaryRequest(message, () => executeResourceOperation(runtime, message.method, message, send, verboseErrors));
+      await runAuxiliaryRequest(message, (callId) => executeResourceOperation(runtime, message.method, message, send, verboseErrors, callId));
       return;
     }
     send(rpcError(message.id, -32601, "Method not found"));
   }
 }
 
-async function handleStdioToolCall({ message, progressToken, policy, pending, runtime, send, verboseErrors, inputState, subscriptions = null }) {
+async function handleStdioToolCall({ message, progressToken, policy, pending, auxiliaryPending = null, runtime, send, verboseErrors, inputState }) {
   // EOF can race a request handler that has not registered its call ID yet. Do not
   // start a side effect after the input transport has closed.
   if (inputState.closed) return;
@@ -223,12 +215,15 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
   }
   const rawArgs = params.arguments === undefined ? {} : params.arguments;
   const validation = validateToolArguments(name, rawArgs);
+  if (rawArgs === null || typeof rawArgs !== "object" || Array.isArray(rawArgs)) {
+    send(rpcError(message.id, -32602, "tools/call arguments must be an object", {
+      side_effects_started: false, validation_issues: validation.issues,
+    }));
+    return;
+  }
   if (!validation.known || !validation.valid) {
-    send(rpcError(message.id, -32602, !validation.known
-      ? "Unknown tool"
-      : "Tool arguments do not match the input schema", validation.valid ? undefined : {
-        validation_issues: validation.issues,
-      }));
+    send(!validation.known ? rpcError(message.id, -32602, "Unknown tool")
+      : rpcResult(message.id, toolResult(toolArgumentValidationError(validation.issues), true, MCP_SERVER_INFO)));
     return;
   }
   if (pending.size >= MAX_PENDING_TOOL_CALLS) {
@@ -236,7 +231,7 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
     return;
   }
   const key = jsonRpcIdKey(message.id);
-  if (key && (pending.has(key) || subscriptions?.has(key))) {
+  if (key && (pending.has(key) || auxiliaryPending?.has(key))) {
     send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
     return;
   }
@@ -253,101 +248,24 @@ async function handleStdioToolCall({ message, progressToken, policy, pending, ru
   }
 }
 
-async function executePromptOperation(runtime, method, message, send, verboseErrors) {
-  const callId = `stdio_prompt_${randomBytes(16).toString("hex")}`;
-  const params = asObject(message.params);
+async function executePromptOperation(runtime, method, message, send, verboseErrors, callId = `stdio_prompt_${randomBytes(16).toString("hex")}`) {
   try {
-    if (method === "prompts/list") {
-      const prompts = [
-        {
-          name: "agent_instructions",
-          description: "Project-specific developer instructions and operating constraints",
-          arguments: [],
-        },
-        {
-          name: "code_review",
-          description: "Review current staged or unstaged git changes",
-          arguments: [
-            { name: "staged", description: "Whether to review staged changes only (boolean)", required: false },
-          ],
-        },
-        {
-          name: "run_skill",
-          description: "Load instructions for a discovered local agent skill; loading does not execute its files",
-          arguments: [
-            { name: "skill", description: "Name of the skill to load", required: true },
-          ],
-        },
-      ];
-      send(rpcResult(message.id, completeResult({ prompts }, MCP_SERVER_INFO)));
+    const resolved = await resolveSharedPromptOperation(
+      method,
+      message.params,
+      (name, args) => runtime.executeTool(name, args, { callId, origin: "stdio" }),
+    );
+    if (!resolved.ok) {
+      send(rpcError(message.id, resolved.code, resolved.message));
       return;
     }
-    if (method === "prompts/get") {
-      const name = String(params.name || "");
-      if (!name) {
-        send(rpcError(message.id, -32602, "prompts/get requires a prompt name"));
-        return;
-      }
-      const args = asObject(params.arguments);
-      if (name === "agent_instructions") {
-        if (Object.keys(args).length) {
-          send(rpcError(message.id, -32602, "agent_instructions does not accept arguments"));
-          return;
-        }
-        const result = await runtime.executeTool("agent_context", {}, { callId, origin: "stdio" });
-        const instructions = instructionPromptText(result);
-        send(rpcResult(message.id, completeResult({
-          description: "Project developer instructions",
-          messages: [{ role: "user", content: { type: "text", text: String(instructions) } }],
-        }, MCP_SERVER_INFO)));
-        return;
-      }
-      if (name === "code_review") {
-        if (Object.keys(args).some((key) => key !== "staged") || (args.staged !== undefined && typeof args.staged !== "boolean")) {
-          send(rpcError(message.id, -32602, "code_review accepts only an optional boolean staged argument"));
-          return;
-        }
-        const staged = args.staged === true;
-        const diffResult = await runtime.executeTool("git_diff", { staged }, { callId, origin: "stdio" });
-        const diffText = diffPromptText(diffResult);
-        send(rpcResult(message.id, completeResult({
-          description: `Code review prompt for ${staged ? "staged" : "unstaged"} changes`,
-          messages: [
-            {
-              role: "user",
-              content: {
-                type: "text",
-                text: `Please review the following git diff for correctness, security, and architecture:\n\n\`\`\`diff\n${diffText}\n\`\`\``,
-              },
-            },
-          ],
-        }, MCP_SERVER_INFO)));
-        return;
-      }
-      if (name === "run_skill") {
-        const skillName = typeof args.skill === "string" ? args.skill.trim() : "";
-        if (!skillName || Object.keys(args).some((key) => key !== "skill")) {
-          send(rpcError(message.id, -32602, "run_skill requires only a non-empty skill argument"));
-          return;
-        }
-        const skillResult = await runtime.executeTool("load_local_skill", { skill: skillName }, { callId, origin: "stdio" });
-        const content = skillPromptText(skillResult);
-        send(rpcResult(message.id, completeResult({
-          description: `Skill: ${skillName}`,
-          messages: [{ role: "user", content: { type: "text", text: content } }],
-        }, MCP_SERVER_INFO)));
-        return;
-      }
-      send(rpcError(message.id, -32602, `Unknown prompt: ${name}`));
-      return;
-    }
+    send(rpcResult(message.id, completeResult(resolved.value, MCP_SERVER_INFO)));
   } catch (error) {
     send(rpcError(message.id, -32603, "Prompt operation failed", publicError(error, { verbose: verboseErrors })));
   }
 }
 
-async function executeResourceOperation(runtime, method, message, send, verboseErrors) {
-  const callId = `stdio_res_${randomBytes(16).toString("hex")}`;
+async function executeResourceOperation(runtime, method, message, send, verboseErrors, callId = `stdio_res_${randomBytes(16).toString("hex")}`) {
   const params = asObject(message.params);
   try {
     if (method === "resources/list") {
@@ -372,7 +290,7 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
         },
         ...HELP_RESOURCES,
       ];
-      send(rpcResult(message.id, { resources }));
+      send(rpcResult(message.id, completeResult({ resources }, MCP_SERVER_INFO)));
       return;
     }
     if (method === "resources/templates/list") {
@@ -384,7 +302,7 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
           mimeType: "text/x-diff",
         },
       ];
-      send(rpcResult(message.id, { resourceTemplates }));
+      send(rpcResult(message.id, completeResult({ resourceTemplates }, MCP_SERVER_INFO)));
       return;
     }
     if (method === "resources/read") {
@@ -395,28 +313,28 @@ async function executeResourceOperation(runtime, method, message, send, verboseE
       }
       const helpText = readHelpResource(uri);
       if (helpText !== null) {
-        send(rpcResult(message.id, {
-          contents: [{ uri, mimeType: "text/markdown", text: helpText }],
-        }));
+        send(rpcResult(message.id, completeResult({
+          contents: [{ uri, mimeType: helpResourceMimeType(uri), text: helpText }],
+        }, MCP_SERVER_INFO)));
         return;
       }
       if (uri === "diff://workspace/staged" || uri === "diff://workspace/unstaged") {
         const staged = uri === "diff://workspace/staged";
         const result = await runtime.executeTool("git_diff", { staged }, { callId, origin: "stdio" });
         const text = diffPromptText(result);
-        send(rpcResult(message.id, {
+        send(rpcResult(message.id, completeResult({
           contents: [{ uri, mimeType: "text/x-diff", text }],
-        }));
+        }, MCP_SERVER_INFO)));
         return;
       }
       if (uri === "diag://runtime/status") {
         const result = await runtime.executeTool("diagnose_runtime", {}, { callId, origin: "stdio" });
-        send(rpcResult(message.id, {
+        send(rpcResult(message.id, completeResult({
           contents: [{ uri, mimeType: "application/json", text: JSON.stringify(result, null, 2) }],
-        }));
+        }, MCP_SERVER_INFO)));
         return;
       }
-      send(rpcError(message.id, -32602, `Unsupported resource URI: ${uri}`));
+      send(rpcError(message.id, -32602, `Unsupported resource URI: ${uri.slice(0, 128)}`));
       return;
     }
   } catch (error) {
@@ -439,7 +357,7 @@ async function executeTaskOperation(runtime, method, message, send, verboseError
     if (method === "tasks/list") {
       const jobs = await runtime.managedJobManager.list({}, { origin: "stdio" });
       const tasks = (jobs?.jobs || []).map((job) => taskViewForJob(job, job.job_id));
-      send(rpcResult(message.id, { tasks }));
+      send(rpcResult(message.id, completeResult({ tasks }, MCP_SERVER_INFO)));
       return;
     }
     const taskId = String(params.taskId || params.task_id || "");
@@ -463,12 +381,12 @@ async function executeTaskOperation(runtime, method, message, send, verboseError
           send(rpcError(message.id, -32800, view.statusMessage));
           return;
         }
-        send(rpcResult(message.id, { taskId, status: view.status, result: taskToolResult(job, MCP_SERVER_INFO) }));
+        send(rpcResult(message.id, completeResult({ taskId, status: view.status, result: taskToolResult(job, MCP_SERVER_INFO) }, MCP_SERVER_INFO)));
         return;
       }
-      send(rpcResult(message.id, view.status === "completed"
+      send(rpcResult(message.id, completeResult(view.status === "completed"
         ? { ...view, result: taskToolResult(job, MCP_SERVER_INFO) }
-        : view));
+        : view, MCP_SERVER_INFO)));
       return;
     }
     if (method === "tasks/cancel") {
@@ -484,11 +402,11 @@ async function executeTaskOperation(runtime, method, message, send, verboseError
         return;
       }
       const view = taskViewForJob(job, taskId);
-      send(rpcResult(message.id, {
+      send(rpcResult(message.id, completeResult({
         ...view,
         cancelled: view.status === "cancelled",
         cancellationRequested: result?.cancellation_requested === true,
-      }));
+      }, MCP_SERVER_INFO)));
       return;
     }
     if (method === "tasks/update") {
@@ -506,7 +424,7 @@ async function executeTaskOperation(runtime, method, message, send, verboseError
         send(rpcError(message.id, -32000, `Task not found: ${taskId}`));
         return;
       }
-      send(rpcResult(message.id, {}));
+      send(rpcResult(message.id, completeResult({}, MCP_SERVER_INFO)));
       return;
     }
     send(rpcError(message.id, -32601, "Method not found"));
@@ -769,11 +687,11 @@ function isJsonRpcId(value) {
   return value === null || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 }
 
-function createAuxiliaryRequestRunner({ inputState, pending, subscriptions, auxiliaryPending, send }) {
+function createAuxiliaryRequestRunner({ inputState, pending, auxiliaryPending, send }) {
   return async function runAuxiliaryRequest(message, operation) {
     if (inputState.closed) return;
     const key = jsonRpcIdKey(message.id);
-    if (key && (pending.has(key) || subscriptions.has(key) || auxiliaryPending.has(key))) {
+    if (key && (pending.has(key) || auxiliaryPending.has(key))) {
       send(rpcError(message.id, -32600, "Duplicate in-flight JSON-RPC request id"));
       return;
     }
@@ -781,9 +699,10 @@ function createAuxiliaryRequestRunner({ inputState, pending, subscriptions, auxi
       send(rpcError(message.id, MCP_LIMIT_EXCEEDED, "Too many concurrent requests"));
       return;
     }
-    if (key) auxiliaryPending.add(key);
+    const callId = `stdio_aux_${randomBytes(16).toString("hex")}`;
+    if (key) auxiliaryPending.set(key, callId);
     try {
-      await operation();
+      await operation(callId);
     } finally {
       if (key) auxiliaryPending.delete(key);
     }

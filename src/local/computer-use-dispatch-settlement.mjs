@@ -106,13 +106,14 @@ function applicationOperationError(code, reason, message, cause, retryable, deta
 }
 
 const UNKNOWN_MUTATION_ERROR_PREFIXES = Object.freeze([
-  "browser mutation request may have been dispatched;",
+  "browser mutation request may have been dispatched",
   "browser mutation may have completed;",
-  "browser action may have been dispatched;",
-  "trusted browser input may have been partially dispatched;",
-  "browser tab mutation may have been dispatched;",
-  "browser screenshot temporary tab activation may have been dispatched;",
-  "browser screenshot restoration may have been dispatched;",
+  "browser action may have been dispatched",
+  "trusted browser input may have been partially dispatched",
+  "form submission failed after partial changes",
+  "browser tab mutation may have been dispatched",
+  "browser screenshot temporary tab activation may have been dispatched",
+  "browser screenshot restoration may have been dispatched",
 ]);
 
 /**
@@ -134,6 +135,8 @@ function isUnknownOutcomeError(surface, error) {
   if (surface === "application") {
     return applicationOperationReason(error) === APPLICATION_OPERATION_REASON.INPUT_OUTCOME_UNKNOWN;
   }
+  const settlement = error instanceof BridgeError ? error.details?.effect_settlement : undefined;
+  if (settlement === "unknown" || settlement === "pending") return true;
   const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
   return UNKNOWN_MUTATION_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix));
 }

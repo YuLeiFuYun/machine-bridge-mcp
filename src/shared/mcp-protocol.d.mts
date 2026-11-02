@@ -11,6 +11,19 @@ export class McpProtocolError extends Error {
   constructor(code: number, message: string, data?: unknown);
 }
 export function asMcpObject(value: unknown): Record<string, unknown>;
+export type ProgressNotificationParams = Readonly<{
+  progressToken: string | number;
+  progress: number;
+  total?: number;
+  message?: string;
+}>;
+export type ProgressNotification = Readonly<{
+  jsonrpc: "2.0";
+  method: "notifications/progress";
+  params: ProgressNotificationParams;
+}>;
+export function progressNotification(params: ProgressNotificationParams): ProgressNotification;
+export function toolArgumentValidationError(issues: readonly Readonly<{ instancePath: string; keyword: string; message: string }>[]): Record<string, unknown>;
 export function requestProtocolVersion(value: unknown): string;
 export function assertBoundedMcpJsonStructure(value: unknown, label?: string): void;
 export function validateRequestMetadata(value: unknown, supportedVersions?: readonly string[]): {

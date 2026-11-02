@@ -54,7 +54,7 @@ import { McpTaskService } from "./mcp-task-service.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly } from "./websocket-protocol.ts";
 import { DaemonWebSocketController } from "./daemon-websocket-controller.ts";
-const SERVER_VERSION = "3.0.0-beta.210";
+const SERVER_VERSION = "3.0.0-beta.211";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
 export class BridgeRoom extends DurableObject<BridgeEnv> {
