@@ -11,19 +11,21 @@ import { BridgeError } from "./errors.mjs";
  */
 export class CodeActExecutor {
   /**
-   * @param {object} options
-   * @param {any} options.runtime
+   * @param {object} [options]
+   * @param {any} [options.runtime]
+   * @param {((tool: string, args?: Record<string, unknown>, context?: Record<string, unknown>) => Promise<unknown>)} [options.executeTool]
    * @param {number} [options.timeoutMs]
    */
-  constructor({ runtime, timeoutMs = 30_000 }) {
-    this.runtime = runtime;
-    this.timeoutMs = timeoutMs;
+  constructor(options = {}) {
+    this.runtime = options.runtime || null;
+    this.executeTool = options.executeTool || null;
+    this.timeoutMs = options.timeoutMs || 30_000;
   }
 
   /**
    * @param {string} script
    * @param {Record<string, unknown>} [context]
-   * @returns {Promise<{ result: unknown, logs: string[] }>}
+   * @returns {Promise<{ ok: boolean, result: unknown, value: unknown, logs: string[] }>}
    */
   async execute(script, context = {}) {
     if (typeof script !== "string" || !script.trim()) {
@@ -36,6 +38,7 @@ export class CodeActExecutor {
 
     const sandbox = {
       sdk,
+      mbm: sdk,
       console: {
         log: (/** @type {unknown[]} */ ...args) => logs.push(args.map(String).join(" ")),
         error: (/** @type {unknown[]} */ ...args) => logs.push("[error] " + args.map(String).join(" ")),
@@ -62,7 +65,8 @@ export class CodeActExecutor {
       });
 
       const result = await promise;
-      return { result: result === undefined ? null : result, logs };
+      const finalResult = result === undefined ? null : result;
+      return { ok: true, result: finalResult, value: finalResult, logs };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new BridgeError("operational_error", `CodeAct batch execution failed: ${message}`, {
@@ -78,12 +82,24 @@ export class CodeActExecutor {
    * @private
    */
   _createSdkProxy(context) {
-    const runtime = this.runtime;
+    const caller = this.runtime?.executeTool
+      ? (/** @type {string} */ tool, /** @type {Record<string, unknown>} */ args, /** @type {Record<string, unknown>} */ ctx) => this.runtime.executeTool(tool, args, ctx)
+      : typeof this.executeTool === "function"
+        ? this.executeTool
+        : null;
+
     return new Proxy({}, {
       get: (_target, prop) => {
         if (typeof prop !== "string") return undefined;
+        if (prop === "callTool") {
+          return async (/** @type {string} */ tool, /** @type {Record<string, unknown>} */ args = {}) => {
+            if (!caller) throw new Error("No tool execution handler available in CodeAct executor");
+            return caller(tool, args, context);
+          };
+        }
         return async (/** @type {Record<string, unknown>} */ args = {}) => {
-          return runtime.executeTool(prop, args, context);
+          if (!caller) throw new Error("No tool execution handler available in CodeAct executor");
+          return caller(prop, args, context);
         };
       },
     });

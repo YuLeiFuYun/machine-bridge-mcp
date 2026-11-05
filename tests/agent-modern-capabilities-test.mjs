@@ -8,6 +8,9 @@ import { applyUpdateHunks } from "../src/local/patch.mjs";
 import { publicProcessToolResult } from "../src/local/process-result-projection.mjs";
 import { extractWorkspaceOutline } from "../src/local/symbol-outline.mjs";
 import { inspectSyntaxWarning, WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
+import { CodeActExecutor } from "../src/local/code-act-executor.mjs";
+import { projectSetOfMarks } from "../src/local/computer-use-observation.mjs";
+import { ToolExecutor } from "../src/local/tool-executor.mjs";
 import { MCP_TEXT_PROJECTION_KEY } from "../src/shared/result-projection.mjs";
 import { CODE_MODE_SDK_RESOURCE_URI, HELP_RESOURCES, helpResourceMimeType, readHelpResource } from "../src/shared/help-resources.mjs";
 import { CORE_CORNERSTONE_TOOL_NAMES, projectToolTypeScriptDeclarations } from "../src/shared/tool-groups.mjs";
@@ -134,4 +137,116 @@ test("WorkspaceFileService and applyUpdateHunks handle line ending invariance, r
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => {});
   }
+});
+
+test("CodeActExecutor executes sandboxed code with tool dispatch and prevents host leaks", async () => {
+  const calls = [];
+  const executor = new CodeActExecutor({
+    executeTool: async (tool, args) => {
+      calls.push({ tool, args });
+      if (tool === "calc") return { result: (args.a || 0) + (args.b || 0) };
+      return { ok: true };
+    },
+    timeoutMs: 3000,
+  });
+
+  const res = await executor.execute(`
+    const r = await mbm.callTool("calc", { a: 20, b: 22 });
+    return { calculated: r.result };
+  `);
+  assert.equal(res.ok, true);
+  assert.equal(res.value?.calculated, 42);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].tool, "calc");
+
+  const leakTest = await executor.execute(`
+    return typeof process === "undefined";
+  `);
+  assert.equal(leakTest.ok, true);
+  assert.equal(leakTest.value, true);
+});
+
+test("projectSetOfMarks projects deterministic marks with center coordinates and labels", () => {
+  const elements = [
+    { targetId: "btn-submit", role: "button", name: "Submit Form", bounds: { x: 100, y: 200, width: 80, height: 30 } },
+    { targetId: "txt-input", role: "textbox", name: "Search", bounds: { x: 50, y: 50, width: 200, height: 30 } },
+    { targetId: "no-bounds", role: "generic" },
+  ];
+  const marks = projectSetOfMarks(elements);
+  assert.equal(marks.length, 2);
+  assert.equal(marks[0].markId, 1);
+  assert.equal(marks[0].targetId, "btn-submit");
+  assert.equal(marks[0].center.x, 140);
+  assert.equal(marks[0].center.y, 215);
+  assert.match(marks[0].label, /button "Submit Form"/);
+
+  assert.equal(marks[1].markId, 2);
+  assert.equal(marks[1].targetId, "txt-input");
+  assert.equal(marks[1].center.x, 150);
+  assert.equal(marks[1].center.y, 65);
+});
+
+test("WorkspaceFileService enforces verify_syntax pre-commit gate on file write and edit", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "mbm-syntax-test-"));
+  try {
+    const service = new WorkspaceFileService({
+      workspace: temp,
+      policy: { allowWrites: true },
+      policyGate: { assert: () => {} },
+      resolveExistingPath: async (p) => p,
+      resolveWritePath: async (p) => p,
+      displayPath: (p) => p,
+      throwIfCancelled: () => {},
+      withMutationPaths: async (_paths, fn) => fn(),
+    });
+
+    const brokenFile = join(temp, "broken.mjs");
+    await assert.rejects(
+      () => service.writeFile({ path: brokenFile, content: "function broken() {\n  return 1;\n", verify_syntax: true }),
+      (err) => err?.code === "invalid_request" && err?.details?.reason === "syntax_gate_failure",
+    );
+
+    const writeRes = await service.writeFile({ path: brokenFile, content: "export function valid() {\n  return 1;\n}\n", verify_syntax: true });
+    assert.equal(writeRes.ok, true);
+
+    await assert.rejects(
+      () => service.editFile({ path: brokenFile, old_text: "return 1;\n}\n", new_text: "return 1;\n", verify_syntax: true }),
+      (err) => err?.code === "invalid_request" && err?.details?.reason === "syntax_gate_failure",
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("ToolExecutor stuck-loop detector flags repeated identical failing calls", async () => {
+  let callIndex = 0;
+  const executor = new ToolExecutor({
+    handlers: {
+      git_status: async () => { throw new Error("git binary not found"); },
+    },
+    policyGate: { assert: () => {} },
+    accountAccessGate: { authority: () => ({ principal: { role: "admin" } }) },
+    callRegistry: {
+      open: (ctx) => ({ callId: `c-${++callIndex}`, ...ctx }),
+      finish: () => {},
+      bindPrincipal: () => {},
+      throwIfCancelled: () => {},
+    },
+    observability: { start: () => {}, finish: () => {} },
+    logger: { event: () => {} },
+    safeMessage: (err) => err.message,
+  });
+
+  await assert.rejects(
+    () => executor.execute("git_status", { refresh: true }),
+    (err) => err.details?.stuck_loop_warning === undefined,
+  );
+  await assert.rejects(
+    () => executor.execute("git_status", { refresh: true }),
+    (err) => err.details?.stuck_loop_warning === undefined,
+  );
+  await assert.rejects(
+    () => executor.execute("git_status", { refresh: true }),
+    (err) => typeof err.details?.stuck_loop_warning === "string" && /3 consecutive identical calls/.test(err.details.stuck_loop_warning),
+  );
 });

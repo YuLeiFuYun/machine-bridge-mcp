@@ -748,11 +748,9 @@ function optionalFiniteNumber(value) {
 function recordOrNull(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
-
 function pushBounded(list, value) {
   if (list.length < MAX_DELTA_ENTRIES) list.push(value);
 }
-
 function boundedBox(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const out = {};
@@ -763,17 +761,12 @@ function boundedBox(value) {
   }
   return out;
 }
-
 function boundedText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
 }
-
 function nearNumber(left, right, tolerance) {
-  return typeof left === "number" && Number.isFinite(left)
-    && typeof right === "number" && Number.isFinite(right)
-    && Math.abs(left - right) <= tolerance;
+  return typeof left === "number" && Number.isFinite(left) && typeof right === "number" && Number.isFinite(right) && Math.abs(left - right) <= tolerance;
 }
-
 function hasAccessibilitySemantics(observation) {
   return Boolean(observation.semantic?.accessibility && observation.semantic.accessibility.available !== false);
 }
@@ -787,18 +780,21 @@ export function projectSetOfMarks(elements) {
   if (!Array.isArray(elements)) return [];
   const marks = [];
   let markId = 1;
-  for (const element of elements) {
-    if (!element || typeof element !== "object") continue;
-    const role = element.role || element.tag || "element";
-    const name = element.name || element.label || element.placeholder || element.text || "";
-    const bounds = element.rect || element.bounding_box || element.geometry || null;
+  for (const el of elements) {
+    if (!el || typeof el !== "object") continue;
+    const b = el.rect || el.bounding_box || el.bounds || el.geometry;
+    if (!b || typeof b !== "object") continue;
+    const x = Number(b.x ?? b.left ?? 0), y = Number(b.y ?? b.top ?? 0);
+    const width = Number(b.width ?? b.w ?? 0), height = Number(b.height ?? b.h ?? 0);
+    const role = String(el.role || el.tag || "element");
+    const name = String(el.name || el.label || el.placeholder || el.text || "").slice(0, 80);
+    const label = (name ? `${role} "${name}"` : role).slice(0, 100);
     marks.push({
-      mark_id: markId++,
-      role: String(role),
-      name: String(name).slice(0, 80),
-      ref: element.ref || null,
-      bounds,
+      mark_id: markId, markId, targetId: el.targetId || el.ref || null, ref: el.ref || null,
+      role, name, label, bounds: { x, y, width, height },
+      center: { x: Math.round(x + width / 2), y: Math.round(y + height / 2) },
     });
+    markId++;
   }
   return marks;
 }

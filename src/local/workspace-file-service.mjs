@@ -327,6 +327,10 @@ export class WorkspaceFileService {
       const bytes = Buffer.byteLength(updated);
       if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
       this.throwIfCancelled(context);
+      if (args.verify_syntax === true) {
+        const preSyntax = inspectSyntaxWarning(full, updated);
+        if (preSyntax) throw new BridgeError("invalid_request", "syntax verification failed: " + preSyntax, { details: { reason: "syntax_gate_failure", diagnostic: preSyntax } });
+      }
       const commit = await commitAtomicText(full, updated, info, {
         ...this.fileTransactionOptions,
         expectedHash: sha256(current),
@@ -377,6 +381,10 @@ export class WorkspaceFileService {
         if (item.kind === "add") {
           if (await pathEntryIfExists(target)) throw new BridgeError("conflict", "add target already exists", { details: { reason: "already_exists", operation: "add" } });
           assertTextSize(operation.content);
+          if (args.verify_syntax === true) {
+            const preSyntax = inspectSyntaxWarning(target, operation.content);
+            if (preSyntax) throw new BridgeError("invalid_request", "syntax verification failed: " + preSyntax, { details: { reason: "syntax_gate_failure", diagnostic: preSyntax } });
+          }
           prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
           continue;
         }
@@ -389,6 +397,10 @@ export class WorkspaceFileService {
         }
         const content = applyUpdateHunks(original, operation.hunks);
         assertTextSize(content);
+        if (args.verify_syntax === true) {
+          const preSyntax = inspectSyntaxWarning(target || source, content);
+          if (preSyntax) throw new BridgeError("invalid_request", "syntax verification failed: " + preSyntax, { details: { reason: "syntax_gate_failure", diagnostic: preSyntax } });
+        }
         if (target !== source && await pathEntryIfExists(target)) throw new BridgeError("conflict", "move target already exists", { details: { reason: "already_exists", operation: "move" } });
         prepared.push({ kind: item.kind, source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
       }
