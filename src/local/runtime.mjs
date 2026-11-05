@@ -1,3 +1,4 @@
+import { CodeActExecutor } from "./code-act-executor.mjs";
 import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
@@ -456,6 +457,11 @@ export class LocalRuntime {
 
   handleRelayReady() {
     this.relayCallRecovery.ready();
+  }
+
+  executeCodeAct(script, context = {}) {
+    if (!this.codeActExecutor) this.codeActExecutor = new CodeActExecutor({ runtime: this });
+    return this.codeActExecutor.execute(script, context);
   }
 
   async executeTool(tool, args, context = {}) {

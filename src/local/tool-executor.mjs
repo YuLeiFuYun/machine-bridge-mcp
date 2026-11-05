@@ -16,6 +16,31 @@ export function validateToolArguments(tool, value) {
   return TOOL_ARGUMENTS.validate(tool, value);
 }
 
+
+class StuckLoopDetector {
+  constructor(threshold = 3) {
+    this.threshold = threshold;
+    this.recentCalls = [];
+  }
+  record(tool, args, status) {
+    let key;
+    try { key = tool + ":" + JSON.stringify(args || {}); } catch { key = String(tool); }
+    this.recentCalls.push({ key, status });
+    if (this.recentCalls.length > 20) this.recentCalls.shift();
+    if (status === "failed") {
+      const tail = this.recentCalls.slice(-this.threshold);
+      if (tail.length === this.threshold && tail.every((item) => item.key === key && item.status === "failed")) {
+        return {
+          detected: true,
+          consecutiveCount: this.threshold,
+          warning: "stuck_loop_warning: " + this.threshold + " consecutive identical calls to \x27" + tool + "\x27 failed; consider changing arguments or trying an alternative strategy",
+        };
+      }
+    }
+    return null;
+  }
+}
+
 export class ToolExecutor {
   constructor(options = {}) {
     this.handlers = options.handlers || {};
@@ -30,9 +55,10 @@ export class ToolExecutor {
     this.onAuthorizedRelayActivityEnd = typeof options.onAuthorizedRelayActivityEnd === "function" ? options.onAuthorizedRelayActivityEnd : null;
     this.safeMessage = typeof options.safeMessage === "function" ? options.safeMessage : (error) => String(error?.message || error || "operation failed");
     this.slowMs = Number.isFinite(Number(options.slowMs)) ? Math.max(1, Number(options.slowMs)) : 30_000;
+    this.stuckLoopDetector = new StuckLoopDetector(3);
     this.pipeline = composeMiddleware([
       lifecycleMiddleware(this.callRegistry),
-      observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
+      observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs, this.stuckLoopDetector),
       authorityMiddleware(this.policyGate, this.accountAccessGate, this.callRegistry),
       validateArgumentsMiddleware(),
       operationAuthorizationMiddleware(this.operationAuthorizer),
@@ -111,7 +137,7 @@ function lifecycleMiddleware(callRegistry) {
   };
 }
 
-function observabilityMiddleware(observability, securityAudit, logger, safeMessage, slowMs) {
+function observabilityMiddleware(observability, securityAudit, logger, safeMessage, slowMs, stuckLoopDetector) {
   const auditFailureReporter = createSecurityAuditFailureReporter(logger);
   return async (operation, next) => {
     const started = performance.now();
@@ -127,6 +153,7 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const durationMs = performance.now() - started;
       const slow = durationMs >= slowMs;
       observability.finish(operation.tool, { status: "completed", durationMs, slow });
+      stuckLoopDetector?.record(operation.tool, operation.args, "completed");
       enqueueSecurityAudit(securityAudit, operation, { outcome: "completed", durationMs, outputBytes: normalizedResult.bytes }, auditFailureReporter);
       logger.event?.("debug", slow ? "tool.call.slow" : "tool.call.completed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin, duration_ms: durationMs,
@@ -136,6 +163,10 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       return result;
     } catch (error) {
       const normalized = normalizeBridgeError(error, { safeMessage: () => safeMessage(error, operation.args, operation.context) });
+      const loopWarning = stuckLoopDetector?.record(operation.tool, operation.args, "failed");
+      if (loopWarning?.detected) {
+        normalized.details = { ...normalized.details, stuck_loop_warning: loopWarning.warning };
+      }
       const durationMs = performance.now() - started;
       const code = errorCode(normalized);
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";

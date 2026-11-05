@@ -253,6 +253,10 @@ export class WorkspaceFileService {
         if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new BridgeError("conflict", "expected_sha256 mismatch", { details: { reason: "hash_mismatch" } });
       }
       this.throwIfCancelled(context);
+      if (args.verify_syntax === true) {
+        const preSyntax = inspectSyntaxWarning(full, content);
+        if (preSyntax) throw new BridgeError("invalid_request", "syntax verification failed: " + preSyntax, { details: { reason: "syntax_gate_failure", diagnostic: preSyntax } });
+      }
       const commit = await commitAtomicText(full, content, existing, {
         ...this.fileTransactionOptions,
         readText: readUtf8File,
