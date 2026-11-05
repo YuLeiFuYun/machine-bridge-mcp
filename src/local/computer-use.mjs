@@ -283,6 +283,9 @@ export class ComputerUseManager {
     const privateState = extractBrowserPrivateBindings(captured);
     validateBrowserObservationForSnapshot(captured);
     const observation = buildBrowserObservation(captured, args);
+    if (args?.set_of_marks === true && observation?.semantic?.frames) {
+      observation.set_of_marks = projectSetOfMarks(observation.semantic.frames.flatMap((frame) => frame.elements || []));
+    }
     let imageContent = Array.isArray(captured.imageContent) ? captured.imageContent : [];
     try {
       assertObservationResultFits(observation, imageContent);
