@@ -777,3 +777,28 @@ function nearNumber(left, right, tolerance) {
 function hasAccessibilitySemantics(observation) {
   return Boolean(observation.semantic?.accessibility && observation.semantic.accessibility.available !== false);
 }
+
+/**
+ * Projects interactive elements into Set-of-Marks (SoM) bounding boxes with numeric visual IDs.
+ * Aligns vision-language observations with discrete action targets.
+ * Reference: Set-of-Mark Prompting (arXiv:2310.11441) and OmniParser (arXiv:2408.00203).
+ */
+export function projectSetOfMarks(elements) {
+  if (!Array.isArray(elements)) return [];
+  const marks = [];
+  let markId = 1;
+  for (const element of elements) {
+    if (!element || typeof element !== "object") continue;
+    const role = element.role || element.tag || "element";
+    const name = element.name || element.label || element.placeholder || element.text || "";
+    const bounds = element.rect || element.bounding_box || element.geometry || null;
+    marks.push({
+      mark_id: markId++,
+      role: String(role),
+      name: String(name).slice(0, 80),
+      ref: element.ref || null,
+      bounds,
+    });
+  }
+  return marks;
+}

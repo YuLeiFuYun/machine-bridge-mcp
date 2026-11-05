@@ -20,7 +20,7 @@ import { ComputerUseSnapshotStore } from "./computer-use-snapshot-store.mjs";
 import { computerActPostObservationTimeoutError, computerActRemainingTimeoutSeconds, computerActVerificationTimeoutProbe, publicPostObservationError, requiredComputerActRemainingTimeoutSeconds, requiredComputerObserveRemainingTimeoutSeconds } from "./computer-use-deadline.mjs";
 import { APPLICATION_OPERATION_REASON, applicationOperationReason, settleComputerUseDispatch } from "./computer-use-dispatch-settlement.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
-import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "./computer-use-observation.mjs";
+import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation, projectSetOfMarks } from "./computer-use-observation.mjs";
 import { buildRetryGuidance } from "./computer-use-recovery.mjs";
 import { applicationElementSupportsPointClick, prepareApplicationObservationElements } from "./computer-use-application-observation.mjs";
 import { browserObservationArgs, validateApplicationInspectionEvidence, validateBrowserObservationForSnapshot } from "./computer-use-observation-contract.mjs";
