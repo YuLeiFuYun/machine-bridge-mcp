@@ -766,7 +766,7 @@ if (!agentContextTestSource.includes('resourceCoordinatorRoot: join(root, "resou
     || agentContextTestSource.includes("processResourceWaitMs: 5 * 60_000")) {
   throw new Error("agent-context coverage fixture lost its isolated, short-bounded resource admission contract");
 }
-const fullAccessSource = readFileSync(join(root, "src", "local", "full-access-test.mjs"), "utf8");
+const fullAccessSource = readFileSync(join(root, "src", "local", "full-access-probe.mjs"), "utf8");
 if (!fullAccessSource.includes('resourceCoordinatorRoot: join(root, "resource-coordinator")')
     || !readFileSync(join(root, "tests", "full-access-test.mjs"), "utf8").includes("resourceCoordinatorOptions: { sampleHost: healthyResourceHost }")
     || !fullAccessSource.includes("processResourceWaitMs: FULL_ACCESS_RESOURCE_WAIT_MS")

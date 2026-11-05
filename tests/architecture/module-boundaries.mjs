@@ -216,7 +216,9 @@ const internalModules = new Set([
   "cli-activate.mjs",
   "cli-idle-sleep.mjs",
   "cli-ready-output.mjs",
+  "computer-use-application-geometry.mjs",
   "computer-use-arguments.mjs",
+  "computer-use-dispatch-sanitizers.mjs",
   "computer-use-verification.mjs",
   "daemon-http-relay-auth.mjs",
   "daemon-http-relay-connection.mjs",
@@ -233,7 +235,7 @@ const internalModules = new Set([
   "exclusive-publication-repair.mjs",
   "execution-routing-intent.mjs",
   "execution-surface.mjs",
-  "full-access-test.mjs",
+  "full-access-probe.mjs",
   "git-content-service.mjs",
   "git-sensitive-path-filter.mjs",
   "git-version.mjs",
@@ -444,12 +446,12 @@ for (const name of ["process-tree-ownership.mjs", "process-identity.mjs", "resou
 //   - the number of large files may not increase (splitting is free, accreting is not),
 //   - one absolute ceiling stops a single file from absorbing everyone else's headroom.
 const lineBudget = Object.freeze({
-  totalLines: 66_000,
+  totalLines: 64_000,
   p95: 360,
-  p99: 850,
-  largestFile: 2_000,
-  over600Files: 21,
-  over1000Files: 5,
+  p99: 800,
+  largestFile: 1_850,
+  over600Files: 16,
+  over1000Files: 4,
 });
 
 // Only a module whose split is itself a contract asserted elsewhere keeps a fixed ceiling.
