@@ -1,11 +1,11 @@
 {
   "_note": "Ratchet for production source size. Lower a number after consolidating modules; raising one requires a recorded review that explains why the new file, byte, or micro-module is necessary.",
-  "totalFiles": 530,
-  "totalBytes": 3100000,
+  "totalFiles": 529,
+  "totalBytes": 3098000,
   "maxModuleBytes": 96000,
-  "microFiles": 114,
+  "microFiles": 112,
   "flatDirectories": {
-    "src/local": 375,
+    "src/local": 374,
     "src/worker": 119
   }
 }

@@ -198,6 +198,7 @@ const internalModules = new Set([
   "account-admin-response.mjs",
   "account-admin.mjs",
   "app-automation-macos-jxa.mjs",
+  "app-automation-support.mjs",
   "application-capability-match.mjs",
   "atomic-fs.mjs",
   "authority-context.mjs",
@@ -243,7 +244,6 @@ const internalModules = new Set([
   "hardened-npm-download-timeout.mjs",
   "hardened-npm-launcher.mjs",
   "hosted-file-read-budget.mjs",
-  "idle-sleep-mode.mjs",
   "job-runner.mjs",
   "log.mjs",
   "macos-idle-sleep-recovery.mjs",
@@ -309,7 +309,6 @@ const internalModules = new Set([
   "relay-liveness-actions.mjs",
   "relay-peer-diagnostics.mjs",
   "relay-probe-deadline.mjs",
-  "relay-probe-dispatch-metrics.mjs",
   "relay-probe-dispatch.mjs",
   "relay-reconnect.mjs",
   "relay-tool-schema-extension.mjs",
@@ -451,7 +450,7 @@ const lineBudget = Object.freeze({
   p99: 800,
   largestFile: 1_850,
   over600Files: 16,
-  over1000Files: 4,
+  over1000Files: 3,
 });
 
 // Only a module whose split is itself a contract asserted elsewhere keeps a fixed ceiling.

@@ -17,7 +17,7 @@ import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFiles
 import { appName, packageRoot } from "./package-identity.mjs";
 import { inspectStateRootGeneration, pruneRetiredStateRootDirectories, removeStateRootGenerationIfCurrent } from "./state-root-retirement.mjs";
 import { validateOwnedStateNamespaces } from "./state-root-owned-namespaces.mjs";
-import { normalizeIdleSleepMode } from "./idle-sleep-mode.mjs";
+import { normalizeIdleSleepMode } from "./remote-idle-sleep-assertions.mjs";
 
 const STATE_MARKER = ".machine-bridge-mcp-state";
 const STATE_MARKER_SCHEMA = 2;

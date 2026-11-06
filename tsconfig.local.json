@@ -47,7 +47,6 @@
     "src/local/git-metadata-tree-safety.mjs",
     "src/local/git-operation-state.mjs",
     "src/local/git-version.mjs",
-    "src/local/idle-sleep-mode.mjs",
     "src/local/managed-job-capacity-maintenance.mjs",
     "src/local/managed-job-capacity.mjs",
     "src/local/managed-job-dependencies.mjs",
