@@ -267,17 +267,17 @@
   "dependencies": {
     "https-proxy-agent": "9.1.0",
     "proxy-from-env": "2.1.0",
-    "ws": "8.22.0"
+    "ws": "8.22.1"
   },
   "devDependencies": {
-    "@babel/parser": "8.0.7",
+    "@babel/parser": "8.1.0",
     "@types/node": "26.6.5",
-    "cf": "1.0.0-beta.20",
-    "eslint": "10.13.0",
+    "cf": "1.0.0-beta.27",
+    "eslint": "10.14.0",
     "fast-check": "4.10.2",
-    "globals": "17.13.0",
+    "globals": "17.14.0",
     "typescript": "7.0.2",
-    "wrangler": "4.151.3"
+    "wrangler": "4.156.2"
   },
   "keywords": [
     "mcp",
