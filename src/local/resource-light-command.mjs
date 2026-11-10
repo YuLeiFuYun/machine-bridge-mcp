@@ -1,3 +1,4 @@
+// @ts-check
 import { resolve } from "node:path";
 import { execPath } from "node:process";
 import { releaseControlEnvironmentIsTrusted } from "./resource-release-control-executable.mjs";
@@ -7,8 +8,18 @@ const TRUSTED_LIGHT_EXECUTABLES = new Set([
   "/usr/bin/echo", "/usr/bin/false", "/usr/bin/ps", "/usr/bin/pwd", "/usr/bin/sleep", "/usr/bin/true", "/usr/bin/uptime",
 ]);
 
+/**
+ * @param {string} [command]
+ * @returns {boolean}
+ */
 export function isTrustedLightExecutable(command) { return TRUSTED_LIGHT_EXECUTABLES.has(String(command || "")); }
 
+/**
+ * @param {string} [command]
+ * @param {unknown[]} [args]
+ * @param {Record<string, any>} [environment]
+ * @returns {boolean}
+ */
 export function isTrustedLightInvocation(command, args = [], environment = {}) {
   if (!releaseControlEnvironmentIsTrusted(environment)) return false;
   if (isTrustedLightExecutable(command)) return true;

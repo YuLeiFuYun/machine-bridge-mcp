@@ -21,7 +21,7 @@ const manifestPath = resolve(process.cwd(), "package.json");
 // `scripts/publish-npm.mjs`, allow prepublication verification to proceed on the source
 // checkout before publishing the already-sanitized candidate tarball. Direct `npm publish`
 // from a source directory sets `npm_command=publish` and is still refused below.
-if (process.env.npm_command === "run-script" && process.env.npm_lifecycle_event === "prepublishOnly") {
+if (["run", "run-script"].includes(String(process.env.npm_command || "")) && process.env.npm_lifecycle_event === "prepublishOnly") {
   console.log("prepublication verification from source checkout ok; candidate tarball manifest is sanitized before publish");
   process.exit(0);
 }

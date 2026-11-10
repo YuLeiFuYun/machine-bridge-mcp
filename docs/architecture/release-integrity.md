@@ -5,7 +5,7 @@ itself lives in [Releasing](../RELEASING.md); this file records what the artifac
 
 ## Deployment toolchain isolation
 
-The consumer runtime has three direct dependencies; cf, Wrangler, Miniflare and deployment Undici remain outside that graph.
+The consumer runtime has four direct dependencies; cf, Wrangler, Miniflare and deployment Undici remain outside that graph.
 Source development declares exact cf/Wrangler versions.
 Installed runtimes construct an owner-only private toolchain from its packaged manifest and lockfile; Undici is verified as a transitive dependency.
 The directory name binds the builder version, templates and original cf bundle hash.

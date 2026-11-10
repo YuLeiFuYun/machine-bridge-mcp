@@ -20,7 +20,7 @@ import { ComputerUseSnapshotStore } from "./computer-use-snapshot-store.mjs";
 import { computerActPostObservationTimeoutError, computerActRemainingTimeoutSeconds, computerActVerificationTimeoutProbe, publicPostObservationError, requiredComputerActRemainingTimeoutSeconds, requiredComputerObserveRemainingTimeoutSeconds } from "./computer-use-deadline.mjs";
 import { APPLICATION_OPERATION_REASON, applicationOperationReason, settleComputerUseDispatch } from "./computer-use-dispatch-settlement.mjs";
 import { createMonotonicDeadline } from "./monotonic-deadline.mjs";
-import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation, projectSetOfMarks } from "./computer-use-observation.mjs";
+import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation, projectSetOfMarks, renderSetOfMarksSvg } from "./computer-use-observation.mjs";
 import { buildRetryGuidance } from "./computer-use-recovery.mjs";
 import { applicationElementSupportsPointClick, prepareApplicationObservationElements } from "./computer-use-application-observation.mjs";
 import { browserObservationArgs, validateApplicationInspectionEvidence, validateBrowserObservationForSnapshot } from "./computer-use-observation-contract.mjs";
@@ -32,6 +32,9 @@ import {
 const BROWSER_TARGETLESS_ACTIONS = new Set(["navigate", "reload", "back", "forward"]);
 const APPLICATION_VERIFY_POLL_MS = 100;
 const APPLICATION_VERIFY_MAX_CAPTURES = 9;
+// The overlay is an aid, not evidence. Cap it so a very large page cannot consume the whole
+// observation result budget and turn a successful capture into a limit failure.
+const MAX_SET_OF_MARKS_SVG_BYTES = 192 * 1024;
 
 export class ComputerUseManager {
   constructor({
@@ -285,6 +288,18 @@ export class ComputerUseManager {
     const observation = buildBrowserObservation(captured, args);
     if (args?.set_of_marks === true && observation?.semantic?.frames) {
       observation.set_of_marks = projectSetOfMarks(observation.semantic.frames.flatMap((frame) => frame.elements || []));
+      if (observation.set_of_marks.length > 0) {
+        const vp = observation.semantic?.viewport || {};
+        const svg = renderSetOfMarksSvg(observation.set_of_marks, {
+          width: vp.width,
+          height: vp.height,
+        });
+        if (Buffer.byteLength(svg) <= MAX_SET_OF_MARKS_SVG_BYTES) {
+          observation.set_of_marks_svg = svg;
+        } else {
+          observation.set_of_marks_svg_omitted = "size_budget";
+        }
+      }
     }
     let imageContent = Array.isArray(captured.imageContent) ? captured.imageContent : [];
     try {

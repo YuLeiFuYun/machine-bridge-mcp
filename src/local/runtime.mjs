@@ -1,4 +1,3 @@
-import { CodeActExecutor } from "./code-act-executor.mjs";
 import { randomBytes } from "node:crypto";
 import { realpathSync, rmSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
@@ -75,9 +74,7 @@ export class LocalRuntime {
     this.deviceRootStatus = deviceRootStatus && typeof deviceRootStatus === "object" ? Object.freeze({ ...deviceRootStatus }) : null;
     this.processTracker = new ProcessTracker();
     this.resourceCoordinator = new ResourceCoordinator({ ...(resourceCoordinatorOptions || {}), ...(resourceCoordinatorRoot ? { root: resourceCoordinatorRoot } : {}) });
-    if (processResourceWaitMs !== undefined && (!Number.isInteger(processResourceWaitMs) || processResourceWaitMs < 0)) {
-      throw new TypeError("processResourceWaitMs must be a non-negative integer when configured");
-    }
+    if (processResourceWaitMs !== undefined && (!Number.isInteger(processResourceWaitMs) || processResourceWaitMs < 0)) throw new TypeError("processResourceWaitMs must be a non-negative integer when configured");
     const resourceWaitMs = processResourceWaitMs === undefined ? undefined : Math.min(processResourceWaitMs, 30 * 60_000);
     this.lifecycle = new LifecycleController("local runtime");
     this.observability = new RuntimeObservability();
@@ -103,6 +100,7 @@ export class LocalRuntime {
     this.fileMutationCoordinator = new FileMutationCoordinator();
     this.capabilityObserver = new CapabilityObserver();
     this.runtimeDir = createRuntimeDir();
+    this.stateRoot = browserStateRoot;
     this.resolveGitExecutable = createTrustedGitResolver({ resolve: resolveGitExecutable, workspace: this.workspace, stateRoot: browserStateRoot, runtimeDir: this.runtimeDir, home: agentHome });
     this.workspaceFileService = new WorkspaceFileService({
       workspace: this.workspace,
@@ -457,11 +455,6 @@ export class LocalRuntime {
 
   handleRelayReady() {
     this.relayCallRecovery.ready();
-  }
-
-  executeCodeAct(script, context = {}) {
-    if (!this.codeActExecutor) this.codeActExecutor = new CodeActExecutor({ runtime: this });
-    return this.codeActExecutor.execute(script, context);
   }
 
   async executeTool(tool, args, context = {}) {

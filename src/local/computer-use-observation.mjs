@@ -798,3 +798,71 @@ export function projectSetOfMarks(elements) {
   }
   return marks;
 }
+
+/**
+ * Renders a high-contrast Set-of-Marks (SoM) visual overlay as an SVG string,
+ * suitable for embedding, client-side overlay, or compositing over screenshot images.
+ * Reference: OmniParser (arXiv:2408.00203) / Set-of-Mark Prompting (arXiv:2310.11441).
+ *
+ * @param {Array<{ markId?: number, mark_id?: number, bounds?: { x: number, y: number, width: number, height: number } }>} marks
+ * @param {object} [dimensions]
+ * @param {number} [dimensions.width]
+ * @param {number} [dimensions.height]
+ * @returns {string} SVG overlay string
+ */
+export function renderSetOfMarksSvg(marks, dimensions = {}) {
+  const width = Math.max(1, Number(dimensions.width) || 1280);
+  const height = Math.max(1, Number(dimensions.height) || 800);
+  if (!Array.isArray(marks) || marks.length === 0) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"></svg>`;
+  }
+
+  const PALETTE = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4"];
+  const elements = [];
+
+  for (let i = 0; i < marks.length; i++) {
+    const mark = marks[i];
+    if (!mark?.bounds) continue;
+    const color = PALETTE[i % PALETTE.length];
+    const x = svgNumber(mark.bounds.x);
+    const y = svgNumber(mark.bounds.y);
+    const bw = svgNumber(mark.bounds.width);
+    const bh = svgNumber(mark.bounds.height);
+    const markId = escapeXml(mark.markId ?? mark.mark_id ?? (i + 1));
+
+    // Bounding box with outline
+    elements.push(`<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="4,2"/>`);
+
+    // Numeric badge positioned directly above or at the top-left of the element
+    const badgeW = Math.max(20, markId.length * 9 + 8);
+    const badgeH = 18;
+    const badgeX = Math.max(0, x);
+    const badgeY = Math.max(0, y >= badgeH ? y - badgeH : y);
+    elements.push(`<rect x="${badgeX}" y="${badgeY}" width="${badgeW}" height="${badgeH}" fill="${color}" rx="3"/>`);
+    elements.push(`<text x="${badgeX + badgeW / 2}" y="${badgeY + 13}" fill="#ffffff" font-size="11" font-weight="bold" font-family="monospace" text-anchor="middle">${markId}</text>`);
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${svgNumber(width)}" height="${svgNumber(height)}" viewBox="0 0 ${svgNumber(width)} ${svgNumber(height)}">\n  ${elements.join("\n  ")}\n</svg>`;
+}
+
+/**
+ * The renderer is exported and may receive labels or geometry from callers other than
+ * `projectSetOfMarks`, so attribute and text values are escaped and coerced here.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function escapeXml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {number}
+ */
+function svgNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : 0;
+}

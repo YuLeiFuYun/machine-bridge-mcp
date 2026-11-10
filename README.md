@@ -113,7 +113,7 @@ machine-mcp doctor
 
 `Unknown cli config "--allow-scripts"` means the package installation ran under npm 11 or older. `Invalid property "node"` or `Invalid property "devEngines.node"` means an older npm parser inspected incompatible nearby project metadata. Repeat the empty-directory procedure and reopen the terminal if `npm --version` still resolves to an older executable. The published package declares no install scripts, so the allowlist above is a defensive whitelist for future transitive dependencies rather than a requirement of the current consumer tree.
 
-The consumer runtime has three direct dependencies. Deployment tooling is installed and audited separately; its upstream cf bundle is verified without rewriting third-party code. The published package ships the runtime, not the repository test harness: `npm test` runs a runtime smoke in an installed package and the full fast plan in a source checkout. Repository-only `check:*` and test scripts are intentionally unavailable after installation.
+The consumer runtime has four direct dependencies. Deployment tooling is installed and audited separately; its upstream cf bundle is verified without rewriting third-party code. The published package ships the runtime, not the repository test harness: `npm test` runs a runtime smoke in an installed package and the full fast plan in a source checkout. Repository-only `check:*` and test scripts are intentionally unavailable after installation.
 
 For a source checkout:
 

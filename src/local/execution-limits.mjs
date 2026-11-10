@@ -1,3 +1,4 @@
+// @ts-check
 import { CONTROL_PLANE_TOOL_NAMES } from "../shared/tool-call-capacity.mjs";
 import { resourceAdmissionGuardrailSnapshot } from "./resource-admission-diagnostics.mjs";
 

@@ -1,3 +1,4 @@
+// @ts-check
 import { toolCallAdmission, toolCallCapacityConfig, toolCallCapacityUsage } from "../shared/tool-call-capacity.mjs";
 import { BridgeError } from "./errors.mjs";
 

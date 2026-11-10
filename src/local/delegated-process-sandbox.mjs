@@ -46,28 +46,56 @@ export function delegatedProcessCommand({ command, args = [], workspace, runtime
   );
 }
 
-export function delegatedProcessIsolationStatus(platform = process.platform) {
-  if (platform === "darwin" && macosSandboxAvailable({ platform })) {
+export function delegatedProcessIsolationStatus(platform = process.platform, options = {}) {
+  const probe = options.probe === true;
+  if (platform === "darwin") {
+    if (macosProbeResult === undefined && !probe) {
+      // `server_info` must not spawn a sandbox probe just to describe the capability. The
+      // behavior probe runs from `diagnose_runtime` or on the first real delegated launch.
+      return {
+        available: false,
+        probed: false,
+        provider: "macos-sandbox-exec-deny-default",
+        network: "unknown",
+        filesystem: "unknown",
+        keychain: "unknown",
+        apple_events: "unknown",
+        residual: "behavior probe not run; call diagnose_runtime to verify the delegated sandbox",
+      };
+    }
+    const available = macosSandboxAvailable({ platform, refresh: options.refresh === true });
+    if (available) {
+      return {
+        available: true,
+        probed: true,
+        provider: "macos-sandbox-exec-deny-default",
+        network: "allowed",
+        filesystem: "workspace-and-isolated-runtime-write; system-runtime-read",
+        keychain: "common Keychain CLI access denied by the behavior probe; not a complete same-user tenancy boundary",
+        apple_events: "not reachable through the deny-default profile",
+        residual: "sandbox-exec is a compatibility boundary, not separate OS-user tenancy; choose a narrow workspace",
+      };
+    }
     return {
-      available: true,
-      provider: "macos-sandbox-exec-deny-default",
-      network: "allowed",
-      filesystem: "workspace-and-isolated-runtime-write; system-runtime-read",
-      keychain: "common Keychain CLI access denied by the behavior probe; not a complete same-user tenancy boundary",
-      apple_events: "not reachable through the deny-default profile",
-      residual: "sandbox-exec is a compatibility boundary, not separate OS-user tenancy; choose a narrow workspace",
+      available: false,
+      probed: true,
+      provider: null,
+      network: "unavailable",
+      filesystem: "unavailable",
+      keychain: "unavailable",
+      apple_events: "unavailable",
+      residual: "sandbox-exec exists but the workspace read/write, outside-path denial, or Keychain-denial behavior probe failed; delegated execution fails closed",
     };
   }
   return {
     available: false,
+    probed: probe,
     provider: null,
     network: "unavailable",
     filesystem: "unavailable",
     keychain: "unavailable",
     apple_events: "unavailable",
-    residual: platform === "darwin"
-      ? "sandbox-exec exists but the workspace read/write, outside-path denial, or Keychain-denial behavior probe failed; delegated execution fails closed"
-      : "no verified delegated process sandbox provider is installed; delegated execution fails closed",
+    residual: "no verified delegated process sandbox provider is installed; delegated execution fails closed",
   };
 }
 
@@ -76,7 +104,8 @@ export function macosDelegatedSandboxProfile({ workspace, runtimeDir } = {}) {
 }
 
 export function macosSandboxAvailable(options = {}) {
-  if (options.refresh === true) macosProbeResult = undefined;
+  if (options.refresh === true || options.clearCacheOnly === true) macosProbeResult = undefined;
+  if (options.clearCacheOnly === true) return undefined;
   if (macosProbeResult !== undefined) return macosProbeResult;
   const platform = String(options.platform || process.platform);
   const exists = typeof options.exists === "function" ? options.exists : existsSync;
@@ -161,6 +190,7 @@ function macosProfile({ workspace, runtimeDir }) {
     "(allow ipc-posix-shm)",
     "(allow network*)",
     "(allow file-read-metadata)",
+    '(allow file-read-data (literal "/"))',
     ...readable.map((value) => `(allow file-read* (subpath ${sandboxString(path.resolve(value))}))`),
     ...writable.map((value) => `(allow file-write* (subpath ${sandboxString(path.resolve(value))}))`),
   ].join(" ");

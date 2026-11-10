@@ -119,6 +119,12 @@ export interface ValidatedAuthorization {
 const AUTH_FAILURE_WINDOW_SECONDS = 10 * 60;
 export const AUTH_BLOCK_SECONDS = 15 * 60;
 const AUTH_FAILURE_LIMIT = 10;
+const PASSWORD_HASH_SCHEME = "pbkdf2-sha256";
+// OWASP's PBKDF2-HMAC-SHA256 guidance is higher, but a Worker login request has a bounded
+// CPU budget and the password format below already requires 256 bits of entropy. 210k keeps
+// the KDF meaningful while staying inside one request.
+const PASSWORD_HASH_ITERATIONS = 210_000;
+const PASSWORD_HASH_BYTES = 32;
 
 export function emptyOAuthStore(): OAuthStore {
   return {
@@ -251,8 +257,11 @@ export async function verifyAccountPassword(account: AccountRecord, passwordValu
   try {
     const password = normalizePassword(passwordValue);
     const salt = base64UrlDecode(account.password_salt);
-    const hash = await derivePasswordHash(password, salt);
-    return safeEqual(hash, account.password_hash);
+    const stored = String(account.password_hash || "");
+    const hash = stored.startsWith(`${PASSWORD_HASH_SCHEME}$`)
+      ? await derivePasswordHash(password, salt)
+      : await deriveLegacyPasswordHash(password, salt);
+    return safeEqual(hash, stored);
   } catch {
     return false;
   }
@@ -400,6 +409,28 @@ function normalizeDisplayName(value: unknown, fallback: string): string {
 }
 
 async function derivePasswordHash(password: string, salt: Uint8Array): Promise<string> {
+  if (salt.byteLength !== 16) throw new Error("account password salt is invalid");
+  const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: saltBuffer, iterations: PASSWORD_HASH_ITERATIONS, hash: "SHA-256" },
+    key,
+    PASSWORD_HASH_BYTES * 8,
+  );
+  return `${PASSWORD_HASH_SCHEME}$${PASSWORD_HASH_ITERATIONS}$${base64Url(new Uint8Array(bits))}`;
+}
+
+/**
+ * Pre-migration record format: one HMAC-SHA256 round. Retained only so an existing account
+ * keeps working; new and rotated passwords always use the KDF above.
+ */
+async function deriveLegacyPasswordHash(password: string, salt: Uint8Array): Promise<string> {
   if (salt.byteLength !== 16) throw new Error("account password salt is invalid");
   const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
   const key = await crypto.subtle.importKey("raw", saltBuffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

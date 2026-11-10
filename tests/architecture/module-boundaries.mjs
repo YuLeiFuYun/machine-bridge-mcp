@@ -217,7 +217,6 @@ const internalModules = new Set([
   "cli-activate.mjs",
   "cli-idle-sleep.mjs",
   "cli-ready-output.mjs",
-  "code-act-executor.mjs",
   "computer-use-application-geometry.mjs",
   "computer-use-arguments.mjs",
   "computer-use-dispatch-sanitizers.mjs",

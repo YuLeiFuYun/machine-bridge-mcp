@@ -4,7 +4,7 @@ import { applicationBackgroundInputConfiguration } from "./macos-background-inpu
 
 export function createRuntimeAppAutomationManager(runtime, applicationAutomation, runProcess, readResourceText) {
   const { backgroundVisualBackend, backgroundInputService } = applicationBackgroundInputConfiguration(
-    applicationAutomation, runProcess, runtime.runtimeDir,
+    applicationAutomation, runProcess, runtime.runtimeDir, { stateRoot: runtime.stateRoot },
   );
   return new AppAutomationManager({
     ...applicationAutomation,

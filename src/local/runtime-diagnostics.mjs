@@ -9,6 +9,7 @@ import { resourceAdmissionDiagnostic } from "./resource-admission-diagnostics.mj
 import { diagnosticActivityProjection, diagnosticInterpretation } from "./runtime-diagnostic-projection.mjs";
 import { correlateEventLoopStallWithSystemSleep, correlateRelayOutageWithSystemSleep, systemSleepDiagnostic } from "./system-sleep-diagnostics.mjs";
 import { resolveRuntimeNodeExecutable, runtimeNodeExecutableCheck, runtimeNodeProcessCheck } from "./runtime-node-executable.mjs";
+import { delegatedProcessIsolationStatus } from "./delegated-process-sandbox.mjs";
 export const RUNTIME_DIAGNOSTIC_PROCESS_TIMEOUT_MS = 30_000;
 export async function diagnoseRuntime({
   policy,
@@ -35,6 +36,10 @@ export async function diagnoseRuntime({
   }];
   const runtimeNode = resolveRuntimeNodeExecutable(runtimeNodeOptions);
   checks.push(runtimeNodeExecutableCheck(runtimeNode));
+  if (process.platform === "darwin") {
+    checks.push(await macosNativeToolchainCheck({ runFixedInternal, context }));
+  }
+  checks.push(delegatedProcessIsolationCheck());
   const relay = typeof relayStatus === "function" ? relayStatus() : null;
   checks.push(relay ? {
     layer: "remote-relay",
@@ -109,5 +114,45 @@ export async function diagnoseRuntime({
     ...diagnosticControlPlaneState(activity.state, relay),
     checks,
     ok: checks.filter((check) => !check.skipped).every((check) => check.ok),
+  };
+}
+
+/**
+ * The optional macOS background-input backend compiles a Swift helper on first use. Without
+ * the Command Line Tools that first click fails deep inside the helper, which reads as a
+ * product bug; report the prerequisite here instead.
+ */
+async function macosNativeToolchainCheck({ runFixedInternal, context }) {
+  try {
+    const result = await runFixedInternal("/usr/bin/xcrun", ["--find", "swiftc"], 5_000, true, 64 * 1024, context);
+    const available = result?.code === 0 && String(result?.stdout || "").trim().length > 0;
+    // The helper is optional (only the opt-in SkyLight backend needs it), so a missing
+    // toolchain is reported as an unavailable capability, not a failed runtime.
+    return {
+      layer: "macos-native-toolchain",
+      ok: true,
+      available,
+      detail: available
+        ? "xcrun swiftc is available for the optional macOS background-input helper"
+        : "xcrun swiftc is unavailable; install Xcode Command Line Tools to enable the macOS background-input helper",
+    };
+  } catch (error) {
+    return { layer: "macos-native-toolchain", ok: true, available: false, error_class: classifyOperationalError(error) };
+  }
+}
+
+/**
+ * Runs the delegated-sandbox behavior probe. This is intentionally only reachable from an
+ * explicit diagnostic: `server_info` describes the capability without spawning probes.
+ */
+function delegatedProcessIsolationCheck() {
+  const status = delegatedProcessIsolationStatus(process.platform, { probe: true });
+  return {
+    layer: "delegated-process-isolation",
+    ok: true,
+    available: status.available,
+    probed: status.probed,
+    provider: status.provider,
+    residual: status.residual,
   };
 }

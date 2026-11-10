@@ -17,6 +17,26 @@ export function validateToolArguments(tool, value) {
 }
 
 
+function reflexionGuidance(tool) {
+  if (tool === "edit_file" || tool === "apply_patch") {
+    return ". Reflexion: Re-read the file with with_line_numbers: true to verify exact target content and indentation.";
+  }
+  if (tool.startsWith("browser_") || tool.startsWith("computer_")) {
+    return ". Reflexion: Capture fresh state with browser_inspect_page or computer_observe to verify DOM/visual alignment.";
+  }
+  if (tool.startsWith("git_")) {
+    return ". Reflexion: Run git_status or git_diff to diagnose repository state before retrying.";
+  }
+  return "";
+}
+
+// Only failures that a different argument or a fresh observation can plausibly fix belong in
+// the loop detector. Authorization, schema, and missing-target errors are deterministic: counting
+// them would both mislabel the failure and disclose guidance for tools the caller cannot use.
+const LOOP_TRACKED_ERROR_CODES = new Set([
+  "execution_failed", "timeout", "network_error", "unavailable", "conflict", "limit_exceeded", "internal_error",
+]);
+
 class StuckLoopDetector {
   constructor(threshold = 3) {
     this.threshold = threshold;
@@ -33,7 +53,7 @@ class StuckLoopDetector {
         return {
           detected: true,
           consecutiveCount: this.threshold,
-          warning: "stuck_loop_warning: " + this.threshold + " consecutive identical calls to \x27" + tool + "\x27 failed; consider changing arguments or trying an alternative strategy",
+          warning: "stuck_loop_warning: " + this.threshold + " consecutive identical calls to \x27" + tool + "\x27 failed; consider changing arguments or trying an alternative strategy" + reflexionGuidance(tool),
         };
       }
     }
@@ -163,12 +183,14 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       return result;
     } catch (error) {
       const normalized = normalizeBridgeError(error, { safeMessage: () => safeMessage(error, operation.args, operation.context) });
-      const loopWarning = stuckLoopDetector?.record(operation.tool, operation.args, "failed");
+      const code = errorCode(normalized);
+      const loopWarning = LOOP_TRACKED_ERROR_CODES.has(code)
+        ? stuckLoopDetector?.record(operation.tool, operation.args, "failed")
+        : null;
       if (loopWarning?.detected) {
         normalized.details = { ...normalized.details, stuck_loop_warning: loopWarning.warning };
       }
       const durationMs = performance.now() - started;
-      const code = errorCode(normalized);
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });
       enqueueSecurityAudit(securityAudit, operation, {

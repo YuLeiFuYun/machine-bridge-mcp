@@ -9,6 +9,9 @@ import { packageRoot } from "./package-identity.mjs";
 
 const SOURCE_RELATIVE = path.join("native", "macos", "MachineBridgeBackgroundInput.swift");
 const MAX_OUTPUT_BYTES = 64 * 1024;
+// Stable name so the macOS Accessibility grant survives helper rebuilds.
+const BACKGROUND_INPUT_BINARY_NAME = "background-input-current";
+const BACKGROUND_INPUT_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 
 export class MacosBackgroundInputService {
   constructor({ runProcess, cacheRoot, platform = process.platform, sourceRoot = packageRoot }) {
@@ -231,7 +234,7 @@ export class MacosBackgroundInputService {
 
   async ensureBuilt(context) {
     while (true) {
-      if (this.binaryPath && await executableRegularFile(this.binaryPath)) return this.binaryPath;
+      if (this.binaryPath && await verifiedExecutable(this.binaryPath)) return this.binaryPath;
       let owned = false;
       let pending = this.buildPromise;
       if (!pending) {
@@ -256,13 +259,16 @@ export class MacosBackgroundInputService {
   async build(context) {
     if (!this.configured()) throw new Error("macOS native input helper unavailable before dispatch");
     const source = await readFile(this.sourcePath);
-    const digest = createHash("sha256").update(source).update(`\0${process.arch}\0`).digest("hex");
     await mkdir(this.cacheRoot, { recursive: true, mode: 0o700 });
     await chmod(this.cacheRoot, 0o700);
-    const output = path.join(this.cacheRoot, `background-input-${digest.slice(0, 24)}`);
-    if (await executableRegularFile(output)) return output;
+    // A stable binary path keeps the macOS TCC (Accessibility) grant valid across upgrades.
+    // Integrity comes from the sidecar digest instead of from the file name.
+    const output = path.join(this.cacheRoot, BACKGROUND_INPUT_BINARY_NAME);
+    if (await verifiedExecutable(output)) return output;
     const temporary = `${output}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
     const temporarySource = `${temporary}.swift`;
+    const digestPath = `${output}.sha256`;
+    const digestTemporary = `${digestPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
     try {
       await writeFile(temporarySource, source, { mode: 0o600, flag: "wx" });
       await this.runProcess(
@@ -274,31 +280,41 @@ export class MacosBackgroundInputService {
         context,
       );
       await chmod(temporary, 0o700);
+      const digest = createHash("sha256").update(await readFile(temporary)).digest("hex");
+      await writeFile(digestTemporary, `${digest}\n`, { mode: 0o600, flag: "wx" });
       try { await rename(temporary, output); }
       catch (error) {
-        if (!await executableRegularFile(output)) throw error;
+        if (!await verifiedExecutable(output)) throw error;
       }
       await chmod(output, 0o700);
+      // Publish the digest last: a crash in between leaves a stale sidecar, which fails
+      // verification and triggers a rebuild instead of running unverified bytes.
+      try { await rename(digestTemporary, digestPath); }
+      catch { await writeFile(digestPath, `${digest}\n`, { mode: 0o600 }); }
       return output;
     } finally {
       await rm(temporary, { force: true }).catch(() => { /* Preserve the primary native-helper result; temp cleanup is best-effort. */ });
       await rm(temporarySource, { force: true }).catch(() => { /* Preserve the primary native-helper result; source cleanup is best-effort. */ });
+      await rm(digestTemporary, { force: true }).catch(() => { /* Preserve the primary native-helper result; temp cleanup is best-effort. */ });
     }
   }
 }
 
-export function applicationBackgroundInputConfiguration(applicationAutomation, runProcess, runtimeDir) {
+export function applicationBackgroundInputConfiguration(applicationAutomation, runProcess, runtimeDir, options = {}) {
   const configuredBackend = applicationAutomation.backgroundVisualBackend === undefined
     ? process.env.MBM_MACOS_BACKGROUND_VISUAL_BACKEND || "disabled"
     : applicationAutomation.backgroundVisualBackend;
   if (typeof configuredBackend !== "string") throw new Error("backgroundVisualBackend must be disabled or skylight-experimental");
   const backgroundVisualBackend = configuredBackend;
   const applicationPlatform = applicationAutomation.platform || process.platform;
+  const cacheRoot = options.cacheRoot || (options.stateRoot
+    ? path.resolve(options.stateRoot, "toolchains", "macos-background-input")
+    : path.resolve(runtimeDir, "macos-background-input"));
   const backgroundInputService = applicationAutomation.backgroundInputService
     || (applicationPlatform === "darwin"
       ? new MacosBackgroundInputService({
           runProcess,
-          cacheRoot: path.resolve(runtimeDir, "macos-background-input"),
+          cacheRoot,
           platform: applicationPlatform,
         })
       : null);
@@ -312,6 +328,25 @@ async function executableRegularFile(value) {
     const trustedOwner = currentUid === null || info.uid === currentUid || info.uid === 0;
     return info.isFile() && !info.isSymbolicLink() && trustedOwner && (info.mode & 0o111) !== 0 && (info.mode & 0o022) === 0;
   } catch { return false; }
+}
+
+/**
+ * The helper is compiled locally, so its bytes are only trusted when they match the digest
+ * recorded next to it. A missing, malformed, or mismatched sidecar forces a rebuild.
+ *
+ * @param {string} binaryPath
+ * @returns {Promise<boolean>}
+ */
+async function verifiedExecutable(binaryPath) {
+  if (!await executableRegularFile(binaryPath)) return false;
+  try {
+    const expected = (await readFile(`${binaryPath}.sha256`, "utf8")).trim().toLowerCase();
+    if (!BACKGROUND_INPUT_DIGEST_PATTERN.test(expected)) return false;
+    const actual = createHash("sha256").update(await readFile(binaryPath)).digest("hex");
+    return actual === expected;
+  } catch {
+    return false;
+  }
 }
 
 function positiveInteger(value, label) {

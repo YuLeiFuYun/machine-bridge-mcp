@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const budget = JSON.parse(readFileSync(join(root, "tests", "architecture", "source-budget.json"), "utf8"));
 const files = ["src", "browser-extension"].flatMap((directory) => walk(join(root, directory)));
-const measurements = files.map((file) => ({ file, bytes: statSync(file).size }));
+const measurements = files.map((file) => ({ file, bytes: normalizedSourceSize(file) }));
 const totalBytes = measurements.reduce((sum, entry) => sum + entry.bytes, 0);
 const microFiles = measurements.filter((entry) => entry.bytes < 1536).length;
 const largest = measurements.reduce((current, entry) => (entry.bytes > current.bytes ? entry : current), { file: "", bytes: 0 });
@@ -43,4 +43,13 @@ function walk(directory) {
 
 function isSource(name) {
   return /\.(?:mjs|ts|js)$/.test(name) && !/\.d\.mts$/.test(name);
+}
+
+function normalizedSourceSize(file) {
+  const buffer = readFileSync(file);
+  let crCount = 0;
+  for (let i = 0; i < buffer.length; i += 1) {
+    if (buffer[i] === 0x0d) crCount += 1;
+  }
+  return buffer.length - crCount;
 }
