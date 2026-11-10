@@ -16,6 +16,51 @@ export function validateToolArguments(tool, value) {
   return TOOL_ARGUMENTS.validate(tool, value);
 }
 
+
+function reflexionGuidance(tool) {
+  if (tool === "edit_file" || tool === "apply_patch") {
+    return ". Reflexion: Re-read the file with with_line_numbers: true to verify exact target content and indentation.";
+  }
+  if (tool.startsWith("browser_") || tool.startsWith("computer_")) {
+    return ". Reflexion: Capture fresh state with browser_inspect_page or computer_observe to verify DOM/visual alignment.";
+  }
+  if (tool.startsWith("git_")) {
+    return ". Reflexion: Run git_status or git_diff to diagnose repository state before retrying.";
+  }
+  return "";
+}
+
+// Only failures that a different argument or a fresh observation can plausibly fix belong in
+// the loop detector. Authorization, schema, and missing-target errors are deterministic: counting
+// them would both mislabel the failure and disclose guidance for tools the caller cannot use.
+const LOOP_TRACKED_ERROR_CODES = new Set([
+  "execution_failed", "timeout", "network_error", "unavailable", "conflict", "limit_exceeded", "internal_error",
+]);
+
+class StuckLoopDetector {
+  constructor(threshold = 3) {
+    this.threshold = threshold;
+    this.recentCalls = [];
+  }
+  record(tool, args, status) {
+    let key;
+    try { key = tool + ":" + JSON.stringify(args || {}); } catch { key = String(tool); }
+    this.recentCalls.push({ key, status });
+    if (this.recentCalls.length > 20) this.recentCalls.shift();
+    if (status === "failed") {
+      const tail = this.recentCalls.slice(-this.threshold);
+      if (tail.length === this.threshold && tail.every((item) => item.key === key && item.status === "failed")) {
+        return {
+          detected: true,
+          consecutiveCount: this.threshold,
+          warning: "stuck_loop_warning: " + this.threshold + " consecutive identical calls to \x27" + tool + "\x27 failed; consider changing arguments or trying an alternative strategy" + reflexionGuidance(tool),
+        };
+      }
+    }
+    return null;
+  }
+}
+
 export class ToolExecutor {
   constructor(options = {}) {
     this.handlers = options.handlers || {};
@@ -30,9 +75,10 @@ export class ToolExecutor {
     this.onAuthorizedRelayActivityEnd = typeof options.onAuthorizedRelayActivityEnd === "function" ? options.onAuthorizedRelayActivityEnd : null;
     this.safeMessage = typeof options.safeMessage === "function" ? options.safeMessage : (error) => String(error?.message || error || "operation failed");
     this.slowMs = Number.isFinite(Number(options.slowMs)) ? Math.max(1, Number(options.slowMs)) : 30_000;
+    this.stuckLoopDetector = new StuckLoopDetector(3);
     this.pipeline = composeMiddleware([
       lifecycleMiddleware(this.callRegistry),
-      observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs),
+      observabilityMiddleware(this.observability, this.securityAudit, this.logger, this.safeMessage, this.slowMs, this.stuckLoopDetector),
       authorityMiddleware(this.policyGate, this.accountAccessGate, this.callRegistry),
       validateArgumentsMiddleware(),
       operationAuthorizationMiddleware(this.operationAuthorizer),
@@ -111,7 +157,7 @@ function lifecycleMiddleware(callRegistry) {
   };
 }
 
-function observabilityMiddleware(observability, securityAudit, logger, safeMessage, slowMs) {
+function observabilityMiddleware(observability, securityAudit, logger, safeMessage, slowMs, stuckLoopDetector) {
   const auditFailureReporter = createSecurityAuditFailureReporter(logger);
   return async (operation, next) => {
     const started = performance.now();
@@ -127,6 +173,7 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       const durationMs = performance.now() - started;
       const slow = durationMs >= slowMs;
       observability.finish(operation.tool, { status: "completed", durationMs, slow });
+      stuckLoopDetector?.record(operation.tool, operation.args, "completed");
       enqueueSecurityAudit(securityAudit, operation, { outcome: "completed", durationMs, outputBytes: normalizedResult.bytes }, auditFailureReporter);
       logger.event?.("debug", slow ? "tool.call.slow" : "tool.call.completed", {
         call_id: shortCallId(operation.context.callId), tool: operation.tool, origin: operation.context.origin, duration_ms: durationMs,
@@ -136,8 +183,14 @@ function observabilityMiddleware(observability, securityAudit, logger, safeMessa
       return result;
     } catch (error) {
       const normalized = normalizeBridgeError(error, { safeMessage: () => safeMessage(error, operation.args, operation.context) });
-      const durationMs = performance.now() - started;
       const code = errorCode(normalized);
+      const loopWarning = LOOP_TRACKED_ERROR_CODES.has(code)
+        ? stuckLoopDetector?.record(operation.tool, operation.args, "failed")
+        : null;
+      if (loopWarning?.detected) {
+        normalized.details = { ...normalized.details, stuck_loop_warning: loopWarning.warning };
+      }
+      const durationMs = performance.now() - started;
       const status = code === "cancelled" ? "cancelled" : code === "timeout" ? "timeout" : "failed";
       observability.finish(operation.tool, { status, durationMs, errorCode: code, slow: durationMs >= slowMs });
       enqueueSecurityAudit(securityAudit, operation, {

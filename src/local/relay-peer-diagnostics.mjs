@@ -14,6 +14,19 @@ const TRANSPORT_ERROR_REASONS = new Set([
 ]);
 const RECENT_RELAY_OUTAGE_LIMIT = 8;
 
+/**
+ * Clamp a duration that may be reported as a high-resolution float.
+ * @param {unknown} value
+ * @param {number} fallback
+ * @param {number} minimum
+ * @param {number} maximum
+ */
+function clampDuration(value, fallback, minimum, maximum) {
+  const number = typeof value === "number" ? value : Number(value);
+  const rounded = Number.isFinite(number) ? Math.round(number) : fallback;
+  return clampInteger(rounded, fallback, minimum, maximum);
+}
+
 /** @param {unknown} value */
 export function relayHandshakeDiagnostics(value = {}) {
   const status = isPlainRecord(value) ? value : {};
@@ -55,22 +68,22 @@ export function relayHandshakeDiagnostics(value = {}) {
     last_transport_error_authenticated: status.last_transport_error_authenticated === true,
     last_probe_buffered_bytes: clampInteger(heartbeat.last_probe_buffered_bytes, 0, 0, 64 * 1024 * 1024),
     max_probe_buffered_bytes: clampInteger(heartbeat.max_probe_buffered_bytes, 0, 0, 64 * 1024 * 1024),
-    last_probe_dispatch_ms: clampInteger(heartbeat.last_probe_dispatch_ms, 0, 0, 10 * 60_000),
-    max_probe_dispatch_ms: clampInteger(heartbeat.max_probe_dispatch_ms, 0, 0, 10 * 60_000),
-    last_probe_dispatch_timeout_age_ms: clampInteger(heartbeat.last_probe_dispatch_timeout_age_ms, 0, 0, 10 * 60_000),
-    last_probe_timeout_age_ms: clampInteger(heartbeat.last_probe_timeout_age_ms, 0, 0, 10 * 60_000),
-    transport_confirmation_dispatch_timeout_ms: clampInteger(heartbeat.transport_confirmation_dispatch_timeout_ms, 0, 0, 10 * 60_000),
-    last_transport_confirmation_dispatch_ms: clampInteger(heartbeat.last_transport_confirmation_dispatch_ms, 0, 0, 10 * 60_000),
-    max_transport_confirmation_dispatch_ms: clampInteger(heartbeat.max_transport_confirmation_dispatch_ms, 0, 0, 10 * 60_000),
-    last_transport_confirmation_dispatch_timeout_age_ms: clampInteger(heartbeat.last_transport_confirmation_dispatch_timeout_age_ms, 0, 0, 10 * 60_000),
-    transport_confirmation_timeout_ms: clampInteger(heartbeat.transport_confirmation_timeout_ms, 0, 0, 10 * 60_000),
-    last_transport_confirmation_ms: clampInteger(heartbeat.last_transport_confirmation_ms, 0, 0, 10 * 60_000),
-    max_transport_confirmation_ms: clampInteger(heartbeat.max_transport_confirmation_ms, 0, 0, 10 * 60_000),
-    last_transport_confirmation_timeout_age_ms: clampInteger(heartbeat.last_transport_confirmation_timeout_age_ms, 0, 0, 10 * 60_000),
+    last_probe_dispatch_ms: clampDuration(heartbeat.last_probe_dispatch_ms, 0, 0, 10 * 60_000),
+    max_probe_dispatch_ms: clampDuration(heartbeat.max_probe_dispatch_ms, 0, 0, 10 * 60_000),
+    last_probe_dispatch_timeout_age_ms: clampDuration(heartbeat.last_probe_dispatch_timeout_age_ms, 0, 0, 10 * 60_000),
+    last_probe_timeout_age_ms: clampDuration(heartbeat.last_probe_timeout_age_ms, 0, 0, 10 * 60_000),
+    transport_confirmation_dispatch_timeout_ms: clampDuration(heartbeat.transport_confirmation_dispatch_timeout_ms, 0, 0, 10 * 60_000),
+    last_transport_confirmation_dispatch_ms: clampDuration(heartbeat.last_transport_confirmation_dispatch_ms, 0, 0, 10 * 60_000),
+    max_transport_confirmation_dispatch_ms: clampDuration(heartbeat.max_transport_confirmation_dispatch_ms, 0, 0, 10 * 60_000),
+    last_transport_confirmation_dispatch_timeout_age_ms: clampDuration(heartbeat.last_transport_confirmation_dispatch_timeout_age_ms, 0, 0, 10 * 60_000),
+    transport_confirmation_timeout_ms: clampDuration(heartbeat.transport_confirmation_timeout_ms, 0, 0, 10 * 60_000),
+    last_transport_confirmation_ms: clampDuration(heartbeat.last_transport_confirmation_ms, 0, 0, 10 * 60_000),
+    max_transport_confirmation_ms: clampDuration(heartbeat.max_transport_confirmation_ms, 0, 0, 10 * 60_000),
+    last_transport_confirmation_timeout_age_ms: clampDuration(heartbeat.last_transport_confirmation_timeout_age_ms, 0, 0, 10 * 60_000),
     last_disconnected_at: typeof status.last_disconnected_at === "string" ? status.last_disconnected_at : null,
-    previous_ready_duration_ms: clampInteger(status.last_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
-    previous_ready_inbound_silence_ms: clampInteger(status.last_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
-    https_fallback_last_takeover_ms: clampInteger(status.https_fallback_last_takeover_ms, 0, 0, 10 * 60_000),
+    previous_ready_duration_ms: clampDuration(status.last_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
+    previous_ready_inbound_silence_ms: clampDuration(status.last_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
+    https_fallback_last_takeover_ms: clampDuration(status.https_fallback_last_takeover_ms, 0, 0, 10 * 60_000),
     https_fallback_last_takeover_outage_number: clampInteger(status.https_fallback_last_takeover_outage_number, 0, 0, 1_000_000_000),
   };
 }
@@ -89,10 +102,10 @@ function recentOutages(value) {
       disconnected_at: boundedTimestamp(candidate.disconnected_at),
       last_disconnect_at: boundedTimestamp(candidate.last_disconnect_at),
       ready_at: boundedTimestamp(candidate.ready_at),
-      duration_ms: clampInteger(candidate.duration_ms, 0, 0, 31 * 24 * 60 * 60_000),
+      duration_ms: clampDuration(candidate.duration_ms, 0, 0, 31 * 24 * 60 * 60_000),
       https_fallback_taken_over: fallbackTakenOver,
       https_fallback_takeover_ms: fallbackTakenOver
-        ? clampInteger(candidate.https_fallback_takeover_ms, 0, 0, 10 * 60_000) : 0,
+        ? clampDuration(candidate.https_fallback_takeover_ms, 0, 0, 10 * 60_000) : 0,
       attempts: clampInteger(candidate.attempts, 0, 0, 1_000_000),
       close_category: typeof candidate.close_category === "string" ? candidate.close_category.slice(0, 128) : null,
       close_code: typeof candidate.close_code === "number" && Number.isSafeInteger(candidate.close_code) && candidate.close_code >= 0 && candidate.close_code <= 4999
@@ -104,21 +117,21 @@ function recentOutages(value) {
         ? candidate.last_transport_error_reason : "unknown",
       last_transport_error_ready: candidate.last_transport_error_ready === true,
       last_transport_error_authenticated: candidate.last_transport_error_authenticated === true,
-      previous_ready_duration_ms: clampInteger(candidate.previous_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
-      previous_ready_inbound_silence_ms: clampInteger(candidate.previous_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
+      previous_ready_duration_ms: clampDuration(candidate.previous_ready_duration_ms, 0, 0, 365 * 24 * 60 * 60_000),
+      previous_ready_inbound_silence_ms: clampDuration(candidate.previous_ready_inbound_silence_ms, 0, 0, 31 * 24 * 60 * 60_000),
       probe_dispatch_pending_at_start: candidate.probe_dispatch_pending_at_start === true,
-      probe_dispatch_age_ms_at_start: clampInteger(candidate.probe_dispatch_age_ms_at_start, 0, 0, 31 * 24 * 60 * 60_000),
+      probe_dispatch_age_ms_at_start: clampDuration(candidate.probe_dispatch_age_ms_at_start, 0, 0, 31 * 24 * 60 * 60_000),
       probe_outstanding_at_start: candidate.probe_outstanding_at_start === true,
-      probe_age_ms_at_start: clampInteger(candidate.probe_age_ms_at_start, 0, 0, 31 * 24 * 60 * 60_000),
+      probe_age_ms_at_start: clampDuration(candidate.probe_age_ms_at_start, 0, 0, 31 * 24 * 60 * 60_000),
       transport_confirmation_pending_at_start: candidate.transport_confirmation_pending_at_start === true,
-      application_inbound_silence_ms_at_start: clampInteger(candidate.application_inbound_silence_ms_at_start, 0, 0, 31 * 24 * 60 * 60_000),
+      application_inbound_silence_ms_at_start: clampDuration(candidate.application_inbound_silence_ms_at_start, 0, 0, 31 * 24 * 60 * 60_000),
       last_connect_stage: typeof candidate.last_connect_stage === "string" ? candidate.last_connect_stage.slice(0, 64) : "idle",
-      last_connect_duration_ms: clampInteger(candidate.last_connect_duration_ms, 0, 0, 10 * 60_000),
+      last_connect_duration_ms: clampDuration(candidate.last_connect_duration_ms, 0, 0, 10 * 60_000),
       last_connect_milestones_ms: connectMilestones(candidate.last_connect_milestones_ms),
       last_connect_http_status: boundedHttpStatus(candidate.last_connect_http_status),
       last_failed_connect_stage: CONNECT_STAGES.has(String(candidate.last_failed_connect_stage || ""))
         ? candidate.last_failed_connect_stage : null,
-      last_failed_connect_duration_ms: clampInteger(candidate.last_failed_connect_duration_ms, 0, 0, 10 * 60_000),
+      last_failed_connect_duration_ms: clampDuration(candidate.last_failed_connect_duration_ms, 0, 0, 10 * 60_000),
       last_failed_connect_milestones_ms: connectMilestones(candidate.last_failed_connect_milestones_ms),
       last_failed_connect_http_status: boundedHttpStatus(candidate.last_failed_connect_http_status),
     });

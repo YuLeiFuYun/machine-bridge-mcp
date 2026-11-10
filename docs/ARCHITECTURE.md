@@ -43,7 +43,7 @@ flowchart LR
   L[Local MCP client] -->|stdio JSON-RPC| R
   R --> T[Effective-authority and ownership gate]
   T -->|canonical workspace tools| F[Selected workspace]
-  T -->|owner or verified delegated sandbox| P[Local user / OS / network]
+  T -->|owner; delegated sandbox is policy-unreachable today| P[Local user / OS / network]
   T -->|owner-only structured actions| A[Local applications]
   T -->|authenticated loopback broker| B[Existing-profile browser extension]
   B -->|DOM and visible UI authority| WB[Web pages and browser tabs]

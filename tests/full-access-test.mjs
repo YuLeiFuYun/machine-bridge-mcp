@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { runFullAccessTest } from "../src/local/full-access-test.mjs";
+import { runFullAccessTest } from "../src/local/full-access-probe.mjs";
 import { policyProfile } from "../src/local/tools.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 

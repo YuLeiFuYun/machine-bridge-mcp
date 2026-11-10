@@ -1,0 +1,11 @@
+{
+  "_note": "Ratchet for production source size. The budget is a baseline plus a small fixed headroom, not the current value: ordinary feature work must not be blocked by the ratchet. Lower the numbers after consolidating modules; raising them requires a recorded review that explains why the new file, byte, or micro-module is necessary.",
+  "totalFiles": 536,
+  "totalBytes": 3150000,
+  "maxModuleBytes": 96000,
+  "microFiles": 116,
+  "flatDirectories": {
+    "src/local": 380,
+    "src/worker": 123
+  }
+}

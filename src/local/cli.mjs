@@ -21,7 +21,7 @@ import { classifyOperationalError, createLogger, sanitizeLogText } from "./log.m
 import { formatPolicySummary, printMcpConnection, printStartJson } from "./cli-ready-output.mjs";
 import { runCf, runExecutable, runWrangler } from "./shell.mjs";
 import { cfAuthenticationResult } from "./cf-authentication.mjs";
-import { runFullAccessTest } from "./full-access-test.mjs";
+import { runFullAccessTest } from "./full-access-probe.mjs";
 import { stopAndRemoveAutostart } from "./service-lifecycle.mjs";
 import { stopOwnedPlatformService } from "./service-ownership.mjs";
 import { loadServiceEnvironment } from "./service-environment.mjs";

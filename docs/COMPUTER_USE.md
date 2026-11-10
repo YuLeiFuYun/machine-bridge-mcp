@@ -49,6 +49,12 @@ Application observations contain:
 Surface-specific arguments are strict.
 Browser-only arguments are rejected for application observations and application-only arguments are rejected for browser observations.
 
+Browser observations accept `set_of_marks=true`.
+The response then carries `set_of_marks` (numbered marks with bounds, centre, role, name, and target/ref links) and, when at least one mark exists, `set_of_marks_svg`: a self-contained overlay using the observation viewport size.
+The SVG is generated locally from already-projected numeric geometry; it is a visual aid for the caller and never grants dispatch authority.
+Marks and overlay are bounded by the same element budget as the observation itself, and the SVG is omitted rather than truncated when the projection is empty.
+An overlay larger than 192 KiB is omitted with `set_of_marks_svg_omitted=size_budget`, so a very large page cannot consume the observation result budget and turn a successful capture into a limit failure.
+
 Snapshots are process-local, bounded to 64 recent entries, and expire after ten minutes measured by the daemon process monotonic clock.
 Wall-clock adjustment cannot extend or prematurely expire snapshot authority.
 They are intentionally not durable job state.
@@ -504,6 +510,11 @@ Native visual point dispatch is **disabled by default**, even when a screenshot 
 The default macOS path remains Accessibility-first.
 An explicit experimental backend can be enabled with `MBM_MACOS_BACKGROUND_VISUAL_BACKEND=skylight-experimental`; ordinary runtime startup does not load or compile the helper or resolve private SkyLight symbols when that setting is absent.
 On first window capture after visual opt-in, the fixed helper is compiled into an owner-only runtime cache and probed once.
+Compilation uses `/usr/bin/xcrun swiftc`, so the host needs the Xcode Command Line Tools; without them the first native action fails closed with `helper_probe_failed_before_dispatch` and `doctor` reports `runtime:macos-native-toolchain` as failed.
+The first call in a new runtime cache pays the compile cost, bounded by a 120-second build timeout; later calls reuse the cached binary.
+The cache uses a stable `background-input-current` path plus a sibling SHA-256 sidecar rather than a content-derived name, so a rebuild does not invalidate the macOS Accessibility (TCC) grant recorded for that path.
+A missing, malformed, or mismatched sidecar discards the binary and forces a rebuild instead of executing unverified bytes.
+Upgrading the package therefore does not require re-granting Accessibility unless the binary is removed or the OS resets the grant.
 Only a successful probe changes `snapshot_bound_visual_points` to true.
 The same fixed native binary is also used lazily for public PID-scoped keyboard delivery, but its `unicode_keystroke`/`key_press` operations bypass `SkyLightSymbols` construction entirely; using keyboard actions therefore does not opt into or probe the private visual backend.
 Probe failure degrades to screenshot + Accessibility observation and is surfaced through `visual_point_probed=true`, `snapshot_bound_visual_points=false`, and `visual_point_error_class`; it does not make observation fail.

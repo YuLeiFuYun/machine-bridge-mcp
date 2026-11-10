@@ -1,11 +1,12 @@
 {
-  "totalIncludes": 2712,
+  "totalIncludes": 2760,
   "files": {
     "tests/account-admin-test.mjs": 3,
     "tests/affected-checks-test.mjs": 6,
     "tests/agent-boundaries-test.mjs": 8,
     "tests/agent-context-test.mjs": 66,
     "tests/agent-evals-test.mjs": 1,
+    "tests/agent-modern-capabilities-test.mjs": 4,
     "tests/agent-workflows-test.mjs": 1,
     "tests/app-automation-test.mjs": 40,
     "tests/app-screenshot-test.mjs": 2,

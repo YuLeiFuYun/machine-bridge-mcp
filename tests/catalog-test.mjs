@@ -18,11 +18,11 @@ const metadata = JSON.parse(await readFile(new URL("../src/shared/server-metadat
 // Budget the final, tagged projections; raw JSON alone misses Worker augmentation.
 const hostedTools = [serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool, ...workspaceTools];
 const finalLocalTools = toolsForPolicy(policyProfile("full")).map((tool) => tagToolSchemaGeneration(tool, Number(metadata.toolSchemaGeneration)));
-assert(Buffer.byteLength(JSON.stringify(finalLocalTools)) <= 111419, "final local catalog exceeded its byte budget");
-assert(Buffer.byteLength(JSON.stringify(hostedTools)) <= 137948, "final hosted catalog exceeded its byte budget");
-assert(hostedTools.reduce((sum, tool) => sum + tool.description.length, 0) <= 61482,
+assert(Buffer.byteLength(JSON.stringify(finalLocalTools)) <= 112800, "final local catalog exceeded its byte budget");
+assert(Buffer.byteLength(JSON.stringify(hostedTools)) <= 139400, "final hosted catalog exceeded its byte budget");
+assert(hostedTools.reduce((sum, tool) => sum + tool.description.length, 0) <= 62000,
   "final hosted descriptions exceeded their character budget");
-assert(hostedTools.every((tool) => tool.description.length <= 5709), "one hosted description exceeded its character budget");
+assert(hostedTools.every((tool) => tool.description.length <= 5800), "one hosted description exceeded its character budget");
 const appOnly = hostedTools.filter((tool) => {
   const visibility = tool._meta?.ui?.visibility;
   return Array.isArray(visibility) && new Set(visibility).has("app") && !new Set(visibility).has("model");
@@ -89,7 +89,7 @@ const securityNames = Object.keys(toolSecurityContract.tools || {});
 assert(JSON.stringify([...securityNames].sort()) === JSON.stringify([...names].sort()), "static tool security contract must have exact catalog parity");
 const descriptionCharacters = catalog.reduce((sum, tool) => sum + tool.description.length, 0);
 const longestDescription = Math.max(...catalog.map((tool) => tool.description.length));
-assert(descriptionCharacters <= 37_747, `tool descriptions grew to ${descriptionCharacters} characters; reduce prose or deliberately re-baseline the 37,747-character budget`);
+assert(descriptionCharacters <= 38_200, `tool descriptions grew to ${descriptionCharacters} characters; reduce prose or deliberately re-baseline the 38,200-character budget`);
 assert(longestDescription <= 3_300, `one tool description grew to ${longestDescription} characters; the per-tool budget is 3,300`);
 assert(names[0] === "server_info", "server_info must remain the first catalog tool");
 assert(JSON.stringify(names) === JSON.stringify(allToolNames()), "runtime tool inventory differs from catalog");
@@ -275,6 +275,16 @@ for (const tool of catalog) {
 }
 for (const name of groupedToolNames) {
   strictAssert.ok(catalogToolNames.has(name), `a progressive tool group lists unknown tool ${name}`);
+}
+
+// The delegated-process sandbox can only be reached by a non-owner account that can start a
+// process. Today every such tool is owner-only, so the sandbox is policy-unreachable; this
+// guard fails if an entry is removed from `ownerOnlyTools` without re-verifying that path.
+const accessContract = JSON.parse(await readFile(new URL("../src/shared/access-contract.json", import.meta.url), "utf8"));
+const ownerOnlyTools = new Set(accessContract.ownerOnlyTools || []);
+for (const name of ["exec_command", "run_process", "run_local_command", "start_process", "write_process", "kill_process", "stage_job", "start_job"]) {
+  strictAssert.ok(ownerOnlyTools.has(name),
+    `process-capable tool ${name} is no longer owner-only; the delegated-process sandbox is unreachable by policy and must be re-verified before granting it to another role`);
 }
 
 console.log("shared tool catalog test ok");

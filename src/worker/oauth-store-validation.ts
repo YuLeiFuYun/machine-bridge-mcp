@@ -11,7 +11,9 @@ import {
 import { OAUTH_CLIENT_REGISTRATION_REVISION } from "./oauth-client-contract.ts";
 
 const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
-const BOUNDED_SECRET_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
+// Accepts both the current `pbkdf2-sha256$<iterations>$<digest>` record and the legacy
+// single-round HMAC digest so a pre-migration account still loads.
+const BOUNDED_SECRET_PATTERN = /^(?:pbkdf2-sha256\$\d{1,7}\$)?[A-Za-z0-9_-]{20,128}$/;
 
 export function isCurrentOAuthStore(value: unknown): value is OAuthStore {
   if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_STORE_FIELDS) || value.schema_version !== 1) return false;

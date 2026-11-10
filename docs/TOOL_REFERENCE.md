@@ -863,7 +863,7 @@ Perform a structured macOS Accessibility action on a matched UI element. check/u
 
 **Observe computer surface**
 
-Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state. timeout_seconds is one end-to-end observation budget; compound screenshot/semantic/window-revalidation stages consume the remaining deadline rather than restarting it.
+Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state. timeout_seconds is one end-to-end observation budget; compound screenshot/semantic/window-revalidation stages consume the remaining deadline rather than restarting it. Set set_of_marks=true on the browser surface to add numbered bounding boxes and a local SVG overlay.
 
 | Contract field | Value |
 |---|---|
@@ -975,6 +975,11 @@ Create a snapshot-bound browser or desktop observation. Browser mode combines ex
       "minimum": 1,
       "maximum": 60,
       "default": 30
+    },
+    "set_of_marks": {
+      "type": "boolean",
+      "default": false,
+      "description": "Browser surface only: add numbered Set-of-Marks bounding boxes plus a local SVG overlay to the observation."
     }
   },
   "required": [
@@ -3488,7 +3493,7 @@ Read a bounded PNG, JPEG, GIF, or WebP image from the workspace and return nativ
 
 **Write text file**
 
-Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 preconditions checked before replacement; the hash check is not a cross-process compare-and-swap. Expected state failures return typed conflict reasons without exposing file content or hashes.
+Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 preconditions checked before replacement; the hash check is not a cross-process compare-and-swap. Expected state failures return typed conflict reasons without exposing file content or hashes. Set verify_syntax=true to reject the mutation when the resulting file fails syntax validation.
 
 | Contract field | Value |
 |---|---|
@@ -3517,6 +3522,11 @@ Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 pr
     "expected_sha256": {
       "type": "string",
       "pattern": "^[a-fA-F0-9]{64}$"
+    },
+    "verify_syntax": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reject the mutation before commit when the resulting file fails syntax validation. Content above 512 KiB cannot be validated and is rejected rather than silently accepted."
     }
   },
   "required": [
@@ -3560,7 +3570,7 @@ Atomically replace a UTF-8 file up to 5 MiB. Supports create-only and SHA-256 pr
 
 **Edit text file**
 
-Atomically replace a text fragment in one UTF-8 file while keeping the destination path visible through replacement. Matching is exact, including indentation and line endings. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts.
+Atomically replace a text fragment in one UTF-8 file while keeping the destination path visible through replacement. Matching is exact, including indentation and line endings. The SHA-256 precondition is checked before commit but is not a cross-process compare-and-swap. Missing text returns not_found; ambiguous text, stale preconditions, and unsupported targets return typed conflicts. Set verify_syntax=true to reject the mutation when the resulting file fails syntax validation.
 
 | Contract field | Value |
 |---|---|
@@ -3593,6 +3603,11 @@ Atomically replace a text fragment in one UTF-8 file while keeping the destinati
     "expected_sha256": {
       "type": "string",
       "pattern": "^[a-fA-F0-9]{64}$"
+    },
+    "verify_syntax": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reject the mutation before commit when the resulting file fails syntax validation. Content above 512 KiB cannot be validated and is rejected rather than silently accepted."
     }
   },
   "required": [
@@ -3645,7 +3660,7 @@ Atomically replace a text fragment in one UTF-8 file while keeping the destinati
 
 **Apply structured patch**
 
-Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Hunk context must match exactly, including indentation. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying.
+Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or delete operations. Hunk context must match exactly, including indentation. Syntax errors are invalid_request; stale contexts and target collisions are typed conflicts; mutations remain serialized and transactional. A failed transaction is rolled back when possible; if rollback itself is incomplete after mutations began, the tool returns a public non-retryable patch_recovery_incomplete settlement because affected files may be partially modified and must be inspected before retrying. Set verify_syntax=true to reject the mutation when the resulting file fails syntax validation.
 
 | Contract field | Value |
 |---|---|
@@ -3665,6 +3680,11 @@ Apply a bounded Begin Patch/End Patch envelope containing add, update, move, or 
       "type": "string",
       "minLength": 1,
       "maxLength": 5242880
+    },
+    "verify_syntax": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reject the mutation before commit when the resulting file fails syntax validation. Content above 512 KiB cannot be validated and is rejected rather than silently accepted."
     }
   },
   "required": [

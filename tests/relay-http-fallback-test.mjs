@@ -763,6 +763,15 @@ function testFallbackDiagnosticProjectionContract() {
   assert.equal(local.recent_outages[0].private_connection_id, undefined);
   assert.equal(local.recent_outages[1].private_proxy_url, undefined);
 
+  const floatDiagnostics = relayHandshakeDiagnostics({
+    last_ready_duration_ms: 11628224.7105,
+    heartbeat: {
+      last_probe_dispatch_ms: 3099.482,
+    },
+  });
+  assert.equal(floatDiagnostics.previous_ready_duration_ms, 11628225);
+  assert.equal(floatDiagnostics.last_probe_dispatch_ms, 3099);
+
   const worker = sanitizeDaemonRelayDiagnostics(local);
   assert(worker, "Worker sanitizer rejected the bounded local relay diagnostic schema");
   assert.equal(worker.https_fallback_last_takeover_outage_number, 8);

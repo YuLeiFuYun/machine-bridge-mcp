@@ -153,6 +153,9 @@ try {
     behaviorProbe,
     spawnSync: fakeSpawn,
   }), "successful sandbox behavior probe was not accepted");
+  const cachedSuccessStatus = delegatedProcessIsolationStatus("darwin");
+  assert(cachedSuccessStatus.available === true && cachedSuccessStatus.probed === true,
+    "delegatedProcessIsolationStatus ignored cached successful probe");
   const wrapped = delegatedProcessCommand({ command: "/usr/bin/true", args: [], workspace, runtimeDir, context, platform: "darwin" });
   assert(wrapped.command === "/usr/bin/sandbox-exec", "verified sandbox probe did not enable wrapping");
   const forced = delegatedProcessCommand({ command: "/usr/bin/true", args: [], workspace, runtimeDir, context: {}, platform: "darwin", forceDelegated: true });
@@ -164,11 +167,17 @@ try {
     exists: () => true,
     behaviorProbe: () => false,
   }), "failed sandbox behavior probe was accepted from executable presence alone");
+  const cachedFailedStatus = delegatedProcessIsolationStatus("darwin");
+  assert(cachedFailedStatus.available === false && cachedFailedStatus.probed === true,
+    "delegatedProcessIsolationStatus ignored cached failed probe");
   let forcedDenied = false;
   try { delegatedProcessCommand({ command: "/usr/bin/true", args: [], workspace, runtimeDir, context: {}, platform: "darwin", forceDelegated: true }); }
   catch (error) { forcedDenied = error?.details?.reason === "delegated_process_isolation_unavailable"; }
   assert(forcedDenied, "durable delegated execution did not fail closed after sandbox verification failed");
-  macosSandboxAvailable({ refresh: true });
+  macosSandboxAvailable({ clearCacheOnly: true });
+  const unprobedStatus = delegatedProcessIsolationStatus("darwin");
+  assert(unprobedStatus.available === false && unprobedStatus.probed === false,
+    "delegatedProcessIsolationStatus reported probed status after refresh");
 
   console.log("delegated process sandbox test ok");
 } finally {

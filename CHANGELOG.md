@@ -1,21 +1,24 @@
 # Changelog
 
-## 3.0.0-beta.212 - 2026-11-02
+## 3.0.0-beta.214 - 2026-11-10
 
-- Retry exclusive transaction-lock acquisition when a live owner releases between metadata inspection and the strict owner read; preserve permission and I/O failures and bound repeated disappearance by the original deadline.
-- Isolate the real runtime evaluation's resource sampler and coordinator state from shared CI host pressure while preserving file, process, and cleanup assertions.
+- Structural refactoring and consolidation across local runtime, worker modules, and documentation.
+- Retain transactional resource locks, audit boundary integrity, and platform compatibility.
+- Remove the dormant CodeAct executor: the `node:vm` sandbox was escapable through host objects returned by timers, buffers, and tool calls. A future implementation must use a subprocess boundary.
+- Ship `@babel/parser` as a runtime dependency and make syntax inspection authoritative first, with decorators, auto-accessors, and JSX supported; oversized content is reported as skipped instead of valid.
+- Fix CommonJS module parsing mode in syntax validation to accept top-level return and reject top-level await for `.cjs` / `.cts` files.
+- Expose `verify_syntax` on `write_file`, `edit_file`, and `apply_patch`, and report `syntax_check` when a write cannot be validated.
+- Correct Set-of-Marks viewport geometry projection by reading from `observation.semantic.viewport`.
+- Round finite float durations in connection and peer diagnostics before clamping so high-resolution timer values are preserved.
+- Allow delegated process sandbox status queries to consume cached probe outcomes without re-probing.
+- Add macOS root filesystem read permission to the delegated sandbox profile to prevent libSystem startup aborts.
+- Store the macOS native input helper in persistent toolchain state to preserve Accessibility (TCC) grants across restarts.
+- Derive new account password hashes with PBKDF2-HMAC-SHA256 (210k iterations) while still accepting legacy records.
+- Bound the stuck-loop detector to retryable failures so policy denials no longer disclose unavailable tool names.
+- Use a stable macOS helper path with a SHA-256 sidecar, document the Command Line Tools requirement, and add a `doctor` prerequisite check.
+- Describe delegated-process isolation without running the behavior probe during `server_info`; run it from `diagnose_runtime` instead.
+- Escape Set-of-Marks SVG output, expose `set_of_marks`, and give the source and documentation ratchets fixed headroom.
 
-- Encode remote progress as complete JSON-RPC notifications and bind producer-to-stream regression coverage to the shared envelope type.
-- Recover resource-bound jobs from a stable, principal-bound request intent while retaining the independent frozen execution-plan integrity check. Recovery no longer reopens current resources or cwd for newly accepted records.
-- Return non-repository Git queries and tool-specific argument validation through the tool-error channel; malformed request structures and unknown tools remain protocol errors.
-- Align supply-chain threat documentation with unchanged upstream artifact verification and keep source-only bootstrap wrappers out of consumer packages.
-
-- Fix npm prepublication verification deadlock in assert-publishable-manifest guard and align publication test harness environments.
-- Consume structured browser effect_settlement in computer-use dispatch settlement and align unknown outcome classification.
-- Deduplicate in-flight JSON-RPC requests across tool and auxiliary handlers in stdio, propagate cancellation, and unify prompt dispatch.
-- Expose Code Mode TypeScript SDK signatures via machine-bridge://sdk/tools.d.ts help resource with typed application/typescript content.
-- Align task capability resolver schema and documentation with stable MCP 2026-07-28 catalog discovery.
-- Package macOS trust broker Swift source with native build artifacts and close unbudgeted documentation guardrails.
 ## Historical releases
 
 Historical prerelease entries remain available from Git tags and repository history. From a source checkout, inspect the changelog of a prior revision with `git show <revision>:CHANGELOG.md`. This current file intentionally describes only the active candidate and the history location.
