@@ -4,7 +4,7 @@ This snapshot covers **51 distinct agent projects** and **19 foundational/recent
 
 **Rolling maintenance observation — 2026-10-26.** AutoGen's current upstream README marks the project archived and no longer maintained by Microsoft and directs new users to Microsoft Agent Framework. This observation records maintenance status only; the table below remains pinned to exact revisions.
 
-The bridge remains an execution and authority boundary. It does not acquire a model loop, vector database, distributed queue, continuous screen recorder or automatic self-modification merely because an upstream framework offers one. Its three direct runtime dependencies remain purposeful: `ws`, `https-proxy-agent` and `proxy-from-env`. Managed-job records are bounded JSON, not CBOR.
+The bridge remains an execution and authority boundary. It does not acquire a model loop, vector database, distributed queue, continuous screen recorder or automatic self-modification merely because an upstream framework offers one. Its four direct runtime dependencies remain purposeful: `@babel/parser`, `https-proxy-agent`, `proxy-from-env` and `ws`. Managed-job records are bounded JSON, not CBOR.
 
 ## Pinned project comparison
 
@@ -18,7 +18,7 @@ The Decision column records design intent, not implementation status. Only `AGEN
 | [aaif-goose/goose](https://github.com/aaif-goose/goose/tree/7143dddf732be1b259f2fde83f225b44d10caf71) | Modular MCP extensions and `.goosehints` | Read `.goosehints` and keep server catalogs stable and leave progressive definition loading to the host; keep provider routing host-owned. |
 | [cline/cline](https://github.com/cline/cline/tree/627e51e54622177d0e1a25a2e78aacdd83704d11) | `.clinerules` guidance and reviewable plans | Read `.clinerules` in project context and expose `stage_job` for inspectable plans before `start_job`. |
 | [RooCodeInc/Roo-Code (archived)](https://github.com/RooCodeInc/Roo-Code/tree/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16) | `.roorules` mode rules; archived snapshot | Include `.roorules` in bounded instruction discovery; avoid embedding IDE-specific persona modes. |
-| [Aider-AI/aider](https://github.com/Aider-AI/aider/tree/5dc9490bb35f9729ef2c95d00a19ccd30c26339c) | Repository maps and search/replace diagnostics | Provide lexical `symbol-outline` and line-numbered `near_miss` edit hints without Tree-sitter or PageRank. |
+| [Aider-AI/aider](https://github.com/Aider-AI/aider/tree/5dc9490bb35f9729ef2c95d00a19ccd30c26339c) | Repository maps and search/replace diagnostics | Provide lexical `symbol-outline` and line-numbered `nearMiss` edit hints without Tree-sitter or PageRank. |
 | [OpenHands/OpenHands](https://github.com/OpenHands/OpenHands/tree/9057a57f4a7b5a74e93989090edaffc21e3554ff) | Event-stream action/observation split | Preserve action/result separation and `start_process`/`read_process` sessions without bundling Docker runtimes. |
 | [SWE-agent/SWE-agent](https://github.com/SWE-agent/SWE-agent/tree/3ea751c087f32b16e039a2233dd6eefecef325d5) | ACI windowed viewing and lint guards | Add `with_line_numbers` windowed file reads, JSON write syntax warnings, and interactive prompt advisories. |
 | [SWE-agent/mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent/tree/04d809ceab9df28f9adaed044884180159172930) | Minimal stateless execution loop | Keep tool calls stateless and request-scoped over MCP 2026-07-28; leave trajectory history to callers. |
@@ -42,13 +42,13 @@ The Decision column records design intent, not implementation status. Only `AGEN
 | [letta-ai/letta](https://github.com/letta-ai/letta/tree/8816d3a8516893bfdc0fa14bfb1235226012e295) | Tiered memory with read/write separation | Keep `agent_context` strictly read-only with bounded `.project-local/agent-memory.json` projection. |
 | [lastmile-ai/mcp-agent](https://github.com/lastmile-ai/mcp-agent/tree/f62d849350816588b1c6294e7914bbe4d8b84072) | MCP server composition and routing | Rank compatible tool groups and execution surfaces in `resolve_task_capabilities` without hiding allowed tools. |
 | [bytedance/deer-flow](https://github.com/bytedance/deer-flow/tree/8b68832f32a0bb724e1ca39983ae0c43284a0c40) | Planner/executor split with human review | Support `stage_job` plan inspection and local user confirmation gates for sensitive operations. |
-| [browser-use/browser-use](https://github.com/browser-use/browser-use/tree/aa093a843da5edbf323c0b4145c9b6a0db3ecde8) | Indexed DOM extraction and action loops | Assign snapshot-bound element refs (`ref`) in `browser_snapshot` and verify post-action DOM effects. |
-| [browserbase/stagehand](https://github.com/browserbase/stagehand/tree/2ee356fbb37a25dd3aeaf24738e88c26e08c3eee) | `act`/`extract`/`observe` browser primitives | Separate `browser_snapshot`, `browser_extract`, and `browser_act` with explicit tab targeting. |
+| [browser-use/browser-use](https://github.com/browser-use/browser-use/tree/aa093a843da5edbf323c0b4145c9b6a0db3ecde8) | Indexed DOM extraction and action loops | Assign snapshot-bound element refs (`ref`) in `browser_inspect_page` and verify post-action DOM effects. |
+| [browserbase/stagehand](https://github.com/browserbase/stagehand/tree/2ee356fbb37a25dd3aeaf24738e88c26e08c3eee) | `act`/`extract`/`observe` browser primitives | Separate `browser_inspect_page`, `browser_get_source`, and `browser_action` with explicit tab targeting. |
 | [Skyvern-AI/skyvern](https://github.com/Skyvern-AI/skyvern/tree/2d761e7da6577dd6b504c4be55b579e2a698d923) | Form filling with credential alias injection | Inject `{{resource:name}}` secrets into browser fields without exposing raw values in MCP arguments. |
-| [simular-ai/Agent-S](https://github.com/simular-ai/Agent-S/tree/15776a8dc659658b1963816ea006f7af1978e595) | Grounded GUI observe-act-verify cycle | Require a fresh `observation_id` before `computer_act` and classify post-action effect status. |
+| [simular-ai/Agent-S](https://github.com/simular-ai/Agent-S/tree/15776a8dc659658b1963816ea006f7af1978e595) | Grounded GUI observe-act-verify cycle | Require a fresh `snapshot_id` before `computer_act` and classify post-action effect status. |
 | [trycua/cua](https://github.com/trycua/cua/tree/c797b9ba62cff0b018c30dd4a3db6c0dc1466e08) | Cross-platform desktop capability projection | Report explicit per-platform desktop/application capabilities in `server_info` and `computer_observe`. |
-| [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp/tree/ab6d67cbf8b619338f096980806fdbe29432cc4d) | Accessibility snapshots over raw screenshots | Prefer structured DOM/Accessibility snapshots (`browser_snapshot`, `inspect_local_application`) over pixels. |
-| [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser/tree/fd93075e55a21a47fcb36d7433361daa867a0580) | Ref-based browser interaction | Bind `browser_act` element references to the exact snapshot frame and tab generation. |
+| [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp/tree/ab6d67cbf8b619338f096980806fdbe29432cc4d) | Accessibility snapshots over raw screenshots | Prefer structured DOM/Accessibility snapshots (`browser_inspect_page`, `inspect_local_application`) over pixels. |
+| [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser/tree/fd93075e55a21a47fcb36d7433361daa867a0580) | Ref-based browser interaction | Bind `browser_action` element references to the exact snapshot frame and tab generation. |
 | [ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp/tree/bf8c6d9bc70d24523c353f43775a6542a45e8c56) | CDP input dispatch and page diagnostics | Support debugger-backed input/observation in the paired extension while fencing restricted browser URLs. |
 | [remorses/playwriter](https://github.com/remorses/playwriter/tree/796e5716c64329c4c6a772ea62fa58216a24fe97) | Extension bridge to existing browser profiles | Operate the user's paired Chromium profile via loopback broker with role-separated credentials. |
 | [microsoft/UFO](https://github.com/microsoft/UFO/tree/eae3c0a8d168c47cb10df0652e293e092eda1078) | OS accessibility controls with fallback | Route macOS automation through Accessibility (`operate_local_application`) first and `computer_act` second. |
@@ -57,7 +57,7 @@ The Decision column records design intent, not implementation status. Only `AGEN
 | [OS-Copilot/OS-Copilot](https://github.com/OS-Copilot/OS-Copilot/tree/f720af8807e49a92dda64572d2c6bc6c0ac7ee7e) | Reusable OS skills and environment feedback | Expose local `run_local_command` presets and `SKILL.md` bundles gated by local policy. |
 | [HKUDS/AutoAgent](https://github.com/HKUDS/AutoAgent/tree/16c12b052ef2330a198063c62a07a7f9723031e3) | Zero-code agent and tool synthesis | Reject runtime self-generated tools; require all commands and skills to pass local policy checks. |
 | [kortix-ai/suna](https://github.com/kortix-ai/suna/tree/ee289439b934f32014951591dd199d78899681ec) | Hosted agent with browser/shell tools | Bridge remote MCP clients over OAuth 2.1 + DPoP relay while enforcing delegated-role path boundaries. |
-| [HKUDS/nanobot](https://github.com/HKUDS/nanobot/tree/73a55e0b2fac17ae70641f028448201c4a0cb710) | Lightweight persistent assistant runtime | Keep the local daemon dependency footprint minimal (3 runtime packages) with bounded JSON state. |
+| [HKUDS/nanobot](https://github.com/HKUDS/nanobot/tree/73a55e0b2fac17ae70641f028448201c4a0cb710) | Lightweight persistent assistant runtime | Keep the local daemon dependency footprint minimal (4 runtime packages) with bounded JSON state. |
 | [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code/tree/67325c1b25e46b2fc66043bceab059221b719fa9) | IDE/CLI coding integration over MCP | Share one canonical MCP 2026-07-28 tool catalog across stdio and remote HTTP transports. |
 | [mastra-ai/mastra](https://github.com/mastra-ai/mastra/tree/605864cff64eee320a24000daf9d6312c3faf5ef) | Workflow graphs and suspended tool steps | Project durable jobs into MCP Tasks (`tasks/get`, `tasks/result`, `tasks/cancel`) via `mcp-task-contract.mjs`. |
 | [FoundationAgents/OpenManus](https://github.com/FoundationAgents/OpenManus/tree/3309bf4e416fb1c74b008f3e86494439a31bad53) | General agent combining browser, shell, files | Unify browser, desktop, file, Git, process, and job tools behind one policy-enforced MCP boundary. |
@@ -78,7 +78,7 @@ The 51-project table above is the reproducible **2026-10-21 pinned snapshot**. T
 
 ## Adopted changes and synthesis
 
-- **Instruction hierarchy and repo maps (Codex, Claude Code, Gemini CLI, Aider, SWE-agent).** Nearest-first `AGENTS.md` precedence, explicit omissions, on-demand memory, `with_line_numbers` windowed reads, numbered `near_miss` edit hints, and lexical `symbol-outline` are implemented without bundling an embedded LLM, Tree-sitter, or PageRank.
+- **Instruction hierarchy and repo maps (Codex, Claude Code, Gemini CLI, Aider, SWE-agent).** Nearest-first `AGENTS.md` precedence, explicit omissions, on-demand memory, `with_line_numbers` windowed reads, numbered `nearMiss` edit hints, and lexical `symbol-outline` are implemented without bundling an embedded LLM, Tree-sitter, or PageRank.
 - **MCP extensions and durable workflows (Goose, Cline, LangGraph, Mastra, mcp-agent).** Advisory task capability routing, `stage_job`/`start_job`/`read_job`, idempotency recovery keys, and MCP Tasks projections preserve state across disconnects while leaving planners and role graphs to the host.
 - **Browser and desktop grounding (browser-use, Stagehand, Playwright MCP, Agent-S, UFO).** Observations bind to the current tab, frame, snapshot, and capability; actions verify post-dispatch effects without bundling a browser engine or granting ambient screen authority.
 - **Memory, typed contracts, and evaluation gates (Letta, Pydantic AI, AgentLab, OpenEvolve).** Memory remains read-only in `agent_context`, output schemas are verified against `tool-output-contract.json`, deterministic fixtures verify final state, and a thirteen-case synthetic scoring fixture exercises a generic `pass`/`fail`/`unknown` scorer with call/latency/token/cost accounting. The scorer consumes prerecorded traces and is not a live model benchmark.
@@ -89,11 +89,11 @@ The core specification remains `2026-07-28`; the 2026 changes are extensions, li
 
 | Standard | Status | Project decision |
 | --- | --- | --- |
-| Skills over MCP (`io.modelcontextprotocol/skills`) | Final (SEP-2640; 2026-09-13) | Planned; keep `agent_context` and skill tools until scheduled. |
+| Skills over MCP (`io.modelcontextprotocol/skills`) | Final (SEP-2640; 2026-09-13) | Not scheduled; unimplemented. Keep `agent_context` and skill tools unchanged. |
 | MCP Tasks (`io.modelcontextprotocol/tasks`) | Official extension | Polling/terminal only; document that `input_required` is unsupported. |
 | MCP Apps (`io.modelcontextprotocol/ui`) | Official extension | Worker-only Job Monitor; document the boundary. |
 | Progressive Disclosure WG | Active; no Final | Catalogs stay stable per MCP 2026-07-28; definition discovery is host-owned. |
-| CIMD | Next-core direction; DCR deprecated | Plan before the next core release; keep DCR fallback. |
+| CIMD | Next-core direction; DCR deprecated | Not scheduled; `registerClient` DCR is the only registration path. |
 
 ## Foundational and recent papers
 

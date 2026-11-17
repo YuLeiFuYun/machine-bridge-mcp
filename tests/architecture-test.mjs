@@ -6,6 +6,8 @@ import "./architecture/documentation-budget.mjs";
 import "./architecture/source-budget.mjs";
 import "./architecture/browser-security-structure.mjs";
 import "./architecture/release-contracts.mjs";
+import "./architecture/doc-tool-references.mjs";
+import "./architecture/deployment-config-parity.mjs";
 import "./architecture/semantic-architecture-test.mjs";
 
 console.log("architecture/documentation test ok");
