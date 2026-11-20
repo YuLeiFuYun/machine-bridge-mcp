@@ -5,12 +5,7 @@ Security assumptions, attacker models, non-goals, and residual risks are defined
 
 ## Design goal
 
-The system separates four questions that are often conflated:
-
-1. **Who may request an operation?** Remote OAuth account/client identity and role, or the local process identity that launched stdio.
-2. **Which tools exist?** The shared tool catalog, policy profile, and account-role intersection.
-3. **Is this remote effect inside the current authority?** The daemon ceiling, account role, trusted client, account version, refresh family, operation invariants, and object owner must all agree.
-4. **What can an authorized tool actually do?** The local runtime, workspace/path rules, operating-system user authority, and platform security controls.
+The system separates four questions that are often conflated: who may request an operation, which tools exist, whether a remote effect is inside the current authority, and what an authorized tool can actually do. [System overview](OVERVIEW.md) defines each one; this document covers how the pieces are built.
 
 No transport is treated as a sandbox. Both transports invoke the same local runtime.
 

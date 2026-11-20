@@ -2,6 +2,7 @@
 
 import { rename as fsRename } from "node:fs/promises";
 import { isTransientFilesystemMutationError } from "./atomic-fs.mjs";
+import { clampInteger } from "../shared/numbers.mjs";
 
 /** @param {string} source @param {string} target @param {(source: string, target: string) => Promise<void>} [move] @param {{attempts?: number, baseDelayMs?: number, maxDelayMs?: number}} [options] */
 export async function renameWithRetry(source, target, move = fsRename, options = {}) {
@@ -22,11 +23,4 @@ export async function renameWithRetry(source, target, move = fsRename, options =
     }
   }
   throw lastError || new Error("atomic file replacement failed");
-}
-
-/** @param {unknown} value @param {number} fallback @param {number} minimum @param {number} maximum */
-function clampInteger(value, fallback, minimum, maximum) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, minimum), maximum);
 }

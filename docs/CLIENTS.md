@@ -278,3 +278,7 @@ The initial `start_job` request is still subject to host approval.
 If it is blocked before dispatch, the operator can review and submit the same JSON plan locally with `machine-mcp job submit plan.json`.
 If the hosted acceptance outcome is **unknown** rather than definitely blocked, do not switch to a second submission path: retry the same hosted arguments with the same `idempotency_key` while the retained recovery window is still valid.
 See [MANAGED_JOBS.md](MANAGED_JOBS.md).
+
+### Code Mode TypeScript SDK resource
+
+Machine Bridge exposes `machine-bridge://sdk/tools.d.ts` as an MCP resource containing compact TypeScript interface declarations for all exposed tools. This resource is intended for host-side Code Mode or client orchestration environments; the Machine Bridge server itself does not execute caller-provided script code.

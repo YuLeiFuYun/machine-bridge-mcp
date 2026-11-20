@@ -1,4 +1,5 @@
 import { renameSync, rmSync } from "node:fs";
+import { clampInteger } from "../shared/numbers.mjs";
 
 const TRANSIENT_FILESYSTEM_MUTATION_ERRORS = new Set(["EACCES", "EBUSY", "EPERM", "ENOTEMPTY"]);
 const WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(4));
@@ -68,10 +69,4 @@ function retryDelayMs(attempt, baseDelayMs, maxDelayMs, random) {
 function sleepSync(milliseconds) {
   if (milliseconds <= 0) return;
   Atomics.wait(WAIT_BUFFER, 0, 0, milliseconds);
-}
-
-function clampInteger(value, fallback, minimum, maximum) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  const number = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(number, minimum), maximum);
 }

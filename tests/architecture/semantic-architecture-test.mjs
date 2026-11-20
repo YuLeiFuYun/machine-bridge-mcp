@@ -11,6 +11,8 @@ import {
   hasSemanticImport,
   measureSemanticComplexity,
 } from "./semantic-analyzer.mjs";
+import { toolNamesForPolicy, policyProfile } from "../../src/local/policy.mjs";
+import { CODE_MODE_SDK_RESOURCE_URI, readHelpResource } from "../../src/shared/help-resources.mjs";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -115,5 +117,52 @@ const helpResourcesSource = readFileSync(join(root, "src", "shared", "help-resou
 const helpResourcesExports = getSemanticExports(helpResourcesSource, "help-resources.mjs");
 assert(helpResourcesExports.some((e) => e.name === "HELP_RESOURCES"), "help-resources.mjs missing HELP_RESOURCES export");
 assert(helpResourcesExports.some((e) => e.name === "readHelpResource"), "help-resources.mjs missing readHelpResource export");
+
+// 8. Contract anchor: delegated process sandbox must remain policy-unreachable
+// The delegated process sandbox is reached only through shell-family tools when executed
+// by non-owner principals. Guarding all shell tools under owner-only authority and verifying
+// zero reachable intersection ensures the sandbox remains strictly unreachable.
+const securityContract = JSON.parse(readFileSync(join(root, "src", "shared", "tool-security-contract.json"), "utf8"));
+const accessContract = JSON.parse(readFileSync(join(root, "src", "shared", "access-contract.json"), "utf8"));
+const ownerOnly = new Set(accessContract.ownerOnlyTools);
+const shellFamily = new Set(Object.entries(securityContract.tools)
+  .filter(([, spec]) => spec.family === "shell").map(([name]) => name));
+
+assert.ok(Array.from(shellFamily).every((tool) => ownerOnly.has(tool)),
+  "all shell family tools must remain in ownerOnlyTools");
+
+for (const [role, spec] of Object.entries(accessContract.roles)) {
+  if (role === accessContract.ownerRole) continue;
+  const reachable = toolNamesForPolicy(policyProfile(spec.profile, "explicit"))
+    .filter((name) => !ownerOnly.has(name));
+  const reachableShell = reachable.filter((name) => shellFamily.has(name));
+  assert.equal(reachableShell.length, 0,
+    `role ${role} can reach shell tool(s) [${reachableShell.join(", ")}]; delegated sandbox becomes policy-reachable`);
+}
+
+// 9. Contract anchor: Code Mode SDK resource must project valid TypeScript declarations
+const sdkDeclarations = readHelpResource(CODE_MODE_SDK_RESOURCE_URI);
+assert.ok(sdkDeclarations.startsWith("declare namespace mbm {"), "SDK d.ts must start with namespace mbm declaration");
+assert.ok(sdkDeclarations.length > 5000, "SDK d.ts must contain generated tool declarations");
+
+// 10. Contract anchor: role capability matrix and explicit progression
+// Enforce explicit progression across roles and track delta tools between roles.
+const roleProgression = ["reviewer", "editor", "operator", "owner"];
+const roleTools = {};
+for (const role of roleProgression) {
+  const profileName = accessContract.roles[role].profile;
+  const tools = toolNamesForPolicy(policyProfile(profileName, "explicit"))
+    .filter((name) => role === accessContract.ownerRole || !ownerOnly.has(name));
+  roleTools[role] = new Set(tools);
+}
+for (let index = 1; index < roleProgression.length; index += 1) {
+  const previous = roleProgression[index - 1];
+  const next = roleProgression[index];
+  const missing = [...roleTools[previous]].filter((tool) => !roleTools[next].has(tool));
+  assert.deepEqual(missing, [], `${next} must retain all ${previous} tools`);
+  assert.ok(roleTools[next].size > roleTools[previous].size, `${next} must add tools beyond ${previous}`);
+}
+const operatorAdditions = [...roleTools.operator].filter((t) => !roleTools.editor.has(t));
+assert.deepEqual(operatorAdditions, ["git_commit"], "operator role must explicitly add only git_commit over editor");
 
 console.log("semantic architecture test ok");

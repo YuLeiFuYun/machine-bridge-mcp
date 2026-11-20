@@ -1,6 +1,6 @@
 # Project standards
 
-This document defines the repository-wide engineering and collaboration standard. It complements the product and security invariants in [ENGINEERING.md](ENGINEERING.md). A rule is preferred only when it reduces material risk, makes review easier, or can be enforced consistently; ceremony without a credible failure mode is not a quality control.
+This document defines the repository-wide engineering and collaboration standard. It complements the product and security invariants in [ENGINEERING.md](ENGINEERING.md); on conflict, ENGINEERING's product and security invariants win. A rule is preferred only when it reduces material risk, makes review easier, or can be enforced consistently; ceremony without a credible failure mode is not a quality control.
 
 ## 1. Change flow
 
@@ -162,6 +162,7 @@ Tests follow risk rather than a repository-wide aggregate percentage:
 - Hosted-runtime boundaries such as deployed Durable Object persistence, edge request cancellation, browser integration, and provider lifecycle receive deployed/live canaries when local workerd, emulators, or OS fakes cannot prove equivalent semantics. OAuth/token persistence changes require deployed authorization-code exchange, access/refresh persistence, one authenticated MCP request, and refresh rotation before acceptance.
 - Supported operating systems run the required suite in CI.
 - Critical modules have explicit function and branch baselines. Thresholds may rise after better tests or extraction; lowering one requires an audit note explaining why the old measurement was misleading.
+- New security and architectural assertions must provide mutation evidence proving they fail when the guarded invariant is violated; an assertion that cannot fail under mutation is considered unimplemented.
 - High-risk JavaScript contract modules opt into strict TypeScript checking through `tsconfig.local.json`; implicit `any`, `@ts-ignore`, and untyped duplicate protocol/configuration shapes are not acceptable substitutes for a defined boundary.
 
 An 80% aggregate coverage target is not a repository requirement: it can hide untested critical branches behind trivial files. New or materially changed pure business modules should normally achieve at least 80% function coverage and meaningful branch coverage, but risk-specific tests remain the acceptance criterion.

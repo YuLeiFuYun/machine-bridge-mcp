@@ -166,7 +166,8 @@ async function runNpm(npmCli, args, cwd, runCommand, options, timeoutMs, allowFa
 function validateTemplate(manifest, lock) {
   if (manifest.private !== true || manifest.dependencies?.wrangler !== "4.151.3"
       || manifest.dependencies?.cf !== CF_NETWORK_ARTIFACT.version
-      || Object.keys(manifest.dependencies).length !== 2) {
+      || manifest.dependencies?.["@noble/hashes"] !== "2.4.0"
+      || Object.keys(manifest.dependencies).length !== 3) {
     throw new Error("Cloudflare toolchain manifest lost its exact private dependencies");
   }
   if (manifest.overrides?.sharp !== "0.35.5"

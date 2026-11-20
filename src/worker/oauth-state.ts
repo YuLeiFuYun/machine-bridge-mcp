@@ -1,3 +1,5 @@
+import { pbkdf2Async } from "@noble/hashes/pbkdf2.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { normalizeAccountRole, type AccountRole } from "./access.ts";
 import { OAUTH_CLIENT_REGISTRATION_REVISION } from "./oauth-client-contract.ts";
 import { hasOnlyRecordFields, OAUTH_REFRESH_STORE_FIELDS } from "./oauth-field-contract.ts";
@@ -120,9 +122,8 @@ const AUTH_FAILURE_WINDOW_SECONDS = 10 * 60;
 export const AUTH_BLOCK_SECONDS = 15 * 60;
 const AUTH_FAILURE_LIMIT = 10;
 const PASSWORD_HASH_SCHEME = "pbkdf2-sha256";
-// OWASP's PBKDF2-HMAC-SHA256 guidance is higher, but a Worker login request has a bounded
-// CPU budget and the password format below already requires 256 bits of entropy. 210k keeps
-// the KDF meaningful while staying inside one request.
+// The password format is for generated 256-bit tokens, and each login has a bounded
+// compute budget. Retain the exact work factor and format used by existing verifiers.
 const PASSWORD_HASH_ITERATIONS = 210_000;
 const PASSWORD_HASH_BYTES = 32;
 
@@ -411,19 +412,26 @@ function normalizeDisplayName(value: unknown, fallback: string): string {
 async function derivePasswordHash(password: string, salt: Uint8Array): Promise<string> {
   if (salt.byteLength !== 16) throw new Error("account password salt is invalid");
   const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveBits"],
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: saltBuffer, iterations: PASSWORD_HASH_ITERATIONS, hash: "SHA-256" },
-    key,
-    PASSWORD_HASH_BYTES * 8,
-  );
-  return `${PASSWORD_HASH_SCHEME}$${PASSWORD_HASH_ITERATIONS}$${base64Url(new Uint8Array(bits))}`;
+  const passwordBytes = new TextEncoder().encode(password);
+  let hash: Uint8Array;
+  try {
+    const key = await crypto.subtle.importKey("raw", passwordBytes, { name: "PBKDF2" }, false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt: saltBuffer, iterations: PASSWORD_HASH_ITERATIONS, hash: "SHA-256" },
+      key,
+      PASSWORD_HASH_BYTES * 8,
+    );
+    hash = new Uint8Array(bits);
+  } catch (error) {
+    // Hosted Workers can reject higher iteration counts even when their local
+    // emulator accepts them. Derive the same verifier with the pinned implementation.
+    if (!(error instanceof DOMException) || error.name !== "NotSupportedError") throw error;
+    hash = await pbkdf2Async(sha256, passwordBytes, salt, {
+      c: PASSWORD_HASH_ITERATIONS,
+      dkLen: PASSWORD_HASH_BYTES,
+    });
+  }
+  return `${PASSWORD_HASH_SCHEME}$${PASSWORD_HASH_ITERATIONS}$${base64Url(hash)}`;
 }
 
 /**

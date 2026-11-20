@@ -1,7 +1,9 @@
 {
   "totalWords": 145000,
   "files": {
+    "AGENTS.md": 1500,
     "README.md": 4200,
+    "SECURITY.md": 4600,
     "docs/AGENT_CONTEXT.md": 3400,
     "docs/ARCHITECTURE.md": 7100,
     "docs/AUDIT.md": 1900,

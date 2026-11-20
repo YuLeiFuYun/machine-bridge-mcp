@@ -1,8 +1,9 @@
+import { pbkdf2Sync } from "node:crypto";
 import { normalizeAccountRole } from "../src/worker/access.ts";
 import { consumeAccountAdminNonce } from "../src/worker/account-admin.ts";
 import { OAuthController } from "../src/worker/oauth-controller.ts";
 import { authorizationPage } from "../src/worker/oauth-authorization-page.ts";
-import { accountByName, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex, validateAuthorizationRequest } from "../src/worker/oauth-state.ts";
+import { accountByName, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex, validateAuthorizationRequest, verifyAccountPassword } from "../src/worker/oauth-state.ts";
 import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth-refresh-families.ts";
 import { oauthRefreshPersistenceEntries } from "../src/worker/oauth-refresh-persistence.ts";
 import { isCurrentOAuthStore } from "../src/worker/oauth-store-validation.ts";
@@ -15,6 +16,32 @@ const SERVER_NAME = "machine-bridge-mcp";
 const BASE = "https://bridge.example.test";
 const REDIRECT = "https://client.example.test/callback";
 const PASSWORD = `test_password_${"A".repeat(43)}`;
+
+async function testHostedPasswordHashFallback() {
+  const subtle = crypto.subtle;
+  const original = Object.getOwnPropertyDescriptor(subtle, "deriveBits");
+  const deriveBits = subtle.deriveBits.bind(subtle);
+  Object.defineProperty(subtle, "deriveBits", {
+    configurable: true,
+    value: (algorithm, ...args) => {
+      if (algorithm.name === "PBKDF2" && algorithm.iterations > 100_000) {
+        return Promise.reject(new DOMException("PBKDF2 iteration limit", "NotSupportedError"));
+      }
+      return deriveBits(algorithm, ...args);
+    },
+  });
+  try {
+    const account = await createAccount({ name: "hosted-reviewer", role: "reviewer", password: PASSWORD, now: 1 });
+    const salt = Buffer.from(account.password_salt, "base64url");
+    const reference = pbkdf2Sync(PASSWORD, salt, 210_000, 32, "sha256").toString("base64url");
+    assert(account.password_hash === `pbkdf2-sha256$210000$${reference}`, "hosted fallback changed the verifier bytes or work factor");
+    assert(await verifyAccountPassword(account, PASSWORD), "hosted fallback rejected an existing verifier");
+    assert(!(await verifyAccountPassword(account, `test_password_${"B".repeat(43)}`)), "hosted fallback accepted the wrong password");
+  } finally {
+    if (original) Object.defineProperty(subtle, "deriveBits", original);
+    else delete subtle.deriveBits;
+  }
+}
 
 async function testOAuthStoreCapacityBudget() {
   const now = Math.floor(Date.now() / 1000);
@@ -831,6 +858,7 @@ function assert(condition, message) {
 }
 
 await testStoreAndRegistration();
+await testHostedPasswordHashFallback();
 await testOAuthStoreCapacityBudget();
 await testOAuthStoreDeepValidation();
 await testStaleRegistrationRequiresRepair();

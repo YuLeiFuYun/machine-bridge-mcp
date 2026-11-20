@@ -3,7 +3,6 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path, { basename, resolve } from "node:path";
-import { compileFunction } from "node:vm";
 import { directoryEntriesWithMetadata } from "./directory-metadata.mjs";
 import { BridgeError } from "./errors.mjs";
 import { formatNumberedSlice, hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
@@ -26,10 +25,11 @@ const localRequire = createRequire(import.meta.url);
 let babelParser = null;
 try {
   const bp = localRequire("@babel/parser");
-  babelParser = bp.parse || bp.default?.parse || bp;
+  const parse = bp.parse || bp.default?.parse || bp;
+  if (typeof parse === "function") babelParser = parse;
 } catch {
-  // Optional dependency missing: the heuristic delimiter scan remains, and results report
-  // backend "heuristic" instead of implying a full parse.
+  // Keep advisory delimiter scans available if the installed parser cannot load.
+  // Explicit verification requires an authoritative backend.
 }
 
 export const MAX_WRITE_BYTES = 5 * 1024 * 1024;
@@ -46,7 +46,7 @@ const DELIMITER_PAIRS = { "{": "}", "(": ")", "[": "]" };
 const CLOSING_DELIMITERS = new Set(["}", ")", "]"]);
 // One ceiling for the authoritative parse: beyond this the write path would spend more
 // time validating than writing, so the result is reported as skipped rather than "ok".
-const SYNTAX_CHECK_MAX_CHARS = 512 * 1024;
+const SYNTAX_CHECK_MAX_BYTES = 512 * 1024;
 const TYPESCRIPT_EXTENSIONS = new Set([".ts", ".mts", ".cts", ".tsx"]);
 // Decorators and auto-accessors are ordinary production syntax in Angular/NestJS/TypeORM
 // projects. Omitting them turns valid files into false syntax warnings.
@@ -90,10 +90,9 @@ function parseSource(content, ext, jsx) {
  * full syntax check.
  *
  * @param {string} content
- * @param {string} ext
  * @returns {string | null}
  */
-function heuristicSyntaxWarning(content, ext) {
+function heuristicSyntaxWarning(content) {
   const sanitized = sanitizeSource(content);
   const stack = [];
   for (let i = 0; i < sanitized.length; i += 1) {
@@ -104,11 +103,6 @@ function heuristicSyntaxWarning(content, ext) {
     }
   }
   if (stack.length > 0) return `syntax_warning: unclosed delimiter expecting '${stack.at(-1)}'`;
-  if (ext === ".cjs" || (ext === ".js" && !/^\s*(?:import|export)\b/m.test(sanitized))) {
-    try { compileFunction(content); } catch (error) {
-      return `syntax_warning: invalid JavaScript syntax: ${String(error?.message || error).slice(0, 100)}`;
-    }
-  }
   return null;
 }
 
@@ -117,26 +111,28 @@ function heuristicSyntaxWarning(content, ext) {
  *
  * `status` is one of `ok`, `warning`, `skipped_too_large`, or `not_applicable`.
  * `backend` is `babel` when the source was actually parsed, `heuristic` when only the
- * delimiter scan ran, and `none` for non-code files.
+ * delimiter scan ran, `native` for built-in JSON parsing, and `none` for non-code files.
  *
  * @param {string} filePath
  * @param {string} content
- * @returns {{ status: "ok" | "warning" | "skipped_too_large" | "not_applicable", message?: string, backend: "babel" | "heuristic" | "none" }}
+ * @returns {{ status: "ok" | "warning" | "skipped_too_large" | "not_applicable", message?: string, backend: "babel" | "heuristic" | "none" | "native" }}
  */
 export function inspectSyntax(filePath, content) {
   const ext = path.extname(filePath).toLowerCase();
+  if (ext !== ".json" && !CODE_SYNTAX_EXTENSIONS.has(ext)) {
+    return { status: "not_applicable", backend: "none" };
+  }
+  if (Buffer.byteLength(content) > SYNTAX_CHECK_MAX_BYTES) {
+    return { status: "skipped_too_large", message: `syntax_check_skipped: content exceeds ${SYNTAX_CHECK_MAX_BYTES} bytes`, backend: "none" };
+  }
   if (ext === ".json") {
     try { JSON.parse(content); } catch (error) {
-      return { status: "warning", message: `syntax_warning: invalid JSON: ${String(error?.message || error).slice(0, 100)}`, backend: "babel" };
+      return { status: "warning", message: `syntax_warning: invalid JSON: ${String(error?.message || error).slice(0, 100)}`, backend: "native" };
     }
-    return { status: "ok", backend: "babel" };
-  }
-  if (!CODE_SYNTAX_EXTENSIONS.has(ext)) return { status: "not_applicable", backend: "none" };
-  if (content.length > SYNTAX_CHECK_MAX_CHARS) {
-    return { status: "skipped_too_large", message: `syntax_check_skipped: content exceeds ${SYNTAX_CHECK_MAX_CHARS} characters`, backend: "none" };
+    return { status: "ok", backend: "native" };
   }
   if (!babelParser) {
-    const message = heuristicSyntaxWarning(content, ext);
+    const message = heuristicSyntaxWarning(content);
     return message ? { status: "warning", message, backend: "heuristic" } : { status: "ok", backend: "heuristic" };
   }
   const jsxCapable = ext === ".jsx" || ext === ".tsx";
@@ -169,24 +165,31 @@ export function inspectSyntaxWarning(filePath, content) {
 }
 
 /**
- * Pre-commit gate used by `verify_syntax`. Fails closed when the content cannot be
- * validated at all, so an explicit verification request never silently degrades.
+ * Inspect each mutation once and require an authoritative result for explicit verification.
  *
  * @param {string} filePath
  * @param {string} content
+ * @param {boolean | undefined} verify
  */
-function assertSyntaxVerified(filePath, content) {
+function inspectMutationSyntax(filePath, content, verify) {
   const result = inspectSyntax(filePath, content);
+  if (verify !== true || result.status === "not_applicable") return result;
+  if (result.status === "skipped_too_large") {
+    throw new BridgeError("invalid_request", "syntax verification cannot run on content above the validation ceiling", {
+      details: { reason: "syntax_check_skipped_too_large", maximum_bytes: SYNTAX_CHECK_MAX_BYTES },
+    });
+  }
+  if (result.backend !== "babel" && result.backend !== "native") {
+    throw new BridgeError("unavailable", "syntax verification backend is unavailable", {
+      details: { reason: "syntax_verifier_unavailable", backend: result.backend }, retryable: true,
+    });
+  }
   if (result.status === "warning") {
     throw new BridgeError("invalid_request", "syntax verification failed: " + result.message, {
       details: { reason: "syntax_gate_failure", diagnostic: result.message },
     });
   }
-  if (result.status === "skipped_too_large") {
-    throw new BridgeError("invalid_request", "syntax verification cannot run on content above the validation ceiling", {
-      details: { reason: "syntax_check_skipped_too_large", maximum_characters: SYNTAX_CHECK_MAX_CHARS },
-    });
-  }
+  return result;
 }
 
 export class WorkspaceFileService {
@@ -382,7 +385,7 @@ export class WorkspaceFileService {
         if (sha256(current) !== String(args.expected_sha256).toLowerCase()) throw new BridgeError("conflict", "expected_sha256 mismatch", { details: { reason: "hash_mismatch" } });
       }
       this.throwIfCancelled(context);
-      if (args.verify_syntax === true) assertSyntaxVerified(full, content);
+      const syntax = inspectMutationSyntax(full, content, args.verify_syntax);
       const commit = await commitAtomicText(full, content, existing, {
         ...this.fileTransactionOptions,
         readText: readUtf8File,
@@ -390,7 +393,6 @@ export class WorkspaceFileService {
         expectedHash: args.expected_sha256 ? String(args.expected_sha256).toLowerCase() : undefined,
       });
       const warnings = commit.warnings.slice();
-      const syntax = inspectSyntax(full, content);
       if (syntax.status === "warning") warnings.push(syntax.message);
       return {
         ok: true, path: this.displayPath(full, context), sha256: sha256(content), bytes,
@@ -453,18 +455,26 @@ export class WorkspaceFileService {
       if (matchMode === "normalized_newlines" && current.includes("\r\n") && !newText.includes("\r\n")) {
         replacement = newText.replace(/\r?\n/g, "\r\n");
       }
-      const updated = args.replace_all ? current.split(searchTarget).join(replacement) : current.replace(searchTarget, () => replacement);
+      // Well-formed operands keep UTF-8 byte lengths additive across replacement
+      // boundaries. UTF-16 length is a safe lower bound when a surrogate can join
+      // across a boundary. Check the exact bytes below in that case as well.
+      const estimatedBytes = searchTarget.isWellFormed() && replacement.isWellFormed()
+        ? Buffer.byteLength(current) + occurrences * (Buffer.byteLength(replacement) - Buffer.byteLength(searchTarget))
+        : current.length + occurrences * (replacement.length - searchTarget.length);
+      assertEditedSize(estimatedBytes);
+      const updated = args.replace_all
+        ? current.replaceAll(searchTarget, () => replacement)
+        : current.replace(searchTarget, () => replacement);
       const bytes = Buffer.byteLength(updated);
-      if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
+      assertEditedSize(bytes);
       this.throwIfCancelled(context);
-      if (args.verify_syntax === true) assertSyntaxVerified(full, updated);
+      const syntax = inspectMutationSyntax(full, updated, args.verify_syntax);
       const commit = await commitAtomicText(full, updated, info, {
         ...this.fileTransactionOptions,
         expectedHash: sha256(current),
         readText: readUtf8File,
       });
       const warnings = commit.warnings.slice();
-      const syntax = inspectSyntax(full, updated);
       if (syntax.status === "warning") warnings.push(syntax.message);
       return {
         ok: true,
@@ -509,8 +519,8 @@ export class WorkspaceFileService {
         if (item.kind === "add") {
           if (await pathEntryIfExists(target)) throw new BridgeError("conflict", "add target already exists", { details: { reason: "already_exists", operation: "add" } });
           assertTextSize(operation.content);
-          if (args.verify_syntax === true) assertSyntaxVerified(target, operation.content);
-          prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600 });
+          const syntax = inspectMutationSyntax(target, operation.content, args.verify_syntax);
+          prepared.push({ kind: "add", source: null, target, content: operation.content, mode: 0o600, syntax });
           continue;
         }
         const sourceInfo = await lstat(source);
@@ -520,19 +530,19 @@ export class WorkspaceFileService {
           prepared.push({ kind: "delete", source, target: null, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
           continue;
         }
-        const content = applyUpdateHunks(original, operation.hunks);
+        const content = applyUpdateHunks(original, operation.hunks, MAX_WRITE_BYTES);
         assertTextSize(content);
-        if (args.verify_syntax === true) assertSyntaxVerified(target || source, content);
+        const syntax = inspectMutationSyntax(target || source, content, args.verify_syntax);
         if (target !== source && await pathEntryIfExists(target)) throw new BridgeError("conflict", "move target already exists", { details: { reason: "already_exists", operation: "move" } });
-        prepared.push({ kind: item.kind, source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777 });
+        prepared.push({ kind: item.kind, source, target, content, originalHash: sha256(original), mode: sourceInfo.mode & 0o777, syntax });
       }
       this.throwIfCancelled(context);
       const transaction = await commitPatchOperations(prepared, { ...this.fileTransactionOptions, readText: readUtf8File });
       const warnings = transaction.warnings.slice();
       const syntaxChecks = [];
       for (const item of prepared) {
-        if (item.content === undefined) continue;
-        const syntax = inspectSyntax(item.target || item.source, item.content);
+        const { syntax } = item;
+        if (!syntax) continue;
         if (syntax.status === "warning") warnings.push(`${this.displayPath(item.target || item.source, context)}: ${syntax.message}`);
         if (syntax.status === "warning" || syntax.status === "skipped_too_large") {
           syntaxChecks.push({ path: this.displayPath(item.target || item.source, context), status: syntax.status });
@@ -631,6 +641,10 @@ export function commitPatchTransaction(operations, options = {}) {
 function assertTextSize(content) {
   const bytes = Buffer.byteLength(content);
   if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `patched file exceeds maximum size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
+}
+
+function assertEditedSize(bytes) {
+  if (bytes > MAX_WRITE_BYTES) throw new BridgeError("limit_exceeded", `edited content exceeds maximum write size (${bytes} > ${MAX_WRITE_BYTES})`, { details: { reason: "write_limit", bytes, maximum_bytes: MAX_WRITE_BYTES } });
 }
 
 function countOccurrences(content, needle) {

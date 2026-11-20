@@ -239,7 +239,7 @@ Regression suites cover:
 - root-certified ephemeral sessions, preflight nonce replay, daemon challenge binding, readiness, reconnect, and candidate replacement;
 - signed account administration, client revocation, bounded strict-JSON administration responses, and removal of the long-lived administration secret;
 - control-plane path denial, path canonicalization, symlink handling, sensitive/persistence targets, and object ownership;
-- delegated sandbox behavior and fail-closed platform detection;
+- delegated sandbox platform detection and non-owner policy unreachability;
 - process/session cleanup, generated-key rollback including cleanup failure, managed-job lifecycle and recovery, state locks, atomic persistence, and destructive removal;
 - browser pairing, version/capability handshake, broker routing, independent concurrency limits, public-error redaction, sensitive input, and navigation controls;
 - audit-chain integrity, privacy redaction, package contents, installation, release impact, dependency integrity, CodeQL, Scorecard findings, and GitHub publication guard/lock behavior;
