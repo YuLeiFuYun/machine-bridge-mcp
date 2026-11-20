@@ -117,19 +117,19 @@ function heuristicSyntaxWarning(content, ext) {
  *
  * `status` is one of `ok`, `warning`, `skipped_too_large`, or `not_applicable`.
  * `backend` is `babel` when the source was actually parsed, `heuristic` when only the
- * delimiter scan ran, and `none` for non-code files.
+ * delimiter scan ran, `native` for built-in JSON parsing, and `none` for non-code files.
  *
  * @param {string} filePath
  * @param {string} content
- * @returns {{ status: "ok" | "warning" | "skipped_too_large" | "not_applicable", message?: string, backend: "babel" | "heuristic" | "none" }}
+ * @returns {{ status: "ok" | "warning" | "skipped_too_large" | "not_applicable", message?: string, backend: "babel" | "heuristic" | "none" | "native" }}
  */
 export function inspectSyntax(filePath, content) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === ".json") {
     try { JSON.parse(content); } catch (error) {
-      return { status: "warning", message: `syntax_warning: invalid JSON: ${String(error?.message || error).slice(0, 100)}`, backend: "babel" };
+      return { status: "warning", message: `syntax_warning: invalid JSON: ${String(error?.message || error).slice(0, 100)}`, backend: "native" };
     }
-    return { status: "ok", backend: "babel" };
+    return { status: "ok", backend: "native" };
   }
   if (!CODE_SYNTAX_EXTENSIONS.has(ext)) return { status: "not_applicable", backend: "none" };
   if (content.length > SYNTAX_CHECK_MAX_CHARS) {

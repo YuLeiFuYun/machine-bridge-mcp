@@ -1,7 +1,10 @@
 # Changelog
 
-## 3.0.0-beta.214 - 2026-11-10
+## 3.0.0-beta.215 - 2026-11-20
 
+- Correct syntax inspection backend status to report native JSON parser when validating JSON files.
+- Add automated architectural contract asserting delegated process sandbox remains policy-unreachable across all canonical profiles.
+- Document worker runtime type seed deterministic generation, verification, and refresh lifecycle.
 - Structural refactoring and consolidation across local runtime, worker modules, and documentation.
 - Retain transactional resource locks, audit boundary integrity, and platform compatibility.
 - Remove the dormant CodeAct executor: the `node:vm` sandbox was escapable through host objects returned by timers, buffers, and tool calls. A future implementation must use a subprocess boundary.
