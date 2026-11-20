@@ -116,4 +116,14 @@ const helpResourcesExports = getSemanticExports(helpResourcesSource, "help-resou
 assert(helpResourcesExports.some((e) => e.name === "HELP_RESOURCES"), "help-resources.mjs missing HELP_RESOURCES export");
 assert(helpResourcesExports.some((e) => e.name === "readHelpResource"), "help-resources.mjs missing readHelpResource export");
 
+// 8. Contract anchor: delegated process sandbox must remain policy-unreachable
+const policyContract = JSON.parse(readFileSync(join(root, "src", "shared", "policy-contract.json"), "utf8"));
+const toolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
+for (const [profileName, profile] of Object.entries(policyContract.profiles || {})) {
+  assert.equal(profile.sandbox, undefined, `profile ${profileName} must not expose uncontracted sandbox capability`);
+}
+for (const tool of toolCatalog) {
+  assert(!/sandbox/i.test(tool.name), `tool ${tool.name} exposes delegated sandbox to public catalog`);
+}
+
 console.log("semantic architecture test ok");

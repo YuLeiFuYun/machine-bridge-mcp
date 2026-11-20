@@ -91,3 +91,7 @@ Managed-job listing, activity metrics and bounded recovery priority share one li
 ### AST-based semantic architecture verification
 
 To prevent mechanical line-count and substring assertions from impeding domain refactoring, Machine Bridge includes a semantic architecture analyzer (`tests/architecture/semantic-analyzer.mjs`). Powered by Babel parser, it verifies actual AST import/export specifiers, call expressions (such as distinguishing forbidden wall-clock calls from benign comments), and semantic statement complexity.
+
+### Worker runtime type seed lifecycle and integrity
+
+The deterministic Worker configuration type seed (`toolchain/worker-runtime-types-seed.b64`) is a Brotli-compressed Base64 artifact generated via `scripts/generate-worker-types.mjs`. It guarantees reproducible Worker type generation across offline and air-gapped environments. When bindings or configurations in `wrangler.jsonc` legitimately change, maintainers refresh the seed using `node scripts/generate-worker-types.mjs --refresh-runtime-seed`. The seed is verified by `tests/worker-types-generator-test.mjs` and must never be committed without corresponding configuration diff review.
