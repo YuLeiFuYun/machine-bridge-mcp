@@ -11,6 +11,8 @@ import {
   hasSemanticImport,
   measureSemanticComplexity,
 } from "./semantic-analyzer.mjs";
+import { toolNamesForPolicy, policyProfile } from "../../src/local/policy.mjs";
+import { CODE_MODE_SDK_RESOURCE_URI, readHelpResource } from "../../src/shared/help-resources.mjs";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -117,13 +119,30 @@ assert(helpResourcesExports.some((e) => e.name === "HELP_RESOURCES"), "help-reso
 assert(helpResourcesExports.some((e) => e.name === "readHelpResource"), "help-resources.mjs missing readHelpResource export");
 
 // 8. Contract anchor: delegated process sandbox must remain policy-unreachable
-const policyContract = JSON.parse(readFileSync(join(root, "src", "shared", "policy-contract.json"), "utf8"));
-const toolCatalog = JSON.parse(readFileSync(join(root, "src", "shared", "tool-catalog.json"), "utf8"));
-for (const [profileName, profile] of Object.entries(policyContract.profiles || {})) {
-  assert.equal(profile.sandbox, undefined, `profile ${profileName} must not expose uncontracted sandbox capability`);
+// The delegated process sandbox is reached only through shell-family tools when executed
+// by non-owner principals. Guarding all shell tools under owner-only authority and verifying
+// zero reachable intersection ensures the sandbox remains strictly unreachable.
+const securityContract = JSON.parse(readFileSync(join(root, "src", "shared", "tool-security-contract.json"), "utf8"));
+const accessContract = JSON.parse(readFileSync(join(root, "src", "shared", "access-contract.json"), "utf8"));
+const ownerOnly = new Set(accessContract.ownerOnlyTools);
+const shellFamily = new Set(Object.entries(securityContract.tools)
+  .filter(([, spec]) => spec.family === "shell").map(([name]) => name));
+
+assert.ok(Array.from(shellFamily).every((tool) => ownerOnly.has(tool)),
+  "all shell family tools must remain in ownerOnlyTools");
+
+for (const [role, spec] of Object.entries(accessContract.roles)) {
+  if (role === accessContract.ownerRole) continue;
+  const reachable = toolNamesForPolicy(policyProfile(spec.profile, "explicit"))
+    .filter((name) => !ownerOnly.has(name));
+  const reachableShell = reachable.filter((name) => shellFamily.has(name));
+  assert.equal(reachableShell.length, 0,
+    `role ${role} can reach shell tool(s) [${reachableShell.join(", ")}]; delegated sandbox becomes policy-reachable`);
 }
-for (const tool of toolCatalog) {
-  assert(!/sandbox/i.test(tool.name), `tool ${tool.name} exposes delegated sandbox to public catalog`);
-}
+
+// 9. Contract anchor: Code Mode SDK resource must project valid TypeScript declarations
+const sdkDeclarations = readHelpResource(CODE_MODE_SDK_RESOURCE_URI);
+assert.ok(sdkDeclarations.startsWith("declare namespace mbm {"), "SDK d.ts must start with namespace mbm declaration");
+assert.ok(sdkDeclarations.length > 5000, "SDK d.ts must contain generated tool declarations");
 
 console.log("semantic architecture test ok");

@@ -1,5 +1,24 @@
 # Operations
 
+## Contents
+
+- [Health and diagnosis](#health-and-diagnosis)
+- [Browser extension setup and diagnosis](#browser-extension-setup-and-diagnosis)
+- [macOS application automation](#macos-application-automation)
+- [Foreground startup, background service, and upgrades](#foreground-startup-background-service-and-upgrades)
+- [Standard MCP protocol operations (Tasks, Prompts, Resources)](#standard-mcp-protocol-operations-tasks-prompts-resources)
+- [Current upgrade convergence](#current-upgrade-convergence)
+- [State-root safety and removal](#state-root-safety-and-removal)
+- [Logs](#logs)
+- [Full capability acceptance](#full-capability-acceptance)
+- [Managed jobs and local recovery](#managed-jobs-and-local-recovery)
+- [Hosted OAuth failure diagnosis](#hosted-oauth-failure-diagnosis)
+- [Hosted OAuth reconnection](#hosted-oauth-reconnection)
+- [Reconnect and replacement](#reconnect-and-replacement)
+- [Limits](#limits)
+- [Upgrade behavior](#upgrade-behavior)
+- [Incident response](#incident-response)
+
 ## Health and diagnosis
 
 ```sh

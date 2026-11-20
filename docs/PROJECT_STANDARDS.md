@@ -1,6 +1,6 @@
 # Project standards
 
-This document defines the repository-wide engineering and collaboration standard. It complements the product and security invariants in [ENGINEERING.md](ENGINEERING.md). A rule is preferred only when it reduces material risk, makes review easier, or can be enforced consistently; ceremony without a credible failure mode is not a quality control.
+This document defines the repository-wide engineering and collaboration standard. It complements the product and security invariants in [ENGINEERING.md](ENGINEERING.md); on conflict, ENGINEERING's product and security invariants win. A rule is preferred only when it reduces material risk, makes review easier, or can be enforced consistently; ceremony without a credible failure mode is not a quality control.
 
 ## 1. Change flow
 

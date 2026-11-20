@@ -1,6 +1,6 @@
 # Engineering principles and maintenance rules
 
-This document records project-wide decisions that must survive individual fixes, releases, and maintainers. It is normative for repository changes together with [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md). Machine-specific observations belong in the ignored `.project-local/` directory instead.
+This document records project-wide decisions that must survive individual fixes, releases, and maintainers. It is normative for repository changes together with [PROJECT_STANDARDS.md](PROJECT_STANDARDS.md); on conflict, ENGINEERING's product and security invariants win. Machine-specific observations belong in the ignored `.project-local/` directory instead.
 
 ## Dependency save policy
 

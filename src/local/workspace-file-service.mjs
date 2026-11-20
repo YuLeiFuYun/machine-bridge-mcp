@@ -3,7 +3,6 @@ import { constants as fsConstants } from "node:fs";
 import { lstat, open, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path, { basename, resolve } from "node:path";
-import { compileFunction } from "node:vm";
 import { directoryEntriesWithMetadata } from "./directory-metadata.mjs";
 import { BridgeError } from "./errors.mjs";
 import { formatNumberedSlice, hostedFileReadLimits, hostedFileReadResult } from "./hosted-file-read-budget.mjs";
@@ -90,10 +89,10 @@ function parseSource(content, ext, jsx) {
  * full syntax check.
  *
  * @param {string} content
- * @param {string} ext
+ * @param {string} [_ext]
  * @returns {string | null}
  */
-function heuristicSyntaxWarning(content, ext) {
+function heuristicSyntaxWarning(content, _ext) {
   const sanitized = sanitizeSource(content);
   const stack = [];
   for (let i = 0; i < sanitized.length; i += 1) {
@@ -104,11 +103,6 @@ function heuristicSyntaxWarning(content, ext) {
     }
   }
   if (stack.length > 0) return `syntax_warning: unclosed delimiter expecting '${stack.at(-1)}'`;
-  if (ext === ".cjs" || (ext === ".js" && !/^\s*(?:import|export)\b/m.test(sanitized))) {
-    try { compileFunction(content); } catch (error) {
-      return `syntax_warning: invalid JavaScript syntax: ${String(error?.message || error).slice(0, 100)}`;
-    }
-  }
   return null;
 }
 
@@ -185,6 +179,12 @@ function assertSyntaxVerified(filePath, content) {
   if (result.status === "skipped_too_large") {
     throw new BridgeError("invalid_request", "syntax verification cannot run on content above the validation ceiling", {
       details: { reason: "syntax_check_skipped_too_large", maximum_characters: SYNTAX_CHECK_MAX_CHARS },
+    });
+  }
+  const VERIFIED_BACKENDS = new Set(["babel", "native"]);
+  if (result.status !== "not_applicable" && !VERIFIED_BACKENDS.has(result.backend)) {
+    throw new BridgeError("unavailable", "syntax verification backend is unavailable", {
+      details: { reason: "syntax_verifier_unavailable", backend: result.backend }, retryable: true,
     });
   }
 }
