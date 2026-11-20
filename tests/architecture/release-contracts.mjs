@@ -242,6 +242,9 @@ const toolchainManifest = JSON.parse(readFileSync(join(root, "src", "local", "wr
 const toolchainLock = JSON.parse(readFileSync(join(root, "src", "local", "wrangler-toolchain", "package-lock.json"), "utf8"));
 if (toolchainManifest.private !== true || toolchainManifest.dependencies?.wrangler !== "4.151.3"
     || toolchainManifest.dependencies?.cf !== "1.0.0-beta.20"
+    || toolchainManifest.dependencies?.["@noble/hashes"] !== "2.4.0"
+    || packageJson.devDependencies?.["@noble/hashes"] !== toolchainManifest.dependencies?.["@noble/hashes"]
+    || toolchainLock.packages?.["node_modules/@noble/hashes"]?.version !== toolchainManifest.dependencies?.["@noble/hashes"]
     || Object.hasOwn(toolchainManifest.dependencies || {}, "undici")
     || Object.hasOwn(packageJson.devDependencies || {}, "undici")
     || toolchainManifest.overrides?.miniflare !== "5.20261019.1-beta"

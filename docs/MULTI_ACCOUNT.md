@@ -46,6 +46,8 @@ machine-mcp account add alice reviewer
 machine-mcp account add build-bot operator
 ```
 
+Account password verifiers use PBKDF2-HMAC-SHA256 with 210,000 iterations. If the Worker runtime declines the native derivation, the pinned implementation in the Worker bundle computes the same verifier. Existing password verifiers and account records retain their format and work factor.
+
 Change role or active state:
 
 ```sh

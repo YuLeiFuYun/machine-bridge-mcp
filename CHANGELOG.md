@@ -1,6 +1,8 @@
 # Changelog
 
-## 3.0.0-beta.215 - 2026-11-20
+## 3.0.0-beta.216 - 2026-11-20
+
+- Preserve the existing 210,000-round account password verifiers on hosted Workers whose native PBKDF2 rejects the iteration count.
 
 - Correct syntax inspection backend status to report native JSON parser when validating JSON files.
 - Fail closed in `verify_syntax` by rejecting unverified parser backends, and remove the remaining `node:vm` import.
