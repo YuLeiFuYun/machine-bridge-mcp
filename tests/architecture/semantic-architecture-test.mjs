@@ -145,4 +145,20 @@ const sdkDeclarations = readHelpResource(CODE_MODE_SDK_RESOURCE_URI);
 assert.ok(sdkDeclarations.startsWith("declare namespace mbm {"), "SDK d.ts must start with namespace mbm declaration");
 assert.ok(sdkDeclarations.length > 5000, "SDK d.ts must contain generated tool declarations");
 
+// 10. Contract anchor: role capability matrix and explicit progression
+// Enforce explicit progression across roles and track delta tools between roles.
+const roleProgression = ["reviewer", "editor", "operator", "owner"];
+const roleTools = {};
+for (const role of roleProgression) {
+  const profileName = accessContract.roles[role].profile;
+  const tools = toolNamesForPolicy(policyProfile(profileName, "explicit"))
+    .filter((name) => role === accessContract.ownerRole || !ownerOnly.has(name));
+  roleTools[role] = new Set(tools);
+}
+assert.ok(roleTools.editor.size > roleTools.reviewer.size, "editor must provide more tools than reviewer");
+assert.ok(roleTools.operator.size >= roleTools.editor.size, "operator must provide at least editor tools");
+assert.ok(roleTools.owner.size > roleTools.operator.size, "owner must strictly exceed operator tools");
+const operatorAdditions = [...roleTools.operator].filter((t) => !roleTools.editor.has(t));
+assert.deepEqual(operatorAdditions, ["git_commit"], "operator role must explicitly add only git_commit over editor");
+
 console.log("semantic architecture test ok");
