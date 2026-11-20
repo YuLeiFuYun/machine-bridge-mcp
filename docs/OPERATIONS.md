@@ -935,6 +935,7 @@ Defense-in-depth limits include:
 - OAuth body: 64 KiB;
 - daemon WebSocket message: 8 MiB, enforced by the local WebSocket parser before string conversion;
 - text writes and patch envelopes: 5 MiB;
+- syntax inspection: 512 KiB per resulting JavaScript, TypeScript, JSX, TSX, or JSON file, measured in UTF-8 bytes;
 - images: 4 MiB before base64 encoding;
 - shell/argv envelope: 64 KiB;
 - public one-shot output preview: 32 KiB per stream; larger output returns an `output_session_id` and remains readable through `read_process`;
@@ -958,6 +959,8 @@ Defense-in-depth limits include:
 - browser forms: 200 fields, 128 KiB per text value, and 4 MiB aggregate text; upload: eight resources and 5 MiB total;
 - application Accessibility inspection: 500 elements and depth 12; action text: 4,000 characters;
 - job-scoped temporary files: 16 files, 512 KiB total content.
+
+With `verify_syntax=true`, `write_file`, `edit_file`, and `apply_patch` reject malformed supported files, files above the syntax inspection limit, or supported files whose parser is unavailable before committing the mutation. With default advisory inspection, a write can succeed with a syntax warning or `skipped_too_large` status. File types outside the supported set have no syntax inspection, and the separate 5 MiB write limit still applies.
 
 The list above describes bounded application resources, not OS quotas.
 CPU time shares, resident-memory ceilings, syscall sandboxes, and egress policy must be imposed by the account/container/VM that runs Machine Bridge.

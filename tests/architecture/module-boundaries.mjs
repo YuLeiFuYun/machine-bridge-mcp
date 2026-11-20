@@ -1170,8 +1170,8 @@ for (const forbidden of ["writeFlushedText", ".mbm-backup-", "createTarget(stage
   if (workspaceFileSource.includes(forbidden)) throw new Error(`workspace file service regained transaction mechanics: ${forbidden}`);
 }
 const patchUpdateCalls = workspaceFileSource.match(/applyUpdateHunks\([^\n]+\)/g) || [];
-if (patchUpdateCalls.length !== 1 || patchUpdateCalls[0] !== "applyUpdateHunks(original, operation.hunks)") {
-  throw new Error("workspace patch updates pass arguments outside the applyUpdateHunks contract");
+if (patchUpdateCalls.length !== 1 || patchUpdateCalls[0] !== "applyUpdateHunks(original, operation.hunks, MAX_WRITE_BYTES)") {
+  throw new Error("workspace patch updates must pass the shared workspace write limit to applyUpdateHunks");
 }
 const projectOverviewProjectionSource = readFileSync(join(root, "src", "shared", "project-overview-projection.mjs"), "utf8");
 for (const required of ["projectOverviewDetail", "detail !== \"summary\"", "effectiveToolCount", "daemonToolCount", "compactCapabilityRouting", "compactTopLevel", "compactAuthorization"]) {

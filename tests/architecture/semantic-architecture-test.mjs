@@ -155,9 +155,13 @@ for (const role of roleProgression) {
     .filter((name) => role === accessContract.ownerRole || !ownerOnly.has(name));
   roleTools[role] = new Set(tools);
 }
-assert.ok(roleTools.editor.size > roleTools.reviewer.size, "editor must provide more tools than reviewer");
-assert.ok(roleTools.operator.size >= roleTools.editor.size, "operator must provide at least editor tools");
-assert.ok(roleTools.owner.size > roleTools.operator.size, "owner must strictly exceed operator tools");
+for (let index = 1; index < roleProgression.length; index += 1) {
+  const previous = roleProgression[index - 1];
+  const next = roleProgression[index];
+  const missing = [...roleTools[previous]].filter((tool) => !roleTools[next].has(tool));
+  assert.deepEqual(missing, [], `${next} must retain all ${previous} tools`);
+  assert.ok(roleTools[next].size > roleTools[previous].size, `${next} must add tools beyond ${previous}`);
+}
 const operatorAdditions = [...roleTools.operator].filter((t) => !roleTools.editor.has(t));
 assert.deepEqual(operatorAdditions, ["git_commit"], "operator role must explicitly add only git_commit over editor");
 

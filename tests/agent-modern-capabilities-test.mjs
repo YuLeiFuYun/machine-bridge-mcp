@@ -261,9 +261,88 @@ test("WorkspaceFileService enforces verify_syntax pre-commit gate on file write 
       () => service.writeFile({ path: join(temp, "huge.mjs"), content: "x".repeat(512 * 1024 + 1), verify_syntax: true }),
       (err) => err?.code === "invalid_request" && err?.details?.reason === "syntax_check_skipped_too_large",
     );
+
+    const limit = 512 * 1024;
+    const oversized = (err) => err?.code === "invalid_request"
+      && err?.details?.reason === "syntax_check_skipped_too_large"
+      && err?.details?.maximum_bytes === limit;
+    const jsonPath = join(temp, "bounded.json");
+    const boundaryJson = JSON.stringify("x".repeat(limit - 2));
+    assert.deepEqual(inspectSyntax("bounded.json", boundaryJson), { status: "ok", backend: "native" });
+    assert.equal((await service.writeFile({ path: jsonPath, content: boundaryJson, verify_syntax: true })).ok, true);
+    await assert.rejects(
+      () => service.editFile({ path: jsonPath, old_text: '"x', new_text: '"汉', verify_syntax: true }),
+      oversized,
+    );
+    assert.equal(await readFile(jsonPath, "utf8"), boundaryJson);
+
+    const wideSource = "//" + "汉".repeat(Math.ceil(limit / 3));
+    const widePath = join(temp, "wide.mjs");
+    await assert.rejects(() => service.writeFile({
+      path: widePath, content: wideSource, verify_syntax: true,
+    }), oversized);
+    await assert.rejects(() => readFile(widePath), { code: "ENOENT" });
+
+    const patchPath = join(temp, "patch.json");
+    const patch = ["*** Begin Patch", "*** Add File: " + patchPath, "+" + boundaryJson, "*** End Patch"].join("\n");
+    await assert.rejects(() => service.applyPatch({ patch, verify_syntax: true }), oversized);
+    assert.equal((await service.applyPatch({ patch })).syntax_check, "skipped_too_large");
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => {});
   }
+});
+
+test("WorkspaceFileService bounds expanded edits before constructing the replacement", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "mbm-edit-budget-"));
+  try {
+    const service = new WorkspaceFileService({
+      workspace: temp,
+      policy: { allowWrites: true },
+      policyGate: { assert: () => {} },
+      resolveExistingPath: async (p) => p,
+      resolveWritePath: async (p) => p,
+      displayPath: (p) => p,
+      throwIfCancelled: () => {},
+      withMutationPaths: async (_paths, fn) => fn(),
+    });
+    const path = join(temp, "text.txt");
+    const original = "x".repeat(100_000);
+    await writeFile(path, original);
+    await assert.rejects(
+      () => service.editFile({ path, old_text: "x", new_text: "字".repeat(20_000), replace_all: true }),
+      (err) => err?.code === "limit_exceeded" && err?.details?.reason === "write_limit"
+        && err?.details?.bytes === 6_000_000_000,
+    );
+    assert.equal(await readFile(path, "utf8"), original);
+    await writeFile(path, "😀 😀");
+    assert.equal((await service.editFile({ path, old_text: "😀", new_text: "$&", replace_all: true })).replacements, 2);
+    assert.equal(await readFile(path, "utf8"), "$& $&");
+    // Literal matching may address half a surrogate pair. Preserve the exact UTF-8
+    // measurement of the final string when the replacement rejoins its other half.
+    await writeFile(path, "😀");
+    const halves = await service.editFile({ path, old_text: "\uD83D", new_text: "\uD83D", replace_all: true });
+    assert.equal(halves.bytes, 4);
+    assert.equal(await readFile(path, "utf8"), "😀");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("patch updates handle large line insertions and bound inherited indentation", () => {
+  const lineCount = 150_000;
+  const lines = [{ type: "-", text: "old" }, ...Array.from({ length: lineCount }, () => ({ type: "+", text: "new" }))];
+  assert.equal(applyUpdateHunks("old\r\nkeep\n", [{ lines }]), "new\r\n".repeat(lineCount) + "keep\n");
+
+  const indented = "    one\n    two\n";
+  const relativeHunk = { lines: [
+    { type: " ", text: "one" },
+    { type: "-", text: "two" },
+    { type: "+", text: "replacement" },
+    { type: "+", text: "extra" },
+  ] };
+  assert.throws(() => applyUpdateHunks(indented, [relativeHunk], 11),
+    (err) => err?.code === "limit_exceeded" && err?.details?.reason === "write_limit");
+  assert.equal(applyUpdateHunks(indented, [relativeHunk], 34), "    one\n    replacement\n    extra\n");
 });
 
 test("ToolExecutor stuck-loop detector flags repeated identical failing calls", async () => {

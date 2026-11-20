@@ -3,6 +3,7 @@ import { BridgeError } from "./errors.mjs";
 const BEGIN = "*** Begin Patch";
 const END = "*** End Patch";
 const SECTION_PREFIXES = ["*** Add File: ", "*** Update File: ", "*** Delete File: "];
+const MAX_SPLICE_INSERTIONS = 8192;
 
 export function parsePatchEnvelope(input) {
   const text = String(input ?? "").replaceAll("\r\n", "\n");
@@ -105,10 +106,11 @@ export function parsePatchEnvelope(input) {
  * terminator. Mixed CRLF/LF files therefore retain their per-line style instead of falling
  * back to LF, and a missing final newline remains missing.
  */
-export function applyUpdateHunks(content, hunks) {
-  const { lines, terminators } = splitLinesWithTerminators(String(content));
+export function applyUpdateHunks(content, hunks, maximumPaddingBytes = Infinity) {
+  let { lines, terminators } = splitLinesWithTerminators(String(content));
   const defaultEol = preferredLineEnding(terminators);
   let searchFrom = 0;
+  let paddingBytes = 0;
 
   for (const [hunkIndex, hunk] of hunks.entries()) {
     const oldLines = hunk.lines.filter((line) => line.type !== "+").map((line) => line.text);
@@ -122,17 +124,38 @@ export function applyUpdateHunks(content, hunks) {
     }
     const at = matches[0];
     const delta = indentDeltas[0] || 0;
-    const newLines = delta === 0 ? rawNewLines : rawNewLines.map((line) => shiftLineIndent(line, delta));
+    const newLines = delta === 0 ? rawNewLines : rawNewLines.map((line) => {
+      if (!line.trim()) return line;
+      if (delta > 0) {
+        // Later hunks start after these lines, so this padding survives in the result.
+        paddingBytes += delta;
+        if (paddingBytes > maximumPaddingBytes) {
+          throw new BridgeError("limit_exceeded", "patched file exceeds maximum size after indentation adjustment", {
+            details: { reason: "write_limit", maximum_bytes: maximumPaddingBytes },
+          });
+        }
+      }
+      return shiftLineIndent(line, delta);
+    });
     const removedTerminators = terminators.slice(at, at + oldLines.length);
     const replacementTerminators = replacementLineTerminators({
       removedTerminators, newLineCount: newLines.length, terminators, at, defaultEol,
     });
-    lines.splice(at, oldLines.length, ...newLines);
-    terminators.splice(at, oldLines.length, ...replacementTerminators);
+    lines = replaceLineRange(lines, at, oldLines.length, newLines);
+    terminators = replaceLineRange(terminators, at, oldLines.length, replacementTerminators);
     searchFrom = at + newLines.length;
   }
 
   return lines.map((line, index) => `${line}${terminators[index]}`).join("");
+}
+
+function replaceLineRange(values, at, removed, replacement) {
+  // Avoid passing file contents as an engine-limited argument list for large hunks.
+  if (replacement.length > MAX_SPLICE_INSERTIONS) {
+    return values.slice(0, at).concat(replacement, values.slice(at + removed));
+  }
+  values.splice(at, removed, ...replacement);
+  return values;
 }
 
 function splitLinesWithTerminators(source) {
@@ -192,7 +215,6 @@ function leadingSpaces(line) {
 }
 
 function shiftLineIndent(line, delta) {
-  if (!line.trim() || delta === 0) return line;
   if (delta > 0) return `${" ".repeat(delta)}${line}`;
   const remove = Math.min(-delta, leadingSpaces(line));
   return line.slice(remove);
@@ -207,7 +229,11 @@ function findSequenceMatches(lines, sequence, start) {
     for (let offset = 0; offset < sequence.length; offset += 1) {
       if (lines[index + offset] !== sequence[offset]) { matched = false; break; }
     }
-    if (matched) { matches.push(index); indentDeltas.push(0); }
+    if (matched) {
+      matches.push(index);
+      indentDeltas.push(0);
+      if (matches.length === 2) return { matches, indentDeltas };
+    }
   }
   if (matches.length === 0) {
     for (let index = Math.max(0, start); index <= lines.length - sequence.length; index += 1) {
@@ -215,7 +241,11 @@ function findSequenceMatches(lines, sequence, start) {
       for (let offset = 0; offset < sequence.length; offset += 1) {
         if (lines[index + offset].trimEnd() !== sequence[offset].trimEnd()) { matched = false; break; }
       }
-      if (matched) { matches.push(index); indentDeltas.push(0); }
+      if (matched) {
+        matches.push(index);
+        indentDeltas.push(0);
+        if (matches.length === 2) return { matches, indentDeltas };
+      }
     }
   }
   if (matches.length === 0 && sequence.filter((line) => line.trim().length > 0).length >= 2) {
@@ -236,6 +266,7 @@ function findSequenceMatches(lines, sequence, start) {
       if (matched && expectedDelta !== null) {
         matches.push(index);
         indentDeltas.push(expectedDelta);
+        if (matches.length === 2) return { matches, indentDeltas };
       }
     }
   }
