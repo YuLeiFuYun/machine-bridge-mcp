@@ -11,7 +11,12 @@ const GENERATED_DOCUMENTS = new Set([
 ]);
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const baseline = JSON.parse(readFileSync(join(root, "tests", "architecture", "documentation-budget.json"), "utf8"));
-const files = [...walk(join(root, "docs")).filter((file) => file.endsWith(".md")), join(root, "README.md")]
+const files = [
+  ...walk(join(root, "docs")).filter((file) => file.endsWith(".md")),
+  join(root, "README.md"),
+  join(root, "SECURITY.md"),
+  join(root, "AGENTS.md"),
+]
   .filter((file) => !GENERATED_DOCUMENTS.has(relative(root, file).split("\\").join("/")))
   .sort();
 const counts = new Map();
