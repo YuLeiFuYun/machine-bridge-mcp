@@ -3,12 +3,14 @@ import type { DaemonRegistry } from "./daemon-registry.ts";
 import { readyDaemonChannels } from "./daemon-channel.ts";
 import type { WorkerObservability } from "./observability.ts"; import type { WorkerContinuityEvidence } from "./worker-continuity-evidence.ts";
 import { hiddenWorkerActivity, hiddenWorkerPending, projectDaemonStatus, workerGlobalActivityVisible } from "./server-info-activity.ts";
+import { NATIVE_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
 export type ServerInfoDetail = "summary" | "full";
 
 type ServerInfoInput = {
   serverName: string;
   serverVersion: string;
   base: string;
+  mcpPath?: McpResourcePath;
   oauth: Record<string, unknown>;
   authorization: Record<string, unknown>;
   daemon: Record<string, unknown>;
@@ -32,7 +34,7 @@ export function buildServerInfoResult(input: ServerInfoInput, detail: ServerInfo
   return {
     name: input.serverName,
     version: input.serverVersion,
-    mcp_url: `${input.base}/mcp`,
+    mcp_url: `${input.base}${input.mcpPath ?? NATIVE_MCP_PATH}`,
     oauth: input.oauth,
     account: input.authorization.account,
     authorization: input.authorization,

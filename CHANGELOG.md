@@ -1,8 +1,8 @@
 # Changelog
 
-## 3.0.0-beta.220 - 2026-11-21
+## 3.0.0-beta.221 - 2026-11-21
 
-- Complete browser `POST /oauth/authorize` submissions (`Accept: text/html`) via a zero-script `200 OK` HTML handoff document (`form-action 'none'`, `Referrer-Policy: no-referrer`, `<meta http-equiv="refresh">`) so multi-hop OAuth callbacks like Gemini's `oauth-redirect.googleusercontent.com` relay navigate cleanly without broadening `form-action` on the credential page (removing the unnecessary `*.google.com` and `*.gemini.google` wildcards).
+- Align `/mcp/gemini` `server_info` projection with the active Gemini endpoint (`mcp_url: .../mcp/gemini`), exclude unexposed MCP Apps job-monitor tools (`render_job_monitor`, `claim_job_monitor`, `read_job_monitor`) from Gemini `server_info` tool counts/lists, and strip `_meta.ui` from `read_job` in Gemini `tools/list` while preserving native `/mcp` behavior.
 
 ## Historical releases
 

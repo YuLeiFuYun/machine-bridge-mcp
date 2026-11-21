@@ -55,7 +55,7 @@ import { McpTaskService } from "./mcp-task-service.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly } from "./websocket-protocol.ts";
 import { DaemonWebSocketController } from "./daemon-websocket-controller.ts";
-const SERVER_VERSION = "3.0.0-beta.220";
+const SERVER_VERSION = "3.0.0-beta.221";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
 export class BridgeRoom extends DurableObject<BridgeEnv> {
@@ -97,8 +97,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       tools: (authorized, includeJobMonitor) => workerToolsForRole(authorized.role, includeJobMonitor),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
-      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken }) => this.callTool(
-        name, args, base, authorized, requestKey, signal, clientCapabilities, progressToken,
+      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken, mcpPath }) => this.callTool(
+        name, args, base, authorized, requestKey, signal, clientCapabilities, progressToken, mcpPath,
       ),
     });
   }
@@ -254,11 +254,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
   }
 
-  private async serverInfoResult(base: string, authorized: AuthorizedToken, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const { daemon, effectiveTools, advertisedTools, authorization } = this.authorityContext(authorized);
+  private async serverInfoResult(
+    base: string,
+    authorized: AuthorizedToken,
+    args: Record<string, unknown>,
+    mcpPath: McpResourcePath = NATIVE_MCP_PATH,
+  ): Promise<Record<string, unknown>> {
+    const includeJobMonitor = mcpPath !== GEMINI_MCP_PATH;
+    const { daemon, effectiveTools, advertisedTools, authorization } = this.authorityContext(authorized, includeJobMonitor);
     const pendingSnapshot = pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry));
     return buildServerInfoResult({
-      serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base,
+      serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base, mcpPath,
       oauth: authorizationServerMetadata(base, SERVER_NAME), authorization, daemon,
       effectiveTools, advertisedTools, pendingSnapshot,
       toolListSubscription: this.mcp.toolListSubscriptionSnapshot(authorized.accountId),
@@ -283,9 +289,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private async callTool(
     name: string, args: Record<string, unknown>, base: string, authorized: AuthorizedToken,
     requestKey?: string, signal?: AbortSignal, clientCapabilities?: Record<string, unknown>, _progressToken?: unknown,
+    mcpPath: McpResourcePath = NATIVE_MCP_PATH,
   ): Promise<unknown> {
     this.assertWorkerToolArguments(name, args);
-    if (name === "server_info") return this.serverInfoResult(base, authorized, args);
+    if (name === "server_info") return this.serverInfoResult(base, authorized, args, mcpPath);
     if ((name === JOB_MONITOR_RENDER_TOOL || name === JOB_MONITOR_CLAIM_TOOL || name === JOB_MONITOR_READ_TOOL) && !accountRoleAllowsTool(authorized.role, "start_job")) throw new WorkerToolError("authorization_denied", "managed-job monitor is not allowed for this account role");
     if (name === JOB_MONITOR_RENDER_TOOL) return renderManagedJobMonitor(this.jobMonitorClaims, args, authorized, this.oauth.identityKey());
     if (name === JOB_MONITOR_CLAIM_TOOL) return claimManagedJobMonitor(this.jobMonitorClaims, args, authorized, this.oauth.identityKey());
@@ -452,9 +459,9 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       },
     });
   }
-  private authorityContext(authorized: AuthorizedToken) {
+  private authorityContext(authorized: AuthorizedToken, includeJobMonitor = true) {
     return workerAuthorityContext({
-      authorized, daemonStatus: this.daemonStatus(true), daemonTools: this.daemonAdvertisedTools(),
+      authorized, daemonStatus: this.daemonStatus(true), daemonTools: this.daemonAdvertisedTools(), includeJobMonitor,
     });
   }
   private daemonAdvertisedTools(): Set<string> {

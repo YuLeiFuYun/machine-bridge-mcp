@@ -103,6 +103,21 @@ assert.equal(geminiResult.id, 0);
 assert.deepEqual(Object.keys(geminiResult.result), ["tools"]);
 assert.equal(geminiResult.result.tools[0].name, "server_info");
 
+const geminiCall = await controller.handleGeminiRequest({
+  request: new Request("https://example.test/mcp/gemini", {
+    method: "POST",
+    headers: { "MCP-Protocol-Version": "2025-11-25" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } } }),
+  }),
+  base: "https://example.test",
+  authorized,
+  bodyLimitBytes: 1024,
+});
+assert.equal(geminiCall.status, 200);
+assert.equal(calls.at(-1)?.name, "server_info");
+assert.equal(calls.at(-1)?.mcpPath, "/mcp/gemini");
+calls.length = 0;
+
 assert.equal(removedProtocolResponse(new Request("https://example.test/mcp"), request("tools/list", {}), [MCP_PROTOCOL_VERSION]), null);
 const removedInitialize = removedProtocolResponse(new Request("https://example.test/mcp"), request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "outdated-client", version: "1" } }), [MCP_PROTOCOL_VERSION]);
 assert.equal(removedInitialize.status, 400);

@@ -16,15 +16,41 @@ const {
 
 function testWorkerToolAuthorityProjection() {
   const ownerTools = workerToolsForRole("owner");
+  const geminiOwnerTools = workerToolsForRole("owner", false);
   const reviewerTools = workerToolsForRole("reviewer");
-  assert(ownerTools.some((tool) => tool.name === "server_info") && ownerTools.some((tool) => tool.name === "start_job"),
-    "owner Worker catalog lost server_info or persistent-job authority");
+  assert(ownerTools.some((tool) => tool.name === "server_info") && ownerTools.some((tool) => tool.name === "start_job")
+    && ownerTools.some((tool) => tool.name === "render_job_monitor"),
+    "owner Worker catalog lost server_info, job-monitor, or persistent-job authority");
+  const nativeReadJob = ownerTools.find((tool) => tool.name === "read_job");
+  const geminiReadJob = geminiOwnerTools.find((tool) => tool.name === "read_job");
+  assert(nativeReadJob?._meta?.ui && geminiReadJob && !geminiReadJob._meta?.ui && !Object.hasOwn(geminiReadJob, "_meta")
+    && !geminiOwnerTools.some((tool) => tool.name.endsWith("_job_monitor")),
+  "non-Apps Worker catalog kept job-monitor tools or _meta.ui metadata, or mutated the native catalog");
   assert(reviewerTools.some((tool) => tool.name === "server_info") && reviewerTools.some((tool) => tool.name === "read_file")
     && !reviewerTools.some((tool) => tool.name === "start_job"),
   "reviewer Worker catalog escaped role filtering");
   ownerTools[0].name = "mutated-test-tool";
   assert(workerToolsForRole("owner")[0].name !== "mutated-test-tool",
     "Worker role catalog returned shared mutable tool definitions");
+
+  const ownerGeminiContext = workerAuthorityContext({
+    authorized: {
+      tokenKey: "synthetic-owner-token", accountId: "synthetic-owner", accountVersion: 1,
+      clientId: "synthetic-client", familyId: "synthetic-family", dpopJkt: "", role: "owner",
+    },
+    daemonStatus: {
+      policy: {
+        profile: "full", origin: "explicit", revision: 5, allowWrite: true, allowExec: true, execMode: "shell",
+        unrestrictedPaths: true, minimalEnv: false, exposeAbsolutePaths: true,
+      },
+      tools: ["read_file", "start_job"],
+    },
+    daemonTools: ["read_file", "start_job"],
+    includeJobMonitor: false,
+  });
+  assert(!ownerGeminiContext.advertisedTools.some((name) => name.endsWith("_job_monitor"))
+    && !ownerGeminiContext.effectiveTools.some((name) => name.endsWith("_job_monitor")),
+  "Worker authority projection kept unexposed job-monitor tools when includeJobMonitor was false");
 
   const context = workerAuthorityContext({
     authorized: {
@@ -460,7 +486,10 @@ function testDaemonAndServerInfoProjection() {
     && serverInfoDetail() === "full",
     "server_info detail selector guessed an unsupported projection");
   const ownerFull = buildServerInfoResult(input, "full");
-  assert(ownerFull.worker.pending_calls.active === 2
+  const geminiOwnerFull = buildServerInfoResult({ ...input, mcpPath: "/mcp/gemini" }, "full");
+  assert(ownerFull.mcp_url === "https://example.test/mcp"
+    && geminiOwnerFull.mcp_url === "https://example.test/mcp/gemini"
+    && ownerFull.worker.pending_calls.active === 2
     && ownerFull.worker.pending_calls.pre_dispatch_waiters === 1
     && ownerFull.worker.pending_calls.capacity_active === 3
     && ownerFull.worker.daemon_candidates === 2

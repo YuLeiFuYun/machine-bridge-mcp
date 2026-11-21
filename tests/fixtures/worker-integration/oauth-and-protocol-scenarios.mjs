@@ -597,7 +597,13 @@ export async function runOAuthAndProtocolScenarios(context) {
   });
   const reviewerToken = reviewerCredentials.accessToken;
   const reviewerRefreshToken = reviewerCredentials.refreshToken;
-  await testGeminiCloudMcp({ base, nativeToken: reviewerToken, password: REVIEWER_PASSWORD, version: pkg.version });
+  await testGeminiCloudMcp({
+    base,
+    nativeToken: reviewerToken,
+    password: REVIEWER_PASSWORD,
+    ownerPassword: OWNER_PASSWORD,
+    version: pkg.version,
+  });
   const editorRegistration = await registerTestClient({ base, redirectUri, name: "Editor Integration Client" });
   const editorCredentials = await issueAccountToken({
     base,
@@ -712,7 +718,7 @@ export async function runOAuthAndProtocolScenarios(context) {
   };
 }
 
-async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
+async function testGeminiCloudMcp({ base, nativeToken, password, ownerPassword, version }) {
   const resource = `${base}/mcp/gemini`;
   const metadataUrl = `${base}/.well-known/oauth-protected-resource/mcp/gemini`;
   const metadata = await fetchJson(metadataUrl);
@@ -857,12 +863,32 @@ async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
 
   const list = await (await call(accessToken, "tools/list", {}, protocol)).json();
   const names = list.result?.tools?.map((tool) => tool.name);
-  assert(JSON.stringify(names) === JSON.stringify(workerToolsForRole("reviewer").map((tool) => tool.name))
+  assert(JSON.stringify(names) === JSON.stringify(workerToolsForRole("reviewer", false).map((tool) => tool.name))
+    && list.result?.tools?.every((tool) => !tool?._meta?.ui)
     && !Object.hasOwn(list.result, "resultType"), "Gemini tool listing changed the reviewer's visible tool catalog or wire format");
   const callInfo = await (await call(accessToken, "tools/call", { name: "server_info", arguments: { detail: "summary" } }, protocol)).json();
   assert(callInfo.result?.isError === false && callInfo.result?.content?.[0]?.type === "text"
     && callInfo.result?.structuredContent?.version === version && !Object.hasOwn(callInfo.result, "resultType"),
   "Gemini tool call did not return a 2025-11-25 result");
+  const fullInfo = await (await call(accessToken, "tools/call", { name: "server_info", arguments: {} }, protocol)).json();
+  assert(fullInfo.result?.isError === false && fullInfo.result?.structuredContent?.mcp_url === resource,
+    "Gemini server_info did not advertise the Gemini MCP endpoint URL");
+  const ownerClient = await registerTestClient({ base, redirectUri, name: "Gemini Owner Integration Client" });
+  const ownerGemini = await issueAccountToken({
+    base, clientId: ownerClient.client_id, redirectUri, accountName: "owner", password: ownerPassword, state: "gemini-owner-state",
+    resource,
+  });
+  const ownerList = await (await call(ownerGemini.accessToken, "tools/list", {}, protocol)).json();
+  const ownerNames = ownerList.result?.tools?.map((tool) => tool.name);
+  assert(JSON.stringify(ownerNames) === JSON.stringify(workerToolsForRole("owner", false).map((tool) => tool.name))
+    && !ownerList.result?.tools?.some((tool) => tool.name.endsWith("_job_monitor"))
+    && ownerList.result?.tools?.every((tool) => !tool?._meta?.ui),
+  "Gemini owner tools/list exposed MCP Apps job-monitor tools or _meta.ui metadata");
+  const ownerFullInfo = await (await call(ownerGemini.accessToken, "tools/call", { name: "server_info", arguments: {} }, protocol)).json();
+  assert(ownerFullInfo.result?.isError === false
+    && ownerFullInfo.result?.structuredContent?.mcp_url === resource
+    && !ownerFullInfo.result?.structuredContent?.tools?.some((name) => name.endsWith("_job_monitor")),
+  "Gemini owner server_info did not exclude unexposed job-monitor tools or align mcp_url");
   const denied = await (await call(accessToken, "tools/call", { name: "run_process", arguments: {} }, protocol)).json();
   assert(denied.error?.code === -32602, "Gemini callable tools exceeded reviewer authority");
 
