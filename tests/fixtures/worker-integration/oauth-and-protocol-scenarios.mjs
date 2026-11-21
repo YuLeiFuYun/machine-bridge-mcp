@@ -747,6 +747,63 @@ async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
   const client = await registerTestClient({ base, redirectUris, name: "Gemini Integration Client" });
   assert(JSON.stringify(client.redirect_uris) === JSON.stringify(redirectUris),
     "Gemini registration did not retain all six Google redirect URIs");
+
+  const challenge = createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url");
+  async function fetchAuthorizeFormActions(clientId, candidateRedirectUri, state) {
+    const page = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: candidateRedirectUri,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      scope: "machine-bridge-mcp",
+      resource,
+      state,
+    })}`);
+    assert(page.status === 200, `Gemini authorization page failed for ${candidateRedirectUri}: ${page.status}`);
+    return cspDirectiveSources(page.headers.get("content-security-policy") ?? "", "form-action");
+  }
+
+  for (const geminiRedirect of [redirectUris[0], redirectUris[1], redirectUri]) {
+    const geminiFormActions = await fetchAuthorizeFormActions(client.client_id, geminiRedirect, "gemini-page-state");
+    assert(
+      geminiFormActions.size === 4
+        && geminiFormActions.has("'self'")
+        && geminiFormActions.has(new URL(geminiRedirect).origin)
+        && geminiFormActions.has("https://*.google.com")
+        && geminiFormActions.has("https://*.gemini.google")
+        && !geminiFormActions.has("https://*.googleusercontent.com"),
+      `Gemini authorization page CSP did not allow only self, validated Google redirect origin, https://*.google.com, and https://*.gemini.google for ${geminiRedirect}`,
+    );
+  }
+
+  const lookalikeRedirects = [
+    "https://oauth-redirect.googleusercontent.com.example.com/r/test",
+    "https://evil.googleusercontent.com/r/test",
+  ];
+  const lookalikeClient = await registerTestClient({
+    base,
+    redirectUris: lookalikeRedirects,
+    name: "Google Lookalike Integration Client",
+  });
+  try {
+    for (const lookalikeRedirect of lookalikeRedirects) {
+      const lookalikeFormActions = await fetchAuthorizeFormActions(lookalikeClient.client_id, lookalikeRedirect, "gemini-lookalike-state");
+      assert(
+        lookalikeFormActions.size === 2
+          && lookalikeFormActions.has("'self'")
+          && lookalikeFormActions.has(new URL(lookalikeRedirect).origin)
+          && !lookalikeFormActions.has("https://*.google.com")
+          && !lookalikeFormActions.has("https://*.gemini.google")
+          && !lookalikeFormActions.has("https://*.googleusercontent.com"),
+        `Google-lookalike redirect ${lookalikeRedirect} received the Gemini callback-chain exception`,
+      );
+    }
+  } finally {
+    const deleted = await fetchJson(`${base}/admin/clients`, adminRequest("DELETE", "/admin/clients", { client_id: lookalikeClient.client_id }));
+    assert(deleted.response.status === 200, `failed to clean up Google-lookalike test client: ${deleted.response.status}`);
+  }
+
   const { accessToken, refreshToken } = await issueAccountToken({
     base, clientId: client.client_id, redirectUri, accountName: "reviewer", password, state: "gemini-state",
     resource: null,
