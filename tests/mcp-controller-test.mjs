@@ -87,6 +87,22 @@ const controller = new McpController({
   },
 });
 
+const geminiTools = await controller.handleGeminiRequest({
+  request: new Request("https://example.test/mcp/gemini", {
+    method: "POST",
+    headers: { "MCP-Protocol-Version": "2025-11-25" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" }),
+  }),
+  base: "https://example.test",
+  authorized,
+  bodyLimitBytes: 1024,
+});
+assert.equal(geminiTools.status, 200);
+const geminiResult = await geminiTools.json();
+assert.equal(geminiResult.id, 0);
+assert.deepEqual(Object.keys(geminiResult.result), ["tools"]);
+assert.equal(geminiResult.result.tools[0].name, "server_info");
+
 assert.equal(removedProtocolResponse(new Request("https://example.test/mcp"), request("tools/list", {}), [MCP_PROTOCOL_VERSION]), null);
 const removedInitialize = removedProtocolResponse(new Request("https://example.test/mcp"), request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "outdated-client", version: "1" } }), [MCP_PROTOCOL_VERSION]);
 assert.equal(removedInitialize.status, 400);

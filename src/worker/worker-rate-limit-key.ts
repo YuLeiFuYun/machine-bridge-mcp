@@ -1,3 +1,5 @@
+import { isMcpResourcePath } from "./mcp-resource.ts";
+
 export async function statefulRateLimitKey(request: Request): Promise<string> {
   const url = new URL(request.url);
   const route = statefulRouteClass(url.pathname);
@@ -16,7 +18,7 @@ export function globalStatefulRateLimitKey(request: Request): string {
 }
 
 export function statefulRouteClass(pathname: string): string {
-  if (pathname === "/mcp") return "mcp";
+  if (isMcpResourcePath(pathname)) return "mcp";
   if (pathname === "/daemon/ws" || pathname === "/daemon/http") return "daemon";
   if (pathname.startsWith("/oauth/")) return "oauth";
   if (pathname.startsWith("/admin/")) return "admin";

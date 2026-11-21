@@ -104,7 +104,7 @@ const publicAuthorizationAt = workerSource.indexOf("authorizeMcpRequest({");
 if (controlHandlerAt < 0 || publicAuthorizationAt < 0 || controlHandlerAt > publicAuthorizationAt) {
   throw new Error("private modern cancellation again reuses the public OAuth/DPoP proof");
 }
-if (!workerStaticRoutesSource.includes('path === "/mcp"')
+if (!workerStaticRoutesSource.includes("isMcpResourcePath(path)")
   || !workerStaticRoutesSource.includes("mcpOriginRejection(request, base, extraOrigins)")) {
   throw new Error("outer Worker no longer rejects invalid MCP origins before Durable Object routing");
 }

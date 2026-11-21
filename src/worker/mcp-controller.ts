@@ -5,6 +5,7 @@ import { mcpStreamProxyId, mcpStreamRequestKey, type StreamProxyMode } from "./m
 import { McpRequestCancellationRegistry } from "./mcp-request-cancellation.ts";
 import { closedSubscriptionResponse } from "./mcp-subscription-stream.ts";
 import { McpSubscriptionRegistry } from "./mcp-subscription-registry.ts";
+import { handleGeminiMcp } from "./mcp-gemini.ts";
 import { json } from "./http.ts";
 import {
   cacheableResult, discoverResult, emptySubscriptionAcknowledgement,
@@ -27,7 +28,7 @@ type McpConfig = Readonly<{
   toolListTtlMs: number;
   taskStore?: McpTaskStore;
   resolveTaskCredentials?: TaskCredentialResolver;
-  tools: (authorized: AuthorizedToken) => Array<Record<string, unknown>>;
+  tools: (authorized: AuthorizedToken, includeJobMonitor?: boolean) => Array<Record<string, unknown>>;
   recordError: (code: string) => void;
   cancelClientRequest: (requestKey?: string) => Promise<void>;
   callTool: (input: {
@@ -69,6 +70,18 @@ export class McpController {
     this.subscriptions.cancelRequest(requestKey);
     await this.config.cancelClientRequest(requestKey);
     return new Response(null, { status: requestKey ? 202 : 400 });
+  }
+
+  handleGeminiRequest(input: { request: Request; base: string; authorized: AuthorizedToken; bodyLimitBytes: number }): Promise<Response> {
+    return handleGeminiMcp({
+      ...input,
+      config: {
+        serverInfo: this.config.serverInfo,
+        tools: (authorized) => this.config.tools(authorized, false),
+        recordError: this.config.recordError,
+        callTool: this.config.callTool,
+      },
+    });
   }
 
   async handleRequest(input: {

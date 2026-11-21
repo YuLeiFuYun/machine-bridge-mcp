@@ -1,3 +1,4 @@
+import { matchesMcpOAuthResource, NATIVE_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
 import type { AuthorizedToken } from "./access.ts";
 import { consumeDpopProof, verifyDpopProof, type VerifiedDpopProof } from "./dpop.ts";
 import { HttpError, json, parseRequestBody } from "./http.ts";
@@ -54,9 +55,7 @@ async function exchangeAuthorizationCode(
           || typeof body.redirect_uri !== "string" || body.redirect_uri !== record.redirect_uri) {
         return json({ error: "invalid_grant", error_description: "client or redirect mismatch" }, 400);
       }
-      const resource = body.resource === undefined ? record.resource
-        : typeof body.resource === "string" ? body.resource : null;
-      if (resource !== record.resource || record.resource !== `${base}/mcp`) {
+      if (!matchesMcpOAuthResource(base, record.resource, body.resource)) {
         return json({ error: "invalid_target", error_description: "resource mismatch" }, 400);
       }
       if (normalizeOAuthScope(record.scope, options.serverName) !== record.scope) {
@@ -89,7 +88,7 @@ async function exchangeAuthorizationCode(
 /** Validate current authority; callers persist any pruned token while holding the OAuth lock. */
 export async function currentOAuthTokenAuthority(
   store: OAuthStore, key: string, tokenVersion: string, serverName: string, base?: string,
-  revokedFamilies: Record<string, unknown> = {},
+  revokedFamilies: Record<string, unknown> = {}, path: McpResourcePath = NATIVE_MCP_PATH,
 ): Promise<AuthorizedToken | null> {
     const record = store.tokens[key];
     if (!record) return null;
@@ -99,7 +98,7 @@ export async function currentOAuthTokenAuthority(
     }
     const currentVersion = tokenVersion;
     if (!record.version || !currentVersion || !(await safeEqual(record.version, currentVersion))) return null;
-    if (base !== undefined && record.resource !== `${base}/mcp`) return null;
+    if (base !== undefined && record.resource !== base + path) return null;
     if (record.family_id && Object.hasOwn(revokedFamilies, record.family_id)) {
       delete store.tokens[key];
       return null;

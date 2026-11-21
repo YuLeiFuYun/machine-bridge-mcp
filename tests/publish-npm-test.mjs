@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -41,6 +41,13 @@ assert(npmAuthenticationRequired({ status: 1, stderr: "npm error code EOTP\nAuth
 "npm authentication-required classification is incorrect");
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const { scripts } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+assert(scripts.prepublishOnly === [
+  "node scripts/assert-publishable-manifest.mjs",
+  "npm run publication:check",
+  "npm run version:check",
+  "node scripts/github-release.mjs --check",
+].join(" && "), "npm prepublication must verify the exact GitHub release without rerunning the full test or consumer audit scripts");
 const accepted = {
   required: true,
   metadata: {

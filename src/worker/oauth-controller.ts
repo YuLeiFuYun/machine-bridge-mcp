@@ -1,4 +1,5 @@
 import { WorkerToolError } from "./errors.ts";
+import { NATIVE_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
 import type { AuthorizedToken } from "./access.ts";
 import { accountAdminAuthorized, consumeAccountAdminNonce, handleAccountAdminOperation } from "./account-admin.ts";
 import { currentOAuthTokenAuthority, exchangeOAuthToken, type OAuthRefreshEvent } from "./oauth-tokens.ts";
@@ -283,10 +284,10 @@ export class OAuthController {
     });
   }
 
-  async verifyAccessToken(token: string, base: string): Promise<AuthorizedToken | null> {
+  async verifyAccessToken(token: string, base: string, path: McpResourcePath = NATIVE_MCP_PATH): Promise<AuthorizedToken | null> {
     if (!token) return null;
     const key = `sha256:${await sha256Hex(token)}`;
-    return this.withOAuthLock(() => this.authorityForTokenKey(key, base));
+    return this.withOAuthLock(() => this.authorityForTokenKey(key, base, path));
   }
 
   // Revalidate after body parsing/reconnect waits and synchronously transfer dispatch ownership.
@@ -303,12 +304,12 @@ export class OAuthController {
     });
   }
 
-  private async authorityForTokenKey(key: string, base?: string): Promise<AuthorizedToken | null> {
+  private async authorityForTokenKey(key: string, base?: string, path?: McpResourcePath): Promise<AuthorizedToken | null> {
     const store = await this.oauthStore();
     const refreshStore = await loadOAuthRefreshStore(store, this.ctx.storage);
     const hadToken = Object.hasOwn(store.tokens, key);
     const current = await currentOAuthTokenAuthority(
-      store, key, this.env.OAUTH_TOKEN_VERSION ?? "", this.serverName, base, refreshStore.revoked_families,
+      store, key, this.env.OAUTH_TOKEN_VERSION ?? "", this.serverName, base, refreshStore.revoked_families, path,
     );
     if (hadToken && !Object.hasOwn(store.tokens, key)) await this.ctx.storage.put("oauth", store);
     return current;

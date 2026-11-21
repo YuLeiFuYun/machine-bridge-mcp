@@ -1,3 +1,4 @@
+import { defaultMcpOAuthResource, isMcpOAuthResource } from "./mcp-resource.ts";
 import { pbkdf2Async } from "@noble/hashes/pbkdf2.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { normalizeAccountRole, type AccountRole } from "./access.ts";
@@ -187,12 +188,10 @@ export function validateAuthorizationRequest(
   const redirectUri = String(body.redirect_uri ?? "");
   const codeChallenge = String(body.code_challenge ?? "");
   const codeChallengeMethod = String(body.code_challenge_method ?? "");
-  const requestedResource = String(body.resource ?? `${base}/mcp`);
   const scope = normalizeOAuthScope(body.scope, serverName);
   const state = body.state === undefined ? "" : typeof body.state === "string" ? body.state : "";
 
   if (responseType !== "code") return { error: "response_type must be code.", status: 400 };
-  if (requestedResource !== `${base}/mcp`) return { error: "resource mismatch.", status: 400 };
   if (!scope) return { error: "unsupported scope.", status: 400 };
   if (body.state !== undefined && typeof body.state !== "string") return { error: "state must be a string.", status: 400 };
   if (state.length > 1024) return { error: "state is too long.", status: 400 };
@@ -202,6 +201,8 @@ export function validateAuthorizationRequest(
   const client = Object.hasOwn(store.clients, clientId) ? store.clients[clientId] : undefined;
   if (!client) return { error: "Unknown OAuth client.", status: 400 };
   if (!client.redirect_uris.includes(redirectUri)) return { error: "redirect_uri is not registered.", status: 400 };
+  const requestedResource = typeof body.resource === "string" ? body.resource : defaultMcpOAuthResource(base, redirectUri);
+  if (!isMcpOAuthResource(base, requestedResource)) return { error: "resource mismatch.", status: 400 };
   if (client.registration_revision !== OAUTH_CLIENT_REGISTRATION_REVISION) {
     return { error: "OAuth client registration predates the current server contract. Recreate this app before authorizing it again.", status: 409 };
   }
