@@ -11,9 +11,9 @@ import {
 } from "./oauth-state.ts";
 import {
   HttpError, authorizationRedirectLocation, json, normalizeDisplayText,
-  normalizeRedirectUri, oauthRedirect, parseRequestBody, searchParamsObject,
+  normalizeRedirectUri, oauthRedirect, parseRequestBody, prefersHtmlDocument, searchParamsObject,
 } from "./http.ts";
-import { authorizationPage } from "./oauth-authorization-page.ts";
+import { authorizationPage, authorizationRedirectPage } from "./oauth-authorization-page.ts";
 import { handleOAuthClientAdminOperation } from "./oauth-client-admin.ts";
 import {
   MAX_OAUTH_CLIENTS, MAX_OAUTH_CLIENTS_PER_IDENTITY, MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION,
@@ -266,7 +266,9 @@ export class OAuthController {
       pruneRecordByExpiry(store.codes, MAX_OAUTH_CODES);
       await this.ctx.storage.put("oauth", store);
 
-      return oauthRedirect(redirectLocation);
+      return prefersHtmlDocument(request)
+        ? authorizationRedirectPage({ location: redirectLocation, clientName: client.client_name, serverName: this.serverName })
+        : oauthRedirect(redirectLocation);
     });
   }
 

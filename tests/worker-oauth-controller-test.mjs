@@ -2,13 +2,13 @@ import { pbkdf2Sync } from "node:crypto";
 import { normalizeAccountRole } from "../src/worker/access.ts";
 import { consumeAccountAdminNonce } from "../src/worker/account-admin.ts";
 import { OAuthController } from "../src/worker/oauth-controller.ts";
-import { authorizationPage } from "../src/worker/oauth-authorization-page.ts";
+import { authorizationPage, authorizationRedirectPage } from "../src/worker/oauth-authorization-page.ts";
 import { accountByName, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex, validateAuthorizationRequest, verifyAccountPassword } from "../src/worker/oauth-state.ts";
 import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth-refresh-families.ts";
 import { oauthRefreshPersistenceEntries } from "../src/worker/oauth-refresh-persistence.ts";
 import { isCurrentOAuthStore } from "../src/worker/oauth-store-validation.ts";
 import { saveOAuthStores } from "../src/worker/oauth-token-issuance.ts";
-import { workerErrorClass } from "../src/worker/http.ts";
+import { prefersHtmlDocument, workerErrorClass } from "../src/worker/http.ts";
 import { authorityRevocations } from "../src/worker/authority-revocations.ts";
 import { MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
 
@@ -354,33 +354,57 @@ async function testAuthorizationPageRendering() {
     const origin = new URL(geminiRedirect).origin;
     const sources = formActionSourcesFor(geminiRedirect);
     assert(
-      sources.size === 4
-        && sources.has("'self'")
-        && sources.has(origin)
-        && sources.has("https://*.google.com")
-        && sources.has("https://*.gemini.google")
-        && !sources.has("https://*.googleusercontent.com"),
-      `Gemini authorization page CSP did not match expected form-action set for ${geminiRedirect}`,
-    );
-  }
-
-  for (const lookalikeRedirect of [
-    "https://oauth-redirect.googleusercontent.com.example.com/r/test",
-    "https://evil.googleusercontent.com/r/test",
-    "https://sub.oauth-redirect.googleusercontent.com/r/test",
-    "https://oauth-redirect.googleusercontent.com:8443/r/test",
-  ]) {
-    const origin = new URL(lookalikeRedirect).origin;
-    const sources = formActionSourcesFor(lookalikeRedirect);
-    assert(
       sources.size === 2
         && sources.has("'self'")
         && sources.has(origin)
         && !sources.has("https://*.google.com")
-        && !sources.has("https://*.gemini.google"),
-      `lookalike authorization page unexpectedly received Google callback-chain exception for ${lookalikeRedirect}`,
+        && !sources.has("https://*.gemini.google")
+        && !sources.has("https://*.googleusercontent.com"),
+      `Gemini authorization page CSP broadened beyond self and validated redirect origin for ${geminiRedirect}`,
     );
   }
+
+  for (const [acceptHeader, expected] of [
+    ["text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", true],
+    ["text/html", true],
+    ["application/json, text/html;q=0.8", true],
+    [undefined, false],
+    ["*/*", false],
+    ["application/json", false],
+    ["text/html;q=0", false],
+    ["text/html;q=0.000", false],
+    ["text/html-fake", false],
+  ]) {
+    const request = new Request(`${BASE}/oauth/authorize`, acceptHeader ? { headers: { accept: acceptHeader } } : {});
+    assert(prefersHtmlDocument(request) === expected, `prefersHtmlDocument returned wrong value for Accept=${String(acceptHeader)}`);
+  }
+
+  const handoffLocation = new URL("https://oauth-redirect.googleusercontent.com/r/client?code=mcp_code_test&state=state-123&iss=https%3A%2F%2Fbridge.example.test");
+  const handoff = authorizationRedirectPage({ location: handoffLocation, clientName: "Google <Client>", serverName: SERVER_NAME });
+  const handoffHtml = await handoff.text();
+  const handoffCsp = handoff.headers.get("content-security-policy") || "";
+  assert(handoff.status === 200, `handoff page returned unexpected status ${handoff.status}`);
+  assert(handoff.headers.get("content-type") === "text/html; charset=utf-8", "handoff page used wrong content-type");
+  assert(handoff.headers.get("cache-control") === "no-store", "handoff page was cacheable");
+  assert(handoff.headers.get("referrer-policy") === "no-referrer", "handoff page leaked referrer");
+  assert(handoff.headers.get("x-frame-options") === "DENY", "handoff page missed frame denial");
+  assert(
+    /default-src 'none'/.test(handoffCsp)
+      && /form-action 'none'/.test(handoffCsp)
+      && /base-uri 'none'/.test(handoffCsp)
+      && /frame-ancestors 'none'/.test(handoffCsp),
+    "handoff page weakened CSP directives",
+  );
+  assert(!/<script\b/i.test(handoffHtml), "handoff page must remain script-free");
+  assert(/Google &lt;Client&gt;/.test(handoffHtml), "handoff page failed to escape client name");
+  const metaMatch = handoffHtml.match(/<meta http-equiv="refresh" content="0;url=([^"]+)">/);
+  assert(metaMatch && metaMatch[1].replaceAll("&amp;", "&") === handoffLocation.href, "handoff meta refresh lost callback URL fidelity");
+  const anchorMatch = handoffHtml.match(/<a href="([^"]+)" rel="noreferrer">/);
+  assert(anchorMatch && anchorMatch[1].replaceAll("&amp;", "&") === handoffLocation.href, "handoff fallback link lost callback URL fidelity");
+  expectThrow(
+    () => authorizationRedirectPage({ location: new URL("javascript:alert(1)"), clientName: "Evil", serverName: SERVER_NAME }),
+    "HTTPS or HTTP",
+  );
 }
 
 async function testAuthorizationAndTokens() {
@@ -424,8 +448,35 @@ async function testAuthorizationAndTokens() {
   assert(authorized.status === 303, "valid account authorization did not issue a redirect");
   const redirect = new URL(authorized.headers.get("location"));
   assert(redirect.origin === new URL(REDIRECT).origin && redirect.searchParams.get("state") === "state-value", "authorization redirect changed the registered callback or state");
+  const browserSubmitBody = new URLSearchParams(authorizeUrl.searchParams);
+  browserSubmitBody.set("account_name", account.name);
+  browserSubmitBody.set("account_password", PASSWORD);
+  const browserAuthorized = await controller.authorizeSubmit(new Request(authorizeUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "CF-Connecting-IP": "203.0.113.20",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    body: browserSubmitBody,
+  }), BASE);
+  assert(browserAuthorized.status === 200, `browser form authorization returned ${browserAuthorized.status}`);
+  assert(browserAuthorized.headers.get("content-type") === "text/html; charset=utf-8", "browser form authorization omitted HTML content-type");
+  assert(!browserAuthorized.headers.has("location"), "browser HTML handoff unexpectedly set HTTP Location");
+  const browserHandoffHtml = await browserAuthorized.text();
+  assert(browserHandoffHtml.split(PASSWORD).length === 1, "browser HTML handoff leaked submitted password");
+  const browserMeta = browserHandoffHtml.match(/<meta http-equiv="refresh" content="0;url=([^"]+)">/);
+  assert(browserMeta, "browser HTML handoff omitted meta refresh callback");
+  const browserRedirect = new URL(browserMeta[1].replaceAll("&amp;", "&"));
+  assert(
+    browserRedirect.origin === new URL(REDIRECT).origin
+      && /^mcp_code_[A-Za-z0-9_-]{43}$/.test(browserRedirect.searchParams.get("code") ?? "")
+      && browserRedirect.searchParams.get("state") === "state-value"
+      && browserRedirect.searchParams.get("iss") === BASE,
+    "browser HTML handoff callback missed expected code, state, or issuer",
+  );
   const authorizedStore = await storage.get("oauth");
-  assert(Object.keys(authorizedStore.codes).length === 1 && Object.keys(authorizedStore.auth_failures).length === 0, "successful authorization did not replace failure state with a one-time code");
+  assert(Object.keys(authorizedStore.codes).length === 2 && Object.keys(authorizedStore.auth_failures).length === 0, "successful authorization did not replace failure state with one-time codes");
 
   const rawToken = "access_token_for_controller_test";
   const tokenKey = `sha256:${await sha256Hex(rawToken)}`;

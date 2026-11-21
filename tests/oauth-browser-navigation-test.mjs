@@ -55,8 +55,10 @@ const regionalCallbackPort = await listen(regionalCallbackServer);
 const regionalCallbackOrigin = `http://127.0.0.1:${regionalCallbackPort}`;
 
 let globalCallbackHits = 0;
+let lastGlobalReferer = "";
 const globalCallbackServer = http.createServer((request, response) => {
   globalCallbackHits += 1;
+  lastGlobalReferer = typeof request.headers.referer === "string" ? request.headers.referer : "";
   const requestUrl = new URL(request.url, "http://127.0.0.1");
   response.writeHead(302, {
     location: `${regionalCallbackOrigin}/redirect${requestUrl.search}`,
@@ -69,7 +71,21 @@ const globalCallbackOrigin = `http://127.0.0.1:${globalCallbackPort}`;
 
 const authorizationServer = http.createServer((request, response) => {
   const requestUrl = new URL(request.url, "http://127.0.0.1");
+  const handoff = requestUrl.searchParams.get("handoff") === "1";
   if (request.method === "POST" && requestUrl.pathname === "/oauth/authorize") {
+    if (handoff) {
+      assert(/text\/html/i.test(request.headers.accept ?? ""), "browser handoff submission omitted text/html Accept header");
+      const target = `${globalCallbackOrigin}/redirect?code=handoff-code&state=handoff-state&iss=${encodeURIComponent(authorizationOrigin)}`;
+      const escapedTarget = target.replaceAll("&", "&amp;");
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+      });
+      response.end(`<!doctype html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=${escapedTarget}"><title>Returning</title></head><body><a href="${escapedTarget}" rel="noreferrer">Continue</a></body>`);
+      return;
+    }
     response.writeHead(303, { location: `${globalCallbackOrigin}/redirect?code=test-code&state=test-state`, "cache-control": "no-store" });
     response.end();
     return;
@@ -84,7 +100,7 @@ const authorizationServer = http.createServer((request, response) => {
     "cache-control": "no-store",
     "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formActionSources.join(" ")}; base-uri 'none'; frame-ancestors 'none'`,
   });
-  response.end(`<!doctype html><title>Authorize</title><form method="post" action="/oauth/authorize"><button id="authorize" type="submit">Authorize</button></form>`);
+  response.end(`<!doctype html><title>Authorize</title><form method="post" action="/oauth/authorize${handoff ? "?handoff=1" : ""}"><button id="authorize" type="submit">Authorize</button></form>`);
 });
 const authorizationPort = await listen(authorizationServer);
 const authorizationOrigin = `http://127.0.0.1:${authorizationPort}`;
@@ -92,6 +108,7 @@ const blockedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=0`
 const firstHopOnlyAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=1`;
 const regionalOnlyAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=2`;
 const allowedAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?allow=3`;
+const handoffAuthorizationUrl = `${authorizationOrigin}/oauth/authorize?handoff=1`;
 
 const profile = await mkdtemp(path.join(os.tmpdir(), "mbm-oauth-browser-"));
 const chromeArgs = [
@@ -165,6 +182,23 @@ try {
     assert(parsed.origin === studioCallbackOrigin, `authorization did not reach the Copilot Studio callback origin: ${finalUrl}`);
     assert(parsed.searchParams.get("code") === "test-code", "authorization callback omitted code");
     assert(parsed.searchParams.get("state") === "test-state", "authorization state was not preserved");
+
+    lastGlobalReferer = "sentinel-unset";
+    await client.send("Page.navigate", { url: handoffAuthorizationUrl });
+    await waitForExpression(client, "document.readyState === 'complete' && location.search === '?handoff=1' && Boolean(document.getElementById('authorize'))");
+    await client.send("Runtime.evaluate", { expression: "document.getElementById('authorize').click()" });
+    await waitForExpression(
+      client,
+      `location.origin === ${JSON.stringify(studioCallbackOrigin)} && location.pathname === '/connection/oauth/redirect' && new URLSearchParams(location.search).get('code') === 'handoff-code'`,
+    );
+    const handoffResult = await client.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
+    const handoffUrl = String(handoffResult.result?.result?.value ?? "");
+    const handoffParsed = new URL(handoffUrl);
+    assert(handoffParsed.origin === studioCallbackOrigin, `HTML handoff did not reach the final callback origin: ${handoffUrl}`);
+    assert(handoffParsed.searchParams.get("code") === "handoff-code", "HTML handoff omitted code");
+    assert(handoffParsed.searchParams.get("state") === "handoff-state", "HTML handoff did not preserve state");
+    assert(handoffParsed.searchParams.get("iss") === authorizationOrigin, "HTML handoff omitted or changed issuer");
+    assert(lastGlobalReferer === "", `HTML handoff leaked Referer header: ${lastGlobalReferer}`);
   } finally {
     client.close();
   }

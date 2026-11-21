@@ -18,13 +18,9 @@ const GEMINI_REDIRECT_ORIGINS = new Set([
   "https://oauth-redirect-test.googleusercontent.com",
 ]);
 
-export function isGeminiRedirectOrigin(origin: string): boolean {
-  return GEMINI_REDIRECT_ORIGINS.has(origin);
-}
-
 export function defaultMcpOAuthResource(base: string, registeredRedirectUri: string): string {
   const redirect = new URL(registeredRedirectUri);
-  const gemini = isGeminiRedirectOrigin(redirect.origin) && /^\/(?:r|a)\/.+/.test(redirect.pathname);
+  const gemini = GEMINI_REDIRECT_ORIGINS.has(redirect.origin) && /^\/(?:r|a)\/.+/.test(redirect.pathname);
   return base + (gemini ? GEMINI_MCP_PATH : NATIVE_MCP_PATH);
 }
 

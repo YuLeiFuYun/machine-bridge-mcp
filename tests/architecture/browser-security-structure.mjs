@@ -120,11 +120,16 @@ if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
   || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com")')) {
   throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the complete Power Platform callback chain");
 }
-if (!hasSemanticImport(workerHttpSource, "./mcp-resource.ts", { requiredSymbols: ["isGeminiRedirectOrigin"] })
-  || findSemanticCalls(workerHttpSource, { callee: "isGeminiRedirectOrigin" }).length === 0
-  || !/sources\.push\("https:\/\/\*\.google\.com",\s*"https:\/\/\*\.gemini\.google"\)/.test(workerHttpSource)
-  || /\*\.googleusercontent\.com/.test(workerHttpSource)) {
-  throw new Error("authorization HTML no longer scopes Google callback-chain form actions strictly to validated Gemini redirect origins");
+if (!hasSemanticImport(workerOAuthControllerSource, "./oauth-authorization-page.ts", { requiredSymbols: ["authorizationPage", "authorizationRedirectPage"] })
+  || !hasSemanticImport(workerOAuthControllerSource, "./http.ts", { requiredSymbols: ["prefersHtmlDocument"] })
+  || findSemanticCalls(workerOAuthControllerSource, { callee: "authorizationRedirectPage" }).length === 0
+  || findSemanticCalls(workerOAuthControllerSource, { callee: "prefersHtmlDocument" }).length === 0
+  || !/form-action 'none'/.test(workerOAuthPageSource)
+  || !/"referrer-policy":\s*"no-referrer"/.test(workerOAuthPageSource)
+  || !/http-equiv="refresh"/.test(workerOAuthPageSource)
+  || !/location\.protocol\s*!==\s*"https:"\s*&&\s*location\.protocol\s*!==\s*"http:"/.test(workerOAuthPageSource)
+  || /\*\.(?:google\.com|gemini\.google|googleusercontent\.com)/.test(workerHttpSource)) {
+  throw new Error("browser authorization handoff lost zero-script fail-closed protections or retained unnecessary provider wildcards");
 }
 if (!workerOAuthControllerSource.includes("./oauth-authorization-page.ts")
     || !workerOAuthPageSource.includes("new URL(authorization.redirectUri).origin")
