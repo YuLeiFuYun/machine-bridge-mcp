@@ -50,7 +50,7 @@ The MCP specification defines stdio and Streamable HTTP as standard transports.
 In stdio, the host launches the server as a subprocess and exchanges newline-delimited JSON-RPC through stdin/stdout.
 Streamable HTTP runs the server independently behind an HTTP endpoint.
 
-Machine Bridge uses MCP `2026-07-28` for both stdio and remote Streamable HTTP.
+Machine Bridge uses MCP `2026-07-28` for stdio and the native remote `/mcp` endpoint.
 Requests carry version and capabilities in `_meta`; `server/discover` replaces initialization, there is no MCP protocol session, and an HTTP response stream belongs to exactly one request.
 `initialize`, `Mcp-Session-Id`, `Last-Event-ID`, replay markers, and other removed protocol-session markers receive bounded upgrade guidance and cannot dispatch tool work. There is no stdio compatibility shim; clients must use request-scoped metadata and `server/discover`.
 Remote `/mcp` is POST-only, so GET returns 405 rather than acting as a recovery channel.
@@ -154,7 +154,10 @@ Supported configuration paths are:
 
 - **ChatGPT and Grok:** enter the `/mcp` URL in the corresponding remote connector. The Worker has exact built-in CORS response support for `https://chatgpt.com`, `https://grok.com`, and the X-hosted Grok surface at `https://x.com`.
 - **Claude custom connectors:** add the exact `/mcp` URL under Claude's connector settings and leave static OAuth client credentials empty so Claude can use DCR. Hosted Claude surfaces use `https://claude.ai/api/mcp/auth_callback`; the Worker accepts that exact registered redirect and rotates refresh tokens for the public client. See Anthropic's [remote custom connector guide](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp) and [authentication contract](https://claude.com/docs/connectors/building/authentication).
+- **Gemini Cloud MCP:** choose **Cloud MCP** in Gemini's custom connected app settings and enter `https://<worker-host>/mcp/gemini`. Leave the OAuth client ID and secret empty so Gemini can register dynamically. Sign in on the Machine Bridge authorization page with a Machine Bridge account. You can reuse an account or create a separate delegated account to limit tool access and revoke Gemini independently.
 - **Microsoft Copilot Studio:** from the agent's **Tools** page, select **Add a tool > New tool > Model Context Protocol**, enter the `/mcp` URL, then select **OAuth 2.0 > Dynamic discovery**. Create the connection and add it to the agent. See Microsoft's [existing MCP server guide](https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-add-existing-server-to-agent).
+
+The Gemini route implements the `2025-11-25` initialization handshake, tool listing and tool calls on a single Streamable HTTP endpoint. It returns JSON results, exposes the authorized role's ordinary tools, and leaves out MCP Apps job monitor tools. Follow durable jobs with their standard job handles. The endpoint has its own OAuth audience. Gemini's registered Google callback selects that audience when the OAuth request omits the resource parameter.
 
 OAuth navigations and form submissions from opaque or client-specific browser containers are routed normally but receive no cross-origin response-sharing permission unless their exact origin is allowed.
 The authorization page permits form navigation only to itself and the validated redirect origin.

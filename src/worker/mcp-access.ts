@@ -1,4 +1,5 @@
 import type { AuthorizedToken } from "./access.ts";
+import { NATIVE_MCP_PATH, PROTECTED_RESOURCE_METADATA_PREFIX, type McpResourcePath } from "./mcp-resource.ts";
 import type { OAuthController } from "./oauth-controller.ts";
 import { consumeDpopProof, verifyDpopProof } from "./dpop.ts";
 import { discardRequestBody, oauthAccessToken } from "./http.ts";
@@ -10,13 +11,15 @@ export type McpAccessResult =
 export async function authorizeMcpRequest(input: {
   request: Request;
   base: string;
+  path?: McpResourcePath;
   oauth: OAuthController;
   storage: DurableObjectStorage;
   bodyLimitBytes: number;
   requiredScope: string;
 }): Promise<McpAccessResult> {
+  const path = input.path ?? NATIVE_MCP_PATH;
   const access = oauthAccessToken(input.request);
-  const authorized = await input.oauth.verifyAccessToken(access.token, input.base);
+  const authorized = await input.oauth.verifyAccessToken(access.token, input.base, path);
   let dpopValid = true;
   if (authorized?.dpopJkt) {
     const proof = access.scheme === "dpop" ? await verifyDpopProof({
@@ -39,7 +42,7 @@ export async function authorizeMcpRequest(input: {
     response: new Response(authorized?.dpopJkt ? "Valid DPoP proof required" : "OAuth bearer token required", {
       status: 401,
       headers: {
-        "WWW-Authenticate": `${scheme} resource_metadata="${input.base}/.well-known/oauth-protected-resource/mcp", scope="${requiredScope}"`,
+        "WWW-Authenticate": `${scheme} resource_metadata="${input.base}${PROTECTED_RESOURCE_METADATA_PREFIX}${path}", scope="${requiredScope}"`,
         "cache-control": "no-store",
         "content-type": "text/plain; charset=utf-8",
         "x-content-type-options": "nosniff",

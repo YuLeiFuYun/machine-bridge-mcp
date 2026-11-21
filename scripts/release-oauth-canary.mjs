@@ -36,7 +36,7 @@ try {
     throw new Error("release OAuth canary refused Node/native debugging, loader, profiling, or TLS environment overrides; run it from a clean terminal environment");
   }
   const evidencePath = await runCanary();
-  console.log("Deployed OAuth canary passed: authorization-code exchange, authenticated MCP, refresh rotation, refreshed MCP, and cleanup all succeeded.");
+  console.log("Deployed OAuth canary passed: authorization-code exchange, authenticated native and Gemini Cloud MCP, refresh rotation, refreshed MCP, and cleanup all succeeded.");
   console.log(`OAuth canary evidence: ${evidencePath}`);
 } catch (error) {
   fail(error?.message || error);
@@ -82,12 +82,14 @@ async function runCanary() {
   let admin;
   try { admin = await accountAdminClient(state); }
   catch (error) { throw new Error("release OAuth canary account-administration session setup failed", { cause: error }); }
-  const result = await runReleaseOAuthCanaryFlow({
+  const canary = {
     admin,
     workerUrl,
     packageName: manifest.package_name,
     packageVersion: manifest.package_version,
-  });
+  };
+  const result = await runReleaseOAuthCanaryFlow(canary);
+  await runReleaseOAuthCanaryFlow({ ...canary, gemini: true });
   return writeReleaseOAuthCanaryEvidence(root, {
     schema_version: RELEASE_OAUTH_CANARY_SCHEMA_VERSION,
     result: "passed",

@@ -2,10 +2,10 @@ import { accountRoleAllowsTool, accountRoleToolNames, type AccountRole, type Aut
 import { accountAuthoritySnapshot, describeDaemonCeiling } from "./authority.ts";
 import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, workspaceTools, type WorkerToolDefinition } from "./tool-catalog.ts";
 
-export function workerToolsForRole(role: AccountRole): WorkerToolDefinition[] {
+export function workerToolsForRole(role: AccountRole, includeJobMonitor = true): WorkerToolDefinition[] {
   const advertised = accountRoleToolNames(role, workspaceTools.map((tool) => tool.name));
   const localTools = workspaceTools.filter((tool) => advertised.has(tool.name));
-  const monitorTools = accountRoleAllowsTool(role, "start_job") ? [jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool] : [];
+  const monitorTools = includeJobMonitor && accountRoleAllowsTool(role, "start_job") ? [jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool] : [];
   return [serverInfoTool, ...monitorTools, ...localTools].map((tool) => structuredClone(tool) as WorkerToolDefinition);
 }
 

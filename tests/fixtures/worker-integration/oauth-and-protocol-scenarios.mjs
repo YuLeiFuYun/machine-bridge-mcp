@@ -597,6 +597,7 @@ export async function runOAuthAndProtocolScenarios(context) {
   });
   const reviewerToken = reviewerCredentials.accessToken;
   const reviewerRefreshToken = reviewerCredentials.refreshToken;
+  await testGeminiCloudMcp({ base, nativeToken: reviewerToken, password: REVIEWER_PASSWORD, version: pkg.version });
   const editorRegistration = await registerTestClient({ base, redirectUri, name: "Editor Integration Client" });
   const editorCredentials = await issueAccountToken({
     base,
@@ -709,4 +710,82 @@ export async function runOAuthAndProtocolScenarios(context) {
     authorization,
     stableOwnerToolNames,
   };
+}
+
+async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
+  const resource = `${base}/mcp/gemini`;
+  const metadataUrl = `${base}/.well-known/oauth-protected-resource/mcp/gemini`;
+  const metadata = await fetchJson(metadataUrl);
+  assert(metadata.response.status === 200 && metadata.body.resource === resource
+    && metadata.body.authorization_servers?.[0] === base, "Gemini OAuth discovery did not bind the exact resource");
+
+  function call(token, method, params = {}, headers = {}, id = 0) {
+    return stableFetch(resource, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", ...(id === null ? {} : { id }), method, params }),
+    });
+  }
+
+  const initialize = { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "Gemini fixture", version: "1" } };
+  const unauthenticated = await call(null, "initialize", initialize);
+  assert(unauthenticated.status === 401 && unauthenticated.headers.get("www-authenticate")?.includes(`resource_metadata="${metadataUrl}"`),
+    "Gemini initialize did not require OAuth or advertise its own resource metadata");
+  assert((await call(nativeToken, "initialize", initialize)).status === 401, "Native token reached the Gemini resource");
+  assert((await call(null, "initialize", initialize, { origin: "https://example.invalid" })).status === 403,
+    "Gemini endpoint accepted an untrusted browser origin");
+  assert((await stableFetch(resource, { headers: { accept: "text/event-stream" } })).status === 405, "Gemini GET opened a session stream");
+
+  const redirectUri = "https://oauth-redirect.googleusercontent.com/r/machine-bridge-integration";
+  const client = await registerTestClient({ base, redirectUri, name: "Gemini Integration Client" });
+  const { accessToken, refreshToken } = await issueAccountToken({
+    base, clientId: client.client_id, redirectUri, accountName: "reviewer", password, state: "gemini-state",
+    resource: null,
+  });
+  assert((await currentMcpCall(base, accessToken, 9100, "tools/list", {})).response.status === 401,
+    "Gemini token reached the native resource");
+  const init = await call(accessToken, "initialize", initialize);
+  const initialized = await init.json();
+  assert(init.status === 200 && initialized.id === 0 && initialized.result?.protocolVersion === initialize.protocolVersion
+    && initialized.result.serverInfo?.version === version && Object.keys(initialized.result.capabilities).join() === "tools"
+    && !init.headers.has("Mcp-Session-Id"), "Gemini initialization did not negotiate the expected stateless protocol");
+  const protocol = { "MCP-Protocol-Version": initialize.protocolVersion };
+  const ready = await call(accessToken, "notifications/initialized", {}, protocol, null);
+  assert(ready.status === 202 && await ready.text() === "", "Gemini initialization notification was not acknowledged");
+  assert((await call(accessToken, "ping", {}, { "MCP-Protocol-Version": "2026-07-28" })).status === 400,
+    "Gemini endpoint accepted a different protocol version");
+  assert((await call(accessToken, "ping", {}, { ...protocol, "Mcp-Session-Id": "unexpected-session" })).status === 400,
+    "Gemini endpoint accepted an MCP session identifier");
+
+  const list = await (await call(accessToken, "tools/list", {}, protocol)).json();
+  const names = list.result?.tools?.map((tool) => tool.name);
+  assert(JSON.stringify(names) === JSON.stringify(workerToolsForRole("reviewer").map((tool) => tool.name))
+    && !Object.hasOwn(list.result, "resultType"), "Gemini tool listing changed the reviewer's visible tool catalog or wire format");
+  const callInfo = await (await call(accessToken, "tools/call", { name: "server_info", arguments: { detail: "summary" } }, protocol)).json();
+  assert(callInfo.result?.isError === false && callInfo.result?.content?.[0]?.type === "text"
+    && callInfo.result?.structuredContent?.version === version && !Object.hasOwn(callInfo.result, "resultType"),
+  "Gemini tool call did not return a 2025-11-25 result");
+  const denied = await (await call(accessToken, "tools/call", { name: "run_process", arguments: {} }, protocol)).json();
+  assert(denied.error?.code === -32602, "Gemini callable tools exceeded reviewer authority");
+
+  function refresh(target) {
+    return fetchJson(`${base}/oauth/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token", refresh_token: refreshToken, client_id: client.client_id, resource: target,
+      }),
+    });
+  }
+  const wrongTarget = await refresh(`${base}/mcp`);
+  assert(wrongTarget.response.status === 400 && wrongTarget.body.error === "invalid_target",
+    "Gemini refresh permitted an audience change");
+  const rotation = await refresh(resource);
+  assert(rotation.response.status === 200 && rotation.body.refresh_token !== refreshToken
+    && (await call(rotation.body.access_token, "ping", {}, protocol)).status === 200, "Gemini OAuth refresh did not rotate usable credentials");
 }

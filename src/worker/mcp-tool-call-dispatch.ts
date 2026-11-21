@@ -9,7 +9,7 @@ import { staleSchemaGuidanceResult } from "./mcp-stale-schema-guidance.ts";
 import { taskCreatedResult, toolArgumentValidationError } from "../shared/mcp-protocol.mjs";
 import { isMcpTaskAugmentedTool, supportsMcpTasks } from "../shared/mcp-task-contract.mjs";
 
-type WorkerToolCallConfig = Readonly<{
+export type WorkerToolCallConfig = Readonly<{
   serverInfo: Record<string, unknown>;
   tools: (authorized: AuthorizedToken) => Array<Record<string, unknown>>;
   recordError: (code: string) => void;

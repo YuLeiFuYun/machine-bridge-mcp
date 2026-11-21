@@ -2,6 +2,7 @@ import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { MCP_PROTOCOL_VERSION } from "../shared/mcp-protocol.mjs";
 import { cancelMcpResponseStream } from "./mcp-response-cancel.ts";
 import { randomToken } from "./oauth-state.ts";
+import { NATIVE_MCP_PATH } from "./mcp-resource.ts";
 import { acceptsEventStream } from "./mcp-http-accept.ts";
 import {
   withProxyHeaders, type BridgeFetcher, type StreamExecutionContext,
@@ -16,7 +17,8 @@ export async function proxyMcpResponseStream(input: {
   ctx: StreamExecutionContext;
 }): Promise<Response | null> {
   const version = input.request.headers.get("MCP-Protocol-Version")?.trim() ?? "";
-  if (version !== MCP_PROTOCOL_VERSION
+  if (new URL(input.request.url).pathname !== NATIVE_MCP_PATH
+    || version !== MCP_PROTOCOL_VERSION
     || input.request.method !== "POST"
     || !acceptsEventStream(input.request)) return null;
 

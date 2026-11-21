@@ -39,7 +39,7 @@ async function registerTestClient({ base, redirectUri, name }) {
   return registration.body;
 }
 
-async function issueAccountToken({ base, clientId, redirectUri, accountName, password, state }) {
+async function issueAccountToken({ base, clientId, redirectUri, accountName, password, state, resource = `${base}/mcp` }) {
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const authorization = {
@@ -49,7 +49,7 @@ async function issueAccountToken({ base, clientId, redirectUri, accountName, pas
     code_challenge: challenge,
     code_challenge_method: "S256",
     scope: "machine-bridge-mcp",
-    resource: `${base}/mcp`,
+    ...(resource === null ? {} : { resource }),
     state,
     account_name: accountName,
     account_password: password,
@@ -72,7 +72,7 @@ async function issueAccountToken({ base, clientId, redirectUri, accountName, pas
       client_id: clientId,
       redirect_uri: redirectUri,
       code_verifier: verifier,
-      resource: `${base}/mcp`,
+      ...(resource === null ? {} : { resource }),
     }),
   });
   assert(token.response.status === 200, `account token exchange failed: ${token.response.status}`);

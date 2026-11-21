@@ -16,6 +16,7 @@ import { daemonStatusSnapshot } from "./daemon-status.ts";
 import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
 import { handleDaemonHttpRelay } from "./daemon-http-controller.ts";
 import { McpController } from "./mcp-controller.ts";
+import { GEMINI_MCP_PATH, isMcpResourcePath, NATIVE_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
 import { authorizeMcpRequest } from "./mcp-access.ts";
 import { removedProtocolResponse } from "./mcp-removed-protocol.ts";
 import { mcpStreamProxyMode } from "./mcp-stream-proxy-contract.ts";
@@ -54,7 +55,7 @@ import { McpTaskService } from "./mcp-task-service.ts";
 import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
 import { closeWebSocketQuietly } from "./websocket-protocol.ts";
 import { DaemonWebSocketController } from "./daemon-websocket-controller.ts";
-const SERVER_VERSION = "3.0.0-beta.216";
+const SERVER_VERSION = "3.0.0-beta.217";
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
 export class BridgeRoom extends DurableObject<BridgeEnv> {
@@ -93,7 +94,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
       taskStore: this.mcpTaskService.store,
       resolveTaskCredentials: this.mcpTaskService.resolveCredentials,
-      tools: (authorized) => workerToolsForRole(authorized.role),
+      tools: (authorized, includeJobMonitor) => workerToolsForRole(authorized.role, includeJobMonitor),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
       callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken }) => this.callTool(
@@ -139,7 +140,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
         if (request.method !== "POST") return methodNotAllowed("POST");
         return await this.acceptDaemonHttp(request);
       }
-      if (url.pathname === "/mcp") return await this.handleMcp(request, base);
+      if (isMcpResourcePath(url.pathname)) return await this.handleMcp(request, base, url.pathname);
       return json({ error: "not_found" }, 404);
     } catch (error) {
       if (error instanceof HttpError) return json({ error: error.code, message: error.message }, error.status);
@@ -203,31 +204,36 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private cleanupDaemonSocket(ws: WebSocket, message: string) {
     return this.daemonWebSocket.cleanupDaemonSocket(ws, message);
   }
-  private async handleMcp(request: Request, base: string): Promise<Response> {
+  private async handleMcp(request: Request, base: string, path: McpResourcePath): Promise<Response> {
     const originRejection = mcpOriginRejection(request, base, this.env.MBM_ALLOWED_ORIGINS ?? "");
     if (originRejection) return originRejection;
     if (request.method !== "POST") return methodNotAllowed("POST");
 
-    const proxyMode = mcpStreamProxyMode(request);
-    const control = await this.mcp.handleControl(request, proxyMode);
-    if (control) return control;
+    const proxyMode = path === NATIVE_MCP_PATH ? mcpStreamProxyMode(request) : "";
+    if (proxyMode) {
+      const control = await this.mcp.handleControl(request, proxyMode);
+      if (control) return control;
+    }
+    const bodyLimitBytes = workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES);
 
     const access = await authorizeMcpRequest({
       request,
       base,
+      path,
       oauth: this.oauth,
       storage: this.ctx.storage,
-      bodyLimitBytes: workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES),
+      bodyLimitBytes,
       requiredScope: SERVER_NAME,
     });
     if (access.response) return access.response;
-
     const headerContractError = httpHeaderContractError(request);
     if (headerContractError) {
-      await discardRequestBody(request, workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES));
+      await discardRequestBody(request, bodyLimitBytes);
       return json(rpcError(null, headerContractError.code, headerContractError.message, headerContractError.data), headerContractError.status);
     }
-    const body = await parseJsonRequest(request, workerBodyLimitBytes(this.env.MBM_WORKER_MAX_BODY_BYTES));
+    if (path === GEMINI_MCP_PATH) return this.mcp.handleGeminiRequest({ request, base, authorized: access.authorized, bodyLimitBytes });
+
+    const body = await parseJsonRequest(request, bodyLimitBytes);
     if (isJsonRpcResponse(body)) return json(rpcError(null, -32600, "Clients must not send JSON-RPC responses"), 400);
     if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
     try {

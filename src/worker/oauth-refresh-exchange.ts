@@ -1,3 +1,4 @@
+import { matchesMcpOAuthResource } from "./mcp-resource.ts";
 import { consumeDpopProof, type VerifiedDpopProof } from "./dpop.ts";
 import { HttpError, json } from "./http.ts";
 import {
@@ -126,9 +127,7 @@ async function validateRefreshGrant(
   if (typeof body.client_id !== "string" || body.client_id !== record.client_id) {
     return { response: json({ error: "invalid_grant", error_description: "client mismatch" }, 400) };
   }
-  const resource = body.resource === undefined ? record.resource
-    : typeof body.resource === "string" ? body.resource : null;
-  if (resource !== record.resource || record.resource !== `${base}/mcp`) {
+  if (!matchesMcpOAuthResource(base, record.resource, body.resource)) {
     return { response: json({ error: "invalid_target", error_description: "resource mismatch" }, 400) };
   }
   if (normalizeOAuthScope(record.scope, options.serverName) !== record.scope) {

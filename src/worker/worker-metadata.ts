@@ -1,3 +1,4 @@
+import { NATIVE_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
 import serverMetadata from "../shared/server-metadata.json" with { type: "json" };
 
 export type WorkerIdentity = { server: string; version: string };
@@ -33,9 +34,9 @@ export function authorizationServerMetadata(base: string, serverName: string): R
   };
 }
 
-export function protectedResourceMetadata(base: string, serverName: string): Record<string, unknown> {
+export function protectedResourceMetadata(base: string, serverName: string, path: McpResourcePath = NATIVE_MCP_PATH): Record<string, unknown> {
   return {
-    resource: `${base}/mcp`,
+    resource: base + path,
     authorization_servers: [base],
     scopes_supported: [serverName],
     bearer_methods_supported: ["header"],

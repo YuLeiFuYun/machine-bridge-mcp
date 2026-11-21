@@ -15,6 +15,7 @@ export async function runReleaseOAuthCanaryFlow({
   packageVersion,
   fetchImpl = fetch,
   randomBytesImpl = randomBytes,
+  gemini = false,
 }) {
   if (!admin || typeof admin.create !== "function" || typeof admin.remove !== "function" || typeof admin.removeClient !== "function"
       || typeof admin.list !== "function" || typeof admin.listClients !== "function") {
@@ -31,7 +32,7 @@ export async function runReleaseOAuthCanaryFlow({
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const stateValue = randomBytesImpl(24).toString("base64url");
   const scope = `${name} offline_access`;
-  const resource = `${origin}/mcp`;
+  const resource = `${origin}${gemini ? "/mcp/gemini" : "/mcp"}`;
   let accountId = "";
   let clientId = "";
   let primaryError = null;
@@ -105,7 +106,8 @@ export async function runReleaseOAuthCanaryFlow({
     const refreshToken = requiredToken(token.refresh_token, "refresh");
     if (token.token_type !== "Bearer" || token.scope !== scope) throw new Error("release OAuth canary token response changed the expected public-client contract");
 
-    const firstInfo = await callServerInfo(fetchImpl, origin, accessToken, 1);
+    if (gemini) await verifyGeminiDiscovery(fetchImpl, resource, accessToken);
+    const firstInfo = await callServerInfo(fetchImpl, resource, accessToken, 1, gemini);
     workerVersion = typeof firstInfo?.version === "string" ? firstInfo.version : "";
     if (workerVersion !== version) throw new Error("release OAuth canary authenticated MCP reached the wrong Worker version");
 
@@ -125,7 +127,7 @@ export async function runReleaseOAuthCanaryFlow({
     if (refreshedAccess === accessToken || refreshedToken === refreshToken) {
       throw new Error("release OAuth canary refresh did not rotate both credentials");
     }
-    const refreshedInfo = await callServerInfo(fetchImpl, origin, refreshedAccess, 2);
+    const refreshedInfo = await callServerInfo(fetchImpl, resource, refreshedAccess, 2, gemini);
     if (typeof refreshedInfo?.version !== "string" || refreshedInfo.version !== version) {
       throw new Error("release OAuth canary refreshed credential reached the wrong Worker version");
     }
@@ -206,16 +208,49 @@ export function normalizeCanaryWorkerUrl(value) {
   return url.origin;
 }
 
-async function callServerInfo(fetchImpl, workerUrl, accessToken, id) {
-  const response = await fetchBounded(fetchImpl, "authenticated MCP", `${workerUrl}/mcp`, {
+const GEMINI_PROTOCOL_VERSION = "2025-11-25";
+
+async function verifyGeminiDiscovery(fetchImpl, resource, accessToken) {
+  function request(method, params, id, useVersionHeader) {
+    return fetchBounded(fetchImpl, `Gemini ${method}`, resource, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${accessToken}`,
+        ...(useVersionHeader ? { "MCP-Protocol-Version": GEMINI_PROTOCOL_VERSION } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+    });
+  }
+  const initialize = await request("initialize", {
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    capabilities: {},
+    clientInfo: { name: "machine-bridge-mcp-release-canary", version: "1" },
+  }, 0, false);
+  if (initialize.status !== 200 || initialize.headers.has("Mcp-Session-Id")
+      || (await readMcpPayload(initialize))?.result?.protocolVersion !== GEMINI_PROTOCOL_VERSION) {
+    throw new Error("release OAuth canary Gemini initialization failed");
+  }
+  const initialized = await request("notifications/initialized", {}, undefined, true);
+  if (initialized.status !== 202) throw new Error("release OAuth canary Gemini initialization notification failed");
+  const discovery = await request("tools/list", {}, 1, true);
+  if (discovery.status !== 200) throw new Error("release OAuth canary Gemini tool discovery failed");
+  const tools = (await readMcpPayload(discovery))?.result?.tools;
+  if (!Array.isArray(tools) || !tools.some((tool) => tool?.name === "server_info") || tools.some((tool) => tool?.name === "run_process")) {
+    throw new Error("release OAuth canary Gemini tool discovery changed reviewer authority");
+  }
+}
+
+async function callServerInfo(fetchImpl, resource, accessToken, id, gemini) {
+  const response = await fetchBounded(fetchImpl, "authenticated MCP", resource, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
       authorization: `Bearer ${accessToken}`,
-      "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
-      "Mcp-Method": "tools/call",
-      "Mcp-Name": "server_info",
+      "MCP-Protocol-Version": gemini ? GEMINI_PROTOCOL_VERSION : MCP_PROTOCOL_VERSION,
+      ...(gemini ? {} : { "Mcp-Method": "tools/call", "Mcp-Name": "server_info" }),
       "user-agent": "machine-bridge-mcp-release-canary",
     },
     body: JSON.stringify({
@@ -225,11 +260,11 @@ async function callServerInfo(fetchImpl, workerUrl, accessToken, id) {
       params: {
         name: "server_info",
         arguments: { detail: "summary" },
-        _meta: {
+        ...(gemini ? {} : { _meta: {
           "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
           "io.modelcontextprotocol/clientCapabilities": {},
           "io.modelcontextprotocol/clientInfo": { name: "machine-bridge-mcp-release-canary", version: "1" },
-        },
+        } }),
       },
     }),
   });
