@@ -16,7 +16,7 @@ import {
 import { authorizationPage } from "./oauth-authorization-page.ts";
 import { handleOAuthClientAdminOperation } from "./oauth-client-admin.ts";
 import {
-  MAX_OAUTH_CLIENTS, MAX_OAUTH_CLIENTS_PER_IDENTITY, OAUTH_CLIENT_REGISTRATION_REVISION,
+  MAX_OAUTH_CLIENTS, MAX_OAUTH_CLIENTS_PER_IDENTITY, MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION,
   OAUTH_CLIENT_IDLE_TTL_SECONDS, OAUTH_UNUSED_CLIENT_TTL_SECONDS, oauthClientRegistrationDocument, reusablePendingOAuthClient,
 } from "./oauth-client-contract.ts";
 import { loadOAuthRefreshStore } from "./oauth-refresh-families.ts"; import { oauthRefreshPersistenceEntries } from "./oauth-refresh-persistence.ts";
@@ -151,8 +151,8 @@ export class OAuthController {
     if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uris must be a non-empty array" }, 400);
     }
-    if (redirectUris.length > 5) {
-      return json({ error: "invalid_client_metadata", error_description: "redirect_uris must contain at most 5 entries" }, 400);
+    if (redirectUris.length > MAX_OAUTH_REDIRECT_URIS) {
+      return json({ error: "invalid_client_metadata", error_description: `redirect_uris must contain at most ${MAX_OAUTH_REDIRECT_URIS} entries` }, 400);
     }
     if (redirectUris.some((item) => typeof item !== "string")) {
       return json({ error: "invalid_client_metadata", error_description: "redirect_uris entries must be strings" }, 400);

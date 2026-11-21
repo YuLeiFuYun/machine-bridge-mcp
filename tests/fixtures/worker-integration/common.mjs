@@ -29,11 +29,11 @@ export function configureWorkerIntegration(ctx) {
 export let daemonInstanceSequence = 0;
 export const WORKER_INTEGRATION_WS_MESSAGE_WAIT_MS = 10_000;
 
-async function registerTestClient({ base, redirectUri, name }) {
+async function registerTestClient({ base, redirectUri, redirectUris = [redirectUri], name }) {
   const registration = await fetchJson(`${base}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: name, redirect_uris: [redirectUri] }),
+    body: JSON.stringify({ client_name: name, redirect_uris: redirectUris }),
   });
   assert(registration.response.status === 201, `test client registration failed: ${registration.response.status}`);
   return registration.body;

@@ -880,6 +880,8 @@ Use the deployed Worker and account inventory to narrow the path:
 | `/oauth/token` returns 200 and client inventory shows active access/refresh credentials, but no authenticated `/mcp` request succeeds | Leave OAuth unchanged and diagnose MCP protocol/catalog/host scanning. |
 | Initial MCP succeeds but continuity fails after the access-token lifetime | Diagnose refresh rotation/retry/persistence and confirm the active refresh-family state; do not infer refresh success from initial authorization. |
 
+Gemini Cloud MCP registers six HTTPS redirect URIs. Both registration and persisted-client validation cap the list at six and check each URI. A Worker from before this change rejects a stored client with six redirects, so a rollback must retain the six-URI validator while such clients exist.
+
 For production tails, collect only what is needed to classify the request: method, route/URL, response outcome/status when available, content type, fixed header-presence booleans such as `has_dpop`, and Machine Bridge's bounded `error_class`.
 Never paste or log raw Authorization/DPoP headers, OAuth form bodies, authorization codes, PKCE verifiers, access/refresh tokens, account passwords, JWKs, or raw exception messages.
 `wrangler tail` output is sampled operational evidence; absence of a sampled event is not proof that the request did not occur.

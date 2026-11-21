@@ -8,7 +8,7 @@ import {
   hasOnlyRecordFields, OAUTH_ACCOUNT_FIELDS, OAUTH_CLIENT_FIELDS, OAUTH_CODE_FIELDS,
   OAUTH_FAILURE_FIELDS, OAUTH_STORE_FIELDS, OAUTH_TOKEN_FIELDS,
 } from "./oauth-field-contract.ts";
-import { OAUTH_CLIENT_REGISTRATION_REVISION } from "./oauth-client-contract.ts";
+import { MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION } from "./oauth-client-contract.ts";
 
 const ACCOUNT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/;
 // Accepts both the current `pbkdf2-sha256$<iterations>$<digest>` record and the legacy
@@ -44,7 +44,7 @@ function validAccount(value: unknown, key: string): value is AccountRecord {
 function validClient(value: unknown, key: string): value is OAuthClient {
   if (!plainRecord(value) || !hasOnlyRecordFields(value, OAUTH_CLIENT_FIELDS)
       || value.client_id !== key || !boundedString(value.client_name, 128)
-      || !Array.isArray(value.redirect_uris) || value.redirect_uris.length < 1 || value.redirect_uris.length > 5
+      || !Array.isArray(value.redirect_uris) || value.redirect_uris.length < 1 || value.redirect_uris.length > MAX_OAUTH_REDIRECT_URIS
       || !value.redirect_uris.every((uri) => validRedirectUri(uri))
       || !positiveInteger(value.created_at) || !positiveInteger(value.last_used_at)
       || Number(value.last_used_at) < Number(value.created_at)

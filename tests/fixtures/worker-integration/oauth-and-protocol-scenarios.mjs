@@ -741,8 +741,12 @@ async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
     "Gemini endpoint accepted an untrusted browser origin");
   assert((await stableFetch(resource, { headers: { accept: "text/event-stream" } })).status === 405, "Gemini GET opened a session stream");
 
-  const redirectUri = "https://oauth-redirect.googleusercontent.com/r/machine-bridge-integration";
-  const client = await registerTestClient({ base, redirectUri, name: "Gemini Integration Client" });
+  const redirectUris = ["r", "a"].flatMap((path) => ["", "-sandbox", "-test"].map((environment) =>
+    `https://oauth-redirect${environment}.googleusercontent.com/${path}/test-machine-bridge`));
+  const redirectUri = redirectUris.at(-1);
+  const client = await registerTestClient({ base, redirectUris, name: "Gemini Integration Client" });
+  assert(JSON.stringify(client.redirect_uris) === JSON.stringify(redirectUris),
+    "Gemini registration did not retain all six Google redirect URIs");
   const { accessToken, refreshToken } = await issueAccountToken({
     base, clientId: client.client_id, redirectUri, accountName: "reviewer", password, state: "gemini-state",
     resource: null,

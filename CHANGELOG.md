@@ -1,9 +1,8 @@
 # Changelog
 
-## 3.0.0-beta.217 - 2026-11-21
+## 3.0.0-beta.218 - 2026-11-21
 
-- Add a dedicated, stateless MCP 2025-11-25 endpoint for Gemini Cloud MCP with OAuth audience isolation.
-- Reuse exact-commit GitHub workflow results for npm prepublication verification, retaining artifact, tag, channel, acceptance, and registry checks.
+- Accept and persist all six redirect URIs in a Gemini Cloud MCP OAuth registration. Exercise six-URI registration in the deployed canary.
 
 ## Historical releases
 
