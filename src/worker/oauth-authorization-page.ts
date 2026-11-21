@@ -71,6 +71,48 @@ export function authorizationPage({
 </html>`, status, redirectOrigin);
 }
 
+export function authorizationRedirectPage({
+  location,
+  clientName,
+  serverName,
+}: {
+  location: URL;
+  clientName: string;
+  serverName: string;
+}): Response {
+  if (location.protocol !== "https:" && location.protocol !== "http:") {
+    throw new Error("OAuth authorization redirect target must use HTTPS or HTTP");
+  }
+  const escapedHref = escapeHtml(location.href);
+  const escapedClient = escapeHtml(normalizeDisplayText(clientName, 128, "client"));
+  const escapedServer = escapeHtml(normalizeDisplayText(serverName, 128, "Machine Bridge"));
+  return new Response(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="refresh" content="0;url=${escapedHref}">
+    <title>Returning to ${escapedClient}</title>
+  </head>
+  <body style="font-family: system-ui, sans-serif; max-width: 640px; margin: 48px auto; line-height: 1.5; padding: 0 16px;">
+    <h1>Authorization complete</h1>
+    <p>Returning from ${escapedServer} to <strong>${escapedClient}</strong>...</p>
+    <p><a href="${escapedHref}" rel="noreferrer">Continue to ${escapedClient}</a></p>
+  </body>
+</html>`, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    },
+  });
+}
+
 function clientTrustNotice(authorization: ValidatedAuthorization): string {
   const previouslyAuthorized = authorization.client.has_been_authorized === true
     && Boolean(authorization.client.trusted_account_id);

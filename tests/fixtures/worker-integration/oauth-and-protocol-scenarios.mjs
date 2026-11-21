@@ -748,7 +748,8 @@ async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
   assert(JSON.stringify(client.redirect_uris) === JSON.stringify(redirectUris),
     "Gemini registration did not retain all six Google redirect URIs");
 
-  const challenge = createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url");
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
   async function fetchAuthorizeFormActions(clientId, candidateRedirectUri, state) {
     const page = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({
       response_type: "code",
@@ -767,42 +768,73 @@ async function testGeminiCloudMcp({ base, nativeToken, password, version }) {
   for (const geminiRedirect of [redirectUris[0], redirectUris[1], redirectUri]) {
     const geminiFormActions = await fetchAuthorizeFormActions(client.client_id, geminiRedirect, "gemini-page-state");
     assert(
-      geminiFormActions.size === 4
+      geminiFormActions.size === 2
         && geminiFormActions.has("'self'")
         && geminiFormActions.has(new URL(geminiRedirect).origin)
-        && geminiFormActions.has("https://*.google.com")
-        && geminiFormActions.has("https://*.gemini.google")
+        && !geminiFormActions.has("https://*.google.com")
+        && !geminiFormActions.has("https://*.gemini.google")
         && !geminiFormActions.has("https://*.googleusercontent.com"),
-      `Gemini authorization page CSP did not allow only self, validated Google redirect origin, https://*.google.com, and https://*.gemini.google for ${geminiRedirect}`,
+      `Gemini authorization page CSP broadened beyond self and validated redirect origin for ${geminiRedirect}`,
     );
   }
 
-  const lookalikeRedirects = [
-    "https://oauth-redirect.googleusercontent.com.example.com/r/test",
-    "https://evil.googleusercontent.com/r/test",
-  ];
-  const lookalikeClient = await registerTestClient({
-    base,
-    redirectUris: lookalikeRedirects,
-    name: "Google Lookalike Integration Client",
+  const browserApproved = await stableFetch(`${base}/oauth/authorize`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    body: new URLSearchParams({
+      response_type: "code",
+      client_id: client.client_id,
+      redirect_uri: redirectUris[0],
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      scope: "machine-bridge-mcp",
+      state: "gemini-browser-handoff",
+      account_name: "reviewer",
+      account_password: password,
+    }),
+    redirect: "manual",
   });
-  try {
-    for (const lookalikeRedirect of lookalikeRedirects) {
-      const lookalikeFormActions = await fetchAuthorizeFormActions(lookalikeClient.client_id, lookalikeRedirect, "gemini-lookalike-state");
-      assert(
-        lookalikeFormActions.size === 2
-          && lookalikeFormActions.has("'self'")
-          && lookalikeFormActions.has(new URL(lookalikeRedirect).origin)
-          && !lookalikeFormActions.has("https://*.google.com")
-          && !lookalikeFormActions.has("https://*.gemini.google")
-          && !lookalikeFormActions.has("https://*.googleusercontent.com"),
-        `Google-lookalike redirect ${lookalikeRedirect} received the Gemini callback-chain exception`,
-      );
-    }
-  } finally {
-    const deleted = await fetchJson(`${base}/admin/clients`, adminRequest("DELETE", "/admin/clients", { client_id: lookalikeClient.client_id }));
-    assert(deleted.response.status === 200, `failed to clean up Google-lookalike test client: ${deleted.response.status}`);
-  }
+  assert(browserApproved.status === 200, `Gemini browser authorization returned ${browserApproved.status}`);
+  assert(browserApproved.headers.get("content-type") === "text/html; charset=utf-8", "Gemini browser handoff used wrong content-type");
+  assert(browserApproved.headers.get("cache-control") === "no-store", "Gemini browser handoff was cacheable");
+  assert(browserApproved.headers.get("referrer-policy") === "no-referrer", "Gemini browser handoff leaked referrer");
+  assert(browserApproved.headers.get("x-frame-options") === "DENY", "Gemini browser handoff omitted frame denial");
+  assert(!browserApproved.headers.has("location"), "Gemini browser handoff unexpectedly set HTTP Location");
+  const handoffActions = cspDirectiveSources(browserApproved.headers.get("content-security-policy") ?? "", "form-action");
+  assert(handoffActions.size === 1 && handoffActions.has("'none'"), "Gemini browser handoff permitted form submission");
+  const handoffHtml = await browserApproved.text();
+  assert(!/<script\b/i.test(handoffHtml), "Gemini browser handoff included script");
+  assert(handoffHtml.split(password).length === 1, "Gemini browser handoff reflected password");
+  const handoffMeta = handoffHtml.match(/<meta http-equiv="refresh" content="0;url=([^"]+)">/);
+  assert(handoffMeta, "Gemini browser handoff omitted meta refresh callback");
+  const handoffCallback = new URL(handoffMeta[1].replaceAll("&amp;", "&"));
+  const handoffCode = handoffCallback.searchParams.get("code") ?? "";
+  assert(
+    handoffCallback.origin + handoffCallback.pathname === redirectUris[0]
+      && /^mcp_code_[A-Za-z0-9_-]{43}$/.test(handoffCode)
+      && handoffCallback.searchParams.get("state") === "gemini-browser-handoff"
+      && handoffCallback.searchParams.get("iss") === base,
+    "Gemini browser handoff callback omitted or altered code, state, or issuer",
+  );
+  const handoffToken = await fetchJson(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code: handoffCode,
+      client_id: client.client_id,
+      redirect_uri: redirectUris[0],
+      code_verifier: verifier,
+      resource,
+    }),
+  });
+  assert(handoffToken.response.status === 200 && typeof handoffToken.body.access_token === "string",
+    `Gemini browser handoff token exchange failed: ${handoffToken.response.status}`);
+  assert((await call(handoffToken.body.access_token, "ping", {}, { "MCP-Protocol-Version": initialize.protocolVersion })).status === 200,
+    "Gemini browser handoff token failed MCP ping");
 
   const { accessToken, refreshToken } = await issueAccountToken({
     base, clientId: client.client_id, redirectUri, accountName: "reviewer", password, state: "gemini-state",
