@@ -1,3 +1,5 @@
+import { isGeminiRedirectOrigin } from "./mcp-resource.ts";
+
 const UNSAFE_DISPLAY_CONTROLS = /[\u0000-\u001f\u007f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
 
 export const BUILT_IN_BROWSER_ORIGINS = Object.freeze([
@@ -89,6 +91,9 @@ function authorizationFormActionSources(value: string): string[] {
     if (url.protocol === "https:" && !url.port && microsoftConsentHost) {
       // Power Platform redirects global consent to a regional endpoint and then back to Copilot Studio; CSP checks every hop.
       sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com");
+    } else if (url.protocol === "https:" && !url.port && isGeminiRedirectOrigin(url.origin)) {
+      // Google's OAuth redirect relay forwards authorized callbacks to first-party Google origins; CSP checks every hop.
+      sources.push("https://*.google.com", "https://*.gemini.google");
     }
     return sources;
   } catch {

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { architectureDocumentation } from "./architecture-documentation.mjs";
+import { findSemanticCalls, hasSemanticImport } from "./semantic-analyzer.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -118,6 +119,12 @@ if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
   || !workerHttpSource.includes('url.hostname.endsWith(".consent.azure-apim.net")')
   || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com")')) {
   throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the complete Power Platform callback chain");
+}
+if (!hasSemanticImport(workerHttpSource, "./mcp-resource.ts", { requiredSymbols: ["isGeminiRedirectOrigin"] })
+  || findSemanticCalls(workerHttpSource, { callee: "isGeminiRedirectOrigin" }).length === 0
+  || !/sources\.push\("https:\/\/\*\.google\.com",\s*"https:\/\/\*\.gemini\.google"\)/.test(workerHttpSource)
+  || /\*\.googleusercontent\.com/.test(workerHttpSource)) {
+  throw new Error("authorization HTML no longer scopes Google callback-chain form actions strictly to validated Gemini redirect origins");
 }
 if (!workerOAuthControllerSource.includes("./oauth-authorization-page.ts")
     || !workerOAuthPageSource.includes("new URL(authorization.redirectUri).origin")

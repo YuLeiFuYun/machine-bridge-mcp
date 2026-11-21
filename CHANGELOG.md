@@ -1,8 +1,8 @@
 # Changelog
 
-## 3.0.0-beta.218 - 2026-11-21
+## 3.0.0-beta.219 - 2026-11-21
 
-- Accept and persist all six redirect URIs in a Gemini Cloud MCP OAuth registration. Exercise six-URI registration in the deployed canary.
+- Admit `https://*.google.com` and `https://*.gemini.google` in the OAuth authorization page `form-action` CSP directive exclusively for validated Gemini `oauth-redirect*.googleusercontent.com` callbacks so multi-hop browser redirects complete without wildcarding `googleusercontent.com`.
 
 ## Historical releases
 

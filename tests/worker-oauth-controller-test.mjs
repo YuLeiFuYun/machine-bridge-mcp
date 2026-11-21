@@ -329,6 +329,58 @@ async function testAuthorizationPageRendering() {
   });
   const queryBody = await queryBacked.text();
   assert(queryBody.includes('value="query-client"') && queryBody.includes('value="query-state"'), "authorization page did not preserve query-backed OAuth fields");
+
+  function formActionSourcesFor(redirectUri) {
+    const page = authorizationPage({
+      request: new Request(`${BASE}/oauth/authorize?state=query-state`),
+      base: BASE,
+      serverName: SERVER_NAME,
+      authorization: {
+        client: { client_name: "Google" },
+        redirectUri,
+        requestedResource: `${BASE}/mcp/gemini`,
+      },
+    });
+    const csp = page.headers.get("content-security-policy") || "";
+    const formAction = csp.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith("form-action "));
+    return new Set((formAction || "").split(/\s+/).slice(1));
+  }
+
+  for (const geminiRedirect of [
+    "https://oauth-redirect.googleusercontent.com/r/test",
+    "https://oauth-redirect-sandbox.googleusercontent.com/r/test",
+    "https://oauth-redirect-test.googleusercontent.com/a/test",
+  ]) {
+    const origin = new URL(geminiRedirect).origin;
+    const sources = formActionSourcesFor(geminiRedirect);
+    assert(
+      sources.size === 4
+        && sources.has("'self'")
+        && sources.has(origin)
+        && sources.has("https://*.google.com")
+        && sources.has("https://*.gemini.google")
+        && !sources.has("https://*.googleusercontent.com"),
+      `Gemini authorization page CSP did not match expected form-action set for ${geminiRedirect}`,
+    );
+  }
+
+  for (const lookalikeRedirect of [
+    "https://oauth-redirect.googleusercontent.com.example.com/r/test",
+    "https://evil.googleusercontent.com/r/test",
+    "https://sub.oauth-redirect.googleusercontent.com/r/test",
+    "https://oauth-redirect.googleusercontent.com:8443/r/test",
+  ]) {
+    const origin = new URL(lookalikeRedirect).origin;
+    const sources = formActionSourcesFor(lookalikeRedirect);
+    assert(
+      sources.size === 2
+        && sources.has("'self'")
+        && sources.has(origin)
+        && !sources.has("https://*.google.com")
+        && !sources.has("https://*.gemini.google"),
+      `lookalike authorization page unexpectedly received Google callback-chain exception for ${lookalikeRedirect}`,
+    );
+  }
 }
 
 async function testAuthorizationAndTokens() {

@@ -162,6 +162,7 @@ The Gemini route implements the `2025-11-25` initialization handshake, tool list
 OAuth navigations and form submissions from opaque or client-specific browser containers are routed normally but receive no cross-origin response-sharing permission unless their exact origin is allowed.
 The authorization page permits form navigation only to itself and the validated redirect origin.
 For a validated Microsoft `consent.azure-apim.net` callback, the form policy also permits HTTPS subdomains of that same Microsoft consent domain and the exact Copilot Studio origin because Power Platform redirects its global callback to a regional endpoint and then back to Copilot Studio.
+For validated Gemini `oauth-redirect*.googleusercontent.com` callbacks (`oauth-redirect`, `oauth-redirect-sandbox`, and `oauth-redirect-test`), the form policy also permits `https://*.google.com` and `https://*.gemini.google` (without wildcarding `googleusercontent.com`) so multi-hop browser redirects back to Gemini complete cleanly.
 Claude remote connectors originate from Anthropic infrastructure, while Copilot Studio connectivity runs through Power Platform connectors, so neither is a reason to broaden the browser CORS allowlist.
 
 Several OAuth clients and named accounts can coexist.
