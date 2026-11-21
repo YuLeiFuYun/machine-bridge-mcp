@@ -6,6 +6,7 @@ import { McpRequestCancellationRegistry } from "./mcp-request-cancellation.ts";
 import { closedSubscriptionResponse } from "./mcp-subscription-stream.ts";
 import { McpSubscriptionRegistry } from "./mcp-subscription-registry.ts";
 import { handleGeminiMcp } from "./mcp-gemini.ts";
+import { GEMINI_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
 import { json } from "./http.ts";
 import {
   cacheableResult, discoverResult, emptySubscriptionAcknowledgement,
@@ -40,6 +41,7 @@ type McpConfig = Readonly<{
     requestKey?: string;
     clientCapabilities?: Record<string, unknown>;
     progressToken?: unknown;
+    mcpPath?: McpResourcePath;
   }) => Promise<unknown>;
 }>;
 type McpDispatchResult = Readonly<{
@@ -79,7 +81,7 @@ export class McpController {
         serverInfo: this.config.serverInfo,
         tools: (authorized) => this.config.tools(authorized, false),
         recordError: this.config.recordError,
-        callTool: this.config.callTool,
+        callTool: (toolInput) => this.config.callTool({ ...toolInput, mcpPath: GEMINI_MCP_PATH }),
       },
     });
   }
