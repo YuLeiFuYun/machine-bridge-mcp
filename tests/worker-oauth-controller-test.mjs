@@ -10,7 +10,7 @@ import { isCurrentOAuthStore } from "../src/worker/oauth-store-validation.ts";
 import { saveOAuthStores } from "../src/worker/oauth-token-issuance.ts";
 import { workerErrorClass } from "../src/worker/http.ts";
 import { authorityRevocations } from "../src/worker/authority-revocations.ts";
-import { OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
+import { MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
 
 const SERVER_NAME = "machine-bridge-mcp";
 const BASE = "https://bridge.example.test";
@@ -58,7 +58,7 @@ async function testOAuthStoreCapacityBudget() {
     const clientId = `mcp_client_${suffix}`;
     clients.push(clientId);
     store.clients[clientId] = {
-      client_id: clientId, client_name: "C".repeat(128), redirect_uris: Array.from({ length: 5 }, (_, offset) => `${redirect.slice(0, 1022)}${offset}`),
+      client_id: clientId, client_name: "C".repeat(128), redirect_uris: Array.from({ length: MAX_OAUTH_REDIRECT_URIS }, (_, offset) => `${redirect.slice(0, 1022)}${offset}`),
       created_at: now, last_used_at: now, has_been_authorized: true,
       registration_identity: `hmac-sha256:${index.toString(16).padStart(64, "0")}`,
       registration_revision: OAUTH_CLIENT_REGISTRATION_REVISION,
@@ -219,6 +219,23 @@ async function testStoreAndRegistration() {
     body: JSON.stringify({ redirect_uris: ["http://remote.example.test/callback"] }),
   }));
   assert(invalid.status === 400, "non-local insecure redirect URI was accepted");
+
+  const sixRedirects = Array.from({ length: 6 }, (_, index) => `${REDIRECT}-${index}`);
+  const registerRedirects = (redirect_uris) => controller.registerClient(new Request(`${BASE}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.11" },
+    body: JSON.stringify({ redirect_uris }),
+  }));
+  const six = await registerRedirects(sixRedirects);
+  const sixClient = await six.json();
+  assert(six.status === 201 && JSON.stringify(sixClient.redirect_uris) === JSON.stringify(sixRedirects),
+    "registration did not retain all six redirect URIs");
+  const reloaded = await createController(storage).oauthStore();
+  assert(JSON.stringify(reloaded.clients[sixClient.client_id]?.redirect_uris) === JSON.stringify(sixRedirects),
+    "persisted OAuth client with six redirects did not reload");
+  const seven = await registerRedirects([...sixRedirects, `${REDIRECT}-7`]);
+  assert(seven.status === 400 && (await seven.json()).error === "invalid_client_metadata",
+    "registration accepted more than six redirect URIs");
 }
 
 

@@ -52,7 +52,7 @@ export async function runReleaseOAuthCanaryFlow({
       headers: { "content-type": "application/json", "user-agent": "machine-bridge-mcp-release-canary" },
       body: JSON.stringify({
         client_name: "Machine Bridge release OAuth canary",
-        redirect_uris: [RELEASE_OAUTH_CANARY_CALLBACK],
+        redirect_uris: canaryRedirectUris(gemini),
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         token_endpoint_auth_method: "none",
@@ -158,6 +158,11 @@ export async function runReleaseOAuthCanaryFlow({
     refreshedMcp: true,
     cleanupCompleted: true,
   });
+}
+
+function canaryRedirectUris(gemini) {
+  if (!gemini) return [RELEASE_OAUTH_CANARY_CALLBACK];
+  return [...Array.from({ length: 5 }, (_, index) => `${RELEASE_OAUTH_CANARY_CALLBACK}-${index}`), RELEASE_OAUTH_CANARY_CALLBACK];
 }
 
 async function cleanupStaleCanaryState(admin) {
