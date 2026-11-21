@@ -54,10 +54,13 @@ for (const task of ["coverage:test", "browser-bridge:test", "package:test", "sbo
 }
 assert.deepEqual(FULL_PREFLIGHT_CHECK_TASKS, ["sbom:test"], "full plan lost its cheap exact-dependency/SBOM preflight");
 assert(FULL_CHECK_TASKS[0] === "sbom:test"
-  && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("managed-jobs:test")
+  && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("managed-job-integration:test")
   && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("coverage:test"),
 "full plan no longer starts by failing fast on an invalid source dependency tree before other verification work");
-for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
+for (const task of [
+  "self-test", "service-platform:test", "full-access:test",
+  "managed-job-resource-idempotency:test", "managed-job-integration:test", "managed-job-terminal-maintenance:test",
+]) {
   assert(PLATFORM_ONLY_CHECK_TASKS.includes(task), `cross-platform behavior task is not platform-only: ${task}`);
 }
 for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "control-plane-resilience:test", "service-restart:test", "browser-identity:test", "check-runner:test", "release-channel:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "sbom-check:test", "npm-environment:test", "hardened-npm:test", "consumer-package-security:test", "wrangler-toolchain:test", "worker-types-generator:test", "workflow-policy:test", "managed-job-boundary:test", "release-diagnostic:test", "browser-devtools-input:test", "browser-devtools-observation:test", "browser-computer-observation:test", "browser-service-worker:test", "app-automation:test"]) {

@@ -188,7 +188,9 @@ export const PLATFORM_ONLY_CHECK_TASKS = Object.freeze([
   "atomic-fs:test",
   "ssh-key:test",
   "full-access:test",
-  "managed-jobs:test",
+  "managed-job-resource-idempotency:test",
+  "managed-job-integration:test",
+  "managed-job-terminal-maintenance:test",
 ]);
 
 export const FULL_PREFLIGHT_CHECK_TASKS = Object.freeze([

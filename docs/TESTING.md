@@ -56,7 +56,7 @@ In particular, a green fast plan is not evidence that the npm tarball has correc
 `npm run check` remains the authoritative complete gate.
 
 During `check:full`, the verification runner owns one private, generation-bound V8 coverage directory for the full invocation and passes it only to tasks that directly execute the curated standalone coverage fixtures; unrelated verification tasks never receive that coverage environment.
-The `coverage:test` gate reuses reports produced by those coverage-relevant tasks that already completed in that same invocation, then executes only coverage fixtures whose evidence is still missing before applying the unchanged module thresholds.
+The `coverage:test` gate reuses reports produced by those coverage-relevant tasks that already completed in that same invocation, then executes only coverage fixtures whose evidence is still missing before applying the unchanged module thresholds. The full plan invokes the managed-job integration and terminal-maintenance fixtures directly so their reports can be reused. `npm run managed-jobs:test` remains the standalone entry point for all three managed-job suites.
 The reuse context is parent-process-bound, permission-checked, tied to the exact coverage-input generation, and removed when the full plan settles.
 A standalone `npm run coverage:test` has no such context, creates its own private directory, executes its complete fixture list, and therefore remains independently authoritative.
 

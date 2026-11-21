@@ -478,7 +478,10 @@ if (packageJson.scripts?.check !== "npm run check:full"
 for (const required of ["runtime-boundaries:test", "worker-oauth-controller:test", "shell:test", "lint:test", "lint", "deadline:test", "release-channel:test", "release-candidate-manifest:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "npm-environment:test", "hardened-npm:test", "consumer-package-security:test", "wrangler-toolchain:test"]) {
   if (!FAST_CHECK_TASKS.includes(required)) throw new Error(`fast check plan omits required task: ${required}`);
 }
-for (const required of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
+for (const required of [
+  "self-test", "service-platform:test", "full-access:test",
+  "managed-job-resource-idempotency:test", "managed-job-integration:test", "managed-job-terminal-maintenance:test",
+]) {
   if (!PLATFORM_CHECK_TASKS.includes(required)) throw new Error(`platform check plan omits required task: ${required}`);
 }
 const localSelfTestSource = readLfSource("tests", "local-self-test.mjs");
