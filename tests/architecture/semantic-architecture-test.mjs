@@ -11,7 +11,7 @@ import {
   hasSemanticImport,
   measureSemanticComplexity,
 } from "./semantic-analyzer.mjs";
-import { toolNamesForPolicy, policyProfile } from "../../src/local/policy.mjs";
+import { toolNamesForPolicy, policyProfile } from "../../src/local/core/policy.mjs";
 import { CODE_MODE_SDK_RESOURCE_URI, readHelpResource } from "../../src/shared/help-resources.mjs";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -90,24 +90,24 @@ assert.throws(() => {
 }, /calls forbidden operation: performance\.now/);
 
 // 6. Test on real production codebase files
-const errorsMjsSource = readFileSync(join(root, "src", "local", "errors.mjs"), "utf8");
+const errorsMjsSource = readFileSync(join(root, "src", "local", "core", "errors.mjs"), "utf8");
 const errorsExports = getSemanticExports(errorsMjsSource, "errors.mjs");
 assert(errorsExports.some((e) => e.name === "BridgeError" && e.kind === "class"));
 assert(errorsExports.some((e) => e.name === "actionableGuidance" && e.kind === "function"));
 assert(errorsExports.some((e) => e.name === "publicError" && e.kind === "function"));
 
-const computerUseSource = readFileSync(join(root, "src", "local", "computer-use.mjs"), "utf8");
-assert(hasSemanticImport(computerUseSource, "./computer-use-deadline.mjs"));
-assert(hasSemanticImport(computerUseSource, "./computer-use-snapshot-store.mjs"));
+const computerUseSource = readFileSync(join(root, "src", "local", "automation", "computer-use.mjs"), "utf8");
+assert(hasSemanticImport(computerUseSource, "./computer-use-policies.mjs"));
+assert(hasSemanticImport(computerUseSource, "./computer-use-contracts.mjs"));
 
 // 7. Verify modern modular architecture boundaries via AST
-const workspacePathsSource = readFileSync(join(root, "src", "local", "workspace-paths.mjs"), "utf8");
+const workspacePathsSource = readFileSync(join(root, "src", "local", "files", "workspace-paths.mjs"), "utf8");
 const workspacePathsExports = getSemanticExports(workspacePathsSource, "workspace-paths.mjs");
 for (const expected of ["expandHome", "resolveWorkspace", "defaultFirstRunWorkspace", "ensureWorkspaceDirectory", "defaultStateRoot", "assertStateRootSeparatedFromWorkspace"]) {
   assert(workspacePathsExports.some((e) => e.name === expected), `workspace-paths.mjs missing expected semantic export: ${expected}`);
 }
 
-const stdioSource = readFileSync(join(root, "src", "local", "stdio.mjs"), "utf8");
+const stdioSource = readFileSync(join(root, "src", "local", "transport", "stdio.mjs"), "utf8");
 assert(hasSemanticImport(stdioSource, "../shared/help-resources.mjs", { requiredSymbols: ["HELP_RESOURCES", "readHelpResource"] }),
   "stdio.mjs does not semantically import help resources");
 assert(hasSemanticImport(stdioSource, "../shared/mcp-task-contract.mjs", { requiredSymbols: ["MCP_TASK_EXTENSION_ID", "supportsMcpTasks"] }),

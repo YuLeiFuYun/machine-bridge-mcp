@@ -12,10 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 import { publishedPackageJsonText } from "../src/shared/published-package.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";
 
 export const ACCEPTANCE_SCHEMA_VERSION = 1;

@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 import {
   brotliCompressSync, brotliDecompressSync, constants as zlibConstants,
 } from "node:zlib";
-import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
-import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
+import { readBoundedRegularFileWithInfoSync } from "../src/local/core/secure-file.mjs";
+import { replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
 import { runCompletedWranglerCommand } from "./wrangler-command-lifecycle.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

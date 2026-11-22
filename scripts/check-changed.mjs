@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseAst } from "./source-syntax.mjs";
+import { parseAst } from "./lib/verification.mjs";
 import { FAST_CHECK_TASKS, SERIAL_FAST_CHECK_TASKS } from "./check-plan.mjs";
 import { directNodeInvocation, runVerificationPlan } from "./check-runner.mjs";
 
@@ -37,7 +37,7 @@ export function selectAffectedChecks({ root, changedPaths, files, packageScripts
     return plan([], "no_changes");
   }
   if (changed.every((path) => /^(?:docs\/.*\.md|(?:README|CHANGELOG|CONTRIBUTING|AGENTS|SECURITY|SUPPORT|GOVERNANCE)\.md)$/.test(path))) {
-    return plan(["privacy:check", "architecture:test", "markdown:test", "tool-docs:check", "policy-docs:check"], "documentation");
+    return plan(["privacy:check", "architecture:test", "test:docs", "tool-docs:check", "policy-docs:check", "components-doc:check", "help-resources:check"], "documentation");
   }
   if (changed.some((path) => !/^(?:src|tests|scripts|browser-extension)\//.test(path) || (!CODE.has(extname(path)) && extname(path) !== ".json"))) {
     full("configuration_or_unclassified_change");
@@ -68,6 +68,12 @@ export function selectAffectedChecks({ root, changedPaths, files, packageScripts
     if (invocation?.args.some((argument) => impacted.has(argument))) selected.add(task);
   }
   if (changed.some((path) => path.startsWith("src/")) && selected.size === BASE_CHECKS.length) full("no_test_entrypoint_reached");
+  if (changed.some((path) => /^(?:src|browser-extension|bin)\//.test(path))) {
+    selected.add("components-doc:check");
+  }
+  if (changed.some((path) => path === "src/shared/help-resources-content.json" || /^docs\/help\/.*\.md$/.test(path))) {
+    selected.add("help-resources:check");
+  }
   return plan([...selected], fallbackReason ? "fast_fallback" : "static_dependency_selection");
 
   function plan(tasks, mode) {

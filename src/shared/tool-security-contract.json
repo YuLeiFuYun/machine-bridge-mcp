@@ -85,6 +85,10 @@
       "family": "browser-upload",
       "effect": "side-effecting"
     },
+    "browser_network_log": {
+      "family": "browser-session",
+      "effect": "read-only"
+    },
     "agent_context": {
       "family": "file-read",
       "effect": "read-only"

@@ -2,7 +2,7 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { runOfficialMcpConformance } from "../../../scripts/official-mcp-conformance.mjs";
 import serverMetadata from "../../../src/shared/server-metadata.json" with { type: "json" };
-import { workerToolsForRole } from "../../../src/worker/worker-tool-authority.ts";
+import { workerToolsForRole } from "../../../src/worker/mcp/tool-authority.ts";
 import {
   registerTestClient, issueAccountToken, waitForWorker, fetchJson, stableFetch,
   adminRequest, currentMcpHeaders, currentMcpRequest, currentMcpCall, callToolsList,
@@ -253,42 +253,34 @@ export async function runOAuthAndProtocolScenarios(context) {
   const authorizationCsp = page.headers.get("content-security-policy") ?? "";
   assert(authorizationCsp.includes("frame-ancestors 'none'"), "authorization page lacks CSP frame protection");
   const authorizationFormActions = cspDirectiveSources(authorizationCsp, "form-action");
-  assert(authorizationFormActions.size === 2 && authorizationFormActions.has("'self'") && authorizationFormActions.has("http://localhost"), "authorization page CSP did not contain only self and the validated loopback redirect origin");
+  assert(authorizationFormActions.size === 1 && authorizationFormActions.has("'self'"), "authorization page CSP did not lock form-action to 'self'");
   assert(page.headers.get("cache-control") === "no-store", "authorization page is cacheable");
 
   const chatGptPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: chatGptRedirectUri, state: "chatgpt-page-state" })}`);
   const chatGptPageCsp = chatGptPage.headers.get("content-security-policy") ?? "";
   assert(chatGptPage.status === 200, `ChatGPT authorization page failed: ${chatGptPage.status}`);
   const chatGptFormActions = cspDirectiveSources(chatGptPageCsp, "form-action");
-  assert(chatGptFormActions.size === 2 && chatGptFormActions.has("'self'") && chatGptFormActions.has("https://chatgpt.com"), "ChatGPT authorization page CSP did not contain only self and its validated redirect origin");
+  assert(chatGptFormActions.size === 1 && chatGptFormActions.has("'self'"), "ChatGPT authorization page CSP did not lock form-action to 'self'");
 
   const claudePage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: claudeRedirectUri, state: "claude-page-state" })}`);
   const claudePageCsp = claudePage.headers.get("content-security-policy") ?? "";
   assert(claudePage.status === 200, `Claude authorization page failed: ${claudePage.status}`);
   const claudeFormActions = cspDirectiveSources(claudePageCsp, "form-action");
-  assert(claudeFormActions.size === 2 && claudeFormActions.has("'self'") && claudeFormActions.has("https://claude.ai"), "Claude authorization page CSP did not contain only self and its validated redirect origin");
+  assert(claudeFormActions.size === 1 && claudeFormActions.has("'self'"), "Claude authorization page CSP did not lock form-action to 'self'");
 
   const copilotPage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: copilotRedirectUri, state: "copilot-page-state" })}`);
   const copilotPageCsp = copilotPage.headers.get("content-security-policy") ?? "";
   assert(copilotPage.status === 200, `Copilot Studio authorization page failed: ${copilotPage.status}`);
   const copilotFormActions = cspDirectiveSources(copilotPageCsp, "form-action");
-  assert(
-    copilotFormActions.size === 4
-      && copilotFormActions.has("'self'")
-      && copilotFormActions.has("https://global.consent.azure-apim.net")
-      && copilotFormActions.has("https://*.consent.azure-apim.net")
-      && copilotFormActions.has("https://copilotstudio.microsoft.com"),
-    "Copilot Studio authorization page CSP did not allow only self, the validated global callback, Microsoft consent subdomains, and the final studio callback",
-  );
+  assert(copilotFormActions.size === 1 && copilotFormActions.has("'self'"), "Copilot Studio authorization page CSP did not lock form-action to 'self'");
 
   const consentLookalikePage = await stableFetch(`${base}/oauth/authorize?${new URLSearchParams({ ...authorization, redirect_uri: consentLookalikeRedirectUri, state: "consent-lookalike-state" })}`);
   const consentLookalikeCsp = consentLookalikePage.headers.get("content-security-policy") ?? "";
   assert(consentLookalikePage.status === 200, `consent-domain lookalike authorization page failed: ${consentLookalikePage.status}`);
   const consentLookalikeFormActions = cspDirectiveSources(consentLookalikeCsp, "form-action");
   assert(
-    consentLookalikeFormActions.size === 2
+    consentLookalikeFormActions.size === 1
       && consentLookalikeFormActions.has("'self'")
-      && consentLookalikeFormActions.has("https://global.consent.azure-apim.net.example.com")
       && !consentLookalikeFormActions.has("https://*.consent.azure-apim.net")
       && !consentLookalikeFormActions.has("https://copilotstudio.microsoft.com"),
     "consent-domain lookalike received the Microsoft callback-chain exception",
@@ -742,7 +734,7 @@ async function testGeminiCloudMcp({ base, nativeToken, password, ownerPassword, 
   const unauthenticated = await call(null, "initialize", initialize);
   assert(unauthenticated.status === 401 && unauthenticated.headers.get("www-authenticate")?.includes(`resource_metadata="${metadataUrl}"`),
     "Gemini initialize did not require OAuth or advertise its own resource metadata");
-  assert((await call(nativeToken, "initialize", initialize)).status === 401, "Native token reached the Gemini resource");
+  assert((await call(nativeToken, "initialize", initialize)).status === 200, "Same-deployment token should reach /mcp/gemini");
   assert((await call(null, "initialize", initialize, { origin: "https://example.invalid" })).status === 403,
     "Gemini endpoint accepted an untrusted browser origin");
   assert((await stableFetch(resource, { headers: { accept: "text/event-stream" } })).status === 405, "Gemini GET opened a session stream");
@@ -774,13 +766,12 @@ async function testGeminiCloudMcp({ base, nativeToken, password, ownerPassword, 
   for (const geminiRedirect of [redirectUris[0], redirectUris[1], redirectUri]) {
     const geminiFormActions = await fetchAuthorizeFormActions(client.client_id, geminiRedirect, "gemini-page-state");
     assert(
-      geminiFormActions.size === 2
+      geminiFormActions.size === 1
         && geminiFormActions.has("'self'")
-        && geminiFormActions.has(new URL(geminiRedirect).origin)
         && !geminiFormActions.has("https://*.google.com")
         && !geminiFormActions.has("https://*.gemini.google")
         && !geminiFormActions.has("https://*.googleusercontent.com"),
-      `Gemini authorization page CSP broadened beyond self and validated redirect origin for ${geminiRedirect}`,
+      `Gemini authorization page CSP broadened beyond 'self' for ${geminiRedirect}`,
     );
   }
 
@@ -846,8 +837,8 @@ async function testGeminiCloudMcp({ base, nativeToken, password, ownerPassword, 
     base, clientId: client.client_id, redirectUri, accountName: "reviewer", password, state: "gemini-state",
     resource: null,
   });
-  assert((await currentMcpCall(base, accessToken, 9100, "tools/list", {})).response.status === 401,
-    "Gemini token reached the native resource");
+  assert((await currentMcpCall(base, accessToken, 9100, "tools/list", {})).response.status === 200,
+    "Same-deployment token should reach /mcp");
   const init = await call(accessToken, "initialize", initialize);
   const initialized = await init.json();
   assert(init.status === 200 && initialized.id === 0 && initialized.result?.protocolVersion === initialize.protocolVersion
@@ -901,9 +892,9 @@ async function testGeminiCloudMcp({ base, nativeToken, password, ownerPassword, 
       }),
     });
   }
-  const wrongTarget = await refresh(`${base}/mcp`);
+  const wrongTarget = await refresh("https://other.example/mcp");
   assert(wrongTarget.response.status === 400 && wrongTarget.body.error === "invalid_target",
-    "Gemini refresh permitted an audience change");
+    "Gemini refresh permitted an alien resource target");
   const rotation = await refresh(resource);
   assert(rotation.response.status === 200 && rotation.body.refresh_token !== refreshToken
     && (await call(rotation.body.access_token, "ping", {}, protocol)).status === 200, "Gemini OAuth refresh did not rotate usable credentials");

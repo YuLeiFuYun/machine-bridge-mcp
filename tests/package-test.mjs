@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { publishedPackageJsonText, publishedPackageManifest } from "../src/shared/published-package.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -49,26 +49,19 @@ try {
     "native/macos/MachineBridgeBackgroundInputSmokeFixture.swift",
     "tests/fixtures/native/MachineBridgeBackgroundInputSmokeFixture.swift",
     "tests/fixtures/tool-output-contract.json",
-    "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/PROJECT_STANDARDS.md", "docs/RELEASING.md", "docs/TESTING.md",
+    "docs/ARCHITECTURE.md", "docs/ENGINEERING.md", "docs/RELEASING.md", "docs/TESTING.md",
   ]) {
     if (record.files.some((item) => item.path === repositoryOnly)) throw new Error(`npm package retained repository-only maintenance material ${repositoryOnly}`);
   }
-  if (!record.files.some((item) => item.path === "src/local/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
+  if (!record.files.some((item) => item.path === "src/local/transport/relay-connection.mjs")) throw new Error("npm package omitted the relay lifecycle module");
   for (const file of [
-    "src/local/hardened-npm.mjs",
-    "src/local/hardened-npm-download.mjs",
-    "src/local/hardened-npm-download-timeout.mjs",
-    "src/local/hardened-npm-extract.mjs",
-    "src/local/hardened-npm-verification.mjs",
-    "src/local/npm-environment.mjs",
-    "src/local/private-toolchain-integrity.mjs",
-    "src/local/wrangler-toolchain.mjs",
-    "src/local/wrangler-toolchain-verification.mjs",
+    "src/local/deploy/hardened-npm.mjs",
+    "src/local/deploy/npm.mjs",
+    "src/local/deploy/cf-network-integrity.mjs",
+    "src/local/deploy/wrangler-toolchain.mjs",
     "src/local/wrangler-toolchain/package.json",
     "src/local/wrangler-toolchain/package-lock.json",
-    "src/local/cf-authentication.mjs",
-    "src/local/cf-project.mjs",
-    "src/local/cf-network-integrity.mjs",
+    "src/local/deploy/cf-project.mjs",
     "cloudflare.config.ts",
     "wrangler.config.ts",
     "scripts/release-diagnostic.mjs",
@@ -109,64 +102,53 @@ try {
   for (const tool of ["cf", "wrangler", "undici", "miniflare", "workerd"]) {
     if (Object.hasOwn(packageJson.dependencies || {}, tool)) throw new Error(`Consumer dependencies must exclude the private deployment tool ${tool}`);
   }
-  for (const [tool, version] of Object.entries({ cf: "1.0.0-beta.20", wrangler: "4.151.3" })) {
-    if (packageJson.devDependencies?.[tool] !== version || privateManifest.dependencies?.[tool] !== version
+  for (const tool of ["cf", "wrangler"]) {
+    const version = String(packageJson.devDependencies?.[tool] || "");
+    if (!version || privateManifest.dependencies?.[tool] !== version
         || privateLock.packages?.[""]?.dependencies?.[tool] !== version
         || privateLock.packages?.[`node_modules/${tool}`]?.version !== version) {
       throw new Error(`The packaged private ${tool} toolchain must retain its exact source development and lockfile pin`);
     }
   }
   if (Object.hasOwn(privateManifest.dependencies, "undici")
-      || privateLock.packages["node_modules/undici"].version !== "7.30.1"
-      || privateLock.packages["node_modules/zod"].version !== "4.6.7") {
+      || privateLock.packages["node_modules/undici"]?.version !== privateManifest.overrides?.undici
+      || privateLock.packages["node_modules/zod"]?.version !== privateManifest.overrides?.zod) {
     throw new Error("The private toolchain must verify transitive Undici/Zod without a redundant direct dependency");
   }
-  if (!record.files.some((item) => item.path === "src/local/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
+  if (!record.files.some((item) => item.path === "src/local/runtime/runtime.mjs")) throw new Error("npm package omitted the local runtime module");
   for (const module of [
-    "runtime-reporting.mjs", "runtime-info-projection.mjs", "runtime-diagnostics.mjs", "runtime-capabilities.mjs", "application-capability-projection.mjs", "execution-routing.mjs",
-    "runtime-tool-handlers.mjs", "runtime-relay.mjs", "runtime-paths.mjs", "runtime-resource-service.mjs",
-    "file-mutation-coordinator.mjs", "filesystem-identity.mjs", "workspace-file-transaction.mjs", "workspace-file-transaction-helpers.mjs", "relay-connection-classification.mjs",
+    "runtime/runtime-services.mjs", "runtime/runtime-projections.mjs", "runtime/runtime-diagnostics.mjs", "automation/app-macos-jxa.mjs", "runtime/call-registry.mjs", "runtime/runtime-relay.mjs",
+    "core/filesystem-identity.mjs", "files/workspace-transaction.mjs", "transport/relay-classification.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted runtime boundary ${module}`);
   }
-  if (!record.files.some((item) => item.path === "src/local/agent-context.mjs")) throw new Error("npm package omitted the agent-context module");
-  for (const module of ["agent-context-projection.mjs", "agent-skill-discovery.mjs", "agent-text-file.mjs"]) {
+  if (!record.files.some((item) => item.path === "src/local/agent/agent-context.mjs")) throw new Error("npm package omitted the agent-context module");
+  for (const module of ["agent/agent-contract.mjs", "agent/agent-skill-discovery.mjs"]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted Agent boundary ${module}`);
   }
-  if (!record.files.some((item) => item.path === "src/local/agent-contract.mjs")) throw new Error("npm package omitted the agent contract module");
-  if (!record.files.some((item) => item.path === "src/local/default-instructions.mjs")) throw new Error("npm package omitted the default-instructions module");
-  if (!record.files.some((item) => item.path === "src/local/daemon-process.mjs")) throw new Error("npm package omitted the daemon-process module");
-  if (!record.files.some((item) => item.path === "src/local/process-identity.mjs")) throw new Error("npm package omitted the process-identity module");
-  if (!record.files.some((item) => item.path === "src/local/exclusive-file.mjs")) throw new Error("npm package omitted the atomic exclusive-file module");
-  if (!record.files.some((item) => item.path === "src/local/service-lifecycle.mjs")) throw new Error("npm package omitted the service-lifecycle module");
-  if (!record.files.some((item) => item.path === "src/local/app-automation.mjs")) throw new Error("npm package omitted the application-automation module");
-  if (!record.files.some((item) => item.path === "src/local/browser-bridge.mjs")) throw new Error("npm package omitted the browser-bridge module");
+  if (!record.files.some((item) => item.path === "src/local/agent/agent-contract.mjs")) throw new Error("npm package omitted the agent contract module");
+  if (!record.files.some((item) => item.path === "src/local/agent/default-instructions.mjs")) throw new Error("npm package omitted the default-instructions module");
+  if (!record.files.some((item) => item.path === "src/local/transport/daemon-process.mjs")) throw new Error("npm package omitted the daemon-process module");
+  if (!record.files.some((item) => item.path === "src/local/process/identity.mjs")) throw new Error("npm package omitted the process-identity module");
+  if (!record.files.some((item) => item.path === "src/local/core/exclusive-file.mjs")) throw new Error("npm package omitted the atomic exclusive-file module");
+  if (!record.files.some((item) => item.path === "src/local/deploy/service-support.mjs")) throw new Error("npm package omitted the service-lifecycle module");
+  if (!record.files.some((item) => item.path === "src/local/automation/app-automation.mjs")) throw new Error("npm package omitted the application-automation module");
+  if (!record.files.some((item) => item.path === "src/local/automation/browser-bridge.mjs")) throw new Error("npm package omitted the browser-bridge module");
   for (const module of [
-    "browser-request-registry.mjs", "browser-bridge-http.mjs", "browser-broker-routes.mjs", "browser-broker-server.mjs", "windows-launcher.mjs",
-    "managed-job-lock.mjs", "managed-job-projection.mjs", "managed-job-storage.mjs", "managed-job-runner.mjs",
-    "managed-job-cancellation.mjs", "managed-job-directory.mjs", "managed-job-hosted-status.mjs", "managed-job-listing.mjs",
-    "resource-admission-diagnostic-error.mjs",
-    "relay-probe-deadline.mjs",
-    "relay-probe-dispatch.mjs",
-    "relay-heartbeat-stall.mjs",
-    "relay-heartbeat-options.mjs",
-    "relay-connect-timing.mjs",
-    "relay-transport-probe.mjs",
-    "relay-transport-probe-send.mjs",
-    "relay-transport-error-state.mjs",
-    "process-session-read.mjs", "process-session-remote-poll.mjs",
+    "automation/browser-broker-routes.mjs", "automation/browser-broker.mjs", "deploy/service-platforms.mjs",
+    "jobs/directory.mjs", "jobs/projection.mjs", "jobs/runner-lifecycle.mjs", "jobs/listing.mjs",
+    "process/resource-admission-policy.mjs",
+    "transport/relay-heartbeat.mjs",
+    "transport/relay-recovery.mjs",
+    "transport/relay-classification.mjs",
+    "transport/daemon-http-relay-protocol.mjs",
+    "process/session-helpers.mjs",
   ]) {
     if (!record.files.some((item) => item.path === `src/local/${module}`)) throw new Error(`npm package omitted extracted local boundary ${module}`);
   }
-  if (!record.files.some((item) => item.path === "src/local/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
+  if (!record.files.some((item) => item.path === "src/local/automation/browser-operation-service.mjs")) throw new Error("npm package omitted browser operation semantics");
   if (!record.files.some((item) => item.path === "src/worker/index.ts")) throw new Error("npm package omitted the worker entrypoint");
-  for (const module of [
-    "mcp-jsonrpc.ts", "websocket-protocol.ts", "mcp-http-contract.ts", "mcp-controller.ts", "mcp-tasks.ts", "mcp-prompts.ts",
-    "mcp-task-service.ts", "mcp-task-store.ts", "mcp-task-result-codec.ts", "mcp-task-projection.ts", "mcp-task-seed.ts", "mcp-task-dispatch.ts",
-    "mcp-streamed-tool-dispatch.ts", "mcp-tool-call-dispatch.ts",
-    "mcp-response-proxy.ts", "mcp-response-stream.ts", "mcp-http-accept.ts", "mcp-stream-proxy-contract.ts", "mcp-removed-protocol.ts",
-    "mcp-tool-call-input.ts", "worker-mcp-config.ts", "worker-runtime-config.ts", "server-info.ts", "daemon-status.ts",
-  ]) {
+  for (const module of ["mcp/jsonrpc.ts", "room/websocket-protocol.ts", "mcp/http-contract.ts", "mcp/controller.ts", "mcp/tasks.ts", "mcp/prompts.ts", "mcp/task-store.ts", "mcp/response-stream.ts", "mcp/tool-call-dispatch.ts", "mcp/response-proxy.ts", "room/server-info.ts", "room/entry.ts", "daemon/registry.ts"]) {
     if (!record.files.some((item) => item.path === `src/worker/${module}`)) throw new Error(`npm package omitted extracted Worker protocol ${module}`);
   }
   for (const module of [
@@ -174,21 +156,23 @@ try {
     "mcp-task-contract.mjs", "mcp-task-contract.d.mts",
     "tool-argument-validation.mjs", "tool-argument-validation.d.mts",
     "trusted-origin.mjs", "trusted-origin.d.mts",
+    "path-containment.mjs", "path-containment.d.mts",
+    "help-resources-content.json",
   ]) {
     if (!record.files.some((item) => item.path === `src/shared/${module}`)) throw new Error(`npm package omitted shared MCP contract ${module}`);
   }
   if (!record.files.some((item) => item.path === "src/shared/activation-recovery.mjs")) {
     throw new Error("npm package omitted shared activation recovery evidence contract");
   }
-  if (!record.files.some((item) => item.path === "src/worker/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
-  if (!record.files.some((item) => item.path === "src/worker/daemon-liveness.ts")) throw new Error("npm package omitted the worker daemon liveness module");
-  if (!record.files.some((item) => item.path === "src/worker/policy.ts")) throw new Error("npm package omitted the worker policy module");
-  if (!record.files.some((item) => item.path === "src/worker/errors.ts")) throw new Error("npm package omitted the worker errors module");
-  if (!record.files.some((item) => item.path === "src/worker/oauth-state.ts")) throw new Error("npm package omitted the worker oauth state module");
-  if (!record.files.some((item) => item.path === "src/worker/oauth-controller.ts")) throw new Error("npm package omitted the Worker OAuth controller");
-  if (!record.files.some((item) => item.path === "src/worker/oauth-authorization-page.ts")) throw new Error("npm package omitted the Worker OAuth authorization page module");
-  if (!record.files.some((item) => item.path === "src/worker/observability.ts")) throw new Error("npm package omitted the worker observability module");
-  if (!record.files.some((item) => item.path === "src/worker/http.ts")) throw new Error("npm package omitted the worker http module");
+  if (!record.files.some((item) => item.path === "src/worker/room/pending-calls.ts")) throw new Error("npm package omitted the worker pending calls module");
+  if (!record.files.some((item) => item.path === "src/worker/daemon/liveness.ts")) throw new Error("npm package omitted the worker daemon liveness module");
+  if (!record.files.some((item) => item.path === "src/worker/room/policy.ts")) throw new Error("npm package omitted the worker policy module");
+  if (!record.files.some((item) => item.path === "src/worker/room/errors.ts")) throw new Error("npm package omitted the worker errors module");
+  if (!record.files.some((item) => item.path === "src/worker/oauth/state.ts")) throw new Error("npm package omitted the worker oauth state module");
+  if (!record.files.some((item) => item.path === "src/worker/oauth/controller.ts")) throw new Error("npm package omitted the Worker OAuth controller");
+  if (!record.files.some((item) => item.path === "src/worker/oauth/authorization-page.ts")) throw new Error("npm package omitted the Worker OAuth authorization page module");
+  if (!record.files.some((item) => item.path === "src/worker/room/observability.ts")) throw new Error("npm package omitted the worker observability module");
+  if (!record.files.some((item) => item.path === "src/worker/room/http.ts")) throw new Error("npm package omitted the worker http module");
   if (record.files.some((item) => item.path.endsWith("worker-configuration.d.ts"))) throw new Error("npm package contains generated Worker type declarations");
   if (record.files.some((item) => item.path === "toolchain/worker-runtime-types-seed.b64")) throw new Error("npm package contains the development-only Worker runtime type seed");
   if (!record.files.some((item) => item.path === "browser-extension/manifest.json")) throw new Error("npm package omitted the browser extension manifest");
@@ -198,8 +182,8 @@ try {
   if (!record.files.some((item) => item.path === "browser-extension/pairing.js")) throw new Error("npm package omitted the browser extension pairing content script");
   if (!record.files.some((item) => item.path === "browser-extension/page-automation.js")) throw new Error("npm package omitted the browser page automation module");
   if (!record.files.some((item) => item.path === "docs/LOCAL_AUTOMATION.md")) throw new Error("npm package omitted local-automation guidance");
-  if (!record.files.some((item) => item.path === "src/local/secure-file.mjs")) throw new Error("npm package omitted the shared secure-file primitive");
-  if (!record.files.some((item) => item.path === "src/local/service-definition.mjs")) throw new Error("npm package omitted identity-bound service-definition cleanup");
+  if (!record.files.some((item) => item.path === "src/local/core/secure-file.mjs")) throw new Error("npm package omitted the shared secure-file primitive");
+  if (!record.files.some((item) => item.path === "src/local/deploy/service-support.mjs")) throw new Error("npm package omitted identity-bound service-definition cleanup");
   if (record.files.some((item) => item.path === "src/local/daemon.mjs")) throw new Error("npm package retained the obsolete local daemon module name");
   for (const helper of [
     "prerelease-activation.mjs", "promotion-digest.mjs", "release-acceptance.mjs",
@@ -209,27 +193,30 @@ try {
     if (!record.files.some((item) => item.path === `scripts/${helper}`)) throw new Error(`npm package omitted runtime canary helper ${helper}`);
   }
   for (const repositoryOnlyScript of [
-    "accepted-candidate-tarball.mjs", "candidate-runtime-store.mjs", "check-plan.mjs", "check-runner.mjs",
-    "commit-message-check.mjs", "consumer-package-security.mjs", "coverage-check.mjs", "coverage-generation.mjs",
-    "foreground-daemon-recovery.mjs", "generate-policy-reference.mjs", "generate-tool-output-schemas.mjs",
+    "accepted-candidate-tarball.mjs", "assert-publishable-manifest.mjs", "candidate-runtime-store.mjs",
+    "check-changed.mjs", "check-plan.mjs", "check-runner.mjs",
+    "commit-message-check.mjs", "consumer-package-security.mjs", "coverage-check.mjs",
+    "foreground-daemon-recovery.mjs", "generate-components-doc.mjs", "generate-help-resources.mjs",
+    "generate-policy-reference.mjs", "generate-tool-output-schemas.mjs",
     "generate-tool-reference.mjs", "generate-worker-types.mjs", "github-backlog.mjs", "github-push.mjs",
-    "github-release-asset.mjs", "github-release.mjs", "global-package-installation.mjs", "hardened-npm-session.mjs",
-    "install-published-prerelease.mjs", "local-release-acceptance.mjs", "macos-background-input-smoke.mjs",
-    "markdown.mjs", "network-retry.mjs", "npm-global-prefix.mjs", "npm-publication-policy.mjs",
+    "github-release-asset.mjs", "github-release.mjs", "global-package-installation.mjs",
+    "install-published-prerelease.mjs", "lib/git-version.mjs", "lib/npm.mjs", "lib/release.mjs",
+    "lib/trusted-github-cli.mjs", "lib/verification.mjs",
+    "local-release-acceptance.mjs", "macos-background-input-smoke.mjs",
+    "network-retry.mjs", "npm-publication-policy.mjs",
     "official-mcp-conformance.mjs", "persistent-activation-process.mjs", "prepare-pinned-npm.mjs",
     "privacy-check.mjs", "publish-npm.mjs", "published-release.mjs", "release-browser-extension-store.mjs",
     "release-ci.mjs", "release-impact-check.mjs", "release-publication-guard.mjs", "release-soak.mjs",
-    "release-state.mjs", "run-checks.mjs", "run-worker-dry-run.mjs", "sarif-security-gate.mjs",
-    "sbom-check.mjs", "source-dependency-tree.mjs", "start-release-candidate.mjs", "syntax-check.mjs",
-    "sync-worker-version.mjs", "verification-environment.mjs", "verification-generation-guard.mjs",
-    "verification-idle-sleep-guard.mjs", "verification-state.mjs", "wrangler-command-lifecycle.mjs",
+    "resolve-versioned-worktree.mjs", "run-checks.mjs", "run-worker-dry-run.mjs", "sarif-security-gate.mjs",
+    "sbom-check.mjs", "start-release-candidate.mjs", "syntax-check.mjs",
+    "sync-worker-version.mjs", "verification-state.mjs", "wrangler-command-lifecycle.mjs",
   ]) {
     if (record.files.some((item) => item.path === `scripts/${repositoryOnlyScript}`)) {
       throw new Error(`npm package retained repository-only development script ${repositoryOnlyScript}`);
     }
   }
   if (record.files.some((item) => item.path.startsWith("release-acceptance/") || item.path.startsWith("release-soak/") || item.path.startsWith(".release-candidate/"))) throw new Error("npm package contains local release or soak evidence");
-  if (!record.files.some((item) => item.path === "src/local/runtime-activation.mjs")) throw new Error("npm package omitted persistent runtime activation orchestration");
+  if (!record.files.some((item) => item.path === "src/local/runtime/runtime-activation.mjs")) throw new Error("npm package omitted persistent runtime activation orchestration");
   for (const file of ["SUPPORT.md", "docs/UPGRADING.md", "tsconfig.local.json"]) {
     if (!record.files.some((item) => item.path === file)) throw new Error(`npm package omitted ${file}`);
   }

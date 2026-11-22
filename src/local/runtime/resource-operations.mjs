@@ -1,0 +1,80 @@
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { inspectResourceFile, validateResourceName } from "../jobs/manager.mjs";
+import { generateSshKeyPair, removeGeneratedSshKeyPair } from "../state/ssh-key.mjs";
+import { acquireStartupLockWithWait, loadState, saveState } from "../state/state.mjs";
+
+export async function generateRegisteredSshKey(
+  { workspace, stateDir, name: rawName, targetPath, comment = "" },
+  options = {},
+) {
+  const name = validateResourceName(rawName);
+  if (typeof targetPath !== "string" || !targetPath.trim()) throw new Error("SSH private key target path is required");
+  const target = resolve(targetPath);
+  const loadStateFn = options.loadState || loadState;
+  const acquireLockFn = options.acquireStartupLockWithWait || acquireStartupLockWithWait;
+  const generateKeyFn = options.generateSshKeyPair || generateSshKeyPair;
+  const inspectResourceFn = options.inspectResourceFile || inspectResourceFile;
+  const saveStateFn = options.saveState || saveState;
+  const rollbackKeyFn = options.removeGeneratedSshKeyPair || removeGeneratedSshKeyPair;
+  const lockState = loadStateFn(workspace, { stateDir });
+  const lock = await acquireLockFn(lockState, { operation: "generate-ssh-key" });
+  let key = null;
+  try {
+    const state = loadStateFn(workspace, { stateDir });
+    state.resources ||= {};
+    const existing = Object.hasOwn(state.resources, name) ? state.resources[name] : null;
+    if (existing?.path && !samePathIdentity(existing.path, target)) {
+      throw new Error(`local resource ${name} is already registered to a different file; remove it first`);
+    }
+    if (!existing && Object.keys(state.resources).length >= 64) throw new Error("local resource registry limit reached (64)");
+    key = await generateKeyFn({
+      privateKeyPath: target,
+      type: "ed25519",
+      comment: comment || `machine-mcp:${name}`,
+    });
+    try {
+      const inspected = inspectResourceFn(key.privateKeyPath);
+      state.resources[name] = inspected;
+      saveStateFn(state);
+    } catch (error) {
+      if (key.created) {
+        try {
+          await rollbackKeyFn(key);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "SSH key registration failed and generated-key rollback was incomplete",
+          );
+        }
+      }
+      throw error;
+    }
+    return {
+      name,
+      created: key.created,
+      registered: true,
+      privateKeyPath: key.privateKeyPath,
+      publicKeyPath: key.publicKeyPath,
+      fingerprint: key.fingerprint,
+      keyType: key.publicKeyType,
+      privateMode: key.privateMode,
+      publicMode: key.publicMode,
+      privateKeyContentExposed: false,
+      availableToNewJobsImmediately: true,
+    };
+  } finally {
+    lock.release();
+  }
+}
+
+function samePathIdentity(left, right) {
+  const a = canonicalIfExisting(left);
+  const b = canonicalIfExisting(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function canonicalIfExisting(value) {
+  const absolute = resolve(String(value));
+  try { return realpathSync.native ? realpathSync.native(absolute) : realpathSync(absolute); } catch { return absolute; }
+}

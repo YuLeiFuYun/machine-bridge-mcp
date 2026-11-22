@@ -8,7 +8,7 @@ import {
   extractWorkspaceOutline,
   renderSymbolOutline,
   sanitizeSource,
-} from "../src/local/symbol-outline.mjs";
+} from "../src/local/agent/symbol-outline.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -26,9 +26,9 @@ export function calculate(a, b) {
 
 const sanitized = sanitizeSource(rawSnippet);
 assert.equal(sanitized.split("\n").length, rawSnippet.split("\n").length, "newline count must match 100%");
-assert(!sanitized.includes("Leading comment"), "line comments must be stripped");
-assert(!sanitized.includes("Multiline comment"), "block comments must be stripped");
-assert(!sanitized.includes("Hello, world!"), "string literals must be stripped");
+assert(!/Leading comment/.test(sanitized), "line comments must be stripped");
+assert(!/Multiline comment/.test(sanitized), "block comments must be stripped");
+assert(!/Hello, world!/.test(sanitized), "string literals must be stripped");
 
 // 2. Test extractFileSymbols with various JS/TS declarations
 const complexModule = `
@@ -126,7 +126,7 @@ assert(processDataFn.params.includes("debug = false"), "params should include mu
 const rendered = renderSymbolOutline(extracted);
 assert(rendered.includes("test-module.ts ("), "header missing");
 assert(rendered.includes("export class DataStore extends BaseStore"), "class outline line missing");
-assert(rendered.includes("constructor(...)"), "constructor outline missing");
+assert(rendered.includes("constructor(options = {})"), "constructor outline missing");
 assert(rendered.includes("export async function processData("), "function outline line missing");
 assert(rendered.includes("export interface DataConfig"), "interface outline line missing");
 
@@ -142,10 +142,10 @@ assert(workspaceResult.truncated, "should be truncated with maxLines = 40");
 assert(workspaceResult.outline.includes("truncated: budget reached"), "truncation notice missing");
 
 // 5. Test on production files
-const errorsCode = readFileSync(join(root, "src", "local", "errors.mjs"), "utf8");
+const errorsCode = readFileSync(join(root, "src", "local", "core", "errors.mjs"), "utf8");
 const errorsOutline = renderSymbolOutline(extractFileSymbols(errorsCode, "errors.mjs"));
 assert(errorsOutline.includes("export class BridgeError extends Error"));
-assert(errorsOutline.includes("export function errorCode(...)"));
+assert(errorsOutline.includes('export function errorCode(error, fallback = "execution_failed")'));
 
 const workerCode = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
 const workerOutline = renderSymbolOutline(extractFileSymbols(workerCode, "index.ts"));
@@ -176,7 +176,7 @@ const logRedactionSymbols = extractFileSymbols(logRedactionCode, "log-redaction.
 assert(logRedactionSymbols.includes("isSensitiveLogFieldName"), "isSensitiveLogFieldName must be extracted from log-redaction.mjs");
 assert(logRedactionSymbols.includes("sanitizePortableLogText"), "sanitizePortableLogText must be extracted from log-redaction.mjs");
 
-const mcpContractCode = readFileSync(join(root, "src", "worker", "mcp-http-contract.ts"), "utf8");
+const mcpContractCode = readFileSync(join(root, "src", "worker", "mcp", "http-contract.ts"), "utf8");
 const mcpContractSymbols = extractFileSymbols(mcpContractCode, "mcp-http-contract.ts").symbols.map((s) => s.name);
 assert(mcpContractSymbols.includes("validateHttpRequest"), "validateHttpRequest must be extracted from mcp-http-contract.ts");
 assert(mcpContractSymbols.includes("httpHeaderContractError"), "httpHeaderContractError must be extracted from mcp-http-contract.ts");
@@ -192,7 +192,7 @@ const longSignatureCode = [
 const longSignatureNames = extractFileSymbols(longSignatureCode, "long.mjs").symbols.map((s) => s.name);
 assert(longSignatureNames.includes("withLongParams"), "a signature spanning more than 12 lines must still be captured");
 
-const runtimeReportingCode = readFileSync(join(root, "src", "local", "runtime-reporting.mjs"), "utf8");
+const runtimeReportingCode = readFileSync(join(root, "src", "local", "runtime", "runtime-services.mjs"), "utf8");
 const runtimeReportingNames = extractFileSymbols(runtimeReportingCode, "runtime-reporting.mjs").symbols.map((s) => s.name);
 assert(runtimeReportingNames.includes("buildRuntimeInfo"), "buildRuntimeInfo must survive a multi-line parameter list");
 
@@ -215,5 +215,18 @@ assert.deepEqual(
     { name: "internalZero", async: false, params: "", isExported: false },
   ],
 );
+
+const outlineSample = extractFileSymbols(
+  "export function alpha(first, second) { return first + second; }\nexport class Svc {\n  run(taskId, options) {}\n}\n",
+  "outline.mjs",
+);
+const renderedOutline = renderSymbolOutline(outlineSample, { maxParamLength: 20 });
+assert(renderedOutline.includes("function alpha(first, second)"), "renderSymbolOutline did not preserve function params");
+assert(renderedOutline.includes("run(taskId, options)"), "renderSymbolOutline did not preserve method params");
+const truncatedOutline = renderSymbolOutline(
+  extractFileSymbols("export function veryLong(alphaParam, betaParam, gammaParam) {}\n", "long-params.mjs"),
+  { maxParamLength: 15 },
+);
+assert(truncatedOutline.includes("function veryLong(alphaParam, ...)"), "renderSymbolOutline did not truncate long params");
 
 console.log("symbol outline test ok");

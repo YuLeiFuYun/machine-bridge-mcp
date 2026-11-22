@@ -2,7 +2,7 @@
   "generation": 1,
   "note": "Top-level output fields observed from real tool invocations. Tools marked verified=false could not be executed in the offline audit harness, so their outputSchema deliberately claims no fields. Fields listed in conditional appear only in that case; fields listed in stdio_injected are added by the progressive stdio transport, not by the tool itself. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
   "verified": 40,
-  "total": 54,
+  "total": 55,
   "tools": {
     "agent_context": {
       "verified": true,
@@ -80,6 +80,10 @@
       "properties": {}
     },
     "browser_manage_tabs": {
+      "verified": false,
+      "properties": {}
+    },
+    "browser_network_log": {
       "verified": false,
       "properties": {}
     },
@@ -816,10 +820,12 @@
         "total_lines": "integer",
         "complete": "boolean",
         "truncated": "boolean",
-        "next_start_line": "integer"
+        "next_start_line": "integer",
+        "next_action_affordance": "object"
       },
       "conditional": [
-        "next_start_line"
+        "next_start_line",
+        "next_action_affordance"
       ],
       "required": [
         "path",
@@ -1125,6 +1131,7 @@
         "workspace": "string",
         "workspace_name": "string",
         "policy": "object",
+        "authority_delta": "object",
         "policy_contract": "object",
         "enforcement": "object",
         "tool_delivery": "object",
@@ -1134,6 +1141,7 @@
         "security_audit": "object",
         "trust": "object",
         "detail": "string",
+        "schema_drift": "object",
         "version": "string",
         "mcp_url": "string",
         "oauth": "object",
@@ -1150,6 +1158,7 @@
         "workspace",
         "workspace_name",
         "policy",
+        "authority_delta",
         "policy_contract",
         "enforcement",
         "tools",
@@ -1158,6 +1167,7 @@
         "security_audit",
         "trust",
         "detail",
+        "schema_drift",
         "version",
         "mcp_url",
         "oauth",

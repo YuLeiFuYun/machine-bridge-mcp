@@ -1,6 +1,6 @@
 // @ts-check
-import { parseAst } from "../../scripts/source-syntax.mjs";
-export { parseAst } from "../../scripts/source-syntax.mjs";
+import { parseAst } from "../../scripts/lib/verification.mjs";
+export { parseAst } from "../../scripts/lib/verification.mjs";
 
 /**
  * @typedef {{
@@ -33,6 +33,18 @@ export { parseAst } from "../../scripts/source-syntax.mjs";
  * }} SemanticCall
  */
 
+/** @typedef {Record<string, any>} AstNode */
+
+/**
+ * Safely extract top-level program statements from a Babel AST.
+ * @param {unknown} ast
+ * @returns {AstNode[]}
+ */
+function programBody(ast) {
+  const record = /** @type {{ program?: { body?: AstNode[] } } | null | undefined} */ (ast);
+  return Array.isArray(record?.program?.body) ? record.program.body : [];
+}
+
 /**
  * Extract all semantic import and re-export statements from an AST or source.
  * @param {unknown} astOrSource
@@ -43,8 +55,7 @@ export function getSemanticImports(astOrSource, filename = "module.ts") {
   const ast = typeof astOrSource === "string" ? parseAst(astOrSource, filename) : astOrSource;
   /** @type {SemanticImport[]} */
   const imports = [];
-  // @ts-ignore
-  const body = ast?.program?.body || [];
+  const body = programBody(ast);
 
   for (const node of body) {
     if (node.type === "ImportDeclaration") {
@@ -173,8 +184,7 @@ export function getSemanticExports(astOrSource, filename = "module.ts") {
   const ast = typeof astOrSource === "string" ? parseAst(astOrSource, filename) : astOrSource;
   /** @type {SemanticExport[]} */
   const exports = [];
-  // @ts-ignore
-  const body = ast?.program?.body || [];
+  const body = programBody(ast);
 
   for (const node of body) {
     if (node.type === "ExportNamedDeclaration") {

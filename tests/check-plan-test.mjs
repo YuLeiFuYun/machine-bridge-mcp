@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { bundleTaskTimeouts } from "../scripts/workflow-bundle-timeouts.mjs";
+import { directNodeTestFiles } from "../scripts/check-runner.mjs";
+import { bundleTaskTimeouts } from "../scripts/lib/release.mjs";
 import {
   FAST_CHECK_TASKS,
   FULL_CHECK_TASKS,
@@ -57,11 +58,25 @@ assert(FULL_CHECK_TASKS[0] === "sbom:test"
   && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("managed-jobs:test")
   && FULL_CHECK_TASKS.indexOf("sbom:test") < FULL_CHECK_TASKS.indexOf("coverage:test"),
 "full plan no longer starts by failing fast on an invalid source dependency tree before other verification work");
-for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test"]) {
+for (const task of ["self-test", "service-platform:test", "full-access:test", "managed-jobs:test", "test:platform-unit"]) {
   assert(PLATFORM_ONLY_CHECK_TASKS.includes(task), `cross-platform behavior task is not platform-only: ${task}`);
 }
-for (const task of ["architecture:test", "lint", "typecheck", "syntax", "policy:test", "runtime-infrastructure:test", "control-plane-resilience:test", "service-restart:test", "browser-identity:test", "check-runner:test", "release-channel:test", "release-soak:test", "runtime-activation:test", "release-publication-guard:test", "sbom-check:test", "npm-environment:test", "hardened-npm:test", "consumer-package-security:test", "wrangler-toolchain:test", "worker-types-generator:test", "workflow-policy:test", "managed-job-boundary:test", "release-diagnostic:test", "browser-devtools-input:test", "browser-devtools-observation:test", "browser-computer-observation:test", "browser-service-worker:test", "app-automation:test"]) {
+const plannedFastFiles = new Set(FAST_CHECK_TASKS.flatMap((task) => directNodeTestFiles(task, scripts)));
+for (const task of ["architecture:test", "lint", "typecheck", "syntax", "test:policy", "test:runtime", "test:browser-unit", "test:apps-computer", "test:agent", "test:release-unit", "test:toolchain", "test:checks", "workflow-policy:test", "wrangler-toolchain:test", "cf-network:test", "cf-build:test"]) {
   assert(FAST_CHECK_TASKS.includes(task), `fast plan omits required development gate: ${task}`);
+}
+for (const testFile of [
+  "tests/policy-test.mjs", "tests/runtime-infrastructure-test.mjs", "tests/control-plane-resilience-test.mjs",
+  "tests/service-restart-handoff-test.mjs", "tests/browser-extension-identity-test.mjs", "tests/check-runner-test.mjs",
+  "tests/release-channel-test.mjs", "tests/release-soak-test.mjs", "tests/runtime-activation-test.mjs",
+  "tests/release-publication-guard-test.mjs", "tests/sbom-check-test.mjs", "tests/npm-environment-test.mjs",
+  "tests/consumer-package-security-test.mjs", "tests/worker-types-generator-test.mjs",
+  "tests/managed-job-boundary-test.mjs", "tests/release-diagnostic-test.mjs",
+  "tests/browser-devtools-input-test.mjs", "tests/browser-devtools-observation-test.mjs",
+  "tests/browser-computer-observation-test.mjs", "tests/browser-service-worker-test.mjs",
+  "tests/app-automation-test.mjs", "tests/local-typecheck-coverage-test.mjs",
+]) {
+  assert(plannedFastFiles.has(testFile), `fast plan omits required test file: ${testFile}`);
 }
 assert.equal(scripts.check, "npm run check:full");
 assert.equal(scripts["check:fast"], "node scripts/run-checks.mjs fast");

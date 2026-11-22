@@ -2,9 +2,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { requireGitVersion } from "../src/local/git-version.mjs";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
-import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
+import { requireGitVersion } from "./lib/git-version.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
+import { createTrustedGitResolver } from "../src/local/core/trusted-executable.mjs";
+import { loadPrivacyDenylistCached } from "../src/local/core/operation-risk.mjs";
 import { sensitiveValuePattern } from "../src/shared/sensitive-value-patterns.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -328,14 +329,10 @@ function removeKnownPublicAutomationTrailers(message) {
 function redactReportPath(relativePath, entries) {
   let shown = String(relativePath);
   for (const entry of entries) {
-    const expression = new RegExp(escapeRegExp(entry), "gi");
+    const expression = new RegExp(RegExp.escape(entry), "gi");
     shown = shown.replace(expression, "<private>");
   }
   return shown;
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function scanBuiltIn(relativePath, text, out) {
@@ -430,15 +427,7 @@ function scanDenylist(relativePath, text, entries, out) {
 }
 
 function loadDenylist(file) {
-  if (!existsSync(file)) return [];
-  let text;
-  try { text = readFileSync(file, "utf8"); } catch {
-    throw new Error("local privacy denylist exists but could not be read");
-  }
-  return [...new Set(text.split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#") && line.length >= 3)
-    .map((line) => line.toLocaleLowerCase("en-US")))];
+  return loadPrivacyDenylistCached(file, { allowMissing: true });
 }
 
 function isSyntheticUser(value) {

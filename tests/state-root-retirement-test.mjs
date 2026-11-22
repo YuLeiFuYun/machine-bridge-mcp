@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync }
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { loadState, removeStateRoot } from "../src/local/state.mjs";
+import { loadState, removeStateRoot } from "../src/local/state/state.mjs";
 import {
   inspectStateRootGeneration, removeStateRootGenerationIfCurrent, retiredStateRootDirectories, stateRootRetirementPath,
-} from "../src/local/state-root-retirement.mjs";
+} from "../src/local/state/state-storage.mjs";
 
 const fixtureParent = await mkdtemp(join(tmpdir(), "mbm-state-retirement-fixtures-"));
 try {

@@ -4,8 +4,8 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
-import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
+import { replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
 import { readPrereleaseActivation } from "./prerelease-activation.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import {
@@ -19,9 +19,9 @@ import {
   requiresSoakForStable,
 } from "./release-channel.mjs";
 import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
-import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/core/trusted-executable.mjs";
 import { readGithubPrerelease, readPublishedNpmPrerelease } from "./published-release.mjs";
-import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { createHardenedNpmSession } from "./lib/npm.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 export const SOAK_SCHEMA_VERSION = 1;

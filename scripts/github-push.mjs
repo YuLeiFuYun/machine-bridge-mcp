@@ -8,9 +8,9 @@ import { verifyCurrentReleaseAcceptance } from "./release-acceptance.mjs";
 import { assertGitHubBacklogReady } from "./github-backlog.mjs";
 import { parseReleaseVersion, requiresSoakForStable } from "./release-channel.mjs";
 import { verifyCurrentStableSoak } from "./release-soak.mjs";
-import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
-import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
-import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/core/trusted-executable.mjs";
+import { resolveTrustedGithubCli } from "./lib/trusted-github-cli.mjs";
+import { createHardenedNpmSession } from "./lib/npm.mjs";
 import { runNetworkCommand } from "./network-retry.mjs";
 import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 

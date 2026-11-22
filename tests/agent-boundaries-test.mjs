@@ -1,13 +1,13 @@
 import { renameSync, symlinkSync } from "node:fs";
 import fs, { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { publicSkillWarnings } from "../src/local/agent-context-projection.mjs";
+import { publicSkillWarnings } from "../src/local/agent/agent-contract.mjs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
   discoverLocalSkills, listSkillFiles, parseSkillMetadata,
-} from "../src/local/agent-skill-discovery.mjs";
-import { readOptionalRegularUtf8, readRegularUtf8 } from "../src/local/agent-text-file.mjs";
+} from "../src/local/agent/agent-skill-discovery.mjs";
+import { readOptionalRegularUtf8, readRegularUtf8 } from "../src/local/agent/agent-contract.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-agent-boundaries-"));
 const workspace = join(root, "workspace");

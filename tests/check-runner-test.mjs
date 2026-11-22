@@ -6,15 +6,15 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveNpmCli } from "../src/local/npm-cli.mjs";
-import { runVerificationPlan } from "../scripts/check-runner.mjs";
-import { assertHostCapabilities } from "../scripts/verification-capabilities.mjs";
-import { verificationChildEnvironment } from "../scripts/verification-environment.mjs";
+import { resolveNpmCli } from "../src/local/deploy/npm.mjs";
+import { directNodeTestFiles, runVerificationPlan } from "../scripts/check-runner.mjs";
 import {
+  assertHostCapabilities,
   rerunVerificationUnderIdleSleepGuard,
+  runWithStableGeneration,
   VERIFICATION_IDLE_SLEEP_GUARD_ENV,
-} from "../scripts/verification-idle-sleep-guard.mjs";
-import { runWithStableGeneration } from "../scripts/verification-generation-guard.mjs";
+  verificationChildEnvironment,
+} from "../scripts/lib/verification.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-check-runner-test-"));
 try {
@@ -278,6 +278,11 @@ if (task === "noisy-success") {
     "coverage gate did not receive the parent-bound reuse context");
   scoped.finish("coverage:test", 0);
   await scopedRun;
+  assert.deepEqual(directNodeTestFiles("single", { single: "node tests/policy-test.mjs" }), ["tests/policy-test.mjs"]);
+  assert.deepEqual(
+    directNodeTestFiles("grouped", { grouped: "node --test tests/policy-test.mjs tests/markdown-test.mjs" }),
+    ["tests/policy-test.mjs", "tests/markdown-test.mjs"],
+  );
 
   const parallel = controlledSpawn();
   const parallelOut = sink();

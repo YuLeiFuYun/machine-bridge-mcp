@@ -119,9 +119,9 @@ Use these sources when changing externally observable behavior. Other documents 
 | Contract | Authoritative implementation and policy source | Normative operator/client documentation |
 |---|---|---|
 | MCP protocol and Tasks | `src/shared/mcp-protocol.mjs`, `src/shared/mcp-task-contract.mjs`, `src/shared/server-metadata.json` | [Client contract](CLIENTS.md) |
-| Authorization and role ceilings | `src/shared/access-contract.json`, `src/shared/policy-contract.json`, `src/local/operation-authorization.mjs` | [Local authorization](LOCAL_AUTHORIZATION.md), generated [policy reference](POLICY_REFERENCE.md) |
-| Managed-job lifecycle and recovery | `src/local/managed-job-terminal.mjs`, `src/local/managed-job-state-validation.mjs`, `src/local/managed-job-storage.mjs`, and the job-runner/recovery modules | [Managed jobs](MANAGED_JOBS.md); [Operations](OPERATIONS.md) is the runbook, not a second lifecycle specification |
-| Computer Use | `src/local/computer-use-observation-contract.mjs`, `src/local/computer-use-dispatch-settlement.mjs`, `src/local/computer-use-snapshot-store.mjs`, and the Computer Use dispatcher | [Computer Use](COMPUTER_USE.md) |
+| Authorization and role ceilings | `src/shared/access-contract.json`, `src/shared/policy-contract.json`, `src/local/core/authority.mjs` | [Local authorization](LOCAL_AUTHORIZATION.md), generated [policy reference](POLICY_REFERENCE.md) |
+| Managed-job lifecycle and recovery | `src/local/jobs/terminal-base.mjs`, `src/local/jobs/directory.mjs`, `src/local/jobs/projection.mjs`, and the job-runner/recovery modules | [Managed jobs](MANAGED_JOBS.md); [Operations](OPERATIONS.md) is the runbook, not a second lifecycle specification |
+| Computer Use | `src/local/automation/computer-use-contracts.mjs`, `src/local/automation/computer-use.mjs`, and the observation/verification/capture modules | [Computer Use](COMPUTER_USE.md) |
 | Release and migration gates | `package.json`, `scripts/`, and the release workflow definitions | repository `docs/RELEASING.md`; [Upgrading](UPGRADING.md) documents the supported migration path |
 
 `MULTI_AGENT.md` and `COMPARATIVE_REVIEW.md` are explanatory/research material. Their examples and external references do not override the current protocol, authorization, recovery, or release contracts above.

@@ -4,7 +4,7 @@
 
 This catalog is the authoritative base public tool contract for names, local-daemon availability classes, behavior annotations, and local/stdio JSON input schemas. An availability value describes the daemon policy ceiling, not authenticated remote-account entitlement. The hosted Worker may deliberately narrow or extend an input schema at its authenticated boundary (for example, managed-job recovery capabilities or explicit browser targets); clients must use the current remote `tools/list` schema for those hosted-only requirements. Remote account-role ceilings (including owner-only tools) and the effective-authority intersection are generated in [POLICY_REFERENCE.md](POLICY_REFERENCE.md).
 
-Tool count: **54**.
+Tool count: **55**.
 
 ## Index
 
@@ -30,6 +30,7 @@ Tool count: **54**.
 | [`browser_action`](#browser_action) | `full` | no | yes | no | yes |
 | [`browser_fill_form`](#browser_fill_form) | `full` | no | yes | no | yes |
 | [`browser_screenshot`](#browser_screenshot) | `full` | no | no | no | yes |
+| [`browser_network_log`](#browser_network_log) | `full` | yes | no | no | yes |
 | [`browser_upload_files`](#browser_upload_files) | `full` | no | yes | no | yes |
 | [`agent_context`](#agent_context) | `always` | yes | no | yes | no |
 | [`list_local_skills`](#list_local_skills) | `always` | yes | no | yes | no |
@@ -93,6 +94,11 @@ Return live authorization and daemon status. Use detail=summary for routine vers
       ],
       "default": "full",
       "description": "Use summary for compact health/authority status; use full for complete tool, OAuth, isolate-local observability, and durable continuity diagnostics."
+    },
+    "client_tool_schema_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional client-observed toolSchemaGeneration for explicit schema_drift detection."
     }
   },
   "additionalProperties": false
@@ -124,6 +130,9 @@ Return live authorization and daemon status. Use detail=summary for routine vers
     "policy": {
       "type": "object"
     },
+    "authority_delta": {
+      "type": "object"
+    },
     "policy_contract": {
       "type": "object"
     },
@@ -150,6 +159,9 @@ Return live authorization and daemon status. Use detail=summary for routine vers
     },
     "detail": {
       "type": "string"
+    },
+    "schema_drift": {
+      "type": "object"
     },
     "version": {
       "type": "string"
@@ -612,7 +624,7 @@ Discover installed local applications and launchers without reading their docume
 
 **Open local application**
 
-Open a named local application, optionally with a document or URL target, using the operating system launcher. Launch is non-idempotent: cancellation is checked immediately before invoking the launcher, but once the launcher process invocation is attempted, timeout, cancellation, or response loss is an unknown launch outcome and callers should inspect application state before retrying. That fixed ambiguous settlement is returned as a public, non-retryable MCP error. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Open a named local application, optionally with a document or URL target, using the OS launcher. Cancellation is checked before invoking the launcher; once attempted, timeout, cancellation, or response loss returns a public non-retryable unknown outcome requiring inspection before retry. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -669,7 +681,7 @@ Open a named local application, optionally with a document or URL target, using 
 
 **Inspect local application UI**
 
-Inspect a bounded macOS Accessibility tree for a running application. Requires local Accessibility permission and never executes arbitrary AppleScript supplied by the caller. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Inspect a bounded macOS Accessibility tree for a running application. Requires local Accessibility permission and never executes arbitrary AppleScript supplied by the caller. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -739,7 +751,7 @@ Inspect a bounded macOS Accessibility tree for a running application. Requires l
 
 **Operate local application UI**
 
-Perform a structured macOS Accessibility action on a matched UI element. check/uncheck are desired-state operations: they read the current checkbox/radio state at dispatch time, skip input when already satisfied, and otherwise issue at most one AXPress (uncheck is checkbox-only). Text can be supplied through a registered local resource so secret values do not enter MCP arguments. keystroke focuses the matched AX target and delivers surrogate-safe Unicode chunks with public PID-scoped CoreGraphics keyboard events; key_press delivers a layout-independent special key (Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, or Space) with optional Shift+, likewise PID-scoped and without making the application frontmost. Both return input_transport=public-cgevent-pid; Meta/Control/Alt and character shortcuts are deliberately unsupported because inactive-AppKit validation did not establish reliable command-shortcut semantics. Cancellation is re-checked after asynchronous local-resource resolution and before invoking the fixed JXA mutation helper. Explicit JXA selector/geometry/action preflight errors remain definite, but once the mutating osascript invocation is attempted, timeout, cancellation, missing output, or malformed helper settlement is an unknown action outcome and must not be replayed blindly. Fixed launch/Accessibility/visual ambiguous settlements are returned as public, non-retryable MCP errors. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Perform a structured macOS Accessibility action on a matched UI element. check/uncheck are desired-state AXPress operations (uncheck is checkbox-only). Text may come from a registered local resource without entering MCP arguments. keystroke delivers Unicode text chunks and key_press sends special keys (Enter, Tab, Escape, Backspace, Delete, arrows, Home/End, PageUp/PageDown, Space with optional Shift+) via public PID-scoped CoreGraphics input (input_transport=public-cgevent-pid; Meta/Control/Alt shortcuts are unsupported). Explicit preflight errors remain definite; once osascript/native input is attempted, timeout, cancellation, or malformed settlement returns a public non-retryable unknown outcome. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -863,7 +875,7 @@ Perform a structured macOS Accessibility action on a matched UI element. check/u
 
 **Observe computer surface**
 
-Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state. timeout_seconds is one end-to-end observation budget; compound screenshot/semantic/window-revalidation stages consume the remaining deadline rather than restarting it. Set set_of_marks=true on the browser surface to add numbered bounding boxes and a local SVG overlay.
+Create a snapshot-bound browser or desktop observation. Browser mode combines executable DOM refs with a real Chromium Accessibility snapshot, layout geometry, document epoch, unlabeled_interactive_count telemetry, and an optional screenshot captured through the same bounded CDP session when available; high-confidence AX nodes are fused back to executable action_ref values, while executable DOM candidates are salience-ranked globally across accessible frames. Cancellation is checked again after asynchronous capture and before snapshot publication, so a cancelled observe cannot leave an actionable snapshot_id in the bounded store. Use computer_act with the exact snapshot_id instead of carrying selectors across changing UI state. timeout_seconds is one end-to-end observation budget; compound screenshot/semantic/window-revalidation stages consume the remaining deadline rather than restarting it. Set include_marks=true on either surface (or legacy alias set_of_marks=true) to add numbered Set-of-Marks bounding boxes and a local SVG overlay.
 
 | Contract field | Value |
 |---|---|
@@ -979,7 +991,12 @@ Create a snapshot-bound browser or desktop observation. Browser mode combines ex
     "set_of_marks": {
       "type": "boolean",
       "default": false,
-      "description": "Browser surface only: add numbered Set-of-Marks bounding boxes plus a local SVG overlay to the observation."
+      "description": "Compatibility alias for include_marks; adds numbered Set-of-Marks bounding boxes and an optional SVG overlay."
+    },
+    "include_marks": {
+      "type": "boolean",
+      "default": false,
+      "description": "Add numbered Set-of-Marks visual bounds and an optional SVG overlay (browser and application surfaces)."
     }
   },
   "required": [
@@ -1771,7 +1788,7 @@ Open the local pairing page and return the packaged unpacked-extension path for 
 
 **List browser tabs**
 
-Read the tab inventory from the paired existing Chromium profile without creating, activating, or closing a tab. Use browser_manage_tabs for tab mutations. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Read the tab inventory from the paired existing Chromium profile without creating, activating, or closing a tab. Use browser_manage_tabs for tab mutations. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -1820,7 +1837,7 @@ Read the tab inventory from the paired existing Chromium profile without creatin
 
 **Manage browser tabs**
 
-Create, activate, or close tabs in the paired existing Chromium profile. Tab mutations are non-idempotent: if Chrome rejects a mutation request after invocation, or the broker loses the extension response after attempting dispatch, the outcome is reported as unknown and callers should inspect browser_list_tabs before retrying. If a completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and must not be used as evidence that activation/close/create did not run. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Activation is verified between its two mutation stages: after tab activation resolves, the target is re-read and must still be active before its freshly observed current window is focused; after focus resolves, the target is re-read again and success returns only the final verified tab provenance. Concurrent tab/window moves or user tab switches are reported as partial completion with inspection guidance and are never automatically re-activated or re-focused. Cancellation is re-checked after asynchronous tab lookup and before each later mutation stage; a stage not yet started is skipped, while an earlier completed stage is not rolled back. Use browser_list_tabs when only a read-only tab inventory is needed. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Create, activate, or close tabs in the paired Chromium profile. Tab mutations are non-idempotent: explicit Chrome errors, lost extension/broker responses, or unserializable oversized settlements return public non-retryable unknown errors requiring browser_list_tabs inspection before retry. Activation re-verifies the active tab before focusing its window and returns verified final tab provenance; concurrent user switches fail as partial completion without auto-retrying. Cancellation skips unstarted stages after async lookup without rolling back completed stages. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -1886,7 +1903,7 @@ Create, activate, or close tabs in the paired existing Chromium profile. Tab mut
 
 **Read browser page source**
 
-Read bounded raw serialized DOM HTML from the active or selected tab only when source markup is genuinely required. Raw source can contain hidden bootstrap, session, account, authentication, or other sensitive data that is not visible in the rendered page; treat the entire result as sensitive and do not use it for routine semantic inspection. Prefer browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Read bounded raw serialized DOM HTML from the active or selected tab only when source markup is genuinely required. Raw source can contain hidden bootstrap, session, account, authentication, or other sensitive data that is not visible in the rendered page; treat the entire result as sensitive and do not use it for routine semantic inspection. Prefer browser_inspect_page for semantic elements, actionability, reusable refs, and structured interaction planning. max_bytes is one aggregate budget across at most 64 accessible frames. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -1945,7 +1962,7 @@ Read bounded raw serialized DOM HTML from the active or selected tab only when s
 
 **Inspect browser page**
 
-Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. Candidates are salience-ranked globally across accessible frames instead of consuming the aggregate budget in frame traversal order. include_values=false is the default; when include_values=true, non-sensitive page controls may return their current values, including content the page previously received from a local resource if that content is now present in an ordinary control. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Inspect a bounded semantic/actionability snapshot with reusable element refs for structured browser decisions and actions. Candidates are salience-ranked globally across accessible frames instead of consuming the aggregate budget in frame traversal order. include_values=false is the default; when include_values=true, non-sensitive page controls may return their current values, including content the page previously received from a local resource if that content is now present in an ordinary control. This is not raw page source; use browser_get_source when serialized DOM HTML is required. The aggregate element budget spans at most 64 accessible frames. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -2008,7 +2025,7 @@ Inspect a bounded semantic/actionability snapshot with reusable element refs for
 
 **Wait for browser state**
 
-Wait until all supplied URL, load, text, and element-state conditions are satisfied in an existing browser tab. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Wait until all supplied URL, load, text, and element-state conditions are satisfied in an existing browser tab. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -2130,7 +2147,7 @@ Wait until all supplied URL, load, text, and element-state conditions are satisf
 
 **Operate browser page**
 
-Perform one structured navigation or page action in the user's existing browser tab without arbitrary JavaScript. A value_resource is resolved locally and is not echoed in the mutating result, but the destination page receives the value and later page observations may expose content the page now holds. Automatic trusted-input fallback occurs only before any trusted preparation (including DOM focus/scroll) or DevTools Input mutation starts; ambiguous post-dispatch failures require inspection before retry. Broker timeout, disconnect, extension replacement, or response loss after WebSocket dispatch is attempted is also an unknown mutation outcome, not proof that the action did not run. If the mutating extension call completes but its success result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown and callers must inspect state rather than replay. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. DOM/trusted-preparation page calls use a structured settlement envelope: an explicit page preflight error remains definite, while loss of the mutating scripting invocation response after that invocation is attempted is an unknown action outcome and must not be replayed blindly. Cancellation is re-checked after asynchronous target/preparation steps and before each later mutation stage; a stage not yet started is skipped, while earlier focus/scroll/input effects are not rolled back. A successful action is not converted to failure by a later tab-metadata read: current tab provenance is returned only when verified, otherwise tab_metadata_verified is false and stale pre-action title/URL metadata is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Perform one structured navigation or page action in the existing browser tab without arbitrary JavaScript. A value_resource is injected locally without echoing in results, though the destination page receives it. Pre-dispatch trusted-input fallback runs only before DOM preparation or DevTools Input mutation starts; post-dispatch timeout, disconnect, extension replacement, scripting response loss, or unserializable settlements return public non-retryable unknown outcomes requiring inspection before retry. Cancellation skips unstarted stages without rolling back prior effects. Results return verified title/URL metadata or set tab_metadata_verified=false. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -2288,7 +2305,7 @@ Perform one structured navigation or page action in the user's existing browser 
 
 **Fill complex browser form**
 
-Fill multiple fields and optionally submit a complex form. Sensitive values can come from registered local resources; the mutating result and errors do not return field values, but the destination page receives them and later page observations may expose content the page now holds. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the form must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/field preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown form outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before page mutation skips the fill stage; once page mutation starts, earlier field changes are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-fill provenance is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Fill multiple fields and optionally submit a form, resolving sensitive values from local resources without echoing them in results (the page receives them). Extension dispatch loss, scripting invocation loss, disconnect, or unserializable oversized settlements return public non-retryable unknown outcomes requiring browser inspection before retry. Cancellation skips unstarted fill stages without rolling back earlier field changes. Results include verified metadata or tab_metadata_verified=false. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -2484,7 +2501,7 @@ Fill multiple fields and optionally submit a complex form. Sensitive values can 
 
 **Capture browser screenshot**
 
-Capture the visible area of the active or selected tab from the paired existing browser profile and return native MCP image content without focusing another window. Selecting an inactive tab may temporarily activate it; pass allow_tab_switch=false to refuse that activation, in which case an inactive target fails before capture and the active tab is never changed. Immediately before activation, the extension revalidates that the same restore-baseline tab is still active in that window; a concurrent user tab switch fails definite pre-dispatch without activating anything. If the activation response is then lost, or if the resolved activation no longer verifies the same target tab in the restore-baseline window, the outcome is unknown, no capture or automatic rollback is attempted, and callers should inspect browser_list_tabs before retrying. Broker response loss after extension dispatch is attempted is also reported as unknown because the temporary activation/capture lifecycle may already have run. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is likewise unknown because temporary tab activation/restoration may already have occurred. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. Cancellation observed before temporary activation prevents activation; if it arrives after confirmed temporary activation but before capture, capture is skipped and the previous active tab is restored when safely verifiable. After confirmed temporary activation, later capture or verification failures restore the previous active tab when safe while preserving a concurrent user tab switch; restoration revalidates that the baseline tab still belongs to the capture window before activating it. Once the restore activation API is invoked, a rejected response, returned window mismatch, or failed post-restore verification is an unknown active-tab outcome and callers must inspect browser_list_tabs before retrying; no same screenshot is replayed automatically. Successful results use the verified post-capture active-tab observation for title/URL provenance and report tab_metadata_verified=true. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Capture the visible area of the active or target tab in the paired browser profile as native MCP image content without focusing another window. Inactive targets may activate temporarily unless allow_tab_switch=false (which fails pre-dispatch without changing the active tab). Concurrent baseline tab switches abort pre-dispatch. Post-activation loss, capture/restore verification failure, broker disconnect, or oversized unserializable settlements return public non-retryable unknown outcomes requiring browser_list_tabs inspection before retry. Cancellation skips capture and best-effort restores the baseline tab safely; verified post-capture metadata sets tab_metadata_verified=true. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -2544,11 +2561,88 @@ Capture the visible area of the active or selected tab from the paired existing 
 }
 ```
 
+## `browser_network_log`
+
+**Read browser network log**
+
+Read bounded CDP network request/response summaries for a paired Chromium tab with automatic header and query/fragment secret redaction. 60s local foreground limit; keep calls request-bounded.
+
+| Contract field | Value |
+|---|---|
+| Availability | `full` |
+| Read-only hint | yes |
+| Destructive hint | no |
+| Idempotent hint | no |
+| Open-world hint | yes |
+
+### Input schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "tab_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Target Chromium tab id. Omit locally to capture the active tab; hosted calls require an explicit tab_id."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 50,
+      "description": "Maximum buffered entries to return (1-200)."
+    },
+    "wait_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5000,
+      "default": 250,
+      "description": "Active CDP network capture window in milliseconds before filtering buffered entries (defaults to 250 ms, or 0 ms when clear=true and omitted)."
+    },
+    "clear": {
+      "type": "boolean",
+      "default": false,
+      "description": "Clear the tab network buffer before listening/reading (with wait_ms=0, discards existing entries and returns [])."
+    },
+    "url_prefix": {
+      "type": "string",
+      "maxLength": 2048,
+      "description": "Optional URL prefix filter applied after capturing buffered entries."
+    },
+    "status_min": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 599,
+      "description": "Optional minimum HTTP status code filter (100-599)."
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 30,
+      "description": "Foreground operation deadline in seconds (1-60)."
+    }
+  }
+}
+```
+
+### Output schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {}
+}
+```
+
 ## `browser_upload_files`
 
 **Upload browser files**
 
-Populate a browser file input from registered local resource files without returning file contents through MCP results. If the broker has attempted extension dispatch and the response is then lost, times out, disconnects, or is interrupted by extension replacement, the mutation outcome is unknown and browser state must be inspected before retrying. If the completed mutating extension result cannot be serialized or fit within the bounded response budget, that result settlement is also unknown and the upload must not be replayed blindly. Fixed ambiguous browser settlements are returned as public, non-retryable MCP errors. The mutating page-world scripting call also uses a structured settlement envelope: explicit selector/file-input preflight errors remain definite, but loss of the scripting invocation response after the invocation is attempted is an unknown upload outcome and must be inspected before retrying. Cancellation observed after asynchronous target lookup but before the file-input mutation skips that stage; once the page mutation starts, resulting input/change handlers are not rolled back. Successful results attach current tab title/URL only when a fresh metadata read verifies them; otherwise tab_metadata_verified is false and stale pre-upload provenance is omitted. Foreground execution is limited to 60 seconds; keep foreground interactions request-bounded and split longer workflows into independently terminal calls.
+Populate a browser file input from registered local resource files without returning file contents. Extension dispatch loss, scripting invocation response loss, disconnect, or oversized unserializable settlements return public non-retryable unknown outcomes requiring inspection before retry. Cancellation skips unstarted upload stages without rolling back triggered page handlers. Verified metadata is attached when fresh, otherwise tab_metadata_verified=false. 60s local foreground limit; keep calls request-bounded.
 
 | Contract field | Value |
 |---|---|
@@ -3413,6 +3507,9 @@ Read a UTF-8 regular file or an inclusive 1-based line range. Files exceeding 30
     },
     "next_start_line": {
       "type": "integer"
+    },
+    "next_action_affordance": {
+      "type": "object"
     }
   },
   "required": [
@@ -5147,6 +5244,11 @@ Validate and persist a durable managed-job draft without starting any process. T
         ],
         "additionalProperties": false
       }
+    },
+    "isolated_worktree": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run steps inside an ephemeral detached git worktree and clean it up in finally."
     }
   },
   "required": [
@@ -5418,6 +5520,11 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
         ],
         "additionalProperties": false
       }
+    },
+    "isolated_worktree": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run steps inside an ephemeral detached git worktree and clean it up in finally."
     }
   },
   "required": [
@@ -5492,7 +5599,7 @@ Durably accept a detached argv-based job with ordered steps, job-scoped temporar
 
 **List managed jobs**
 
-List detached managed-job recovery state without returning step output. The primary jobs array remains capped at 50 and prioritizes unreadable, active, staged, and durable terminal recovery state before transient one-step helper history so helper churn cannot hide an older recoverable long-running job or its terminal result. A hosted one-step process whose current response still requires read_job continuation is non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace. If all 512 retained states are non-evictable, new admission returns typed retryable limit_exceeded backpressure instead of deleting promised recovery evidence. Once Machine Bridge produces a terminal hosted response for that helper, whether during initial settlement or a later read_job, it drops to the shorter 30-minute bounded newest-16 transient delivery reserve; a still-pending result becomes removable after its 24-hour grace expires. recent_process_recovery remains capped at 16 additional authority-visible public job handles, prioritizes retained follow-up-required helpers when they are omitted from the primary window, and returns no step output or internal retention metadata. This is bounded recovery discovery only: it is not an MCP terminal-result replay/session store and must not be used for polling. The durable retained-state store is larger than these response windows. Owner/local callers also receive coarse retained-state capacity including durable-versus-transient terminal counts plus recent job-creation/churn aggregates without internal retired filenames, filesystem identities, argv, paths, or output.
+List detached managed-job recovery state without step output. Primary jobs window is capped at 50 (prioritizing unreadable, active, staged, and durable terminal state before transient helper history); recent_process_recovery holds up to 16 additional handles. Hosted one-step helpers requiring read_job continuation stay non-evictable under capacity pruning for a fixed 24-hour undelivered-result grace (returning limit_exceeded if all 512 retained slots are pinned) before downgrading to a 30-minute bounded 16-item reserve after terminal delivery. Bounded recovery discovery only—never use as a polling substitute or replay store. Owner/local callers also receive coarse retained-state capacity and churn aggregates without internal paths or output.
 
 | Contract field | Value |
 |---|---|

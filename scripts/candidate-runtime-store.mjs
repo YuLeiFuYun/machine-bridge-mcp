@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isCandidateRuntimeDirectoryName } from "../src/local/state-root-owned-namespaces.mjs";
+import { join, resolve } from "node:path";
+import { isCandidateRuntimeDirectoryName } from "../src/local/state/state-storage.mjs";
+import { isStrictChildPath, requireContainedPath } from "../src/shared/path-containment.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 
 const NON_BLOCKING_CLEANUP_CODES = new Set(["EACCES", "EPERM", "EIO", "ENOSPC", "EDQUOT", "ENOMEM", "EROFS", "EMFILE", "ENFILE", "EAGAIN", "ENOBUFS", "EINTR", "ESTALE", "EBUSY", "ENOTEMPTY", "ETIMEDOUT"]);
@@ -24,8 +25,7 @@ export function pruneInactiveCandidateRuntimes({ stateRoot, activePrefix, remove
   const releaseChannels = join(state, "release-channels");
   const container = join(releaseChannels, "runtimes");
   const active = resolve(String(activePrefix || ""));
-  const activeRelative = relative(container, active);
-  if (!activeRelative || activeRelative === ".." || activeRelative.startsWith(`..${sep}`) || isAbsolute(activeRelative)) {
+  if (!isStrictChildPath(container, active)) {
     throw new Error("active candidate runtime is outside the runtime container");
   }
 
@@ -74,10 +74,7 @@ function realDirectoryIfPresent(directory, label) {
 }
 
 function requireContainedDirectory(parent, child, label) {
-  const childRelative = relative(parent, child);
-  if (!childRelative || childRelative === ".." || childRelative.startsWith(`..${sep}`) || isAbsolute(childRelative)) {
-    throw new Error(`${label} escapes its parent directory`);
-  }
+  requireContainedPath(parent, child, `${label} escapes its parent directory`);
 }
 
 function requireSameDirectory(directory, expected, label) {

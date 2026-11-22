@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   isTransientFilesystemMutationError, isTransientReplaceError, removePathSync, replaceFileSync,
-} from "../src/local/atomic-fs.mjs";
-import { publicError } from "../src/local/errors.mjs";
-import { WorkspaceFileService, assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/workspace-file-service.mjs";
-import { renameWithRetry } from "../src/local/workspace-file-rename-retry.mjs";
+} from "../src/local/core/exclusive-file.mjs";
+import { publicError } from "../src/local/core/errors.mjs";
+import { WorkspaceFileService, assertNoResolvedPatchCollisions, atomicWriteText, commitPatchTransaction, sha256 } from "../src/local/files/workspace-file-service.mjs";
+import { renameWithRetry } from "../src/local/files/workspace-transaction.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-atomic-replace-test-"));
 try {
@@ -377,7 +377,7 @@ try {
 
   const interruptedTarget = join(root, "interrupted-atomic-write.txt");
   await writeFile(interruptedTarget, "old", { encoding: "utf8", mode: 0o600 });
-  const transactionModuleUrl = new URL("../src/local/workspace-file-transaction.mjs", import.meta.url).href;
+  const transactionModuleUrl = new URL("../src/local/files/workspace-transaction.mjs", import.meta.url).href;
   const interruptedScript = `
     import { atomicWriteText, sha256 } from ${JSON.stringify(transactionModuleUrl)};
     await atomicWriteText(${JSON.stringify(interruptedTarget)}, "new", { mode: 0o600 }, {

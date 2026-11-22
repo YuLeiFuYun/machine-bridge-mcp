@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runStateRedactionPrivacyTest } from "./state-redaction-test.mjs";
-import { requireGitVersion } from "../src/local/git-version.mjs";
+import { requireGitVersion } from "../scripts/lib/git-version.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 nodeAssert.deepEqual(requireGitVersion("git version 2.50.0"), { major: 2, minor: 50, patch: 0 });

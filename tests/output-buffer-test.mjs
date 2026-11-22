@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fc from "fast-check";
-import { BoundedOutput } from "../src/local/bounded-output.mjs";
-import { ProcessOutputStream } from "../src/local/process-output-stream.mjs";
+import { BoundedOutput } from "../src/local/files/workspace-transaction.mjs";
+import { ProcessOutputStream } from "../src/local/process/settlement.mjs";
 
 const capacity = 128;
 const chunk = Buffer.alloc(4 * 1024 * 1024, 120);

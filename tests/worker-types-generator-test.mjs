@@ -65,8 +65,9 @@ else {
     writeFileSync(process.argv[3], "/* fixture project declarations */\\ninterface Env {}\\n" + runtime);
     process.stdout.write("types-target:" + process.argv[3] + "\\n");
   }
+  if (mode === "sigterm-143") process.on("SIGTERM", () => process.exit(143));
   process.stdout.write(marker);
-  if (mode === "hang-after") setInterval(() => {}, 1000);
+  if (mode === "hang-after" || mode === "sigterm-143") setInterval(() => {}, 1000);
   else if (mode === "normal-cleanup-race") setTimeout(() => process.exit(0), 250);
 }
 `, "utf8");
@@ -254,7 +255,14 @@ else {
 
   const hangingDryRun = capture();
   await runWranglerFixture(commandOptions("hang-after", hangingDryRun));
-  assert(hangingDryRun.stderr.includes("wrangler deploy --dry-run completed but did not exit", "completed Wrangler dry-run hang was not diagnosed or bounded"));
+  assert(hangingDryRun.stderr.includes("wrangler deploy --dry-run completed but did not exit"), "completed Wrangler dry-run hang was not diagnosed or bounded");
+
+  const sigtermDryRun = capture();
+  await runWranglerFixture(commandOptions("sigterm-143", sigtermDryRun, {
+    completionExitGraceMs: 20,
+    terminationGraceMs: 200,
+  }));
+  assert(/completed but did not exit/.test(sigtermDryRun.stderr), "Wrangler SIGTERM exit code 143 after completion marker was not handled as bounded cleanup");
 
   await assert.rejects(runWranglerFixture(commandOptions("fail", capture())), /exit code 7/);
   await assert.rejects(runWranglerFixture(commandOptions("hang-before", capture(), { timeoutMs: 80 })), /wrangler deploy --dry-run timed out after 80ms/);

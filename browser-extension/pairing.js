@@ -31,8 +31,8 @@
     return false;
   });
 
-  const pair = () => {
-    if (!grant) return;
+  const pair = (event) => {
+    if (!event?.isTrusted || !grant) return;
     const button = document.getElementById("pair");
     if (button) button.disabled = true;
     updateStatus("Pairing...");
@@ -57,7 +57,7 @@
       return;
     }
     button.disabled = false;
-    button.addEventListener("click", pair, { once: true });
+    button.addEventListener("click", pair);
     updateStatus("Confirm pairing in this page, or click the Machine Bridge extension icon while this page is active.");
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", arm, { once: true });

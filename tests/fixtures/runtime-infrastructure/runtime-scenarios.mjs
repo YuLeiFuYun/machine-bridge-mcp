@@ -1,20 +1,20 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BridgeError, actionableGuidance, errorCode, publicError } from "../../../src/local/errors.mjs";
-import { CallRegistry } from "../../../src/local/call-registry.mjs";
-import { RuntimeObservability } from "../../../src/local/observability.mjs";
-import { ToolExecutor, composeMiddleware } from "../../../src/local/tool-executor.mjs";
-import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../../../src/local/tool-result-boundary.mjs";
-import { LocalRuntime } from "../../../src/local/runtime.mjs";
-import { FileMutationCoordinator } from "../../../src/local/file-mutation-coordinator.mjs";
-import { DIRECTORY_METADATA_BATCH_SIZE, directoryEntriesWithMetadata } from "../../../src/local/directory-metadata.mjs";
-import { SEARCH_FILE_BATCH_SIZE, searchWorkspaceFiles } from "../../../src/local/workspace-search.mjs";
-import { projectRuntimeInfo } from "../../../src/local/runtime-info-projection.mjs";
-import { startAutostartLogMaintenance } from "../../../src/local/autostart-log-maintenance.mjs";
-import { createSecurityAuditFailureReporter } from "../../../src/local/security-audit-warning.mjs";
-import { resourceAdmissionLogFields } from "../../../src/local/resource-admission-diagnostics.mjs";
-import { LifecycleController } from "../../../src/local/lifecycle.mjs";
-import { boundedProcessErrorMessage } from "../../../src/local/process-execution.mjs";
+import { BridgeError, actionableGuidance, errorCode, publicError } from "../../../src/local/core/errors.mjs";
+import { CallRegistry } from "../../../src/local/runtime/call-registry.mjs";
+import { RuntimeObservability } from "../../../src/local/runtime/observability.mjs";
+import { ToolExecutor, composeMiddleware } from "../../../src/local/runtime/tool-executor.mjs";
+import { MAX_TOOL_RESULT_BYTES, normalizeToolResult } from "../../../src/local/runtime/call-registry.mjs";
+import { LocalRuntime } from "../../../src/local/runtime/runtime.mjs";
+import { FileMutationCoordinator } from "../../../src/local/core/filesystem-identity.mjs";
+import { DIRECTORY_METADATA_BATCH_SIZE, directoryEntriesWithMetadata } from "../../../src/local/core/filesystem-identity.mjs";
+import { SEARCH_FILE_BATCH_SIZE, searchWorkspaceFiles } from "../../../src/local/files/workspace-search.mjs";
+import { projectRuntimeInfo } from "../../../src/local/runtime/runtime-projections.mjs";
+import { startAutostartLogMaintenance } from "../../../src/local/deploy/service-runtime.mjs";
+import { createSecurityAuditFailureReporter } from "../../../src/local/runtime/runtime-projections.mjs";
+import { resourceAdmissionLogFields } from "../../../src/local/process/resource-admission-policy.mjs";
+import { LifecycleController } from "../../../src/local/runtime/call-helpers.mjs";
+import { boundedProcessErrorMessage } from "../../../src/local/process/execution.mjs";
 import { assert, deferred, expectBridgeError, expectReject } from "./common.mjs";
 
 export async function runRuntimeInfrastructureScenarios() {

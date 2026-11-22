@@ -20,6 +20,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return browserOperations().handleRendererProgressMessage(message, sender, sendResponse);
   }
   if (message?.type !== "pair_bootstrap") return false;
+  if (
+    sender?.id !== chrome.runtime.id
+    || sender?.frameId !== 0
+    || sender?.tab?.active !== true
+    || !browserBrokerAuth().parsePairingPage(sender?.url)
+  ) {
+    sendResponse({ ok: false, error: "untrusted_pairing_sender" });
+    return false;
+  }
   pairFromBootstrap(message.port, message.grant, { replace: false })
     .then(sendResponse)
     .catch(() => sendResponse({ ok: false }));
@@ -124,6 +133,8 @@ async function pairConfiguration(rawEndpoint, rawToken, { replace }) {
   } catch (error) {
     if (current.endpoint && current.token) {
       void connect(current.endpoint, current.token).catch(() => { /* Preserve the primary pairing error; prior-pair recovery is best-effort. */ });
+    } else {
+      setConnectionState("unconfigured");
     }
     throw error;
   }
@@ -173,8 +184,17 @@ async function connect(endpoint, token, { reconnect = true } = {}) {
   authenticating = true;
   setConnectionState("connecting");
   let protocol;
-  try { protocol = await extensionBrokerProtocol(endpoint, token); }
-  finally { if (generation === connectGeneration) authenticating = false; }
+  try {
+    protocol = await extensionBrokerProtocol(endpoint, token);
+  } catch (error) {
+    if (generation === connectGeneration) {
+      authenticating = false;
+      setConnectionState("disconnected");
+      if (reconnect) scheduleReconnect(endpoint, token);
+    }
+    throw error;
+  }
+  if (generation === connectGeneration) authenticating = false;
   if (generation !== connectGeneration) throw new Error("browser connection was superseded");
   const ws = new WebSocket(endpoint, [protocol]);
   socket = ws;

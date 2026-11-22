@@ -24,6 +24,8 @@
 ```sh
 machine-mcp status
 machine-mcp doctor
+machine-mcp verify [--json]
+machine-mcp pair [--ttl 300] [--role owner] [--json]
 machine-mcp service status
 ```
 
@@ -31,6 +33,8 @@ Routine remote checks should use authenticated `server_info` with `detail: "summ
 Non-owner full responses intentionally retain hidden markers/counts instead of cross-principal activity, resource aliases, stable device-key identity, or daemon-only tool names.
 Remote `diagnose_runtime` is owner-only because its fixed probes expose machine-wide control-plane activity; narrower roles use `server_info`/`project_overview` for authority-scoped readiness and workspace state.
 `status` prints redacted profile state and verifies the deployed Worker version.
+`verify` performs a strictly read-only check of Node.js version, state-directory accessibility, effective policy, `tool-catalog.json` SHA-256, and browser extension version without modifying state or launching daemons.
+`pair` issues an advisory pairing ticket (`advisory_only: true`, zero secrets exposed) with setup guidance (`role` defaults to `owner`).
 Resource source paths remain redacted.
 `doctor` checks Node.js, the audited private cf binary, structured Cloudflare login, Worker health, the configured policy, the automatic-without-per-operation-prompts authorization model, and the same fixed local filesystem/process/shell/job-storage/resource probes exposed to the remote owner by `diagnose_runtime`.
 It constructs an isolated local runtime: `diagnosticScope.running_service_process_inspected=false` and `remote_relay_inspected=false` are deliberate, so a green doctor result is not evidence that the launchd/systemd/Scheduled Task daemon retained its Worker WebSocket.

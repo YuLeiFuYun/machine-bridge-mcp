@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { AgentContextManager } from "../../../src/local/agent-context.mjs";
-import { readPersistentMemory } from "../../../src/local/agent-memory.mjs";
-import { extractSymbolOutline, extractWorkspaceOutline } from "../../../src/local/symbol-outline.mjs";
-import { applyUpdateHunks } from "../../../src/local/patch.mjs";
-import { BridgeError } from "../../../src/local/errors.mjs";
+import { AgentContextManager } from "../../../src/local/agent/agent-context.mjs";
+import { readPersistentMemory } from "../../../src/local/agent/agent-memory.mjs";
+import { extractSymbolOutline, extractWorkspaceOutline } from "../../../src/local/agent/symbol-outline.mjs";
+import { applyUpdateHunks } from "../../../src/local/core/patch.mjs";
+import { BridgeError } from "../../../src/local/core/errors.mjs";
 
 const root = await realpath(await mkdtemp(join(tmpdir(), "mbm-agent-audit-")));
 const failures = [];

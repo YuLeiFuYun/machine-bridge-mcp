@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { captureCoverageGeneration } from "./coverage-generation.mjs";
-import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
-import { readBoundedRegularFileWithInfoSync } from "../src/local/secure-file.mjs";
+import { captureCoverageGeneration } from "./lib/verification.mjs";
+import { replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
+import { readBoundedRegularFileWithInfoSync } from "../src/local/core/secure-file.mjs";
 
 const RECEIPT_SCHEMA_VERSION = 1;
 const RECEIPT_MAX_BYTES = 16 * 1024;

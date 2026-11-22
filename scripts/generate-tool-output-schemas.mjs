@@ -112,8 +112,8 @@ function schemaForObservedType(type) {
 }
 
 async function observeContract() {
-  const { LocalRuntime, runtimeToolHandlerNames } = await import("../src/local/runtime.mjs");
-  const { policyProfile } = await import("../src/local/tools.mjs");
+  const { LocalRuntime, runtimeToolHandlerNames } = await import("../src/local/runtime/runtime.mjs");
+  const { policyProfile } = await import("../src/local/runtime/observability.mjs");
   const workspace = await mkdtemp(join(tmpdir(), "mbm-output-contract-"));
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-output-contract-state-"));
   await mkdir(join(workspace, "nested"), { recursive: true });
@@ -165,9 +165,9 @@ Return deterministic skill content for the output-observation harness.
     note: typeof previous.note === "string" ? previous.note
       : "Top-level output fields observed from real tool invocations. Tools marked verified=false could not be executed in the offline audit harness, so their outputSchema deliberately claims no fields. Regenerate with scripts/generate-tool-output-schemas.mjs --observe.",
   };
-  const { buildServerInfoResult } = await import("../src/worker/server-info.ts");
-  const { DaemonRegistry } = await import("../src/worker/daemon-registry.ts");
-  const { WorkerObservability } = await import("../src/worker/observability.ts");
+  const { buildServerInfoResult } = await import("../src/worker/room/server-info.ts");
+  const { DaemonRegistry } = await import("../src/worker/daemon/registry.ts");
+  const { WorkerObservability } = await import("../src/worker/room/observability.ts");
   const runtime = new LocalRuntime({
     workspace,
     policy: policyProfile("full", "explicit"),
@@ -236,6 +236,13 @@ Return deterministic skill content for the output-observation harness.
         observations.push(
           observeResult(buildServerInfoResult(workerInput, "full")),
           observeResult(buildServerInfoResult(workerInput, "summary")),
+          observeResult(buildServerInfoResult({
+            ...workerInput,
+            daemon: { ...workerInput.daemon, tools: ["read_file"] },
+            effectiveTools: ["server_info", "read_file"],
+            advertisedTools: ["server_info", "read_file"],
+          }, "summary")),
+          observeResult(buildServerInfoResult({ ...workerInput, clientToolSchemaGeneration: 1 }, "full")),
         );
       }
       if (name === "start_process" && typeof startProcessResult?.session_id === "string") {
@@ -331,7 +338,9 @@ function jsonType(value) {
 
 function observationArgumentVariants(name, state) {
   const args = observationArguments(name, state);
-  if (name === "server_info" || name === "project_overview") return [args, { ...args, detail: "summary" }];
+  if (name === "server_info") return [args, { ...args, detail: "summary" }, { ...args, client_tool_schema_generation: 1 }];
+  if (name === "project_overview") return [args, { ...args, detail: "summary" }];
+  if (name === "read_file") return [args, { path: "contract.txt" }];
   if (name === "exec_command" || name === "run_process" || name === "run_local_command") {
     return [args, { ...args, idempotency_key: `contract-${name}-durable` }];
   }

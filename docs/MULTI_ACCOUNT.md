@@ -121,12 +121,14 @@ Bearer remains available for hosts that do not implement DPoP.
 
 ## Object ownership
 
-Interactive processes, retained output sessions, and managed jobs bind to:
+Interactive processes, retained output sessions, managed jobs, and newly opened browser tabs bind to or record creator ownership:
 
 - account ID;
 - account version;
 - OAuth client ID;
 - refresh-token family ID.
+
+For browser coordination, `browser_manage_tabs` (`new`) records `tab_owner` and `browser_list_tabs` projects `tab_owner` and `owned_by_caller` per tab. `server_info` also exposes `authority_delta` (with `omitted_sample` redacted from non-owners) and `schema_drift` when `client_tool_schema_generation` is passed.
 
 For delegated (non-owner) principals, a different account, client, or token family cannot inspect, continue, send input to, cancel, or terminate the object. The `owner` role is intentionally a local-machine administration role and remains a global object administrator at the daemon boundary; owner CLI/stdio diagnostics can inspect and control retained objects across delegated principals.
 

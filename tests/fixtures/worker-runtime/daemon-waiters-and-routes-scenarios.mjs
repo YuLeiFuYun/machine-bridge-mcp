@@ -415,7 +415,7 @@ async function testWorkerStaticRoutes() {
   assert(missing?.status === 404, "unknown public route reached the Durable Object");
 
   for (const [path, method] of [
-    ["/mcp", "POST"], ["/mcp", "GET"], ["/daemon/ws", "GET"], ["/oauth/token", "POST"],
+    ["/mcp", "POST"], ["/mcp/gemini", "POST"], ["/daemon/ws", "GET"], ["/oauth/token", "POST"],
     ["/oauth/authorize", "GET"], ["/oauth/authorize", "POST"], ["/oauth/register", "POST"],
     ["/admin/accounts", "GET"], ["/admin/accounts", "PATCH"], ["/admin/clients", "DELETE"],
   ]) {
@@ -423,7 +423,7 @@ async function testWorkerStaticRoutes() {
     assert(passthrough === null, `${method} ${path} no longer reaches stateful routing`);
   }
   for (const [path, method, allow] of [
-    ["/mcp", "HEAD", "GET, POST"], ["/daemon/ws", "POST", "GET"], ["/oauth/token", "DELETE", "POST"],
+    ["/mcp", "GET", "POST"], ["/mcp", "HEAD", "POST"], ["/mcp/gemini", "GET", "POST"], ["/daemon/ws", "POST", "GET"], ["/oauth/token", "DELETE", "POST"],
     ["/admin/clients", "PATCH", "GET, DELETE"],
   ]) {
     const rejected = respondWithoutDurableObject(new Request(`https://example.test${path}`, { method }), identity);

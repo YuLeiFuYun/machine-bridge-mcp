@@ -98,7 +98,7 @@ export async function runCompletedWranglerCommand(options = {}) {
     child.once("close", (code, signal) => {
       if (hardTimedOut) { finish(new Error(`${label} timed out after ${timeoutMs}ms`)); return; }
       if (code === 0 && completionIsValid()) { finish(); return; }
-      if (cleanupRequested && completionObserved && signal === "SIGTERM" && completionIsValid()) {
+      if (cleanupRequested && completionObserved && (signal === "SIGTERM" || code === 143) && completionIsValid()) {
         stderr.write(`${label} completed but did not exit; terminated the completed CLI after a bounded grace period\n`);
         finish();
         return;

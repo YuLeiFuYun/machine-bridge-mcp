@@ -3,19 +3,19 @@
   "accepted": [
     {
       "ruleId": "js/shell-command-injection-from-environment",
-      "path": "src/local/process-execution.mjs",
+      "path": "src/local/process/execution.mjs",
       "reason": "Reviewed against CodeQL 2.27.2 on 2026-10-17: the policy-authorized direct-process capability deliberately accepts an executable and validated argv. spawnDirectProcess copies only fixed spawn options and enforces shell=false at child_process.spawn. Role/policy and literal-metacharacter regressions cover this boundary; this exact finding models command interpretation at a capability explicitly granted to its caller.",
       "expires": "2027-01-15"
     },
     {
       "ruleId": "js/indirect-command-line-injection",
-      "path": "src/local/process-execution.mjs",
+      "path": "src/local/process/execution.mjs",
       "reason": "Reviewed against CodeQL 2.27.2 on 2026-10-17: run_process is an intentionally authorized executable/argv capability, not a shell parser. validateArgv bounds its input, policyGate checks availability, and the final spawn passes executable/argv separately with shell=false. Current denial and execution regressions cover the policy and literal-argument contract; keep review scoped to this rule and file.",
       "expires": "2027-01-15"
     },
     {
       "ruleId": "js/insufficient-password-hash",
-      "path": "src/local/account-admin.mjs",
+      "path": "src/local/state/account-admin.mjs",
       "reason": "Reviewed against CodeQL 2.27.2 on 2026-10-17: the flagged SHA-256 operation is accountAdminRequestHeaders.bodyHash, a digest of the serialized HTTP request body included in the device-signed adminAuthTranscript. It is not a stored password verifier or password KDF. The signature binds origin, method, route, body digest, timestamp and nonce; changing this digest to a password KDF would change the authentication transcript rather than harden password storage.",
       "expires": "2027-01-15"
     }

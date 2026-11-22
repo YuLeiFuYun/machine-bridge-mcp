@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, get } from "node:http";
-import { startBrowserBrokerServer } from "../src/local/browser-broker-server.mjs";
+import { startBrowserBrokerServer } from "../src/local/automation/browser-broker.mjs";
 import {
   createBrokerAuthChallenge,
   createBrokerAuthRegistry,
@@ -11,15 +11,15 @@ import {
   parseBrokerAuthResponse,
   BROKER_AUTH_REQUEST_HEADER,
   BROKER_AUTH_REQUEST_VALUE,
-} from "../src/local/browser-broker-auth.mjs";
-import { createBrowserBrokerAuthHttpHandler } from "../src/local/browser-broker-auth-http.mjs";
+} from "../src/local/automation/browser-broker.mjs";
+import { createBrowserBrokerAuthHttpHandler } from "../src/local/automation/browser-broker.mjs";
 import {
   createBrowserPairingGrant,
   createPairingBootstrapInitProof,
   createPairingBootstrapProof,
   createPairingBootstrapRegistry,
   parseBrowserPairingGrant,
-} from "../src/local/browser-pairing-grant.mjs";
+} from "../src/local/automation/browser-broker.mjs";
 
 const token = "t".repeat(43);
 const challenge = createBrokerAuthChallenge();

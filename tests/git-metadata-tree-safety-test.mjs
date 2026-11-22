@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, opendir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveGitMetadataBoundary } from "../src/local/git-metadata-boundary.mjs";
-import { assertGitMetadataTreesSafe } from "../src/local/git-metadata-tree-safety.mjs";
+import { resolveGitMetadataBoundary } from "../src/local/git/git-safety.mjs";
+import { assertGitMetadataTreesSafe } from "../src/local/git/git-contracts.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-git-tree-safety-"));
 try {

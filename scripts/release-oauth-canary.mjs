@@ -3,11 +3,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountAdminClient } from "../src/local/cli-account-admin.mjs";
-import { inspectWorkspaceDaemon } from "../src/local/daemon-process.mjs";
-import { resolveNpmCli } from "../src/local/npm-cli.mjs";
-import { releaseControlEnvironmentIsTrusted } from "../src/local/resource-release-control-executable.mjs";
-import { defaultStateRoot, expandHome, loadState, selectedWorkspace } from "../src/local/state.mjs";
+import { accountAdminClient } from "../src/local/cli/cli-account.mjs";
+import { inspectWorkspaceDaemon } from "../src/local/transport/daemon-process.mjs";
+import { resolveNpmCli } from "../src/local/deploy/npm.mjs";
+import { releaseControlEnvironmentIsTrusted } from "../src/local/process/resource-release-control.mjs";
+import { defaultStateRoot, expandHome, loadState, selectedWorkspace } from "../src/local/state/state.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { assertPrereleaseActivationRuntimeRoot, readPrereleaseActivation } from "./prerelease-activation.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";

@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareHardenedNpm } from "../src/local/hardened-npm.mjs";
-import { createHardenedNpmLauncher } from "../src/local/hardened-npm-launcher.mjs";
+import { prepareHardenedNpm } from "../src/local/deploy/hardened-npm.mjs";
+import { createHardenedNpmLauncher } from "../src/local/deploy/hardened-npm.mjs";
 
 const githubPath = process.env.GITHUB_PATH;
 if (!githubPath) throw new Error("GITHUB_PATH is required; this bootstrap is intended for GitHub Actions");

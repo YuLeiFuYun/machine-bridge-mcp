@@ -20,14 +20,14 @@ import {
 import {
   MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
   MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo,
-} from "../src/worker/worker-mcp-config.ts";
+} from "../src/worker/room/server-info.ts";
 import {
   McpHttpContractError,
   decodeMcpHeaderValue,
   toolParameterHeaderNames,
   validateHttpRequest,
   validateToolHeaderSchemas,
-} from "../src/worker/mcp-http-contract.ts";
+} from "../src/worker/mcp/http-contract.ts";
 
 const serverInfo = serverImplementation({ name: "machine-bridge-mcp", version: "test", title: "Machine Bridge MCP" });
 const requestMeta = {

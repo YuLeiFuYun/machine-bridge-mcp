@@ -1,22 +1,23 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { validateCfBuildOutput } from "../src/local/cf-project.mjs";
+import { validateCfBuildOutput } from "../src/local/deploy/cf-project.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-cf-build-test-"));
 const require = createRequire(import.meta.url);
 const cfRoot = dirname(require.resolve("cf/package.json"));
 const nodeModules = join(dirname(dirname(cfRoot)), "node_modules");
+const rootPkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const workerName = "mbm-cf-build-fixture";
 try {
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "package.json"), JSON.stringify({
     private: true,
     type: "module",
-    devDependencies: { wrangler: "4.151.3" },
+    devDependencies: { wrangler: rootPkg.devDependencies.wrangler },
   }));
   writeFileSync(join(root, "cloudflare.config.ts"), `import { bindings, defineConfig, exports as workerExports } from "cf/config";
 const name = ${JSON.stringify(workerName)};

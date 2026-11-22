@@ -3,16 +3,16 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSyn
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { buildServiceSpec, installAutostart, launchdPlist, previewAutostartDefinition, runServiceCommand, stopLaunchdService, stopSystemdService, systemdUnit } from "../src/local/service.mjs";
-import { inspectRuntimePackageIdentity } from "../src/local/runtime-package-identity.mjs";
-import { preflightServiceRestartability } from "../src/local/service-restartability.mjs";
-import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary } from "../src/local/service-status.mjs";
-import { removeServiceDefinitionIfCurrent, snapshotServiceDefinition } from "../src/local/service-definition.mjs";
-import { beginServiceOwnerUpdate, loadCommittedServiceOwner, loadServiceOwner, removeServiceOwner, serviceOwnerPath } from "../src/local/service-owner.mjs";
-import { convergeOwnedServiceRuntime, restartOwnedServiceRuntime, startOwnedServiceRuntime, waitForOwnedServiceDaemon } from "../src/local/service-runtime.mjs";
-import { waitForInactiveStatus } from "../src/local/service-convergence.mjs";
-import { systemdRemovalDecision } from "../src/local/systemd-removal.mjs";
-import { boundedPositiveInteger, stableWindowsStatus, waitForWindowsStatus, windowsStatusWaitOptions } from "../src/local/windows-service-convergence.mjs";
+import { buildServiceSpec, installAutostart, launchdPlist, previewAutostartDefinition, runServiceCommand, stopLaunchdService, stopSystemdService, systemdUnit } from "../src/local/deploy/service.mjs";
+import { inspectRuntimePackageIdentity } from "../src/local/core/runtime-node.mjs";
+import { preflightServiceRestartability } from "../src/local/deploy/service-runtime.mjs";
+import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary } from "../src/local/deploy/service-support.mjs";
+import { removeServiceDefinitionIfCurrent, snapshotServiceDefinition } from "../src/local/deploy/service-support.mjs";
+import { beginServiceOwnerUpdate, loadCommittedServiceOwner, loadServiceOwner, removeServiceOwner, serviceOwnerPath } from "../src/local/deploy/service-owner.mjs";
+import { convergeOwnedServiceRuntime, restartOwnedServiceRuntime, startOwnedServiceRuntime, waitForOwnedServiceDaemon } from "../src/local/deploy/service-runtime.mjs";
+import { waitForInactiveStatus } from "../src/local/deploy/service-support.mjs";
+import { systemdRemovalDecision } from "../src/local/deploy/service-contracts.mjs";
+import { boundedPositiveInteger, stableWindowsStatus, waitForWindowsStatus, windowsStatusWaitOptions } from "../src/local/deploy/windows-service-convergence.mjs";
 import {
   installWindowsTask,
   startWindowsTask,
@@ -24,7 +24,7 @@ import {
   windowsLauncherContent,
   writeWindowsLauncher,
   windowsTaskAction,
-} from "../src/local/windows-service.mjs";
+} from "../src/local/deploy/service-platforms.mjs";
 
 assert.equal(windowsCommandLineArgument("plain"), '"plain"');
 assert.equal(windowsCommandLineArgument("C:\\"), '"C:\\\\"');
@@ -888,6 +888,15 @@ async function systemdStopContractTest() {
   assert.equal(maintenance.ok, false, "systemd maintenance state was treated as safely stoppable");
   assert.equal(maintenance.reason, "status_unavailable");
   assert.equal(maintenanceCommands, 0, "systemd maintenance state was mutated before diagnosis");
+
+  const timedOutStop = await stopSystemdService(quietLogger(), {
+    readStatus: async () => ({ installed: true, active: true, state: "active" }),
+    run: async () => ({ code: 0, stdout: "", stderr: "" }),
+    waitForInactive: async () => ({ installed: true, active: true, state: "deactivating" }),
+  });
+  assert.equal(timedOutStop.ok, false);
+  assert.equal(timedOutStop.restore_required, true,
+    "inconclusive systemd stop lost rollback obligation for an initially active service");
 }
 
 async function launchdStatusContractTest() {

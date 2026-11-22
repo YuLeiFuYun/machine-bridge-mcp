@@ -1,18 +1,18 @@
 import { EventEmitter } from "node:events";
-import { BridgeError } from "../../../src/local/errors.mjs";
-import { LocalRuntime } from "../../../src/local/runtime.mjs";
-import { MAX_CONCURRENT_TOOL_CALLS } from "../../../src/local/execution-limits.mjs";
-import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../../../src/local/runtime-relay.mjs";
-import { relayHandshakeDiagnostics } from "../../../src/local/relay-peer-diagnostics.mjs";
+import { BridgeError } from "../../../src/local/core/errors.mjs";
+import { LocalRuntime } from "../../../src/local/runtime/runtime.mjs";
+import { MAX_CONCURRENT_TOOL_CALLS } from "../../../src/local/process/execution-limits.mjs";
+import { normalizeRelayResumeCalls, normalizeRelayToolCall } from "../../../src/local/runtime/runtime-relay.mjs";
+import { relayHandshakeDiagnostics } from "../../../src/local/transport/relay-recovery.mjs";
 import relayContract from "../../../src/shared/relay-contract.json" with { type: "json" };
-import { RelayCallRecovery } from "../../../src/local/relay-call-recovery.mjs";
-import { RuntimeRelayShutdownDrain } from "../../../src/local/runtime-relay-shutdown-drain.mjs";
-import { relayRecoveryCapacityRejection, relayRecoveryCapacitySnapshot } from "../../../src/local/relay-recovery.mjs";
-import { DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS, RemoteActivityIdleSleepGuard } from "../../../src/local/remote-activity-idle-sleep-guard.mjs";
-import { createDeviceIdentity, createDeviceSessionIdentity } from "../../../src/local/device-identity.mjs";
-import { createUnattendedDeviceSessionFactory } from "../../../src/local/device-root-provider.mjs";
-import { runtimeRelayConnectionOptions } from "../../../src/local/runtime-relay-connection-options.mjs";
-import { DEVICE_SESSION_RENEW_BEFORE_MS, RuntimeDeviceSession } from "../../../src/local/runtime-device-session.mjs";
+import { RelayCallRecovery } from "../../../src/local/transport/relay-recovery.mjs";
+import { RuntimeRelayShutdownDrain } from "../../../src/local/runtime/runtime-relay-drain.mjs";
+import { relayRecoveryCapacityRejection, relayRecoveryCapacitySnapshot } from "../../../src/local/transport/relay-recovery.mjs";
+import { DEFAULT_REMOTE_ACTIVITY_IDLE_SLEEP_GRACE_MS, RemoteActivityIdleSleepGuard } from "../../../src/local/transport/network-proxy.mjs";
+import { createDeviceIdentity, createDeviceSessionIdentity } from "../../../src/local/state/device-identity.mjs";
+import { createUnattendedDeviceSessionFactory } from "../../../src/local/state/device-root-provider.mjs";
+import { runtimeRelayConnectionOptions } from "../../../src/local/runtime/runtime-relay.mjs";
+import { DEVICE_SESSION_RENEW_BEFORE_MS, RuntimeDeviceSession } from "../../../src/local/runtime/runtime-diagnostics.mjs";
 import { assert } from "./common.mjs";
 
 export async function runRelayInfrastructureTests() {

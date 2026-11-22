@@ -1,10 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalRuntime, runtimeToolHandlerNames } from "../src/local/runtime.mjs";
-import { bindRuntimeToolHandlers } from "../src/local/runtime-tool-handlers.mjs";
-import { normalizeToolResult } from "../src/local/tool-result-boundary.mjs";
-import { policyProfile } from "../src/local/tools.mjs";
+import { LocalRuntime, runtimeToolHandlerNames } from "../src/local/runtime/runtime.mjs";
+import { bindRuntimeToolHandlers } from "../src/local/runtime/runtime-services.mjs";
+import { normalizeToolResult } from "../src/local/runtime/call-registry.mjs";
+import { policyProfile } from "../src/local/runtime/observability.mjs";
 import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-runtime-handler-matrix-"));
@@ -83,6 +83,7 @@ try {
     fillForm: route("browser_fill_form"),
     screenshot: route("browser_screenshot"),
     uploadFiles: route("browser_upload_files"),
+    networkLog: route("browser_network_log"),
     cancelCall() {},
     stop() {},
   };

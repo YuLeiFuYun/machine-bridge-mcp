@@ -5,16 +5,16 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { CF_NETWORK_ARTIFACT } from "../src/local/cf-network-integrity.mjs";
+import { CF_NETWORK_ARTIFACT } from "../src/local/deploy/cf-network-integrity.mjs";
 import { stopFixtureChild, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
-import { resolveNpmCli } from "../src/local/npm-cli.mjs";
+import { resolveNpmCli } from "../src/local/deploy/npm.mjs";
 import {
   ensureCloudflareToolchain,
   ensureWranglerToolchain,
   wranglerToolchainDescriptor,
-} from "../src/local/wrangler-toolchain.mjs";
-import { wranglerToolchainMarkerMatches } from "../src/local/wrangler-toolchain-verification.mjs";
-import { validateInstalledWranglerToolchainTree } from "../src/local/wrangler-toolchain-installed-tree.mjs";
+} from "../src/local/deploy/wrangler-toolchain.mjs";
+import { wranglerToolchainMarkerMatches } from "../src/local/deploy/wrangler-toolchain.mjs";
+import { validateInstalledWranglerToolchainTree } from "../src/local/deploy/wrangler-toolchain.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-wrangler-toolchain-test-"));
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -86,17 +86,14 @@ try {
   assert.throws(() => validateInstalledWranglerToolchainTree({
     problems: [],
     dependencies: {
-      cf: { version: "1.0.0-beta.20" },
-      wrangler: { version: "4.151.3", dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
-      undici: { version: "7.30.1" },
-      sharp: { version: "0.35.5" },
-      esbuild: { version: "0.28.2" },
-      workerd: { version: "1.20261019.1" },
+      cf: { version: firstDescriptor.versions.cf },
+      wrangler: { version: firstDescriptor.versions.wrangler, dependencies: { malformed: [{ dependencies: { sharp: { version: "0.35.4" } } }] } },
+      undici: { version: firstDescriptor.versions.undici },
+      sharp: { version: firstDescriptor.versions.sharp },
+      esbuild: { version: firstDescriptor.versions.esbuild },
+      workerd: { version: firstDescriptor.versions.workerd },
     },
-  }, {
-    cf: "1.0.0-beta.20", wrangler: "4.151.3", undici: "7.30.1", sharp: "0.35.5",
-    esbuild: "0.28.2", workerd: "1.20261019.1",
-  }),
+  }, firstDescriptor.versions),
   /invalid dependency node/,
   "malformed nested dependency node hid an unverified dependency subtree behind a patched Sharp sibling");
 
@@ -349,7 +346,7 @@ function toolchainState(root, name) {
 }
 
 async function withForeignMaintenanceLock(stateRoot, callback) {
-  const stateModuleUrl = new URL("../src/local/state.mjs", import.meta.url).href;
+  const stateModuleUrl = new URL("../src/local/state/state.mjs", import.meta.url).href;
   const script = `import { acquireMaintenanceLock } from ${JSON.stringify(stateModuleUrl)};\n`
     + `const lock=acquireMaintenanceLock(process.argv[1],{operation:"wrangler-test"});\n`
     + `if(!lock.acquired)throw new Error("maintenance lock not acquired");\n`
@@ -368,13 +365,16 @@ async function withForeignMaintenanceLock(stateRoot, callback) {
 function createFakeNpmRunner(options = {}) {
   const calls = [];
   const launcherBins = new Set();
+  const baseVersions = wranglerToolchainDescriptor({ packageRoot, stateRoot: join(root, "fake-versions") }).versions;
+  const toolchainManifest = JSON.parse(readFileSync(join(packageRoot, "src", "local", "wrangler-toolchain", "package.json"), "utf8"));
   const versions = {
-    cf: options.cf || "1.0.0-beta.20",
-    wrangler: options.wrangler || "4.151.3",
-    undici: options.undici || "7.30.1",
-    sharp: options.sharp || "0.35.5",
-    esbuild: options.esbuild || "0.28.2",
-    workerd: options.workerd || "1.20261019.1",
+    cf: options.cf || baseVersions.cf,
+    wrangler: options.wrangler || baseVersions.wrangler,
+    undici: options.undici || baseVersions.undici,
+    sharp: options.sharp || baseVersions.sharp,
+    esbuild: options.esbuild || baseVersions.esbuild,
+    workerd: options.workerd || baseVersions.workerd,
+    miniflare: options.miniflare || toolchainManifest.overrides.miniflare,
   };
   return {
     count(kind) { return calls.filter((value) => value === kind).length; },
@@ -423,7 +423,7 @@ function createFakeNpmRunner(options = {}) {
               dependencies: {
                 workerd: { version: versions.workerd },
                 miniflare: {
-                  version: "5.20261019.1-beta",
+                  version: versions.miniflare,
                   dependencies: {
                     undici: { version: versions.undici },
                     sharp: { version: versions.sharp },

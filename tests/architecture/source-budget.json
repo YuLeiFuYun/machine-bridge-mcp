@@ -1,11 +1,11 @@
 {
-  "_note": "Ratchet for production source size. The budget is a baseline plus a small fixed headroom, not the current value: ordinary feature work must not be blocked by the ratchet. Lower the numbers after consolidating modules; raising them requires a recorded review that explains why the new file, byte, or micro-module is necessary.",
-  "totalFiles": 536,
-  "totalBytes": 3150000,
+  "_note": "Ratchet for production source size. The budget is a baseline plus a small fixed headroom, not the current value: ordinary feature work must not be blocked by the ratchet. Lower the numbers after consolidating modules; raising them requires a recorded review that explains why the new file, byte, or micro-module is necessary. 3.0.0-beta.222 review: consolidated totalFiles (536->247) and raised totalBytes 3150000->3190000 (+40 KiB) for browser_network_log CDP capture/redaction, isolated_worktree Git lifecycle/preflight, /mcp/gemini stateless 2025-11-25 endpoint, per-principal taint/StuckLoopDetector guardrails, include_marks/size_budget, and verify/pair CLI.",
+  "totalFiles": 270,
+  "totalBytes": 3190000,
   "maxModuleBytes": 96000,
-  "microFiles": 116,
+  "microFiles": 24,
   "flatDirectories": {
-    "src/local": 380,
-    "src/worker": 123
+    "src/local": 5,
+    "src/worker": 5
   }
 }

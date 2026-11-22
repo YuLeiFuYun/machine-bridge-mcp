@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "../../../src/local/computer-use-observation.mjs";
-import { BridgeError } from "../../../src/local/errors.mjs";
+import { buildBrowserObservation, buildContinuation, extractBrowserPrivateBindings, observationDiff, projectPostObservation } from "../../../src/local/automation/computer-use-observation.mjs";
+import { BridgeError } from "../../../src/local/core/errors.mjs";
 import {
   PNG_A_BASE64, PNG_A_SHA256,
   managerWith, browserStub, browserSnapshot, browserChildFrameSnapshot,

@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
-import { terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "../src/local/process-tree.mjs";
-import { BoundedOutput } from "../src/local/bounded-output.mjs";
+import { terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "../src/local/process/tree-facade.mjs";
+import { BoundedOutput } from "../src/local/files/workspace-transaction.mjs";
 import { releaseDiagnostic } from "./release-diagnostic.mjs";
-import { verificationChildEnvironment } from "./verification-environment.mjs";
+import { verificationChildEnvironment } from "./lib/verification.mjs";
 
 const FAILURE_OUTPUT_BYTES_PER_STREAM = 64 * 1024;
 const MAX_VERIFICATION_CONCURRENCY = 16;
@@ -102,10 +102,10 @@ export const COVERAGE_FIXTURE_TESTS = Object.freeze([
   "tests/device-auth-test.mjs",
   "tests/operation-authorization-test.mjs",
   "tests/security-audit-log-test.mjs",
-  "tests/delegated-process-sandbox-test.mjs",
   "tests/dpop-test.mjs",
   "tests/worker-security-boundaries-test.mjs",
-  "tests/ssh-key-test.mjs"
+  "tests/ssh-key-test.mjs",
+  "tests/frontier-capabilities-test.mjs"
 ]);
 
 export async function runVerificationPlan(options) {
@@ -412,6 +412,15 @@ export function directNodeInvocation(task, packageScripts) {
   const tokens = script.trim().split(/\s+/);
   if (tokens.length < 2 || tokens[0] !== "node" || tokens.slice(1).some((token) => !DIRECT_NODE_TOKEN.test(token))) return null;
   return { script, args: tokens.slice(1) };
+}
+
+export function directNodeTestFiles(task, packageScripts) {
+  const direct = directNodeInvocation(task, packageScripts);
+  if (!direct || !direct.args.length) return [];
+  if (direct.args[0] === "--test") {
+    return direct.args.slice(1).filter((token) => !token.startsWith("-"));
+  }
+  return [direct.args[0]];
 }
 
 function emitFailureDiagnostics(result, output) {

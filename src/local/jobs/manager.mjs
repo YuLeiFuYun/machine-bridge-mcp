@@ -1,0 +1,692 @@
+import { randomBytes } from "node:crypto";
+import { realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { assertStateMaintenanceAvailable } from "../state/state.mjs";
+import { ensureOwnerOnlyDir, inspectPathIfPresentSync } from "../core/secure-file.mjs";
+import { createToolAuthorizer } from "../core/policy.mjs";
+import { BridgeError } from "../core/errors.mjs";
+import { assertOwnedByContext, principalBinding } from "../core/authority.mjs";
+import { recordMatchesAuthorityRevocation } from "../../shared/authority-revocation.mjs";
+import { startDurableProcessJob, acceptedManagedJobProjection, assertKnownManagedJobStatus, assertManagedJobDirectoryIdentity, managedJobTransitionConflict, managedJobRecoveryAttempts, MAX_MANAGED_JOB_RECOVERY_ATTEMPTS } from "./redaction.mjs";
+import { clearTransientProcessRecoveryPending, transientProcessRecoveryStatusFields, relaunchDependencyWaitManagedJob, relaunchInterruptedManagedJob, pruneManagedJobs } from "./retention.mjs";
+import { assertTransientProcessRecoveryAccountCapacity } from "./transient-recovery-capacity.mjs";
+import { managedJobActiveChildFile, managedJobActiveChildRecoveryState, resolveManagedJobDependencies, inspectManagedJobReplayIntent, managedJobIdempotencyDigest, managedJobRequestSha256, normalizeJobIdempotencyKey, omitJobIdempotencyKey } from "./execution.mjs";
+import { inspectResourceFile, normalizeResourceRegistry, validatePlan, validatePlanIntent } from "./plan.mjs";
+import { assertManagedJobPlanIntegrity, managedJobPlanSha256, hostedManagedJobStatus, projectManagedJobResult, publicStatus, reviewablePlan } from "./projection.mjs";
+import { acquireJobCapacityLock, acquireJobTransitionLock, acquireRecoveryLock, atomicWriteJson, cleanupIsolatedWorktreeDir, readBoundedFile, readJson, readRequiredJson, resourceErrorClass, safeReadDir, MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent, retiredManagedJobDirectories, writeManagedJobCancellation } from "./directory.mjs";
+import { reconcileManagedJobStatusHosted, pruneManagedJobsAtCapacity } from "./capacity-maintenance.mjs";
+import { listManagedJobs } from "./listing.mjs";
+import { launchRunner, runnerProcessIsCurrent, createManagedJobRunnerExitRecovery } from "./runner-lifecycle.mjs";
+import { MAX_JOBS, scrubTerminalJobArtifacts, assertTerminalJobEvidence } from "./capacity.mjs";
+import { ACTIVE_JOB_STATES, isTerminalManagedJobResult, isTerminalManagedJobStatus, persistManagedJobTerminal, terminalStatusFromResult } from "./terminal-base.mjs";
+
+export { inspectResourceFile, publicResourceRegistry, validateResourceName } from "./plan.mjs";
+
+export { launchRunner } from "./runner-lifecycle.mjs";
+
+const MAX_PLAN_BYTES = 1024 * 1024;
+
+const PRUNE_INTERVAL_MS = 30_000;
+
+export class ManagedJobManager {
+  constructor({ jobRoot, workspace, policy, authorizeTool = null, policyForContext = null, resources = {}, resourceStatePath = "", stateRoot = "", logger = console, recover = true, runnerEnvironmentOverrides = {}, runnerSpawnProcess = null }) {
+    const jobRootInput = resolve(jobRoot);
+    ensureOwnerOnlyDir(jobRootInput);
+    this.jobRoot = realpathSync.native ? realpathSync.native(jobRootInput) : realpathSync(jobRootInput);
+    const workspaceInput = resolve(workspace);
+    this.workspace = realpathSync.native ? realpathSync.native(workspaceInput) : realpathSync(workspaceInput);
+    this.policy = policy;
+    this.authorizeTool = createToolAuthorizer(this.policy, authorizeTool);
+    this.policyForContext = typeof policyForContext === "function" ? policyForContext : () => this.policy;
+    this.resources = normalizeResourceRegistry(resources);
+    this.resourceStatePath = resourceStatePath ? resolve(resourceStatePath) : "";
+    this.stateRoot = stateRoot ? resolve(stateRoot) : "";
+    this.logger = logger;
+    this.runnerEnvironmentOverrides = { ...runnerEnvironmentOverrides };
+    if (runnerSpawnProcess !== null && typeof runnerSpawnProcess !== "function") {
+      throw new TypeError("runnerSpawnProcess must be a function when configured");
+    }
+    this.runnerSpawnProcess = runnerSpawnProcess;
+    this.lastPruneAt = 0;
+    this.runnerExitRecovery = createManagedJobRunnerExitRecovery({
+      reconcileStatus: (dir) => this.reconcileStatus(dir), logger: this.logger,
+    });
+    this.assertMaintenanceAvailable();
+    this.prune();
+    if (recover) this.recoverInterruptedJobs();
+  }
+
+  status(context = {}) {
+    this.assertMaintenanceAvailable();
+    const listing = this.list({ limit: MAX_JOBS }, context, { maximumLimit: MAX_JOBS });
+    const jobs = listing.jobs;
+    return {
+      active: jobs.filter((job) => ACTIVE_JOB_STATES.has(job.status)).length,
+      staged: jobs.filter((job) => job.status === "staged").length,
+      retained: jobs.length,
+      maximum: MAX_JOBS,
+      ...(listing.capacity ? { capacity: listing.capacity } : {}),
+      ...(listing.recent_activity ? { recent_activity: listing.recent_activity } : {}),
+    };
+  }
+
+  resourceInfo(context = {}) {
+    this.assertMaintenanceAvailable();
+    if (context?.authority?.owner === false) {
+      return { count: null, names: [], values_exposed: false, inventory_hidden_by_authority: true };
+    }
+    const resources = this.currentResources();
+    return {
+      count: Object.keys(resources).length,
+      names: Object.keys(resources).sort(),
+      values_exposed: false,
+    };
+  }
+
+  listResources(_context = {}) {
+    this.authorizeTool("list_local_resources");
+    this.assertMaintenanceAvailable();
+    const resources = [];
+    for (const [name, resource] of Object.entries(this.currentResources()).sort(([a], [b]) => a.localeCompare(b))) {
+      try {
+        const inspected = inspectResourceFile(resource.path, { allowInsecurePermissions: resource.allowInsecurePermissions === true });
+        resources.push({ name, kind: "file", available: true, size: inspected.size, mode: inspected.mode });
+      } catch (error) {
+        const errorClass = resourceErrorClass(error);
+        if (errorClass === "resource_unavailable") throw error;
+        resources.push({ name, kind: "file", available: false, error_class: errorClass });
+      }
+    }
+    return { resources, count: resources.length, values_exposed: false, paths_exposed: false };
+  }
+
+  diagnoseStorage() {
+    this.assertMaintenanceAvailable();
+    const probe = join(this.jobRoot, `.probe-${process.pid}-${randomBytes(6).toString("hex")}`);
+    try {
+      writeFileSync(probe, "ok\n", { mode: 0o600, flag: "wx" });
+      const content = readBoundedFile(probe, 64).toString("utf8");
+      return { ok: content === "ok\n", error_class: content === "ok\n" ? null : "storage_mismatch" };
+    } catch (error) {
+      return { ok: false, error_class: resourceErrorClass(error) };
+    } finally {
+      rmSync(probe, { force: true });
+    }
+  }
+
+  stage(args = {}, context = {}) {
+    this.authorizeTool("stage_job");
+    this.assertMaintenanceAvailable();
+    return this.createJob(args, { launch: false }, context);
+  }
+
+  start(args = {}, context = {}) {
+    this.authorizeTool("start_job");
+    this.assertMaintenanceAvailable();
+    return this.createJob(args, { launch: true }, context);
+  }
+
+  startDurableProcess(args = {}, context = {}) {
+    return startDurableProcessJob(this, args, context);
+  }
+
+  createJob(args, { launch, executionPriority = "background", retentionClass = "managed" }, context = {}) {
+    const effectivePolicy = this.policyForContext(context);
+    const idempotencyKey = launch ? normalizeJobIdempotencyKey(args?.idempotency_key) : null;
+    const planArgs = idempotencyKey === null ? args : omitJobIdempotencyKey(args);
+    const planContext = {
+      workspace: this.workspace,
+      fullEnv: effectivePolicy.minimalEnv === false,
+      unrestrictedPaths: effectivePolicy.unrestrictedPaths === true,
+    };
+    const intent = validatePlanIntent(planArgs, planContext);
+    const requestSha256 = managedJobRequestSha256(intent, {
+      executionPriority, retentionClass, unrestrictedPaths: planContext.unrestrictedPaths,
+    });
+    let preparedPlan;
+    const preparePlan = () => preparedPlan ||= {
+      ...validatePlan(planArgs, { ...planContext, resources: this.currentResources() }),
+      ...(executionPriority === "interactive" ? { execution_priority: "interactive" } : {}),
+    };
+    const idempotencyDigest = idempotencyKey === null ? null : managedJobIdempotencyDigest(idempotencyKey, context);
+    const id = idempotencyDigest === null ? `job_${randomBytes(24).toString("base64url")}` : `job_${idempotencyDigest}`;
+    const dir = join(this.jobRoot, id);
+    const capacity = acquireJobCapacityLock(this.jobRoot);
+    if (!capacity) {
+      throw new BridgeError("conflict", "managed-job capacity is being committed by another process; retry after inspecting current jobs", {
+        retryable: true,
+        details: { capacity_commit_pending: true },
+      });
+    }
+    try {
+      const existingInfo = inspectPathIfPresentSync(dir, "managed job directory");
+      if (existingInfo && (existingInfo.isSymbolicLink() || !existingInfo.isDirectory())) {
+        throw new BridgeError("integrity_error", "managed job directory is not a real directory");
+      }
+      const alreadyExists = Boolean(existingInfo);
+      if (alreadyExists) ensureOwnerOnlyDir(dir);
+      if (!alreadyExists) preparePlan();
+      const recoveryAccountCapacity = assertTransientProcessRecoveryAccountCapacity({
+        jobRoot: this.jobRoot, retentionClass, context, currentJobId: id, currentDirectoryExists: alreadyExists,
+        idempotencyReplayEligible: idempotencyDigest !== null,
+      });
+      const dependencyResolution = alreadyExists
+        ? { witnesses: [], pending: 0 }
+        : resolveManagedJobDependencies({
+          jobRoot: this.jobRoot,
+          dependencyIds: intent.depends_on,
+          currentJobId: id,
+          context,
+          reconcileStatus: (dependencyDir) => this.reconcileStatus(dependencyDir),
+        });
+      const { snapshot: capacitySnapshot, pruned } = alreadyExists
+        ? { snapshot: null, pruned: false }
+        : pruneManagedJobsAtCapacity(this.jobRoot, this.logger, { alreadyExists, recoveryAccountCapacity, plan: intent, retentionClass });
+      if (pruned) this.lastPruneAt = Date.now();
+      if (!alreadyExists && capacitySnapshot.retained_state >= MAX_JOBS) {
+        throw new BridgeError("limit_exceeded", `managed job capacity is fully occupied (${MAX_JOBS})`, {
+          retryable: true,
+          details: { maximum: MAX_JOBS, ...capacitySnapshot },
+        });
+      }
+      ensureOwnerOnlyDir(dir);
+      const transition = idempotencyDigest === null ? null : acquireJobTransitionLock(dir);
+      if (idempotencyDigest !== null && !transition) {
+        throw new BridgeError("conflict", "managed-job idempotency key is being committed by another process; inspect or retry the same request", {
+          retryable: true,
+          details: { idempotency_replay_pending: true },
+        });
+      }
+      try {
+        const statusFile = join(dir, "status.json");
+        const statusEvidence = idempotencyDigest === null ? null : readJson(statusFile, 256 * 1024, "job status");
+        if (statusEvidence !== null) {
+          let replayPlan = inspectManagedJobReplayIntent({
+            dir, status: statusEvidence, context, requestSha256, preparePlan, intent, maxPlanBytes: MAX_PLAN_BYTES,
+          });
+          this.reconcileStatus(dir);
+          const existing = readRequiredJson(statusFile, 256 * 1024, "job status");
+          assertKnownManagedJobStatus(existing);
+          assertOwnedByContext(existing, context, "managed job");
+          assertManagedJobDirectoryIdentity(dir, existing);
+          if (ACTIVE_JOB_STATES.has(existing.status)) {
+            replayPlan = readRequiredJson(join(dir, "plan.json"), MAX_PLAN_BYTES, "job plan");
+            assertManagedJobPlanIntegrity(replayPlan, existing);
+          }
+          if (existing.status === "queued" && !runnerProcessIsCurrent(existing, dir)) {
+            try {
+              launchRunner(dir, false, "", runnerLaunchOptions(replayPlan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
+                () => this.runnerExitRecovery.observe(dir), this.runnerSpawnProcess));
+            } catch (error) {
+              failRunnerLaunch(dir, existing, error);
+              throw error;
+            }
+          }
+          return acceptedManagedJobProjection(existing, replayPlan, { idempotencyReplay: true });
+        }
+        const plan = preparePlan();
+        const planSha256 = managedJobPlanSha256(plan);
+        atomicWriteJson(join(dir, "plan.json"), plan, MAX_PLAN_BYTES);
+        const now = new Date().toISOString();
+        const status = {
+          job_id: id,
+          name: plan.name,
+          status: launch ? "queued" : "staged",
+          created_at: now,
+          updated_at: now,
+          current_phase: null,
+          current_step: null,
+          runner_pid: null,
+          approval: launch ? "mcp" : "review-only",
+          plan_sha256: planSha256,
+          ...(idempotencyDigest === null ? {} : { request_sha256: requestSha256 }),
+          cleanup_guarantee: launch ? "best-effort-finally-and-recovery" : "not-started",
+          recovery_attempts: 0,
+          recovery_history: [],
+          dependency_total: (plan.depends_on || []).length,
+          dependency_pending_count: dependencyResolution.pending,
+          ...(plan.continuation_mode === "task_supervisor" ? { continuation_mode: "task_supervisor" } : {}),
+          ...((plan.depends_on || []).length ? { dependency_witnesses: dependencyResolution.witnesses } : {}),
+          ...transientProcessRecoveryStatusFields(retentionClass, context),
+          ...principalBinding(context),
+        };
+        atomicWriteJson(statusFile, status, 256 * 1024);
+        if (launch) {
+          try {
+            launchRunner(dir, false, "", runnerLaunchOptions(plan.full_env === true, this.logger, this.runnerEnvironmentOverrides,
+              () => this.runnerExitRecovery.observe(dir), this.runnerSpawnProcess));
+          } catch (error) {
+            failRunnerLaunch(dir, status, error);
+            throw error;
+          }
+        }
+        return launch
+          ? acceptedManagedJobProjection(status, plan, { idempotencyReplay: false, idempotencyAccepted: idempotencyDigest !== null })
+          : {
+            staged: true,
+            job_id: id,
+            name: plan.name,
+            status: "staged",
+            execution_started: false,
+            plan_sha256: planSha256,
+            dependency_total: (plan.depends_on || []).length,
+            continuation: "review this draft; execution requires a separate start_job submission and never promotes this staged record",
+            plan_expires_after_hours: 24,
+          };
+      } finally {
+        transition?.release();
+      }
+    } finally {
+      capacity.release();
+    }
+  }
+
+  list(args = {}, context = {}, options = {}) {
+    this.authorizeTool("list_jobs");
+    this.assertMaintenanceAvailable();
+    const listOptions = {
+      jobRoot: this.jobRoot, args, context, logger: this.logger,
+      reconcileStatus: (dir) => this.reconcileStatus(dir),
+      assertKnownStatus: (dir, status) => { assertManagedJobDirectoryIdentity(dir, status); assertKnownManagedJobStatus(status); },
+      maximumLimit: options.maximumLimit,
+    };
+    let listing = listManagedJobs(listOptions);
+    if (listing.maintenanceRequired || listing.retained >= MAX_JOBS || Date.now() - this.lastPruneAt >= PRUNE_INTERVAL_MS) {
+      if (this.prune()) listing = listManagedJobs(listOptions);
+    }
+    const { maintenanceRequired: _maintenanceRequired, ...result } = listing;
+    return result;
+  }
+
+  read(args = {}, context = {}, options = {}) {
+    this.authorizeTool("read_job");
+    this.assertMaintenanceAvailable();
+    const dir = this.jobDir(args.job_id);
+    if (options.skipReconcile !== true) this.reconcileStatus(dir);
+    const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+    assertManagedJobDirectoryIdentity(dir, status);
+    assertKnownManagedJobStatus(status);
+    assertOwnedByContext(status, context, "managed job");
+    const result = status.result_persisted === false ? null : readJson(join(dir, "result.json"), 4 * 1024 * 1024);
+    if (!result && status.result_persisted !== false && !ACTIVE_JOB_STATES.has(status.status) && status.status !== "staged") {
+      throw new BridgeError("integrity_error", "managed job terminal result is missing");
+    }
+    if (result && !isTerminalManagedJobResult(result, status.job_id)) {
+      throw new BridgeError("integrity_error", "managed job result is invalid or belongs to another job");
+    }
+    if (result && !ACTIVE_JOB_STATES.has(status.status) && result.status !== status.status) {
+      throw new BridgeError("integrity_error", "managed job status and result disagree");
+    }
+    const projectedStatus = ACTIVE_JOB_STATES.has(status.status) && result
+      ? terminalStatusFromResult(status, result, { resultPersisted: true, updatedAt: result.finished_at })
+      : status;
+    return {
+      ...publicStatus(projectedStatus),
+      ...hostedManagedJobStatus(projectedStatus, context),
+      ...(result ? { result: projectManagedJobResult(result, { includeResourceAdmissionTiming: context?.authority?.owner !== false }) } : {}),
+    };
+  }
+
+  async readHosted(args = {}, context = {}) {
+    this.authorizeTool("read_job");
+    this.assertMaintenanceAvailable();
+    const dir = this.jobDir(args.job_id);
+    await reconcileManagedJobStatusHosted(this, dir);
+    const result = this.read(args, context, { skipReconcile: true });
+    if (isTerminalManagedJobStatus(String(result?.status || ""))) {
+      try { clearTransientProcessRecoveryPending(dir); }
+      catch (error) { this.logger.warn?.("managed job delivered-result recovery marker could not be downgraded", { error_class: resourceErrorClass(error) }); }
+    }
+    return result;
+  }
+
+  readProgress(args = {}, context = {}) {
+    this.authorizeTool("read_job");
+    this.assertMaintenanceAvailable();
+    const dir = this.jobDir(args.job_id);
+    const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+    assertManagedJobDirectoryIdentity(dir, status);
+    assertKnownManagedJobStatus(status);
+    assertOwnedByContext(status, context, "managed job");
+    return publicStatus(status);
+  }
+
+  inspectLocal(args = {}) {
+    this.assertMaintenanceAvailable();
+    const dir = this.jobDir(args.job_id);
+    const transition = acquireJobTransitionLock(dir);
+    if (!transition) throw managedJobTransitionConflict();
+    try {
+      this.reconcileStatus(dir);
+      const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+      assertManagedJobDirectoryIdentity(dir, status);
+      assertKnownManagedJobStatus(status);
+      const plan = readJson(join(dir, "plan.json"), MAX_PLAN_BYTES);
+      if (plan) assertManagedJobPlanIntegrity(plan, status,
+        "managed job plan integrity check failed; inspect the plan and do not submit or execute it");
+      return {
+        ...publicStatus(status),
+        plan_integrity_verified: Boolean(plan),
+        ...(plan ? { review_plan: reviewablePlan(plan) } : {}),
+      };
+    } finally {
+      transition.release();
+    }
+  }
+
+  cancel(args = {}, context = {}) {
+    this.authorizeTool("cancel_job");
+    return cancelManagedJob(this, args, context);
+  }
+
+  revokeAuthority(revocation) {
+    let revoked = 0;
+    let failure = null;
+    for (const entry of safeReadDir(this.jobRoot)) {
+      if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
+      try {
+        const dir = join(this.jobRoot, entry.name);
+        this.reconcileStatus(dir);
+        const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+        assertManagedJobDirectoryIdentity(dir, status);
+        assertKnownManagedJobStatus(status);
+        if (!recordMatchesAuthorityRevocation(status, revocation)) continue;
+        const principal = { kind: "account", accountId: status.owner_account_id, accountVersion: status.owner_account_version, clientId: status.owner_client_id, familyId: status.owner_family_id, role: "revocation" };
+        if (cancelManagedJob(this, { job_id: entry.name }, { authority: { principal } }).cancellation_requested) revoked += 1;
+      } catch (error) {
+        failure ||= error;
+        this.logger.warn?.("managed job authority revocation could not be applied", { error_class: resourceErrorClass(error) });
+      }
+    }
+    if (failure) {
+      throw new BridgeError("unavailable", "managed job authority revocation was incomplete; retained revocation must be retried", {
+        cause: failure, retryable: true,
+      });
+    }
+    return revoked;
+  }
+
+  currentResources() {
+    this.assertMaintenanceAvailable();
+    if (!this.resourceStatePath) return this.resources;
+    const state = readJson(this.resourceStatePath, 2 * 1024 * 1024, "resource state");
+    if (!state) return this.resources;
+    if (typeof state !== "object" || Array.isArray(state)) throw new Error("resource state is not a JSON object");
+    if (!state.resources || typeof state.resources !== "object" || Array.isArray(state.resources)) {
+      throw new Error("resource state registry is invalid");
+    }
+    return normalizeResourceRegistry(state.resources);
+  }
+
+  assertMaintenanceAvailable() {
+    if (this.stateRoot) assertStateMaintenanceAvailable(this.stateRoot);
+  }
+
+  jobDir(value) {
+    return resolveManagedJobDirectory(this.jobRoot, value);
+  }
+
+  reconcileStatus(dir) {
+    this.assertMaintenanceAvailable();
+    const file = join(dir, "status.json");
+    const initial = readJson(file, 256 * 1024);
+    if (!initial) return;
+    assertManagedJobDirectoryIdentity(dir, initial);
+    assertKnownManagedJobStatus(initial);
+    if (initial.status === "staged") return;
+    if (isTerminalManagedJobStatus(initial.status)) {
+      // The runner persists terminal evidence before its final cleanup-status write. Let a
+      // still-live runner finish that two-phase commit instead of racing its status replacement.
+      if (initial.artifact_cleanup_pending === true) {
+        try { if (runnerProcessIsCurrent(initial, dir)) return; }
+        catch { /* If ownership cannot be established, fall through to fail-closed evidence checks. */ }
+      }
+      scrubTerminalJobArtifacts(dir, initial);
+      return;
+    }
+    if (!ACTIVE_JOB_STATES.has(initial.status)) {
+      throw new BridgeError("integrity_error", "managed job status is invalid");
+    }
+    if (runnerProcessIsCurrent(initial, dir)) return;
+    if (reconcileTerminalResult(dir, file, initial)) return;
+    const updated = Date.parse(initial.updated_at || initial.created_at || "");
+    if (Number.isFinite(updated) && Date.now() - updated < 10_000) return;
+
+    const recoveryLock = acquireRecoveryLock(dir);
+    if (!recoveryLock) return;
+    let handedOff = false;
+    try {
+      const status = readJson(file, 256 * 1024);
+      if (!status) return;
+      assertManagedJobDirectoryIdentity(dir, status);
+      assertKnownManagedJobStatus(status);
+      if (status.status === "staged" || isTerminalManagedJobStatus(status.status)) return;
+      if (!ACTIVE_JOB_STATES.has(status.status)) {
+        throw new BridgeError("integrity_error", "managed job status is invalid");
+      }
+      if (runnerProcessIsCurrent(status, dir)) return;
+      if (reconcileTerminalResult(dir, file, status)) return;
+      const recoveryAttempts = managedJobRecoveryAttempts(status);
+      if (recoveryAttempts >= MAX_MANAGED_JOB_RECOVERY_ATTEMPTS) {
+        const childState = managedJobActiveChildRecoveryState(managedJobActiveChildFile(dir));
+        if (childState !== "ready") {
+          if (childState === "current") this.runnerExitRecovery.observe(dir);
+          return;
+        }
+        markRecoveryExhausted(dir, file, status, recoveryAttempts);
+        return;
+      }
+      if (status.status === "queued" && status.current_phase === "dependency_wait") {
+        relaunchDependencyWaitManagedJob({
+          dir, statusFile: file, status,
+          logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
+          runnerSpawnProcess: this.runnerSpawnProcess,
+          onRunnerExit: () => this.runnerExitRecovery.observe(dir),
+        });
+        return;
+      }
+      const runnerPid = relaunchInterruptedManagedJob({
+        dir, statusFile: file, status, recoveryToken: recoveryLock.token,
+        logger: this.logger, runnerEnvironmentOverrides: this.runnerEnvironmentOverrides,
+        runnerSpawnProcess: this.runnerSpawnProcess,
+        onRunnerExit: () => this.runnerExitRecovery.observe(dir),
+      });
+      recoveryLock.handoff(runnerPid);
+      handedOff = true;
+    } finally {
+      if (!handedOff) recoveryLock.release();
+    }
+  }
+
+  recoverInterruptedJobs() {
+    this.assertMaintenanceAvailable();
+    for (const entry of safeReadDir(this.jobRoot)) {
+      if (!entry.isDirectory() || !MANAGED_JOB_ID.test(entry.name)) continue;
+      try {
+        this.reconcileStatus(join(this.jobRoot, entry.name));
+      } catch (error) {
+        this.logger.warn?.("managed job recovery skipped unreadable state; retaining it for inspection", { error_class: resourceErrorClass(error) });
+      }
+    }
+  }
+
+  stopRunnerExitRecovery() { this.runnerExitRecovery.stop(); }
+
+  prune({ reserveSlots = 0 } = {}) {
+    this.assertMaintenanceAvailable();
+    const capacity = acquireJobCapacityLock(this.jobRoot);
+    if (!capacity) return false;
+    try {
+      pruneManagedJobs({ jobRoot: this.jobRoot, logger: this.logger, reserveSlots });
+      this.lastPruneAt = Date.now();
+      return true;
+    } finally {
+      capacity.release();
+    }
+  }
+
+}
+
+function reconcileTerminalResult(dir, statusFile, status) {
+  const result = readJson(join(dir, "result.json"), 4 * 1024 * 1024, "job result");
+  if (!result) return false;
+  if (!isTerminalManagedJobResult(result, status.job_id)) {
+    throw new BridgeError("integrity_error", "managed job result is invalid or belongs to another job");
+  }
+  const recovered = terminalStatusFromResult(status, result, {
+    resultPersisted: true, updatedAt: new Date().toISOString(),
+  });
+  atomicWriteJson(statusFile, recovered, 256 * 1024);
+  scrubTerminalJobArtifacts(dir, recovered);
+  return true;
+}
+
+function cancelManagedJob(manager, args = {}, context = {}) {
+  manager.assertMaintenanceAvailable();
+  const dir = manager.jobDir(args.job_id);
+  const transition = acquireJobTransitionLock(dir);
+  if (!transition) throw managedJobTransitionConflict();
+  try {
+    manager.reconcileStatus(dir);
+    const status = readRequiredJson(join(dir, "status.json"), 256 * 1024, "job status");
+    assertManagedJobDirectoryIdentity(dir, status);
+    assertKnownManagedJobStatus(status);
+    assertOwnedByContext(status, context, "managed job");
+    if (status.status === "staged") {
+      const now = new Date().toISOString();
+      status.cleanup_guarantee = "not-started";
+      const result = {
+        job_id: status.job_id, name: status.name, status: "cancelled_before_start",
+        steps: [], finally_steps: [], error_class: "cancelled", cleanup_error_class: null, finished_at: now,
+      };
+      const terminal = persistManagedJobTerminal({
+        statusFile: join(dir, "status.json"), resultFile: join(dir, "result.json"),
+        artifacts: [join(dir, "runtime"), join(dir, "plan.json"), join(dir, "runner.pid"), join(dir, "cancel")],
+        status, result, writeJson: atomicWriteJson,
+        removeFile: (file) => rmSync(file, { recursive: true, force: true }),
+        maxStatusBytes: 256 * 1024, maxResultBytes: 4 * 1024 * 1024, classifyPersistenceError: resourceErrorClass,
+      });
+      Object.assign(status, terminal.status);
+      if (!terminal.statusPersisted) throw new Error(`managed job staged cancellation status persistence failed: ${terminal.statusErrorClass}`);
+      return { ...publicStatus(status), cancellation_requested: true, cleanup_will_run: false, execution_started: false };
+    }
+    if (!ACTIVE_JOB_STATES.has(status.status)) {
+      return { ...publicStatus(status), cancellation_requested: false, already_finished: true };
+    }
+    writeManagedJobCancellation(join(dir, "cancel"));
+    return {
+      ...publicStatus(status), cancellation_requested: true,
+      cancellation_delivery: "runner-poll", cleanup_will_run: true,
+    };
+  } finally {
+    transition.release();
+  }
+}
+
+export function activeManagedJobs(jobRoot) {
+  const root = resolveManagedJobRootIfPresent(jobRoot);
+  if (!root) return [];
+  const jobs = [];
+  for (const retired of retiredManagedJobDirectories(root)) {
+    jobs.push(retired.reclaimable
+      ? { state_kind: "retired_managed_job", status: "retired_cleanup_pending", runner_alive: false, error_class: null }
+      : { state_kind: "retired_managed_job", status: "unreadable", runner_alive: true, error_class: retired.error_class || "integrity_error" });
+  }
+  for (const entry of safeReadDir(root)) {
+    if (!MANAGED_JOB_ID.test(entry.name)) continue;
+    if (!entry.isDirectory()) {
+      jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: "integrity_error" });
+      continue;
+    }
+    const dir = join(root, entry.name);
+    let status;
+    try {
+      status = readJson(join(dir, "status.json"), 256 * 1024, "job status");
+    } catch (error) {
+      jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: resourceErrorClass(error) });
+      continue;
+    }
+    if (status && status.job_id !== entry.name) {
+      jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: "integrity_error" });
+      continue;
+    }
+    let validStatus = true;
+    try { if (status) assertKnownManagedJobStatus(status); }
+    catch { validStatus = false; }
+    if (!validStatus) {
+      jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: "integrity_error" });
+      continue;
+    }
+    if (status && isTerminalManagedJobStatus(status.status)) {
+      try { assertTerminalJobEvidence(dir, status); }
+      catch (error) {
+        jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: error?.code === "integrity_error" ? "integrity_error" : resourceErrorClass(error) });
+        continue;
+      }
+    }
+    let runnerAlive;
+    try { runnerAlive = runnerProcessIsCurrent(status, dir); }
+    catch (error) {
+      jobs.push({ job_id: entry.name, status: "unreadable", runner_alive: true, error_class: resourceErrorClass(error) });
+      continue;
+    }
+    const lifecycleActive = status && ACTIVE_JOB_STATES.has(status.status);
+    if (runnerAlive || lifecycleActive) {
+      jobs.push({
+        job_id: entry.name,
+        status: status?.status || "unknown",
+        runner_alive: runnerAlive,
+      });
+    }
+  }
+  return jobs;
+}
+
+export function loadManagedJobPlan(inputPath) {
+  const path = resolve(String(inputPath || ""));
+  const buffer = readBoundedFile(path, MAX_PLAN_BYTES);
+  let value;
+  try { value = JSON.parse(buffer.toString("utf8")); } catch {
+    throw new Error("job plan is not valid JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("job plan must contain a JSON object");
+  return value;
+}
+
+function failRunnerLaunch(dir, status, error) {
+  const now = new Date().toISOString();
+  const errorClass = resourceErrorClass(error);
+  const result = {
+    job_id: status.job_id, name: status.name, status: "runner_launch_failed", steps: [], finally_steps: [],
+    error_class: errorClass, cleanup_error_class: null, finished_at: now,
+  };
+  const terminal = persistManagedJobTerminal({
+    statusFile: join(dir, "status.json"), resultFile: join(dir, "result.json"),
+    artifacts: [join(dir, "runtime"), join(dir, "plan.json"), join(dir, "runner.pid"), join(dir, "cancel")],
+    status: { ...status, cleanup_guarantee: "not-started", error_class: errorClass }, result,
+    writeJson: atomicWriteJson, removeFile: (file) => rmSync(file, { recursive: true, force: true }),
+    maxStatusBytes: 256 * 1024, maxResultBytes: 4 * 1024 * 1024, classifyPersistenceError: resourceErrorClass,
+  });
+  if (!terminal.statusPersisted) throw new Error(`managed job launch-failure status persistence failed: ${terminal.statusErrorClass}`);
+}
+
+function markRecoveryExhausted(dir, statusFile, status, recoveryAttempts) {
+  const now = new Date().toISOString();
+  cleanupIsolatedWorktreeDir(join(dir, "runtime", "worktree"), "", join(dir, "runtime"));
+  const result = {
+    job_id: status.job_id, name: status.name, status: "recovery_exhausted",
+    steps: [], finally_steps: [], error_class: "recovery_exhausted", cleanup_error_class: null,
+    recovery_attempts: recoveryAttempts, finished_at: now,
+  };
+  const terminal = persistManagedJobTerminal({
+    statusFile, resultFile: join(dir, "result.json"),
+    artifacts: [join(dir, "runtime"), join(dir, "plan.json"), join(dir, "runner.pid"), join(dir, "cancel")],
+    status, result, writeJson: atomicWriteJson, removeFile: (file) => rmSync(file, { recursive: true, force: true }),
+    maxStatusBytes: 256 * 1024, maxResultBytes: 4 * 1024 * 1024, classifyPersistenceError: resourceErrorClass,
+  });
+  if (!terminal.statusPersisted) throw new Error(`managed job recovery-exhausted status persistence failed: ${terminal.statusErrorClass}`);
+}
+
+function runnerLaunchOptions(fullEnv, logger, overrides = {}, onExit = undefined, spawnProcess = null) {
+  return { logger, fullEnv, env: { ...process.env, ...overrides }, onExit, ...(spawnProcess ? { spawnProcess } : {}) };
+}

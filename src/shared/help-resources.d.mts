@@ -8,4 +8,4 @@ export interface HelpResource {
 export const CODE_MODE_SDK_RESOURCE_URI: string;
 export const HELP_RESOURCES: readonly HelpResource[];
 export function helpResourceMimeType(uri: unknown): string;
-export function readHelpResource(uri: unknown): string | null;
+export function readHelpResource(uri: unknown, toolsOverride?: ReadonlyArray<Record<string, unknown>> | null): string | null;

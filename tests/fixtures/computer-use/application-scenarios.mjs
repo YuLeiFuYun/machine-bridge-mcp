@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { ComputerUseManager } from "../../../src/local/computer-use.mjs";
-import { ComputerUseSnapshotStore } from "../../../src/local/computer-use-snapshot-store.mjs";
-import { computerActRemainingTimeoutSeconds } from "../../../src/local/computer-use-deadline.mjs";
-import { BridgeError } from "../../../src/local/errors.mjs";
-import { applicationCheckedStateChanged, applicationInputOutcomeUnknown, applicationTargetGeometryChanged, applicationVisualSnapshotChanged } from "../../../src/local/computer-use-dispatch-settlement.mjs";
+import { ComputerUseManager } from "../../../src/local/automation/computer-use.mjs";
+import { ComputerUseSnapshotStore } from "../../../src/local/automation/computer-use-contracts.mjs";
+import { computerActRemainingTimeoutSeconds } from "../../../src/local/automation/computer-use-policies.mjs";
+import { BridgeError } from "../../../src/local/core/errors.mjs";
+import { applicationCheckedStateChanged, applicationInputOutcomeUnknown, applicationTargetGeometryChanged, applicationVisualSnapshotChanged } from "../../../src/local/automation/computer-use-contracts.mjs";
 import {
   PNG_A_BASE64, PNG_B_BASE64, PNG_A_SHA256,
   managerWith, browserStub, browserSnapshot,

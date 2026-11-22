@@ -11,17 +11,17 @@ Arbitrary shell execution has no blanket zero-resource class: even a read-only-l
 Generic zero-resource process exceptions are identity-based in `resource-light-command.mjs` and require a small set of standard absolute executables; PATH-resolved lookalikes do not qualify.
 The heavy script/package-manager family has one separate control-plane exception because the live OAuth canary must remain runnable while unrelated builds hold machine reservations.
 That exception bypasses both npm lifecycle execution and mutable checkout code: only exact direct Node argv `node <activated-runtime-package>/scripts/release-oauth-canary.mjs --allow-live-oauth-canary` can become `release-control`.
-The script operand must be absolute and `resource-release-control-workspace.mjs` canonicalizes it to the running package's own `scripts/release-oauth-canary.mjs`; a workspace-relative or copied canary therefore cannot qualify even when its bytes match.
+The script operand must be absolute and `src/local/process/resource-release-control.mjs` canonicalizes it to the running package's own `scripts/release-oauth-canary.mjs`; a workspace-relative or copied canary therefore cannot qualify even when its bytes match.
 `npm run release:oauth-canary` and `node scripts/release-oauth-canary.mjs ...` remain source/developer entrypoints with ordinary accounting, but prerelease canary provenance rejects them as release evidence because the executing package root must canonicalize to the package root containing activation `runtime_entry`.
 The lexical Node shape alone is also insufficient.
-`resource-release-control-executable.mjs` resolves the executable that the child PATH would actually invoke, canonicalizes it, and requires equality with the daemon's own `process.execPath`; a shadowing first Node match therefore fails instead of being skipped.
+`src/local/process/resource-release-control.mjs` resolves the executable that the child PATH would actually invoke, canonicalizes it, and requires equality with the daemon's own `process.execPath`; a shadowing first Node match therefore fails instead of being skipped.
 It refuses the light profile when Node/native debugging, profiling, TLS, loader, or resource-startup overrides such as `NODE_OPTIONS`, `NODE_DEBUG`, `NODE_TLS_REJECT_UNAUTHORIZED`, `SSLKEYLOGFILE`, `UV_THREADPOOL_SIZE`, `LD_PRELOAD`, or DYLD injection paths are present, and the canary runner enforces the same environment policy before any live OAuth mutation.
 The command cwd remains bound to the running package name/version and exact canary source bytes.
 The packaged canary derives its imports from the activated runtime package but deliberately uses `process.cwd()` as the candidate/evidence data root, so mutable checkout modules are never evaluated under the release-control exemption.
 The canary itself requires exactly the single live-canary flag, requires empty `process.execArgv`, and rejects alternate state/workspace argv before state access because those identities and Node startup flags are not represented in acceptance evidence.
 It also calls the existing service-daemon identity verifier and requires a current startup-ready service daemon whose version equals the candidate, whose canonical `entryScript` equals the executing canary package's `bin/machine-mcp.mjs`, and whose canonical Node executable equals the canary's `process.execPath`, and whose private daemon-lock Node runtime version equals `process.versions.node`.
 That daemon proof applies to stable as well as prerelease candidates; the prerelease activation record remains an additional package-root/hash binding rather than the only code-origin proof.
-It resolves the npm CLI needed by its explicit `--ignore-scripts` pack dry-run without trusting lifecycle `npm_execpath`; `npm-cli.mjs` uses the running Node installation layout, including the package-manager prefix associated with Homebrew Cellar Node paths, before any general fallback is considered.
+It resolves the npm CLI needed by its explicit `--ignore-scripts` pack dry-run without trusting lifecycle `npm_execpath`; `src/local/deploy/npm.mjs` uses the running Node installation layout, including the package-manager prefix associated with Homebrew Cellar Node paths, before any general fallback is considered.
 Shell wrappers, npm/alternate package managers, workspace-owned canary paths, lookalikes, missing/extra argv, and candidate preparation retain ordinary accounting.
 Thus the exception requires direct-argv identity, activated-runtime code identity, runtime Node identity, startup-environment identity, and runtime-bound workspace identity together.
 It remains a cooperative accounting invariant, not hostile same-user code authentication, and changes neither release authorization nor OAuth mutation policy.
@@ -56,7 +56,7 @@ Remote-owner `diagnose_runtime.runtime.execution_guardrails` reports those enfor
 Public one-shot commands inline at most 32 KiB per stream.
 When either stream exceeds that preview, the runtime keeps up to 1 MiB per stream in a closed in-memory process session for thirty minutes and returns an `output_session_id`; `read_process` then reads monotonic byte-offset pages.
 Relay-origin process reads use paced same-response follow-up.
-`process-session-read.mjs` owns read/wait/output orchestration while `process-session-remote-poll.mjs` owns only hosted projection/cooldown policy, leaving `process-sessions.mjs` focused on session lifecycle and ownership.
+`src/local/process/session-helpers.mjs` owns read/wait/output orchestration and hosted projection/cooldown policy, leaving `src/local/process/process-sessions.mjs` focused on session lifecycle and ownership.
 The async read helper returns its internal plan/output snapshot before hosted projection is finalized; after the await the manager re-checks cancellation, then completes projection synchronously, so cancellation at the Promise boundary is not lost and a child exit there cannot produce `running=false` with stale cooldown metadata.
 The Worker and daemon cap the actual output/exit blocking wait at one second; a live session that has just consumed a remote blocking read enters a fifteen-second would-block cooldown.
 A repeated would-block request inside that cooldown is paced inside the same MCP call until output/exit or the cooldown boundary instead of returning an immediate running checkpoint, and the Worker execution budget covers that server-side delay.
@@ -70,7 +70,7 @@ The oldest exited session is evicted before an active session is refused, so con
 The continuation stores command basename and cwd metadata but not argv or shell text. It is memory-only and disappears on runtime stop or daemon replacement.
 
 Resource admission is a separate cooperative boundary, not an OS quota.
-`resource-foreground-wait.mjs` owns the ordinary process-start wait budget: a one-shot foreground call defaults to 20% of its execution timeout with a two-second floor, ten-second ceiling, and never more than the complete execution timeout.
+`src/local/process/resource-admission-policy.mjs` owns the ordinary process-start wait budget: a one-shot foreground call defaults to 20% of its execution timeout with a two-second floor, ten-second ceiling, and never more than the complete execution timeout.
 Owner-local process-session startup defaults to a ten-second cooperative wait, while relay-origin `start_process` performs one admission attempt without queueing by default so known host pressure is returned before the request-owned response budget is consumed.
 An explicit configured override remains authoritative for controlled diagnostics/tests.
 `LocalRuntime` leaves this default unconfigured in production so the services actually apply it, while explicit overrides are validated and capped at thirty minutes.
@@ -99,16 +99,16 @@ Each app-origin status call has a 60-second client response watchdog.
 A missing/transport-failed or explicitly retryable app-read response is retried in the View for at most six attempts with bounded 1/2/4/8/15/30-second backoff; exhausting those attempts or receiving a non-retryable error pauses instead of looping, and no retry path resubmits the managed job.
 Claimed records remain bounded by the existing 128-record durable monitor registry, latest-wins replacement, oldest-record eviction, and authority revocation.
 The View still has no direct network domains or weaker job lookup.
-Unsupported hosts, and UI hosts without proven `serverTools`, retain bounded autonomous model follow-up: `managed-job-hosted-status.mjs` owns the relay-only projection, so relay-origin `read_job` reports `status_polling_mode=bounded_followup` plus `host_turn_handoff_recommended=false` for active jobs while terminal reads report `status_polling_mode=terminal`; local job reads retain their prior shape.
+Unsupported hosts, and UI hosts without proven `serverTools`, retain bounded autonomous model follow-up: `src/local/jobs/projection.mjs` owns the relay-only projection, so relay-origin `read_job` reports `status_polling_mode=bounded_followup` plus `host_turn_handoff_recommended=false` for active jobs while terminal reads report `status_polling_mode=terminal`; local job reads retain their prior shape.
 Worker tool guidance allows a known active job to be followed again in the same assistant response when terminal state is required, while prohibiting busy loops, repeated `list_jobs` substitution, and speculative handoff based only on elapsed wall-clock time.
-`managed-job-read-wait.mjs` keeps that autonomy out of the host spin loop: the runtime `read_job` handler performs a relay-only 40-second default long-poll with five-second lightweight status-only probes, monotonic deadline accounting, and cancellation checks.
+`src/local/jobs/projection.mjs` keeps that autonomy out of the host spin loop: the runtime `read_job` handler performs a relay-only 40-second default long-poll with five-second lightweight status-only probes, monotonic deadline accounting, and cancellation checks.
 Terminal settlement returns on the next bounded probe.
 Nonterminal status/phase/dependency progress is coalesced until at least the 30-second hosted progress floor (or the caller's explicitly shorter wait), and `current_step` alone is excluded from the hosted wake signature; local explicit waits retain step-progress wake behavior.
 The public hosted maximum is 60 seconds; the 40-second default remains intentionally separate so ordinary continuation leaves additional host/Worker settlement headroom, while longer jobs continue through another server-paced read of the same capability-bound job rather than one overlong host request.
 Full runner/recovery reconciliation is bounded to thirty-second intervals inside the advertised wait rather than executing on every lightweight probe.
 The monotonic wait deadline starts before the initial full read, so initial reconciliation consumes the same per-call budget, and an unchanged timeout returns the latest secure persisted progress state without adding a second heavyweight reconcile after the deadline.
 Coherent non-interactive command sequences should use a repository umbrella command or a multi-step managed job so local command fan-out does not become host-visible tool-event fan-out; this density control does not shorten the managed task or its six-hour step ceiling.
-Hosted reads first verify a healthy runner with async process-start identity sampling; `managed-job-hosted-reconcile.mjs` owns that relay-only liveness/recovery decision, and only a non-current/ambiguous runner enters the existing recovery reconciliation path, so a normal long-running job no longer launches synchronous `ps` from the relay event loop every reconcile interval.
+Hosted reads first verify a healthy runner with async process-start identity sampling; `src/local/jobs/manager.mjs` owns that relay-only liveness/recovery decision, and only a non-current/ambiguous runner enters the existing recovery reconciliation path, so a normal long-running job no longer launches synchronous `ps` from the relay event loop every reconcile interval.
 `ManagedJobManager.read()` remains the local synchronous persistence/ownership projection while relay reads use `readHosted()`; `readProgress()` deliberately omits runner reconciliation and terminal-result projection during unchanged waits.
 Relay-origin `list_jobs` remains an `inventory` surface and does not recommend handoff, but its hosted projection is aggregate-only: it omits job IDs, names, and `recent_process_recovery` handles.
 Hosted acceptance returns deterministic HMAC-derived `recovery_key` and `control_key` capabilities bound to account version, OAuth client, refresh family, role, job ID, and capability purpose.
@@ -121,7 +121,7 @@ Owner diagnostics separately expose the Boolean `waiters.drain_active`, computed
 A fixed CPU request that exceeds the machine's best-case priority-specific launch window is structurally incapable of becoming admissible while the configured CPU headroom remains in force; it therefore returns non-retryable `cpu_request_exceeds_launch_window` before entering the retry sleep loop instead of masquerading as transient `cpu_pressure_window`.
 Explicit worker counts/argv are never rewritten and the headroom is not relaxed; elastic/unbounded requests retain their pressure-aware fitting behavior.
 `resource-command-profile.mjs` classifies known light operations, bounded adaptive unknowns, and known CPU/I/O/mixed build families.
-`resource-script-classification.mjs` classifies only an actually executed shell/Node/Python script operand or package-manager script name, and `resource-shell-analysis.mjs` owns conservative shell token/segment parsing.
+`src/local/process/resource-command-profile.mjs` classifies only an actually executed shell/Node/Python script operand or package-manager script name and owns conservative shell token/segment parsing.
 This lets direct orchestration roots reserve startup capacity before descendant fan-out without letting an unrelated argument such as a test filename or release note impersonate a heavy script.
 The arbitrary-process zero-resource allowlist is intentionally identity-bound: `resource-light-command.mjs` accepts only a small set of standard absolute executables for constant/output, process-table, uptime, and sleep probes.
 Bare PATH-resolved names and every arbitrary shell invocation remain adaptive even when their apparent command is cheap, because executable resolution, startup configuration, repository configuration, path behavior, options, helpers, or input size can change the actual work.
@@ -130,9 +130,9 @@ Implementation-owned Git/diagnostic probes use their separate fixed-argv/interna
 `resource-admission.mjs` persists per-user owner-only leases and waiters outside workspace state; ownership is bound to PID plus process-start identity and, where supported, the isolated process group.
 Releasing the caller-side lease does not delete a bound POSIX reservation while that isolated process group still exists: the persisted lease remains until ordinary pruning observes the group gone, so a detached descendant cannot become unaccounted merely because its direct caller returned.
 Independent nested process roots retain their own full durable leases for crash recovery, but live accounting does not blindly add an orchestration envelope and every child reservation.
-`resource-process-ancestry.mjs` samples the live parent graph through `resource-process-ancestry-cache.mjs`; the async cache coalesces concurrent requests and retains a completed snapshot for one second so admission retries do not repeatedly enumerate the complete process table.
+`src/local/process/resource-host.mjs` samples the live parent graph and caches completed snapshots for one second so admission retries do not repeatedly enumerate the complete process table.
 If ancestry cannot be sampled, accounting falls back to conservative full summation.
-`resource-lease-accounting.mjs` forms an ephemeral lease forest whose effective vector is the component-wise maximum of a node's own envelope and the sum of its direct lease children.
+`src/local/process/resource-leases.mjs` forms an ephemeral lease forest whose effective vector is the component-wise maximum of a node's own envelope and the sum of its direct lease children.
 A pending nested request is charged only for the additional vector it contributes to that forest.
 Same-key contention is exempted only for the request's actual ancestor lease chain; siblings and unrelated roots still serialize.
 
@@ -143,7 +143,7 @@ Monitor Durable Object storage is continuation metadata rather than business-res
 The persisted registry additionally validates unique monitor IDs, unique ordering sequences, and claim sequences no newer than the registry generation.
 
 Live host-pressure observation is deliberately asynchronous-only.
-`resource-probe-command.mjs` owns bounded `execFile` child-probe transport and intentionally exposes no synchronous `spawnSync` path; `resource-host-darwin.mjs` runs Darwin memory, VM, disk, and thermal probes concurrently, `resource-process-ancestry.mjs` samples the parent graph asynchronously, and `resource-host-snapshot.mjs` composes those results without blocking the daemon event loop on `ps`, `memory_pressure`, `vm_stat`, `iostat`, or `pmset`.
+`src/local/process/resource-host.mjs` owns bounded `execFile` child-probe transport, intentionally exposes no synchronous `spawnSync` path, runs Darwin memory/VM/disk/thermal probes concurrently, samples the parent graph asynchronously, and composes those results without blocking the daemon event loop on `ps`, `memory_pressure`, `vm_stat`, `iostat`, or `pmset`.
 The previous sync host/Darwin/process-parent samplers and sync ancestry cache are removed rather than retained as test-only APIs that a future runtime path could accidentally call.
 Process-start identity used when binding a spawned lease is also sampled asynchronously before the coordinator file lock is taken.
 Lease/waiter pruning uses a separate one-second cached async process-start snapshot collected outside the transaction lock; while holding the lock it performs only PID liveness plus in-memory generation comparison.
@@ -152,49 +152,49 @@ Missing foreign snapshot evidence fails closed for a live PID, while a proven fo
 This prevents a still-running coordinator from self-pruning its own waiter or provisional lease, or deleting its own in-flight waiter/lease staging file, because of an external process-table generation discrepancy.
 Staging from an older same-PID generation remains reclaimable because its file timestamp predates the current process-start identity.
 The expired beta.104 transaction-owner directory migration path is no longer executable; unsupported legacy transaction-lock directories are retained unchanged and fail closed so stale migration code cannot become a destructive recovery surface.
-`resource-host-cache.mjs` treats a same-project general host snapshot as fresh for 500 milliseconds while retaining successful I/O evidence for at most five seconds; a stale general sample can therefore refresh cheap CPU/memory/load data without waiting for another one-second `iostat` interval, but an older throughput peak is not copied into a current quick sample.
+`src/local/process/resource-host.mjs` treats a same-project general host snapshot as fresh for 500 milliseconds while retaining successful I/O evidence for at most five seconds; a stale general sample can therefore refresh cheap CPU/memory/load data without waiting for another one-second `iostat` interval, but an older throughput peak is not copied into a current quick sample.
 Timestamps represent sample completion rather than sample start.
 `resource-admission-policy.mjs` evaluates effective CPU, memory, I/O, disk-reserve, startup-window, and host-pressure values without imposing global serialism. macOS `iostat -Id` exposes transfer and throughput activity, not device utilization/saturation; fresh high IOPS/MB-per-second evidence therefore tightens I/O capacity as Yellow pressure but cannot by itself mark the host Red.
 Red remains reserved for direct critical evidence such as thermal/memory/disk-headroom failure or a severe load backlog corroborated by current CPU/I/O evidence.
-Linux additionally uses `MemAvailable` and optional PSI avg10 observations through `resource-host-linux.mjs`; sustained `psi_io_full_avg10 >= 60` is direct critical I/O-stall evidence and therefore Red, while lower I/O PSI remains a Yellow capacity-throttling signal.
+Linux additionally uses `MemAvailable` and optional PSI avg10 observations through `src/local/process/resource-host.mjs`; sustained `psi_io_full_avg10 >= 60` is direct critical I/O-stall evidence and therefore Red, while lower I/O PSI remains a Yellow capacity-throttling signal.
 The soft free-disk floor is `min(80 GiB, max(8 GiB, 15% of volume))`; the post-reservation hard floor is `min(50 GiB, max(5 GiB, 10% of volume))`.
 Disk-only hard-red pressure has one narrow self-recovery exception: only an internally classified direct standard absolute deletion executable with the exact small `disk-reclaim` envelope may enter using Yellow capacity limits, and only when `disk_free_headroom_critical` is the sole critical reason.
 PATH-resolved or shell-composed deletion cannot claim that class, and thermal, memory, PSI, CPU/load, or other Red evidence still blocks it.
 Diagnostics expose observed busy CPU next to reserved CPU and their ratio as a mismatch signal, not as process attribution.
-`resource-admission-diagnostics.mjs` owns the privacy-safe snapshot/check projection, while `resource-admission-diagnostic-error.mjs` separately classifies bounded transaction/staging-lock contention as retryable coordinator-busy snapshot unavailability instead of inflating the diagnostics module or mislabeling contention as process execution failure.
+`src/local/process/resource-admission-policy.mjs` owns both the privacy-safe snapshot/check projection and bounded transaction/staging-lock contention classification (retryable coordinator-busy snapshot unavailability) without mislabeling contention as process execution failure.
 `resource-waiters.mjs` normally skips an older request that does not fit, but a sufficiently aged rank-zero waiter blocked by coordinator-owned project/CPU/I/O/memory capacity can enter a protected drain phase if it is structurally feasible after current leases disappear.
 Fixed implementation-owned probes bypass this coordinator so diagnostics/recovery remain usable during resource pressure.
 
 The same protocol is intentionally language-neutral: compatible workflow controllers may use the same per-user coordinator root, schema, lease ownership, contention keys, and waiter ordering.
 This permits Machine Bridge and workflow-bundle to coordinate independent process trees without a new daemon.
-`resource-project-key.mjs` canonicalizes the existing filesystem path before deriving the v1 project-contention hash, so path aliases such as macOS `/var` versus `/private/var` and symlinked workspace roots cannot create different mutex identities across implementations; Windows additionally normalizes separator form, path case, and extended-path prefixes before hashing.
+`src/local/process/resource-command-profile.mjs` canonicalizes the existing filesystem path before deriving the v1 project-contention hash, so path aliases such as macOS `/var` versus `/private/var` and symlinked workspace roots cannot create different mutex identities across implementations; Windows additionally normalizes separator form, path case, and extended-path prefixes before hashing.
 Lease/waiter records contain resource families, numeric reservations, hashes, timestamps, and process ownership but never argv, shell text, or raw project paths.
 The anonymous `project_hash` is derived from the same canonical project identity as contention and is diagnostic correlation only; it is not authorization or admission authority.
 The coordinator is fail-closed on malformed persistent authority.
 
-`resource-transaction-lock.mjs` publishes current `transaction.lock` ownership as one complete-before-visible owner-state regular file using the same exclusive-file primitive as other owner-state locks.
+`src/local/process/resource-waiters.mjs` publishes current `transaction.lock` ownership as one complete-before-visible owner-state regular file using the same exclusive-file primitive as other owner-state locks.
 The record carries a fixed `resource-coordinator` purpose, random ownership token, PID, and process-start identity; release and stale-file reclamation remove only a record whose token/purpose and secure-file identity still match.
 The beta.104 directory reader, owner-publication staging recovery, quarantine/restore path, and their migration-only process-identity branches have been removed because beta.104 is no longer inside the supported immediately-preceding/live transition.
 Encountering the obsolete `transaction.lock/owner.json` directory shape now fails closed without modifying it and directs the operator to preserve the state and use a supported upgrade transition or rollback snapshot.
 Current regular-file claims still wait for a live owner, reclaim only a proven stale matching owner, reject persistent multiple hard links, and keep transaction waiting operation-bounded: admission uses only the remaining caller admission budget, capped at 30 seconds, while spawned-process lease bind/release ownership settlement may wait up to 30 seconds and managed-job background admission retains its longer outer wait.
 
-`resource-staging-recovery.mjs` is the narrow exception to the lease/wait directories' final-name-only rule: it understands only the exact temporary naming emitted by the coordinator's current lease/wait atomic-file helpers.
+`src/local/process/resource-waiters.mjs` also implements the narrow exception to the lease/wait directories' final-name-only rule: it understands only the exact temporary naming emitted by the coordinator's current lease/wait atomic-file helpers.
 Lease/waiter recovery handles a committed two-hard-link alias or a dead-publisher single-link uncommitted replacement after identity/link-count rechecks.
 A staging inode owned by a still-current publisher is classified as `MBM_RESOURCE_STAGING_BUSY`: `ResourceCoordinator.withLock()` releases the transaction generation and performs at most four five-millisecond retries so an ordinary concurrent complete-before-visible publication can settle, while a staging owner that remains live after that fixed budget still fails closed.
 Process admission maps the exhausted busy classification to the same retryable resource-unavailable surface as transaction-lock contention instead of exposing an internal error.
 Retired Workflow Bundle staging names are no longer an accepted migration grammar; they remain untouched as unexpected entries so current recovery never interprets obsolete publisher metadata or destructively guesses at old state.
 No transaction-owner staging grammar remains after the beta.104 transition reader expired.
 
-`resource-build-root.mjs` assigns stable per-project build caches only for toolchains with documented controls.
+`src/local/process/resource-command-profile.mjs` assigns stable per-project build caches only for toolchains with documented controls.
 Cargo receives `CARGO_TARGET_DIR`; direct SwiftPM receives `--scratch-path`; direct Xcode receives `-derivedDataPath`.
 The build-cache partition uses the same canonical anonymous project hash as coordinator diagnostics, so symlink and platform path aliases cannot create duplicate cache identities.
 Compiler job limits are injected only when the caller did not already choose one; they are fan-out hints and startup reservations, not an OS-enforced ceiling on descendants.
 Shell text is not rewritten to smuggle path flags: a conservative literal `cd` chain may refine the resource project root even when the later executable is generic, so sibling repositories do not inherit a false common-parent contention key.
 Dynamic, quoted, or otherwise ambiguous directory changes are left unguessed and fall back to the last provable base.
-`resource-process-priority.mjs` additionally wraps POSIX background heavy roots in `nice +5`; this is work-conserving scheduling preference rather than a quota, so background work may still use idle CPU while yielding more readily to interactive and control-plane work.
+`src/local/process/resource-metrics.mjs` additionally wraps POSIX background heavy roots in `nice +5`; this is work-conserving scheduling preference rather than a quota, so background work may still use idle CPU while yielding more readily to interactive and control-plane work.
 Ordinary and interactive roots are not reniced.
 
-`resource-wait.mjs` owns coordinator retry timing.
+`src/local/process/resource-waiters.mjs` (`resourceSleep`) owns coordinator retry timing.
 An admission or transaction-lock wait is active process work, so its timer remains referenced until completion; cancellation removes the timer and listener, and ordinary timeout completion removes the abort listener.
 This prevents the event loop from exiting while a caller is still awaiting capacity and bounds listener lifetime during long waits.
 
@@ -204,7 +204,7 @@ Trustworthy historical calibration requires settlement-time process-tree usage (
 
 Large object results use `structuredContent` as the authoritative representation.
 The human text mirror is complete only below the shared 16 KiB projection threshold; above it, both local stdio and the Worker return the same compact byte-count/field summary instead of serializing the object a second time.
-`process-result-projection.mjs`, `process-output-stream.mjs`, and the shared result projector keep lifecycle, byte retention, and MCP presentation as separate boundaries.
+`src/local/process/session-helpers.mjs`, `src/local/process/process-sessions.mjs`, and the shared result projector keep lifecycle, byte retention, and MCP presentation as separate boundaries.
 
 Startup-lock waits, daemon takeover, process-session reads, managed-job recovery handoff, browser/page waits, application-cache freshness, and in-memory duration metrics use monotonic elapsed time, so wall-clock correction cannot extend or prematurely terminate their configured duration.
 Persisted timestamps and retention/credential expiry continue to use wall time.
@@ -222,7 +222,7 @@ POSIX ownership is captured before `SIGTERM`, refreshed immediately afterward to
 If a full process-table snapshot is unavailable, each captured PID is queried directly; the complete full-table plus targeted fallback decision shares that one three-second monotonic budget, so descendant count cannot multiply its requested worst-case latency.
 Every synchronous `ps` deadline uses `SIGKILL`, because the Node default `SIGTERM` timeout can remain blocked when the helper does not terminate.
 An empty ownership snapshot, ambiguous identity, changed start timestamp, or PID reuse fails closed before forced escalation.
-One-shot execution, process sessions, and managed-job steps all attach the same `child-process-settlement.mjs` policy: ordinary `close` is preferred so stdout and stderr drain completely; after an observed `exit`, a one-second fallback destroys only residual stdio handles and settles exactly once if libuv never emits `close`.
+One-shot execution, process sessions, and managed-job steps all attach the same `src/local/process/settlement.mjs` policy: ordinary `close` is preferred so stdout and stderr drain completely; after an observed `exit`, a one-second fallback destroys only residual stdio handles and settles exactly once if libuv never emits `close`.
 Tracker/session/resource ownership is released only from that settlement boundary.
 Windows uses tree-aware task termination.
 
@@ -235,6 +235,8 @@ Recovery never replays forward business steps: it reconstructs bounded resource/
 A reconstruction or cancellation-state failure remains the main recovery error even when every independent finally step succeeds, so the terminal state is `recovery_failed`, never contradictory `recovered` plus `error_class`.
 Terminal result persistence is result-first and plan/runner artifacts are scrubbed only through the terminal persistence boundary; synchronization lock files remain owned by their lock primitives.
 Exact resource output redaction is defense in depth; discard capture is the strong option when a command may echo credentials.
+
+Within the 512-state store cap, pending undelivered transient terminals inside 24 hours are excluded from the removable set so ordinary removable history is reclaimed first, and saturation returns typed retryable `limit_exceeded` rather than dropping recovery evidence. On the admission side, `src/local/jobs/transient-recovery-capacity.mjs` enforces fairness for relay non-owner carriers under `capacity.lock`, deriving at most 16 unresolved pending promises for one account ID plus account version across all OAuth clients and refresh families directly from retained status without a second quota ledger.
 
 ## Output-buffer allocation
 

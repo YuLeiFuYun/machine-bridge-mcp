@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseAst } from "../../scripts/source-syntax.mjs";
+import { parseAst } from "../../scripts/lib/verification.mjs";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -4,8 +4,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { withResourceTransactionLock } from "../../src/local/resource-transaction-lock.mjs";
-import { currentProcessStartTimeMs } from "../../src/local/process-identity.mjs";
+import { withResourceTransactionLock } from "../../src/local/process/resource-waiters.mjs";
+import { currentProcessStartTimeMs } from "../../src/local/process/identity.mjs";
 
 function fixture() {
   const root = fs.mkdtempSync(join(tmpdir(), "mbm-resource-lock-race-"));

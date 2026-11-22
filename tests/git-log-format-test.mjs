@@ -1,4 +1,4 @@
-import { parseStructuredGitLog } from "../src/local/git-log-parser.mjs";
+import { parseStructuredGitLog } from "../src/local/git/git-contracts.mjs";
 
 const hash40 = "a".repeat(40);
 const hash64 = "b".repeat(64);
@@ -15,6 +15,10 @@ for (const value of [
   `${hash40}\x1fabcdef0\x1fnot-a-date\x1fA\x1f\x1fS\x1e`,
   `${hash40}\x1fabcdef0\x1f2026-08-13T12:34:56Z\x1fA\x1f\x1e`,
 ]) assertRejected(value);
+const truncatedLog = parseStructuredGitLog(`${row40}\x1e${hash64}\x1fb1c2d3e\x1f2026-08-13`, true, { truncated: true });
+assert(truncatedLog.length === 1 && truncatedLog[0].hash === hash40,
+  "truncated structured Git log failed to discard incomplete trailing record");
+assertRejected(`${row40}\x1e${hash64}\x1fb1c2d3e\x1f2026-08-13`);
 console.log("structured Git log format test ok");
 
 function assertRejected(value) {

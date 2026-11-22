@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scrubTerminalJobArtifacts } from "../src/local/managed-job-terminal-maintenance.mjs";
-import { assertTerminalJobEvidence } from "../src/local/managed-job-terminal-evidence.mjs";
-import { readJson } from "../src/local/managed-job-storage.mjs";
+import { scrubTerminalJobArtifacts } from "../src/local/jobs/capacity.mjs";
+import { assertTerminalJobEvidence } from "../src/local/jobs/capacity.mjs";
+import { readJson } from "../src/local/jobs/directory.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-terminal-evidence-cache-"));
 const jobId = "job_terminal_evidence_cache";

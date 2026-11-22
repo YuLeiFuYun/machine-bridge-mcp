@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareResourceBuildCommand, projectBuildHash } from "../src/local/resource-build-root.mjs";
-import { ResourceAdmissionError } from "../src/local/resource-admission.mjs";
-import { acquireProcessResources, bindProcessResources, releaseProcessResources } from "../src/local/resource-process-admission.mjs";
-import { applyResourceProfileEnv, resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
+import { prepareResourceBuildCommand, projectBuildHash } from "../src/local/process/resource-command-profile.mjs";
+import { ResourceAdmissionError } from "../src/local/process/resource-admission.mjs";
+import { acquireProcessResources, bindProcessResources, releaseProcessResources } from "../src/local/process/resource-process-admission.mjs";
+import { applyResourceProfileEnv, resourceCommandProfile } from "../src/local/process/resource-command-profile.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-agent-build-root-"));
 const project = mkdtempSync(join(tmpdir(), "mbm-agent-build-project-"));
@@ -222,6 +222,19 @@ try {
     () => acquireProcessResources(fakeCoordinator, "cargo", ["test"], { AGENT_BUILD_ROOT: invalidRoot }, { cwd: project, waitMs: 0 }),
   );
   assert.equal(releases, 1, "build-root preparation failure leaked its resource lease");
+
+  for (const [cmd, args] of [
+    ["cargo", ["--version"]],
+    ["cargo", ["metadata", "--format-version=1"]],
+    ["ninja", ["-t", "targets"]],
+    ["swift", ["--help"]],
+    ["make", ["-h"]],
+  ]) {
+    assert.equal(resourceCommandProfile(cmd, args).heavy, false,
+      `light metadata invocation ${cmd} ${args.join(" ")} was classified as heavy`);
+  }
+  const swiftBuildPath = prepareResourceBuildCommand("swift", ["build", "--build-path", "/explicit/swift-build"], {}, swiftRequest, project, { root });
+  assert.equal(swiftBuildPath.args.some((arg) => arg === "--scratch-path"), false, "swift --build-path received duplicate --scratch-path");
 } finally {
   rmSync(root, { recursive: true, force: true });
   rmSync(project, { recursive: true, force: true });

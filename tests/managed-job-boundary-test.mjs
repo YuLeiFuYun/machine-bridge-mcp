@@ -4,11 +4,11 @@ import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, read
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { managedJobCancellationRequested, writeManagedJobCancellation } from "../src/local/managed-job-cancellation.mjs";
-import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/managed-job-directory.mjs";
-import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories, removeManagedJobDirectoryIfCurrent, retiredManagedJobDirectories } from "../src/local/managed-job-directory-generation.mjs";
-import { managedJobDependencyProtection } from "../src/local/managed-job-dependency-retention.mjs";
-import { confirmRunnerClaim } from "../src/local/managed-job-runner-claim.mjs";
+import { managedJobCancellationRequested, writeManagedJobCancellation } from "../src/local/jobs/directory.mjs";
+import { MANAGED_JOB_ID, resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/jobs/directory.mjs";
+import { inspectManagedJobDirectoryGeneration, pruneRetiredManagedJobDirectories, removeManagedJobDirectoryIfCurrent, retiredManagedJobDirectories } from "../src/local/jobs/directory.mjs";
+import { managedJobDependencyProtection } from "../src/local/jobs/execution.mjs";
+import { confirmRunnerClaim } from "../src/local/jobs/runner-claim.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-managed-job-boundary-"));
 try {
@@ -154,7 +154,7 @@ try {
   mkdirSync(privateStartupRoot);
   mkdirSync(missingStatusDir);
   const startupFailure = spawnSync(process.execPath, [
-    fileURLToPath(new URL("../src/local/job-runner.mjs", import.meta.url)), "--job-dir", missingStatusDir,
+    fileURLToPath(new URL("../src/local/jobs/runner.mjs", import.meta.url)), "--job-dir", missingStatusDir,
   ], { encoding: "utf8", windowsHide: true });
   assert.equal(startupFailure.status, 1, "managed-job startup failure did not exit nonzero");
   assert.equal(startupFailure.stdout, "", "managed-job startup failure wrote to the protocol output stream");
@@ -165,7 +165,7 @@ try {
   ].join("\n"), "managed-job startup failure exposed an unbounded exception instead of fixed diagnostics");
   assert(!startupFailure.stderr.includes(privateStartupRoot) && !startupFailure.stderr.includes("ENOENT"),
     "managed-job startup failure exposed a private path or raw filesystem exception");
-  const runnerSource = readFileSync(new URL("../src/local/job-runner.mjs", import.meta.url), "utf8");
+  const runnerSource = readFileSync(new URL("../src/local/jobs/runner.mjs", import.meta.url), "utf8");
   assert(/if \(cancellationAware && isCancellationRequested\(\)\) throw new JobCancelledError\(\);\s*child = spawn\(/.test(runnerSource),
     "managed-job launch lost its final synchronous cancellation check immediately before spawn");
   const fatalStart = runnerSource.indexOf("function recordFatalRunnerError(error) {");

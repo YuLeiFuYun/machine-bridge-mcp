@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 

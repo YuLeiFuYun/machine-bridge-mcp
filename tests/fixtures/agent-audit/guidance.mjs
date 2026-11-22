@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { BridgeError, publicError } from "../../../src/local/errors.mjs";
-import { daemonToolError, publicWorkerToolError, dispatchedDaemonTimeoutError } from "../../../src/worker/errors.ts";
+import { BridgeError, publicError } from "../../../src/local/core/errors.mjs";
+import { daemonToolError, publicWorkerToolError, dispatchedDaemonTimeoutError } from "../../../src/worker/room/errors.ts";
 
 for (const reason of ["text_not_found", "hash_mismatch", "context_ambiguous"]) {
   const local = publicError(new BridgeError("conflict", "safe", { details: { reason } }));

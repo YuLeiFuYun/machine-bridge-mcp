@@ -39,6 +39,7 @@ This table describes the local daemon policy ceiling. Remote account roles apply
 | `browser_inspect_page` | `full` | no | no | no | yes |
 | `browser_list_tabs` | `full` | no | no | no | yes |
 | `browser_manage_tabs` | `full` | no | no | no | yes |
+| `browser_network_log` | `full` | no | no | no | yes |
 | `browser_screenshot` | `full` | no | no | no | yes |
 | `browser_status` | `full` | no | no | no | yes |
 | `browser_upload_files` | `full` | no | no | no | yes |
@@ -100,11 +101,12 @@ Account-access revision: **5**. Default role: **reviewer**. Remote effective aut
 | `browser_inspect_page` | no | no | no | yes |
 | `browser_list_tabs` | no | no | no | yes |
 | `browser_manage_tabs` | no | no | no | yes |
+| `browser_network_log` | no | no | no | yes |
 | `browser_screenshot` | no | no | no | yes |
 | `browser_status` | no | no | no | yes |
 | `browser_upload_files` | no | no | no | yes |
 | `browser_wait` | no | no | no | yes |
-| `cancel_job` | no | yes | yes | yes |
+| `cancel_job` | no | no | no | yes |
 | `computer_act` | no | no | no | yes |
 | `computer_observe` | no | no | no | yes |
 | `diagnose_runtime` | no | no | no | yes |
@@ -120,7 +122,7 @@ Account-access revision: **5**. Default role: **reviewer**. Remote effective aut
 | `kill_process` | no | no | no | yes |
 | `list_dir` | yes | yes | yes | yes |
 | `list_files` | yes | yes | yes | yes |
-| `list_jobs` | yes | yes | yes | yes |
+| `list_jobs` | no | no | no | yes |
 | `list_local_applications` | yes | yes | yes | yes |
 | `list_local_commands` | yes | yes | yes | yes |
 | `list_local_resources` | no | no | no | yes |
@@ -132,7 +134,7 @@ Account-access revision: **5**. Default role: **reviewer**. Remote effective aut
 | `pair_browser_extension` | no | no | no | yes |
 | `project_overview` | yes | yes | yes | yes |
 | `read_file` | yes | yes | yes | yes |
-| `read_job` | yes | yes | yes | yes |
+| `read_job` | no | no | no | yes |
 | `read_process` | no | no | no | yes |
 | `resolve_task_capabilities` | yes | yes | yes | yes |
 | `run_local_command` | no | no | no | yes |
@@ -147,7 +149,7 @@ Account-access revision: **5**. Default role: **reviewer**. Remote effective aut
 | `write_file` | no | yes | yes | yes |
 | `write_process` | no | no | no | yes |
 
-Owner-only remote tools: `diagnose_runtime`, `exec_command`, `kill_process`, `list_local_resources`, `read_process`, `run_local_command`, `run_process`, `stage_job`, `start_job`, `start_process`, `write_process`. Their local availability class is unchanged; the extra restriction applies only to authenticated remote account roles.
+Owner-only remote tools: `cancel_job`, `diagnose_runtime`, `exec_command`, `kill_process`, `list_jobs`, `list_local_resources`, `read_job`, `read_process`, `run_local_command`, `run_process`, `stage_job`, `start_job`, `start_process`, `write_process`. Their local availability class is unchanged; the extra restriction applies only to authenticated remote account roles.
 
 ## Enforcement contract
 

@@ -1,63 +1,49 @@
 import { DurableObject } from "cloudflare:workers";
 import relayContract from "../shared/relay-contract.json" with { type: "json" };
 import { MCP_REMOVED_PROTOCOL_MESSAGE } from "../shared/mcp-protocol.mjs";
-import { PendingCallRegistrationError } from "./pending-call-contract.ts";
-import { PendingCallRegistry } from "./pending-calls.ts";
-import { MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./pending-call-capacity.ts";
-import { daemonLivenessDeadlineMs } from "./daemon-liveness.ts";
-import { DaemonRegistry } from "./daemon-registry.ts";
-import type { DaemonChannel } from "./daemon-channel.ts";
-import { trySendDaemonChannel } from "./daemon-channel.ts";
-import { cancelReadyDaemonAuthority, readyDaemonWaiterSnapshot } from "./daemon-ready-waiters.ts";
-import { handleReadyDaemonMessage } from "./daemon-ready-messages.ts";
-import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "./daemon-ready-dispatch.ts";
-import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "./daemon-recovery-budget.ts";
-import { daemonStatusSnapshot } from "./daemon-status.ts";
-import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./runtime-alarm.ts";
-import { handleDaemonHttpRelay } from "./daemon-http-controller.ts";
-import { McpController } from "./mcp-controller.ts";
-import { GEMINI_MCP_PATH, isMcpResourcePath, NATIVE_MCP_PATH, type McpResourcePath } from "./mcp-resource.ts";
-import { authorizeMcpRequest } from "./mcp-access.ts";
-import { removedProtocolResponse } from "./mcp-removed-protocol.ts";
-import { mcpStreamProxyMode } from "./mcp-stream-proxy-contract.ts";
-import { buildServerInfoResult, serverInfoDetail } from "./server-info.ts";
-import { handleOuterWorkerFetch } from "./worker-entry.ts";
-import { daemonToolTimeoutBudget } from "./tool-timeout.ts";
-import { daemonToolRecovery } from "./tool-call-recovery.ts";
-import { WorkerObservability } from "./observability.ts";
-import { readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerSocketDisconnect } from "./worker-continuity-evidence.ts";
-import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./errors.ts";
-import { accountRoleAllowsTool, type AuthorizedToken } from "./access.ts";
-import { OAuthController } from "./oauth-controller.ts";
-import { authorityRevocations, deliverAuthorityRevocations } from "./authority-revocations.ts";
-import { decorateProjectOverview } from "./authority.ts";
-import { validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./tool-catalog.ts";
-import { workerAuthorityContext, workerToolsForRole } from "./worker-tool-authority.ts";
-import { McpHttpContractError, httpHeaderContractError, validateHttpRequest } from "./mcp-http-contract.ts";
-import { randomToken } from "./oauth-state.ts";
-import {
-  HttpError, applyCors, baseUrl, corsPreflight, discardRequestBody, json, mcpOriginRejection, methodNotAllowed,
-  parseJsonRequest, workerErrorClass,
-} from "./http.ts";
-import { authorizationServerMetadata } from "./worker-metadata.ts";
-import { workerBodyLimitBytes, type BridgeEnv } from "./worker-runtime-config.ts";
-import { retainWorkerTask } from "./worker-task-lifetime.ts";
-import { statefulRouteClass } from "./worker-rate-limit-key.ts";
-import { MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS,
-  MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo } from "./worker-mcp-config.ts";
+import { PendingCallRegistrationError, PendingCallRegistry, MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS, assertWorkerPendingCallAdmission, pendingCapacityProjection } from "./room/pending-calls.ts";
+import { daemonLivenessDeadlineMs } from "./daemon/liveness.ts";
+import { DaemonRegistry, daemonStatusSnapshot } from "./daemon/registry.ts";
+import type { DaemonChannel } from "./daemon/channel.ts";
+import { trySendDaemonChannel } from "./daemon/channel.ts";
+import { cancelReadyDaemonAuthority, readyDaemonWaiterSnapshot, immediateReadyDaemonForDispatch, readyDaemonForDispatch, daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "./daemon/ready-waiters.ts";
+import { handleReadyDaemonMessage } from "./daemon/ready-messages.ts";
+import { processRuntimeAlarm, scheduleRuntimeAlarm } from "./room/runtime-alarm.ts";
+import { handleDaemonHttpRelay } from "./daemon/http-controller.ts";
+import { MCP_2025_PROTOCOL_VERSION, McpController } from "./mcp/controller.ts";
+import { GEMINI_MCP_PATH, isMcpResourcePath, NATIVE_MCP_PATH, type McpResourcePath, HttpError, applyCors, baseUrl, corsPreflight, discardRequestBody, json, mcpOriginRejection, methodNotAllowed, parseJsonRequest, workerErrorClass } from "./room/http.ts";
+import { authorizeMcpRequest } from "./mcp/access.ts";
+import { mcpStreamProxyMode } from "./mcp/response-proxy.ts";
+import { buildServerInfoResult, serverInfoDetail, MCP_DISCOVERY_TTL_MS, MCP_INSTRUCTIONS, MCP_PROTOCOL_VERSIONS, MCP_SERVER_CAPABILITIES, MCP_TOOL_LIST_TTL_MS, SERVER_NAME, mcpServerInfo } from "./room/server-info.ts";
+import { handleOuterWorkerFetch, authorizationServerMetadata, workerBodyLimitBytes, type BridgeEnv, retainWorkerTask, statefulRouteClass } from "./room/entry.ts";
+import { daemonToolTimeoutBudget, daemonToolRecovery } from "./room/tool-timeout.ts";
+import { WorkerObservability } from "./room/observability.ts";
+import { readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerSocketDisconnect } from "./daemon/continuity-evidence.ts";
+import { dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError } from "./room/errors.ts";
+import { accountRoleAllowsTool, type AuthorizedToken, decorateProjectOverview } from "./oauth/authority.ts";
+import { OAuthController } from "./oauth/controller.ts";
+import { authorityRevocations, deliverAuthorityRevocations } from "./oauth/authority-revocations.ts";
+import { validateWorkerToolArguments, workerToolParameterHeaders, workspaceTools } from "./mcp/tool-catalog.ts";
+import { workerAuthorityContext, workerToolsForRole } from "./mcp/tool-authority.ts";
+import { McpHttpContractError, httpHeaderContractError, removedProtocolResponse, validateHttpRequest } from "./mcp/http-contract.ts";
+import { randomToken } from "./oauth/state.ts";
 import { projectOverviewDetail, projectProjectOverview } from "../shared/project-overview-projection.mjs";
-import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp-jsonrpc.ts";
-import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./managed-job-read-timeout.ts";
-import { daemonToolRedeliveryArguments } from "./daemon-tool-redelivery.ts";
-import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./managed-job-hosted-authority.ts";
-import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore } from "./mcp-job-monitor-claims.ts";
-import { McpTaskService } from "./mcp-task-service.ts";
-import { JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp-job-monitor-tools.ts";
-import { closeWebSocketQuietly } from "./websocket-protocol.ts";
-import { DaemonWebSocketController } from "./daemon-websocket-controller.ts";
-const SERVER_VERSION = "3.0.0-beta.221";
+import { asObject, isJsonRpcRequest, isJsonRpcResponse, rpcError } from "./mcp/jsonrpc.ts";
+import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "./room/managed-job-contract.ts";
+import { daemonToolRedeliveryArguments, hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "./room/managed-job-hosted.ts";
+import { cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor, hasManagedJobMonitorClaimIfAvailable, ManagedJobMonitorClaimStore, JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL, managedJobMonitorReadDaemonArguments, projectManagedJobMonitorStatus, renderManagedJobMonitor } from "./mcp/job-monitor.ts";
+import { McpTaskService } from "./mcp/tasks.ts";
+import { closeWebSocketQuietly } from "./room/websocket-protocol.ts";
+import { DaemonWebSocketController } from "./daemon/websocket-controller.ts";
+
+const SERVER_VERSION = "3.0.0-beta.222";
+
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
-const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs; const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
+
+const DAEMON_RECONNECT_GRACE_MS = relayContract.reconnectGraceMs;
+
+const NEW_CALL_RECONNECT_GRACE_MS = relayContract.newCallReconnectGraceMs;
+
 export class BridgeRoom extends DurableObject<BridgeEnv> {
   private readonly pending = new PendingCallRegistry(MAX_PENDING_CALLS, WORKER_PENDING_REGISTRY_OPTIONS);
   private readonly observability = new WorkerObservability();
@@ -89,6 +75,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       capabilities: MCP_SERVER_CAPABILITIES,
       serverInfo: MCP_SERVER_INFO,
       instructions: MCP_INSTRUCTIONS,
+      stateless2025Instructions: "Access a connected workspace through its authorized tools. Use the returned job handle to follow durable jobs.",
       supportedVersions: MCP_PROTOCOL_VERSIONS,
       discoveryTtlMs: MCP_DISCOVERY_TTL_MS,
       toolListTtlMs: MCP_TOOL_LIST_TTL_MS,
@@ -97,8 +84,8 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       tools: (authorized, includeJobMonitor) => workerToolsForRole(authorized.role, includeJobMonitor),
       recordError: (code) => this.observability.recordError(code),
       cancelClientRequest: (requestKey) => this.cancelClientRequest(requestKey),
-      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken, mcpPath }) => this.callTool(
-        name, args, base, authorized, requestKey, signal, clientCapabilities, progressToken, mcpPath,
+      callTool: ({ name, args, base, authorized, signal, requestKey, clientCapabilities, progressToken, mcpPath, includeJobMonitor }) => this.callTool(
+        name, args, base, authorized, requestKey, signal, clientCapabilities, progressToken, mcpPath, includeJobMonitor,
       ),
     });
   }
@@ -231,11 +218,41 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       await discardRequestBody(request, bodyLimitBytes);
       return json(rpcError(null, headerContractError.code, headerContractError.message, headerContractError.data), headerContractError.status);
     }
-    if (path === GEMINI_MCP_PATH) return this.mcp.handleGeminiRequest({ request, base, authorized: access.authorized, bodyLimitBytes });
 
-    const body = await parseJsonRequest(request, bodyLimitBytes);
-    if (isJsonRpcResponse(body)) return json(rpcError(null, -32600, "Clients must not send JSON-RPC responses"), 400);
-    if (!isJsonRpcRequest(body)) return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
+    if (path === GEMINI_MCP_PATH) {
+      if (request.headers.has("Mcp-Session-Id") || request.headers.has("Last-Event-ID")) {
+        await discardRequestBody(request, bodyLimitBytes);
+        return json(rpcError(null, -32600, "This endpoint has no session or replay support"), 400);
+      }
+      const headerVersion = request.headers.get("MCP-Protocol-Version");
+      if (headerVersion !== null && headerVersion !== MCP_2025_PROTOCOL_VERSION) {
+        await discardRequestBody(request, bodyLimitBytes);
+        return json(rpcError(null, -32600, "Unsupported MCP-Protocol-Version"), 400);
+      }
+    }
+
+    let body: unknown;
+    try { body = await parseJsonRequest(request, bodyLimitBytes); }
+    catch (error) {
+      if (error instanceof HttpError && error.code === "invalid_json") {
+        return json(rpcError(null, -32700, "Parse error"), 400);
+      }
+      throw error;
+    }
+    if (isJsonRpcResponse(body)) {
+      if (path === GEMINI_MCP_PATH) return new Response(null, { status: 202 });
+      return json(rpcError(null, -32600, "Clients must not send JSON-RPC responses"), 400);
+    }
+    if (!isJsonRpcRequest(body) || (path === GEMINI_MCP_PATH && body.id === null)) {
+      return json(rpcError(null, -32600, "Invalid JSON-RPC request"), 400);
+    }
+    if (path === GEMINI_MCP_PATH) {
+      if (body.id === undefined) return new Response(null, { status: 202 });
+      return await this.mcp.handleRequest({
+        request, body, base, authorized: access.authorized, proxyMode: "", protocolMode: MCP_2025_PROTOCOL_VERSION, mcpPath: path,
+      });
+    }
+
     try {
       if (request.headers.has("Last-Event-ID")) {
         return json(rpcError(body.id ?? null, -32601, MCP_REMOVED_PROTOCOL_MESSAGE, { supported: [...MCP_PROTOCOL_VERSIONS] }), 400);
@@ -245,7 +262,10 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const mcpMetadata = validateHttpRequest({
         request, body, tools: workerToolsForRole(access.authorized.role) as Array<{ name: string; inputSchema?: unknown }>,
       });
-      return await this.mcp.handleRequest({ request, body, base, authorized: access.authorized, proxyMode, progressToken: mcpMetadata.progressToken });
+      return await this.mcp.handleRequest({
+        request, body, base, authorized: access.authorized, proxyMode, progressToken: mcpMetadata.progressToken,
+        protocolMode: "2026-07-28", mcpPath: path,
+      });
     } catch (error) {
       if (error instanceof McpHttpContractError) {
         return json(rpcError(body.id, error.code, error.message, error.data), error.status);
@@ -259,21 +279,23 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     authorized: AuthorizedToken,
     args: Record<string, unknown>,
     mcpPath: McpResourcePath = NATIVE_MCP_PATH,
+    includeJobMonitor = mcpPath !== GEMINI_MCP_PATH,
   ): Promise<Record<string, unknown>> {
-    const includeJobMonitor = mcpPath !== GEMINI_MCP_PATH;
     const { daemon, effectiveTools, advertisedTools, authorization } = this.authorityContext(authorized, includeJobMonitor);
     const pendingSnapshot = pendingCapacityProjection(this.pending.snapshot(), readyDaemonWaiterSnapshot(this.daemonRegistry));
     return buildServerInfoResult({
       serverName: SERVER_NAME, serverVersion: SERVER_VERSION, base, mcpPath,
+      subscriptionsSupported: includeJobMonitor,
       oauth: authorizationServerMetadata(base, SERVER_NAME), authorization, daemon,
       effectiveTools, advertisedTools, pendingSnapshot,
       toolListSubscription: this.mcp.toolListSubscriptionSnapshot(authorized.accountId),
       daemonRegistry: this.daemonRegistry, observability: this.observability,
       continuityEvidence: authorization.account_role_is_owner === true ? await readWorkerContinuityEvidence(this.ctx.storage) : undefined,
+      clientToolSchemaGeneration: args?.client_tool_schema_generation,
     }, serverInfoDetail(args));
   }
-  private assertWorkerToolArguments(name: string, args: unknown): void {
-    const validation = validateWorkerToolArguments(name, args);
+  private assertWorkerToolArguments(name: string, args: unknown, includeJobMonitor = true): void {
+    const validation = validateWorkerToolArguments(name, args, includeJobMonitor);
     if (!validation.known) throw new WorkerToolError("not_found", "unknown tool");
     if (!validation.valid) {
       try { daemonToolTimeoutBudget(name, asObject(args)); }
@@ -289,10 +311,13 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
   private async callTool(
     name: string, args: Record<string, unknown>, base: string, authorized: AuthorizedToken,
     requestKey?: string, signal?: AbortSignal, clientCapabilities?: Record<string, unknown>, _progressToken?: unknown,
-    mcpPath: McpResourcePath = NATIVE_MCP_PATH,
+    mcpPath: McpResourcePath = NATIVE_MCP_PATH, includeJobMonitor = mcpPath !== GEMINI_MCP_PATH,
   ): Promise<unknown> {
-    this.assertWorkerToolArguments(name, args);
-    if (name === "server_info") return this.serverInfoResult(base, authorized, args, mcpPath);
+    this.assertWorkerToolArguments(name, args, includeJobMonitor);
+    if (name === "server_info") return this.serverInfoResult(base, authorized, args, mcpPath, includeJobMonitor);
+    if (!includeJobMonitor && (name === JOB_MONITOR_RENDER_TOOL || name === JOB_MONITOR_CLAIM_TOOL || name === JOB_MONITOR_READ_TOOL)) {
+      throw new WorkerToolError("not_found", "unknown tool");
+    }
     if ((name === JOB_MONITOR_RENDER_TOOL || name === JOB_MONITOR_CLAIM_TOOL || name === JOB_MONITOR_READ_TOOL) && !accountRoleAllowsTool(authorized.role, "start_job")) throw new WorkerToolError("authorization_denied", "managed-job monitor is not allowed for this account role");
     if (name === JOB_MONITOR_RENDER_TOOL) return renderManagedJobMonitor(this.jobMonitorClaims, args, authorized, this.oauth.identityKey());
     if (name === JOB_MONITOR_CLAIM_TOOL) return claimManagedJobMonitor(this.jobMonitorClaims, args, authorized, this.oauth.identityKey());
@@ -305,11 +330,17 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       const result = await this.callDaemonTool(name, daemonArgs, authorized, requestKey, signal);
       if (name === "project_overview") {
         return projectProjectOverview(decorateProjectOverview(result, { accountId: authorized.accountId,
-          accountVersion: authorized.accountVersion, role: authorized.role }), overviewDetail);
+          accountVersion: authorized.accountVersion, role: authorized.role }, { includeJobMonitor }), overviewDetail);
       }
-      const monitorJobId = name === "read_job" ? args.job_id : asObject(result).job_id; const uiMonitorClaimed = await hasManagedJobMonitorClaimIfAvailable(this.jobMonitorClaims, monitorJobId, args.ui_monitor_id, authorized, (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }));
+      const monitorJobId = name === "read_job" ? args.job_id : asObject(result).job_id;
+      const uiMonitorClaimed = includeJobMonitor
+        ? await hasManagedJobMonitorClaimIfAvailable(this.jobMonitorClaims, monitorJobId, args.ui_monitor_id, authorized, (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }))
+        : false;
       return projectHostedManagedJobResult(name, result, authorized, this.oauth.identityKey(), {
-        clientCapabilities, uiMonitorStore: this.jobMonitorClaims, uiMonitorClaimed, onMonitorCoordinationFailure: (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }),
+        clientCapabilities,
+        ...(includeJobMonitor ? { uiMonitorStore: this.jobMonitorClaims } : {}),
+        uiMonitorClaimed,
+        onMonitorCoordinationFailure: (operation, error) => this.observability.event("warn", "managed_job.monitor.coordination_unavailable", { operation, error_class: workerErrorClass(error) }),
       });
     }
     throw new Error("unknown tool");
@@ -422,11 +453,11 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
       throw error;
     }
   }
-  private daemonCallTimeout(record: import("./pending-call-contract.ts").PendingCallRecord, name: string): Error {
+  private daemonCallTimeout(record: import("./room/pending-calls.ts").PendingCallRecord, name: string): Error {
     const terminationRequested = Boolean(record.socket && trySendDaemonChannel(record.socket, { type: "cancel_call", id: record.id }));
     return dispatchedDaemonTimeoutError(name, terminationRequested, record.recovery);
   }
-  private daemonCallCancellation(record: import("./pending-call-contract.ts").PendingCallRecord): Error {
+  private daemonCallCancellation(record: import("./room/pending-calls.ts").PendingCallRecord): Error {
     const terminationRequested = Boolean(record.socket && trySendDaemonChannel(record.socket, { type: "cancel_call", id: record.id }));
     this.ctx.waitUntil(recordWorkerClientCancellation(this.ctx.storage, "request_abort"));
     return dispatchedDaemonCancellationError("tool call cancelled when its HTTP response stream closed", terminationRequested, record.recovery);
@@ -511,7 +542,7 @@ export class BridgeRoom extends DurableObject<BridgeEnv> {
     }
     this.daemonRegistry.rememberDisconnected(socket);
     await this.detachDaemonChannelCalls(socket, message);
-    this.daemonRegistry.http.close(socket as import("./daemon-http-channel.ts").DaemonHttpChannel);
+    this.daemonRegistry.http.close(socket as import("./daemon/http-channel.ts").DaemonHttpChannel);
     this.observability.event("warn", "daemon.https_fallback.disconnected", { error_class: errorCode });
     if (reschedule) await this.scheduleRuntimeAlarm();
   }

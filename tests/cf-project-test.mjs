@@ -3,9 +3,8 @@ import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSy
 import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
-import { cfAuthenticationResult, cfDeploymentAccount, ensureCfAuthenticated } from "../src/local/cf-authentication.mjs";
-import { validateCfBuildOutput, withCfProject } from "../src/local/cf-project.mjs";
-import { workerDeploymentSourceSnapshot } from "../src/local/worker-deployment-fingerprint.mjs";
+import { cfAuthenticationResult, cfDeploymentAccount, ensureCfAuthenticated, validateCfBuildOutput, withCfProject } from "../src/local/deploy/cf-project.mjs";
+import { workerDeploymentSourceSnapshot } from "../src/local/deploy/worker-deployment.mjs";
 
 const authenticated = { code: 0, stdout: JSON.stringify({ authenticated: true, tokenValid: true, accounts: [{ id: "1".repeat(32) }] }) };
 for (const stdout of ["", "not json", "null", "[]", '{"authenticated":false}', '{"authenticated":"true"}',
@@ -53,11 +52,13 @@ assert.deepEqual(loginCalls.map(args => args.slice(0, 2)), [["auth", "whoami"], 
 assert.deepEqual(loginCalls[1].slice(2), ["--scopes","account-settings.read","user-details.read","workers-scripts.read","workers-scripts.write","workers-scripts.bind","workers-routes.read","workers-routes.write","workers-observability.read","workers-observability.write","offline"]);
 
 const root = mkdtempSync(join(tmpdir(), "mbm-cf-project-test-"));
+const rootPkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const builderVersion = rootPkg.devDependencies.wrangler;
 try {
   const toolchain = join(root, "toolchain");
   const source = join(root, "source");
   mkdirSync(join(toolchain, "node_modules"), { recursive: true });
-  writeFileSync(join(toolchain, "package.json"), JSON.stringify({ dependencies: { wrangler: "4.151.3" } }));
+  writeFileSync(join(toolchain, "package.json"), JSON.stringify({ dependencies: { wrangler: builderVersion } }));
   for (const file of ["src/worker/index.ts", "src/shared/value.ts", "wrangler.jsonc", "cloudflare.config.ts",
     "wrangler.config.ts", "tsconfig.json", "src/local/wrangler-toolchain/package.json",
     "src/local/wrangler-toolchain/package-lock.json"]) {
@@ -75,7 +76,7 @@ try {
     assert.equal(readFileSync(join(project.cwd, "src/worker/index.ts"), "utf8"), "snapshot bytes\n");
     assert.equal(existsSync(join(project.cwd, ".env")), false);
     assert.deepEqual(JSON.parse(readFileSync(join(project.cwd, "package.json"), "utf8")).devDependencies,
-      { wrangler: "4.151.3" }, "private project did not declare its audited build provider");
+      { wrangler: builderVersion }, "private project did not declare its audited build provider");
     assert.equal(project.env.MBM_WORKER_NAME, "mbm-cf-test");
     assert.equal(project.env.CLOUDFLARE_ACCOUNT_ID, "1".repeat(32));
     assert.equal(validateCfBuildOutput(project.cwd, "mbm-cf-test").name, "mbm-cf-test");
@@ -115,7 +116,7 @@ try {
       writeBuild(project.cwd, config => {
         for (let index = 0; index < 255; index += 1) config.manifest.modules["module-" + index + ".js"] = { type: "esm" };
       });
-      const bundle = join(project.cwd, ".cloudflare/output/v0/workers/default/bundle");
+      const bundle = join(project.cwd, ".cloudflare/output/v1/workers/default/bundle");
       for (let index = 0; index < 255; index += 1) writeFileSync(join(bundle, "module-" + index + ".js"), "");
     },
   });
@@ -125,7 +126,7 @@ try {
 
   await withCfProject(snapshot, "mbm-cf-test", async project => {
     assert.equal(validateCfBuildOutput(project.cwd, "mbm-cf-test").name, "mbm-cf-test");
-    const output = join(project.cwd, ".cloudflare/output/v0/workers/default");
+    const output = join(project.cwd, ".cloudflare/output/v1/workers/default");
     const configPath = join(output, "worker.config.json");
     const config = JSON.parse(readFileSync(configPath));
     config.manifest.modules["overflow.js"] = { type: "esm" };
@@ -136,7 +137,7 @@ try {
     ...projectOptions(toolchain),
     runCf: async (_args, project) => {
       writeBuild(project.cwd, config => { config.manifest.modules["second.js"] = { type: "esm" }; });
-      const bundle = join(project.cwd, ".cloudflare/output/v0/workers/default/bundle");
+      const bundle = join(project.cwd, ".cloudflare/output/v1/workers/default/bundle");
       fs.truncateSync(join(bundle, "index.js"), 16 * 1024 * 1024);
       writeFileSync(join(bundle, "second.js"), "");
       fs.truncateSync(join(bundle, "second.js"), 16 * 1024 * 1024);
@@ -187,7 +188,7 @@ try {
       ...projectOptions(toolchain),
       runCf: async (_args, project) => {
         writeBuild(project.cwd);
-        const cfg = join(project.cwd, ".cloudflare/output/v0/workers/default/worker.config.json");
+        const cfg = join(project.cwd, ".cloudflare/output/v1/workers/default/worker.config.json");
         const outside = join(root, "linked-artifact.json");
         writeFileSync(outside, readFileSync(cfg));
         rmSync(cfg);
@@ -233,7 +234,7 @@ function projectOptions(toolchain, mutation = () => {}) {
 }
 
 function writeBuild(directory, mutation = () => {}) {
-  const output = join(directory, ".cloudflare/output/v0/workers/default");
+  const output = join(directory, ".cloudflare/output/v1/workers/default");
   mkdirSync(join(output, "bundle"), { recursive: true });
   const config = {
     name: "mbm-cf-test", exports: { BridgeRoom: { type: "durable-object", storage: "sqlite" } },

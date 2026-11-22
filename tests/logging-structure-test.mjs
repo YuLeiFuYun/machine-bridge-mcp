@@ -1,5 +1,5 @@
 import nodeAssert from "node:assert/strict";
-import { createLogger } from "../src/local/log.mjs";
+import { createLogger } from "../src/local/core/log.mjs";
 import { sensitiveValuePattern } from "../src/shared/sensitive-value-patterns.mjs";
 import { sanitizePortableLogText } from "../src/shared/log-redaction.mjs";
 

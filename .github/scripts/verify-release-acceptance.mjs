@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ACCEPTANCE_CONFIRMATION, ACCEPTANCE_SCHEMA_VERSION } from "../../scripts/release-acceptance.mjs";
 import { computePromotionContentDigest } from "../../scripts/promotion-digest.mjs";
-import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
+import { resolveTrustedGitExecutable } from "../../src/local/core/trusted-executable.mjs";
 import { publishedPackageJsonText } from "../../src/shared/published-package.mjs";
 import { releaseDiagnostic } from "../../scripts/release-diagnostic.mjs";
 

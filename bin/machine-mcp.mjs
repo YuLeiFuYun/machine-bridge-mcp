@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { main } from "../src/local/cli.mjs";
-import { createLogger, sanitizeLogText } from "../src/local/log.mjs";
-import { installFatalProcessHandlers } from "../src/local/process-fatal.mjs";
+import { main } from "../src/local/cli/cli.mjs";
+import { createLogger, sanitizeLogText } from "../src/local/core/log.mjs";
+import { installFatalProcessHandlers } from "../src/local/process/settlement.mjs";
 
 installFatalProcessHandlers({
   logger: createLogger({

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 import LocalAuthentication
@@ -76,7 +77,7 @@ private struct MachineBridgeTrustBroker {
                 result = try output(tag: tag, key: key, signature: raw.base64URLEncodedString())
             case "delete":
                 try deletePrivateKey(tag: tag)
-                result = Output(ok: true, provider: providerName, keyTag: tag, publicJwk: nil, signature: nil, secureEnclave: secureEnclaveAvailable())
+                result = Output(ok: true, provider: providerName, keyTag: tag, publicJwk: nil, signature: nil, secureEnclave: false)
             default:
                 throw BrokerError.usage("unknown action: \(action)")
             }
@@ -212,14 +213,7 @@ private func output(tag: String, key: SecKey, signature: String?) throws -> Outp
 }
 
 private func secureEnclaveAvailable() -> Bool {
-    let attributes: [String: Any] = [
-        kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-        kSecAttrKeySizeInBits as String: 256,
-        kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
-        kSecPrivateKeyAttrs as String: [kSecAttrIsPermanent as String: false],
-    ]
-    var error: Unmanaged<CFError>?
-    return SecKeyCreateRandomKey(attributes as CFDictionary, &error) != nil
+    SecureEnclave.isAvailable
 }
 
 private func derToP1363(_ data: Data) throws -> Data {

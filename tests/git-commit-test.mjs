@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { BridgeError } from "../src/local/errors.mjs";
-import { GitService, MAX_GIT_COMMIT_MESSAGE_BYTES } from "../src/local/git-service.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
+import { GitService, MAX_GIT_COMMIT_MESSAGE_BYTES } from "../src/local/git/git-service.mjs";
 
 await import("./git-structured-boundary-test.mjs");
 await import("./git-commit-plumbing-test.mjs");
@@ -163,9 +163,9 @@ try {
   checkedGit(["config", "--local", "--unset-all", "diff.orderFile"], repo);
 
   checkedGit(["config", "--local", "extensions.partialClone", "origin"], repo);
-  const partialCloneFailure = await rejected(() => service.log({ path: repo }));
-  assert(partialCloneFailure.code === "authorization_denied" && partialCloneFailure.details?.reason === "unsafe_repository_git_config",
-    "structured Git accepted repository configuration that can lazily fetch missing objects");
+  const partialCloneRead = await service.log({ path: repo });
+  assert(partialCloneRead.code === 0 && Array.isArray(partialCloneRead.commits),
+    "structured Git log rejected read-only partialClone configuration despite GIT_NO_LAZY_FETCH=1");
   checkedGit(["config", "--local", "--unset-all", "extensions.partialClone"], repo);
 
   await writeFile(join(repo, "race.txt"), "race\n");

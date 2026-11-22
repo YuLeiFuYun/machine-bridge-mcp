@@ -8,15 +8,15 @@ import {
   EXPECTED_EXTENSION_PUBLIC_KEY,
   extensionIdFromPublicKey,
   normalizeExtensionId,
-} from "../src/local/browser-extension-identity.mjs";
+} from "../src/local/automation/browser-commands.mjs";
 import {
   BROWSER_EXTENSION_PROTOCOL,
   EXPECTED_EXTENSION_VERSION,
   normalizeCompatibleExtensionInfo,
   parseExtensionHello,
-} from "../src/local/browser-extension-protocol.mjs";
-import { isAllowedExtensionOrigin } from "../src/local/browser-pairing-http.mjs";
-import { loadOrCreatePairing, savePairing } from "../src/local/browser-pairing-store.mjs";
+} from "../src/local/automation/browser-extension-protocol.mjs";
+import { isAllowedExtensionOrigin } from "../src/local/automation/browser-broker.mjs";
+import { loadOrCreatePairing, savePairing } from "../src/local/automation/browser-pairing.mjs";
 
 const manifest = JSON.parse(readFileSync(new URL("../browser-extension/manifest.json", import.meta.url), "utf8"));
 const packageManifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));

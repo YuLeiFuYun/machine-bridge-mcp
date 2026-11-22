@@ -4,16 +4,16 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { BridgeError } from "../../../src/local/errors.mjs";
-import { ProcessTracker } from "../../../src/local/process-tracker.mjs";
-import { childExitedBeforeTimeout, createChildProcessSettlement } from "../../../src/local/child-process-settlement.mjs";
-import { processState } from "../../../src/local/process-identity.mjs";
-import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "../../../src/local/process-tree.mjs";
-import { executionGuardrailsSnapshot } from "../../../src/local/execution-limits.mjs";
-import { BoundedOutput } from "../../../src/local/bounded-output.mjs";
-import { ProcessExecutionService } from "../../../src/local/process-execution.mjs";
-import { runExecutable, workspaceShellCommand } from "../../../src/local/shell.mjs";
-import { resolveTrustedGitExecutable } from "../../../src/local/trusted-git-executable.mjs";
+import { BridgeError } from "../../../src/local/core/errors.mjs";
+import { ProcessTracker } from "../../../src/local/process/tracker.mjs";
+import { childExitedBeforeTimeout, createChildProcessSettlement } from "../../../src/local/process/settlement.mjs";
+import { processState } from "../../../src/local/process/identity.mjs";
+import { captureProcessTreeOwnership, processTreeOwnershipStillCurrent, refreshProcessTreeOwnership, terminateProcessTree, terminateProcessTreeAndWait, terminateProcessTreeWithEscalation } from "../../../src/local/process/tree-facade.mjs";
+import { executionGuardrailsSnapshot } from "../../../src/local/process/execution-limits.mjs";
+import { BoundedOutput } from "../../../src/local/files/workspace-transaction.mjs";
+import { ProcessExecutionService } from "../../../src/local/process/execution.mjs";
+import { runExecutable, workspaceShellCommand } from "../../../src/local/deploy/shell.mjs";
+import { resolveTrustedGitExecutable } from "../../../src/local/core/trusted-executable.mjs";
 import { assert, expectBridgeError, expectReject, PROCESS_FIXTURE_TIMEOUT_MS } from "./common.mjs";
 
 export async function runProcessInfrastructureTests() {

@@ -3,21 +3,21 @@ import relayContract from "../src/shared/relay-contract.json" with { type: "json
 import { EventEmitter } from "node:events";
 import { testRelayRetryPolicy } from "./relay-http-retry-cases.mjs";
 import { testExecutedIdleRelayBudget } from "./relay-http-budget-cases.mjs";
-import { createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
-import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
-import { DaemonHttpRelayConnection } from "../src/local/daemon-http-relay-connection.mjs";
-import { postDaemonHttpRelay } from "../src/local/daemon-http-relay-request.mjs";
-import { RelayInboundSequence, RelayOutboundSequence } from "../src/local/daemon-http-relay-sequence.mjs";
-import { proxyAgentForRelayHttp } from "../src/local/network-proxy.mjs";
-import { relayHandshakeDiagnostics } from "../src/local/relay-peer-diagnostics.mjs";
-import { runtimeRelayConnectionOptions } from "../src/local/runtime-relay-connection-options.mjs";
-import { ResilientRelayConnection } from "../src/local/resilient-relay-connection.mjs";
-import { reconnectDelay } from "../src/local/relay-connection-classification.mjs";
-import { compactRuntimeRelay } from "../src/local/runtime-info-projection.mjs";
-import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
-import { consumeDaemonPreflightNonce, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
-import { DaemonHttpChannel } from "../src/worker/daemon-http-channel.ts";
-import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon-relay-diagnostics.ts";
+import { createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/state/device-identity.mjs";
+import { createDaemonHttpRelayHeaders } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { DaemonHttpRelayConnection } from "../src/local/transport/daemon-http-relay.mjs";
+import { postDaemonHttpRelay } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { RelayInboundSequence, RelayOutboundSequence } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { proxyAgentForRelayHttp } from "../src/local/transport/network-proxy.mjs";
+import { relayHandshakeDiagnostics } from "../src/local/transport/relay-recovery.mjs";
+import { runtimeRelayConnectionOptions } from "../src/local/runtime/runtime-relay.mjs";
+import { ResilientRelayConnection } from "../src/local/transport/resilient-relay.mjs";
+import { reconnectDelay } from "../src/local/transport/relay-classification.mjs";
+import { compactRuntimeRelay } from "../src/local/runtime/runtime-projections.mjs";
+import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon/http-controller.ts";
+import { consumeDaemonPreflightNonce, verifyDaemonPreflight } from "../src/worker/daemon/auth.ts";
+import { DaemonHttpChannel } from "../src/worker/daemon/http-channel.ts";
+import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../src/worker/daemon/relay-diagnostics.ts";
 
 const ORIGIN = "https://relay.example.invalid";
 const SERVER = "machine-bridge-mcp";
@@ -309,6 +309,18 @@ async function testHttpFallbackFailureClassification() {
   assert.equal(protocolFailure.status().http_poll_failures, 2);
   assert.equal(protocolFailure.nextPollDelay(), 20,
     "repeated fallback protocol/session failures bypassed exponential retry backoff");
+
+  for (const permanentStatus of [401, 404]) {
+    let disconnects = 0;
+    const perm = new DaemonHttpRelayConnection({
+      workerUrl: ORIGIN, now: () => 0, onDisconnect: () => { disconnects += 1; },
+    });
+    perm.authenticated = true;
+    perm.ready = true;
+    await perm.handleResponse(permanentStatus, "");
+    assert.equal(disconnects, 1, `HTTPS fallback status ${permanentStatus} did not immediately tear down the ready session`);
+    assert.equal(perm.ready, false);
+  }
 }
 
 async function testLocalLostResponseDoesNotReplayToolCall() {

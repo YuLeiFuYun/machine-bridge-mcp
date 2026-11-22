@@ -8,7 +8,7 @@ import {
   serviceEnvironmentSummary,
   serviceEnvironmentPath,
   writeServiceEnvironment,
-} from "../src/local/service-environment.mjs";
+} from "../src/local/deploy/service-support.mjs";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "mbm-service-environment-"));
 try {

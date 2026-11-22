@@ -37,6 +37,12 @@ assert.equal(matchOne(cloudflare, /workersDev:\s*(true|false)\b/, "workersDev") 
   wrangler.workers_dev, "the workers.dev setting differs between deployment configurations");
 assert.equal(matchOne(cloudflare, /previewUrls:\s*(true|false)\b/, "previewUrls") === "true",
   wrangler.preview_urls, "the preview URL setting differs between deployment configurations");
+assert.equal(wrangler.keep_vars, true,
+  "wrangler.jsonc must enable keep_vars to match cloudflare.config.ts keep_bindings");
+const cloudflareKeepBindings = matchOne(cloudflare, /keep_bindings:\s*\[([^\]]*)\]/, "keep_bindings")
+  .split(",").map((entry) => entry.trim().replace(/^"|"$/g, "")).filter(Boolean).sort();
+assert.deepEqual(cloudflareKeepBindings, ["json", "plain_text", "secret_key", "secret_text"],
+  "cloudflare.config.ts must preserve plain_text, json, secret_text, and secret_key bindings");
 
 const durableBinding = /\b(\w+):\s*bindings\.durableObject\(\{\s*worker:\s*name,\s*exportName:\s*"([^"]+)"\s*\}\)/.exec(cloudflare);
 assert.ok(durableBinding, "cf must declare the Durable Object as a self-binding");

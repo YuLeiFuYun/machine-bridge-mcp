@@ -183,6 +183,7 @@ Closing the public MCP `2026-07-28` HTTP response stream cancels that request th
 Tool arguments, mirrored header values, validation values, and result content are never logged.
 
 Debug per-tool fields may include tool name, duration, coarse outcome class, and a shortened random call identifier.
+Execution guardrails track per-principal untrusted-read taint elevation (in `src/local/core/operation-risk.mjs`), `StuckLoopDetector` repeated-cycle/oscillation warnings, and rolling one-hour `cost_warning` call-volume metadata without recording raw arguments or outputs.
 When a process-like call is rejected by cooperative resource admission before spawn, the failure event may additionally include only the enumerated `resource_admission_reason` and coarse `resource_pressure_state`; it never includes argv, cwd, project identity, lease identity, host process names, or sampled command output.
 The identifier is for correlating adjacent local events and is not a stable audit identifier.
 Authorization failures return a stable denial code and bounded guidance; the current runtime never creates approval IDs or temporary elevation leases.

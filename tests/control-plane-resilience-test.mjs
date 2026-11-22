@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { enqueueSecurityAudit } from "../src/local/security-audit-dispatch.mjs";
+import { enqueueSecurityAudit } from "../src/local/runtime/security-audit-log.mjs";
 import {
   SECURITY_AUDIT_MAX_BYTES,
   SECURITY_AUDIT_MAX_EVENTS,
@@ -12,9 +12,9 @@ import {
   readVerifiedAuditState,
   recordAuditBatch,
   unhealthyAuditSnapshot,
-} from "../src/local/security-audit-storage.mjs";
-import { terminateProcessTree } from "../src/local/process-tree-signal.mjs";
-import { terminateProcessTreeWithEscalation } from "../src/local/process-tree-supervisor.mjs";
+} from "../src/local/runtime/security-audit-store.mjs";
+import { terminateProcessTree } from "../src/local/process/tree.mjs";
+import { terminateProcessTreeWithEscalation } from "../src/local/process/tree.mjs";
 import { toolCallCapacityConfig, toolCallCapacityUsage } from "../src/shared/tool-call-capacity.mjs";
 import {
   MAX_PENDING_CALLS,
@@ -24,8 +24,8 @@ import {
   assertWorkerPendingCallAdmission,
   pendingCallAdmission,
   pendingRegistrySnapshot,
-} from "../src/worker/pending-call-capacity.ts";
-import { WorkerToolError } from "../src/worker/errors.ts";
+} from "../src/worker/room/pending-calls.ts";
+import { WorkerToolError } from "../src/worker/room/errors.ts";
 
 await testAuditDispatchBoundaries();
 await testAuditStorageBoundaries();

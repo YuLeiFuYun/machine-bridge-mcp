@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
 import toolSecurityContract from "../src/shared/tool-security-contract.json" with { type: "json" };
-import { assertOwnedByContext, buildAuthorityContext, principalBinding, principalForContext, visibleToContext } from "../src/local/authority-context.mjs";
-import { OperationAuthorizer } from "../src/local/operation-authorization.mjs";
+import { assertOwnedByContext, buildAuthorityContext, principalBinding, principalForContext, visibleToContext } from "../src/local/core/authority.mjs";
+import { OperationAuthorizer } from "../src/local/core/authority.mjs";
 import { createToolSecurityIndex } from "../src/shared/tool-security.mjs";
-import { classifyOperation } from "../src/local/operation-risk.mjs";
-import { policyProfile } from "../src/local/policy.mjs";
-import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
+import { classifyOperation } from "../src/local/core/operation-risk.mjs";
+import { policyProfile } from "../src/local/core/policy.mjs";
+import { runtimeToolHandlerNames } from "../src/local/runtime/runtime.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-authority-test-"));
 const workspace = path.join(root, "workspace");

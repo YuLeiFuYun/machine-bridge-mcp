@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { redactManagedJobOutput } from "../src/local/managed-job-output-redaction.mjs";
+import { redactManagedJobOutput } from "../src/local/jobs/redaction.mjs";
 
 const emptyContext = {
   bytes: {}, paths: {}, sourcePaths: {}, temporaryPaths: {}, redactions: { empty: [""] },
@@ -72,6 +72,9 @@ if (process.platform !== "win32") {
   "Darwin canonical aliases escaped managed-job result redaction");
   assert(redactManagedJobOutput(Buffer.from("prefix /tmp/job-alias/reso"), darwinContext,
     "/private/tmp/job-alias/runtime", "darwin", 8) === "prefix ", "Darwin truncated alias escaped redaction");
+  assert(redactManagedJobOutput(Buffer.from("/TMP/JOB-ALIAS/RESOURCE"), darwinContext,
+    "/private/tmp/job-alias/runtime", "darwin") === "<resource:sample>",
+  "Darwin case-insensitive path alias escaped managed-job result redaction");
   assert(redactManagedJobOutput(Buffer.from("/tmp/job-alias/resource"), darwinContext,
     "/private/tmp/job-alias/runtime", "linux") === "/tmp/job-alias/resource", "Darwin aliases changed Linux semantics");
 }

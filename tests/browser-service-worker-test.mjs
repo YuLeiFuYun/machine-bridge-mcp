@@ -44,6 +44,7 @@ await testCancellationStopsUnstartedBrowserMutations();
 await testNavigationWaitStopsWhenTabCloses();
 await testBrowserWaitIgnoresWallClockRollback();
 await testAggregateFrameAndSourceBudgets();
+await testStageAPairingTrustAndReconnectRecovery();
 console.log("browser service worker test ok");
 
 async function testPairingGrantBoundary() {
@@ -2122,4 +2123,65 @@ function assert(condition, message) {
   await api.handleMessage(ownerSocket, JSON.stringify({ type: "cancel", id: "owned-cancel" }));
   assert(replacement.cancelled === false, "old socket cancelled a same-id replacement request");
   api.activeRequests.delete("owned-cancel");
+}
+
+async function testStageAPairingTrustAndReconnectRecovery() {
+  let messageListener = null;
+  const badge = [];
+  const timers = [];
+  const extensionId = "test-extension-id";
+  const runtime = {
+    ...runtimeBase(),
+    id: extensionId,
+    onMessage: {
+      addListener(fn) { messageListener = fn; },
+      removeListener() {},
+    },
+  };
+  let authShouldFail = true;
+  const token = "r".repeat(32);
+  const context = createContext({
+    brokerTokens: { "39393": token },
+    fetch: async (...args) => {
+      if (authShouldFail) throw new Error("transient broker auth outage");
+      return brokerAuthFetch({ "39393": token })(...args);
+    },
+    setTimeout(callback, delay) {
+      timers.push({ callback, delay });
+      return timers.length;
+    },
+    clearTimeout() {},
+    chrome: baseChrome({
+      runtime,
+      action: { setBadgeText: async ({ text }) => { badge.push(text); }, setTitle: async () => {}, onClicked: listener() },
+    }),
+  });
+  const api = loadServiceWorker(context, ["connect", "pairConfiguration"]);
+  assert(typeof messageListener === "function", "service worker did not expose runtime message listener");
+
+  const grant = pairingGrant(39393, token);
+  for (const untrustedSender of [
+    { id: "evil-extension", frameId: 0, tab: { active: true }, url: "http://127.0.0.1:45555/pair" },
+    { id: extensionId, frameId: 1, tab: { active: true }, url: "http://127.0.0.1:45555/pair" },
+    { id: extensionId, frameId: 0, tab: { active: false }, url: "http://127.0.0.1:45555/pair" },
+    { id: extensionId, frameId: 0, tab: { active: true }, url: "https://evil.example.test/pair" },
+  ]) {
+    const replies = [];
+    const kept = messageListener({ type: "pair_bootstrap", port: 39393, grant }, untrustedSender, (r) => replies.push(r));
+    assert(kept === false && replies[0]?.ok === false && replies[0]?.error === "untrusted_pairing_sender",
+      `untrusted pair_bootstrap sender was not rejected: ${JSON.stringify(untrustedSender)}`);
+  }
+
+  let pairFailed = false;
+  try { await api.pairConfiguration("ws://127.0.0.1:39393/extension", token, { replace: false }); }
+  catch { pairFailed = true; }
+  assert(pairFailed && badge.at(-1) === "?", "failed unconfigured pairConfiguration did not restore '?' badge");
+
+  let reconnectFailed = false;
+  try { await api.connect("ws://127.0.0.1:39393/extension", token); }
+  catch { reconnectFailed = true; }
+  assert(reconnectFailed, "connect did not reject when extensionBrokerProtocol threw");
+  assert(badge.at(-1) === "!", "failed reconnect connect did not transition badge to '!'");
+  assert(timers.some((t) => t.delay >= 1000 && t.delay <= 30_000),
+    "failed extensionBrokerProtocol during reconnect did not schedule exponential-backoff reconnect timer");
 }

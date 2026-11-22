@@ -22,11 +22,11 @@ import {
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
 import { validateCandidateManifest } from "./release-candidate-manifest.mjs";
-import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
-import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/core/trusted-executable.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
-import { createHardenedNpmSession } from "./hardened-npm-session.mjs";
+import { createHardenedNpmSession } from "./lib/npm.mjs";
 import { readReleaseOAuthCanaryEvidence } from "./release-oauth-canary-evidence.mjs";
 import { assertFreshFullVerificationReceipt } from "./verification-state.mjs";
 

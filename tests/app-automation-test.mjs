@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { AppAutomationManager, powershellSingleQuotedLiteral } from "../src/local/app-automation.mjs";
-import { BridgeError, publicError } from "../src/local/errors.mjs";
-import { LocalRuntime } from "../src/local/runtime.mjs";
+import { AppAutomationManager, powershellSingleQuotedLiteral } from "../src/local/automation/app-automation.mjs";
+import { BridgeError, publicError } from "../src/local/core/errors.mjs";
+import { LocalRuntime } from "../src/local/runtime/runtime.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-app-automation-"));
 const applications = join(root, "Applications");
@@ -126,6 +126,8 @@ try {
 
   const openCallCount = calls.length;
   await expectReject(() => manager.openApplication({ application: "Example", target: null }), "target must be a string");
+  await expectReject(() => manager.openApplication({ application: "Example", target: "--env=EVIL=1" }), "must not begin with '-'");
+  await expectReject(() => manager.openApplication({ application: "Example", target: "-b com.example.evil" }), "must not begin with '-'");
   await expectReject(() => manager.openApplication({ application: "Example", background: null }), "background must be boolean");
   await expectReject(() => manager.openApplication({ application: "Example", timeout_seconds: null }), "expected an integer");
   await expectReject(() => manager.openApplication({ application: "Example", timeout_seconds: 121 }), "expected an integer");

@@ -1,4 +1,4 @@
-import { createStructuredGitCommit } from "../src/local/git-commit.mjs";
+import { createStructuredGitCommit } from "../src/local/git/git-safety.mjs";
 
 const head = "a".repeat(40);
 const tree = "b".repeat(40);
@@ -18,6 +18,15 @@ await fails({ treeResult: { code: 1, stdout: "" } }, "git_commit_failed");
 await fails({ treeResult: { code: 0, stdout: "not-a-hash" } }, "git_commit_failed");
 await fails({ commitResult: { code: 0, stdout: "not-a-hash" } }, "git_commit_failed");
 await fails({ updateResult: { code: 1, stdout: "" } }, "git_commit_conflict");
+{
+  let symbolicReads = 0;
+  await fails({
+    symbolic: () => {
+      symbolicReads += 1;
+      return { code: 0, stdout: symbolicReads === 1 ? "refs/heads/main\n" : "refs/heads/other\n" };
+    },
+  }, "git_commit_conflict");
+}
 
 console.log("structured Git commit plumbing test ok");
 
@@ -59,7 +68,7 @@ function fixture(overrides, calls) {
     runInternalProcess: async (_command, args, _timeout, _allowFailure, _maxBytes, _context, _cwd, stdin) => {
       calls.push({ args: [...args], stdin });
       if (args.includes("write-tree")) return responses.treeResult;
-      if (args.includes("symbolic-ref")) return responses.symbolic;
+      if (args.includes("symbolic-ref")) return typeof responses.symbolic === "function" ? responses.symbolic() : responses.symbolic;
       if (args.includes("check-ref-format")) return responses.refValidation;
       if (args.includes("commit-tree")) return responses.commitResult;
       if (args.includes("update-ref")) return responses.updateResult;

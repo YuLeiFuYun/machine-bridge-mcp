@@ -3,9 +3,9 @@ import { mock } from "node:test";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { policyProfile } from "../src/local/policy.mjs";
-import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/managed-job-lock.mjs";
+import { ManagedJobManager } from "../src/local/jobs/manager.mjs";
+import { policyProfile } from "../src/local/core/policy.mjs";
+import { acquireJobCapacityLock, acquireJobTransitionLock } from "../src/local/jobs/directory.mjs";
 import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "mbm-resource-idempotency-")));

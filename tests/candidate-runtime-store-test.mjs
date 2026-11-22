@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { candidateRuntimeContainer, createCandidateRuntimePrefix, isNonBlockingCandidateRuntimeCleanupError, pruneInactiveCandidateRuntimes } from "../scripts/candidate-runtime-store.mjs";
 import { publishReleaseBrowserExtension } from "../scripts/release-browser-extension-store.mjs";
-import { browserExtensionPathForRuntime, releaseBrowserExtensionPath } from "../src/local/browser-extension-path.mjs";
-import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
-import { validateOwnedStateNamespaces } from "../src/local/state-root-owned-namespaces.mjs";
+import { browserExtensionPathForRuntime, releaseBrowserExtensionPath } from "../src/local/automation/browser-extension-protocol.mjs";
+import { withReleaseRuntimeLock } from "../src/local/state/state-locks-meta.mjs";
+import { validateOwnedStateNamespaces } from "../src/local/state/state-storage.mjs";
 
 const stateRoot = mkdtempSync(join(tmpdir(), "mbm-candidate-runtime-"));
 const container = candidateRuntimeContainer(stateRoot);

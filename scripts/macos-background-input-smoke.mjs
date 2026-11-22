@@ -5,10 +5,10 @@ import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { AppAutomationManager } from "../src/local/app-automation.mjs";
-import { ComputerUseManager } from "../src/local/computer-use.mjs";
-import { MacosBackgroundInputService } from "../src/local/macos-background-input.mjs";
-import { packageRoot } from "../src/local/package-identity.mjs";
+import { AppAutomationManager } from "../src/local/automation/app-automation.mjs";
+import { ComputerUseManager } from "../src/local/automation/computer-use.mjs";
+import { MacosBackgroundInputService } from "../src/local/automation/macos-background-input.mjs";
+import { packageRoot } from "../src/local/core/timing.mjs";
 
 const EXPLICIT_FLAG = "--run";
 const BACKEND_ENV = "MBM_MACOS_BACKGROUND_VISUAL_BACKEND";

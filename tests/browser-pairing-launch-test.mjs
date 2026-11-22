@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { parseBrowserPairingGrant } from "../src/local/browser-pairing-grant.mjs";
-import { startBrowserPairingLaunch } from "../src/local/browser-pairing-launch.mjs";
+import { parseBrowserPairingGrant } from "../src/local/automation/browser-broker.mjs";
+import { startBrowserPairingLaunch } from "../src/local/automation/browser-pairing.mjs";
 
 class FakeServer extends EventEmitter {
   constructor(port) {

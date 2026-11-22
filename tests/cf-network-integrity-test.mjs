@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { CF_NETWORK_ARTIFACT as contract, verifyCfNetworkArtifact } from "../src/local/cf-network-integrity.mjs";
+import { CF_NETWORK_ARTIFACT as contract, verifyCfNetworkArtifact } from "../src/local/deploy/cf-network-integrity.mjs";
 
 const cfRoot = path.dirname(createRequire(import.meta.url).resolve("cf/package.json"));
 const original = readFileSync(path.join(cfRoot, contract.bundle));

@@ -1,16 +1,16 @@
 import strictAssert from "node:assert/strict";
-import { serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool, workspaceTools } from "../src/worker/tool-catalog.ts";
+import { serverInfoTool, jobMonitorRenderTool, jobMonitorClaimTool, jobMonitorReadTool, workspaceTools } from "../src/worker/mcp/tool-catalog.ts";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { toolCatalogDigest, assertToolSchemaContract, readToolSchemaBaselines } from "../scripts/tool-schema-contract.mjs";
+import { toolCatalogDigest, assertToolSchemaContract, readToolSchemaBaselines } from "../scripts/lib/release.mjs";
 import { CORE_CORNERSTONE_TOOL_NAMES, PROGRESSIVE_TOOL_GROUPS } from "../src/shared/tool-groups.mjs";
-import { MAX_TOOL_SELECTION_TEXT_CHARACTERS, toolSelectionText } from "../src/local/execution-routing.mjs";
+import { MAX_TOOL_SELECTION_TEXT_CHARACTERS, toolSelectionText } from "../src/local/runtime/call-registry.mjs";
 import toolSecurityContract from "../src/shared/tool-security-contract.json" with { type: "json" };
 import { readFile, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
-import { allToolNames, MCP_INSTRUCTIONS, toolResult, policyProfile, toolsForPolicy } from "../src/local/tools.mjs";
-import { runtimeToolHandlerNames } from "../src/local/runtime.mjs";
-import { operationMayHaveSideEffects } from "../src/local/operation-risk.mjs";
+import { allToolNames, MCP_INSTRUCTIONS, toolResult, policyProfile, toolsForPolicy } from "../src/local/runtime/observability.mjs";
+import { runtimeToolHandlerNames } from "../src/local/runtime/runtime.mjs";
+import { operationMayHaveSideEffects } from "../src/local/core/operation-risk.mjs";
 import { tagToolSchemaGeneration } from "../src/shared/mcp-protocol.mjs";
 
 const catalog = JSON.parse(await readFile(new URL("../src/shared/tool-catalog.json", import.meta.url), "utf8"));
@@ -72,10 +72,10 @@ const instructionCharacters = MCP_INSTRUCTIONS.length;
 assert(instructionCharacters <= 32_000,
   `shared server instructions grew to ${instructionCharacters} characters; the per-session budget is 32,000`);
 const workerSource = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
-const workerCatalogSource = await readFile(new URL("../src/worker/tool-catalog.ts", import.meta.url), "utf8");
-const workerMcpConfigSource = await readFile(new URL("../src/worker/worker-mcp-config.ts", import.meta.url), "utf8");
-const workerMetadataSource = await readFile(new URL("../src/worker/worker-metadata.ts", import.meta.url), "utf8");
-assert(workerSource.includes('./worker-mcp-config.ts'), "Worker entrypoint bypasses the MCP configuration boundary");
+const workerCatalogSource = await readFile(new URL("../src/worker/mcp/tool-catalog.ts", import.meta.url), "utf8");
+const workerMcpConfigSource = await readFile(new URL("../src/worker/room/server-info.ts", import.meta.url), "utf8");
+const workerMetadataSource = await readFile(new URL("../src/worker/room/entry.ts", import.meta.url), "utf8");
+assert(workerSource.includes('./room/server-info.ts'), "Worker entrypoint bypasses the MCP configuration boundary");
 assert(workerMcpConfigSource.includes('../shared/server-metadata.json')
   && workerMetadataSource.includes('../shared/server-metadata.json'),
 "Worker MCP and discovery metadata do not derive from shared server metadata");
@@ -203,8 +203,8 @@ for (const value of [["array"], "text", 0, false, null]) {
   assert(JSON.stringify(projected.structuredContent) === JSON.stringify(value), `special structuredContent value was lost for ${JSON.stringify(value)}`);
 }
 
-assert(workerSource.includes('./tool-catalog'), "Worker entrypoint does not use the catalog boundary");
-assert(workerCatalogSource.includes('../shared/tool-catalog.json'), "Worker catalog boundary does not import the shared tool catalog");
+assert(workerSource.includes('./mcp/tool-catalog'), "Worker entrypoint does not use the catalog boundary");
+assert(workerCatalogSource.includes('../../shared/tool-catalog.json'), "Worker catalog boundary does not import the shared tool catalog");
 assert(!workerCatalogSource.includes('const workspaceTools = ['), "Worker contains a second hand-maintained tool catalog");
 
 

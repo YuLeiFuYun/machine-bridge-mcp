@@ -3,10 +3,10 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { securityAuditRecentActivity } from "../src/local/security-audit-activity.mjs";
-import { SecurityAuditLog } from "../src/local/security-audit-log.mjs";
-import { createAuditStorageSession } from "../src/local/security-audit-storage.mjs";
-import { appendAuditRecords, decodeAndVerifyAuditState, emptyAuditState } from "../src/local/security-audit-state.mjs";
+import { securityAuditRecentActivity } from "../src/local/runtime/security-audit-store.mjs";
+import { SecurityAuditLog } from "../src/local/runtime/security-audit-log.mjs";
+import { createAuditStorageSession } from "../src/local/runtime/security-audit-store.mjs";
+import { appendAuditRecords, decodeAndVerifyAuditState, emptyAuditState } from "../src/local/runtime/security-audit-store.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-security-audit-"));
 let now = Date.UTC(2026, 6, 21, 0, 0, 0);

@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { withOwnerStateLock } from "../src/local/owner-state-lock.mjs";
-import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
+import { withOwnerStateLock } from "../src/local/state/state-locks.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/core/trusted-executable.mjs";
 
 const LOCK_DIRECTORY = "machine-bridge-release-state";
 const LOCK_FILE = "github-publication.lock";

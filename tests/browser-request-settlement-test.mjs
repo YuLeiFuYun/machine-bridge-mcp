@@ -3,8 +3,8 @@ import {
   browserRequestResponseError,
   browserRequestTransportError,
   invalidBrowserResponseSettlement,
-} from "../src/local/browser-request-settlement.mjs";
-import { settleComputerUseDispatch } from "../src/local/computer-use-dispatch-settlement.mjs";
+} from "../src/local/automation/browser-extension-protocol.mjs";
+import { settleComputerUseDispatch } from "../src/local/automation/computer-use-contracts.mjs";
 
 const mutation = { method: "action", dispatchAttempted: true };
 const readOnly = { method: "inspect_page", dispatchAttempted: true };

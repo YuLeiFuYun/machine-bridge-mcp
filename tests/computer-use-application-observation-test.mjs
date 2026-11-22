@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { applicationElementSupportsPointClick, applicationMatchesSelector, prepareApplicationObservationElements } from "../src/local/computer-use-application-observation.mjs";
-import { buildContinuation, observationDiff } from "../src/local/computer-use-observation.mjs";
+import { applicationElementSupportsPointClick, applicationMatchesSelector, prepareApplicationObservationElements } from "../src/local/automation/computer-use-geometry.mjs";
+import { buildContinuation, observationDiff } from "../src/local/automation/computer-use-observation.mjs";
 
 focusQueryPromotesRelevantControlAndLocalizesGeometry();
 queryMissReportsWhetherSearchWasExhaustive();

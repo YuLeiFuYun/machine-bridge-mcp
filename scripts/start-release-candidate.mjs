@@ -5,8 +5,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultStateRoot, expandHome, selectedWorkspace } from "../src/local/state.mjs";
-import { ensureOwnerOnlyDirectorySync } from "../src/local/secure-file.mjs";
+import { defaultStateRoot, expandHome, selectedWorkspace } from "../src/local/state/state.mjs";
+import { ensureOwnerOnlyDirectorySync } from "../src/local/core/secure-file.mjs";
 import { createCandidateRuntimePrefix, isNonBlockingCandidateRuntimeCleanupError, pruneInactiveCandidateRuntimes } from "./candidate-runtime-store.mjs";
 import { ACTIVATION_SCHEMA_VERSION, writePrereleaseActivation } from "./prerelease-activation.mjs";
 import { verifyTarball } from "./release-acceptance.mjs";
@@ -15,13 +15,12 @@ import { discoverForegroundDaemonRecovery } from "./foreground-daemon-recovery.m
 import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, preflightPersistentActivationWorkerAuth, validateActivationRecoveryPayload } from "./persistent-activation-process.mjs";
 import { assertCandidateMatchesCurrentSource, validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";
-import { createHardenedNpmSession, settleHardenedNpmSession } from "./hardened-npm-session.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { withReleaseRuntimeLock } from "../src/local/release-runtime-lock.mjs";
+import { createHardenedNpmSession, resolveNpmGlobalPrefix, settleHardenedNpmSession } from "./lib/npm.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
+import { withReleaseRuntimeLock } from "../src/local/state/state-locks-meta.mjs";
 import { releaseCommandFailure, releaseDiagnostic, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 import { inspectGlobalPackageInstallation } from "./global-package-installation.mjs";
-import { resolveNpmGlobalPrefix } from "./npm-global-prefix.mjs";
-import { resolveNpmCli } from "../src/local/npm-cli.mjs";
+import { resolveNpmCli } from "../src/local/deploy/npm.mjs";
 import { publishReleaseBrowserExtension } from "./release-browser-extension-store.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

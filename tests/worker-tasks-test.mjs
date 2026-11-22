@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { dispatchWorkerTaskOperation, createWorkerTaskSeed } from "../src/worker/mcp-tasks.ts";
-import { McpTaskStore, MAX_MCP_TASK_RESULT_BYTES } from "../src/worker/mcp-task-store.ts";
-import { statusMessageFor, taskStatusForJob } from "../src/worker/mcp-task-projection.ts";
-import { WorkerToolError } from "../src/worker/errors.ts";
-import { McpController } from "../src/worker/mcp-controller.ts";
-import { MCP_SERVER_CAPABILITIES } from "../src/worker/worker-mcp-config.ts";
+import { dispatchWorkerTaskOperation, createWorkerTaskSeed } from "../src/worker/mcp/tasks.ts";
+import { McpTaskStore, MAX_MCP_TASK_RESULT_BYTES } from "../src/worker/mcp/task-store.ts";
+import { statusMessageFor, taskStatusForJob } from "../src/worker/mcp/tasks.ts";
+import { WorkerToolError } from "../src/worker/room/errors.ts";
+import { McpController } from "../src/worker/mcp/controller.ts";
+import { MCP_SERVER_CAPABILITIES } from "../src/worker/room/server-info.ts";
 import { isMcpTaskJobId, MCP_TASK_EXTENSION_ID, MCP_TASK_JOB_ID_PATTERN, MCP_TASK_TTL_MS } from "../src/shared/mcp-task-contract.mjs";
 
 const authorized = {
@@ -112,24 +112,17 @@ function taskViewRequest(method, id, idValue, clientCapabilities = capabilities)
   }), null, "a mismatched capability must not create a task");
 }
 
-// Each active task reserves enough bounded storage for its eventual result. When
-// capacity is exhausted the server falls back to the ordinary tool result.
+// Concurrent working tasks are no longer capped at a low global task slot limit.
 {
-  const boundedStore = new McpTaskStore(new MemoryDurableObjectStorage());
-  for (const suffix of ["i", "j", "k", "l"]) {
+  const multiStore = new McpTaskStore(new MemoryDurableObjectStorage());
+  for (const suffix of ["i", "j", "k", "l", "m", "n"]) {
     const seed = await createWorkerTaskSeed({
       name: "start_job",
       result: { job_id: taskId(suffix), status: "queued", recovery_key: recoveryKey, control_key: controlKey },
-      authorized, clientCapabilities: capabilities, store: boundedStore, resolveCredentials, now,
+      authorized, clientCapabilities: capabilities, store: multiStore, resolveCredentials, now,
     });
-    assert.notEqual(seed, null);
+    assert.notEqual(seed, null, `concurrent working task ${suffix} was unexpectedly rejected`);
   }
-  const overCapacity = await createWorkerTaskSeed({
-    name: "start_job",
-    result: { job_id: taskId("m"), status: "queued", recovery_key: recoveryKey, control_key: controlKey },
-    authorized, clientCapabilities: capabilities, store: boundedStore, resolveCredentials, now,
-  });
-  assert.equal(overCapacity, null, "the server must not promise a task when its result reservation cannot be guaranteed");
 }
 
 const invokerCalls = [];
@@ -291,7 +284,7 @@ const invoker = async ({ name, args }) => {
   );
   assert.equal(cancelled.message.result.resultType, "complete");
   assert.equal(Object.keys(cancelled.message.result).filter((key) => key !== "resultType" && key !== "_meta").length, 0);
-  assert.equal((await store.get(activeId, authorized)).status, "working", "cancel acknowledgement must not claim cancellation completed");
+  assert.equal((await store.get(activeId, authorized)).status, "cancelled", "tasks/cancel must immediately persist cancelled state");
 
   jobStatus = "cancelled_before_start";
   const cancelledState = await dispatchWorkerTaskOperation(
@@ -301,6 +294,28 @@ const invoker = async ({ name, args }) => {
   assert.equal(cancelledState.message.result.status, "cancelled");
   assert.equal("result" in cancelledState.message.result, false);
   jobStatus = "running";
+}
+
+// Terminal result storage enforces a 32 MiB LRU eviction budget without dropping newest results.
+{
+  const lruStorage = new MemoryDurableObjectStorage();
+  const lruStore = new McpTaskStore(lruStorage);
+  const chunkText = "z".repeat(7 * 1024 * 1024);
+  const ids = ["v", "w", "x", "y", "z"].map((ch) => taskId(ch));
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    await lruStore.create(id, authorized, now + i * 10);
+    await lruStore.updateStatus(
+      id,
+      authorized,
+      "completed",
+      "Execution completed.",
+      { content: [{ type: "text", text: chunkText }], isError: false },
+      now + i * 10 + 1,
+    );
+  }
+  assert.equal(await lruStore.getResult(ids[0], authorized, now + 100), null, "LRU did not evict oldest completed result past 32 MiB");
+  assert.notEqual(await lruStore.getResult(ids.at(-1), authorized, now + 100), null, "LRU evicted the newest completed result");
 }
 
 // Terminal results are chunked and integrity-checked; expired task records and chunks are removed.

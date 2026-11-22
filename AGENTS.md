@@ -1,6 +1,6 @@
 # Repository automation contract
 
-Read [ENGINEERING](docs/ENGINEERING.md), [PROJECT_STANDARDS](docs/PROJECT_STANDARDS.md), and [CONTRIBUTING](CONTRIBUTING.md) before changing code. They define architecture, security, validation and review obligations; [RELEASING](docs/RELEASING.md) is the authoritative release procedure. Preserve unrelated work and existing safety boundaries.
+Read [ENGINEERING](docs/ENGINEERING.md) and [CONTRIBUTING](CONTRIBUTING.md) before changing code. They define architecture, security, validation and review obligations; [RELEASING](docs/RELEASING.md) is the authoritative release procedure. Preserve unrelated work and existing safety boundaries.
 
 ## Tool-selection hard gate
 

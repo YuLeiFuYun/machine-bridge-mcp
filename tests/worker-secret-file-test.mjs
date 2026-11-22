@@ -2,9 +2,9 @@ import { lstatSync, readdirSync, unlinkSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureOwnerOnlyDirectorySync } from "../src/local/secure-file.mjs";
-import { cleanupStaleWorkerSecretFiles, withWorkerSecretsFile } from "../src/local/worker-secret-file.mjs";
-import { createDeviceIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+import { ensureOwnerOnlyDirectorySync } from "../src/local/core/secure-file.mjs";
+import { cleanupStaleWorkerSecretFiles, withWorkerSecretsFile } from "../src/local/state/worker-secret-file.mjs";
+import { createDeviceIdentity, publicDeviceJwkJson } from "../src/local/state/device-identity.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-worker-secrets-test-"));
 try {

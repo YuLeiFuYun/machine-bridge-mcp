@@ -30,5 +30,7 @@ for (const file of deferred) {
 for (const file of sourceFiles) {
   if (hasTsCheck(file)) assert(included.has(file) || deferred.has(file), `new @ts-check module bypasses strict checking and the explicit migration queue: ${file}`);
 }
-assert(included.size >= 121, `strict local typecheck coverage regressed below the current ratchet (${included.size} < 121)`);
-console.log(`local typecheck coverage contract ok (${included.size} checked modules; ${deferred.size} explicitly deferred modules)`);
+const ratio = sourceFiles.size > 0 ? included.size / sourceFiles.size : 0;
+assert(ratio >= 0.30,
+  `strict local typecheck coverage ratio regressed below 30% (${included.size}/${sourceFiles.size} = ${(ratio * 100).toFixed(1)}%)`);
+console.log(`local typecheck coverage contract ok (${included.size}/${sourceFiles.size} checked modules = ${(ratio * 100).toFixed(1)}%; ${deferred.size} explicitly deferred modules)`);

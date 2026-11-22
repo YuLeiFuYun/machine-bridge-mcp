@@ -1,12 +1,12 @@
 import nodeAssert from "node:assert/strict";
 import { mock } from "node:test";
-import { createStreamedToolResponse } from "../src/worker/mcp-streamed-tool-dispatch.ts";
-import { McpRequestCancellationRegistry } from "../src/worker/mcp-request-cancellation.ts";
+import { createStreamedToolResponse } from "../src/worker/mcp/response-stream.ts";
+import { McpRequestCancellationRegistry } from "../src/worker/mcp/request-cancellation.ts";
 import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
-import { jsonRpcResponseStream } from "../src/worker/mcp-response-stream.ts";
+import { jsonRpcResponseStream } from "../src/worker/mcp/response-stream.ts";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
-import { acceptsEventStream } from "../src/worker/mcp-http-accept.ts";
-import { proxyMcpResponseStream } from "../src/worker/mcp-response-proxy.ts";
+import { acceptsEventStream } from "../src/worker/mcp/http-contract.ts";
+import { proxyMcpResponseStream } from "../src/worker/mcp/response-proxy.ts";
 import {
   MCP_STREAM_PROXY_ID_HEADER,
   MCP_STREAM_PROXY_MODE_HEADER,
@@ -15,7 +15,7 @@ import {
   mcpStreamProxyMode,
   sanitizeBridgeRequest,
   withProxyHeaders,
-} from "../src/worker/mcp-stream-proxy-contract.ts";
+} from "../src/worker/mcp/response-proxy.ts";
 
 await testJsonRpcStreamSettlement();
 await testJsonRpcStreamProgress();

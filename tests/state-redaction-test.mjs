@@ -1,6 +1,8 @@
-import { createDeviceIdentity } from "../src/local/device-identity.mjs";
-import { redactState } from "../src/local/state.mjs";
-import { supportStateProjection } from "../src/local/support-state-projection.mjs";
+import os from "node:os";
+import path from "node:path";
+import { createDeviceIdentity } from "../src/local/state/device-identity.mjs";
+import { redactState } from "../src/local/state/state.mjs";
+import { supportStateProjection } from "../src/local/runtime/runtime-projections.mjs";
 
 export function runStateRedactionPrivacyTest() {
   const active = decorate(createDeviceIdentity(), "active");
@@ -41,6 +43,16 @@ export function runStateRedactionPrivacyTest() {
   assert(redacted.worker.oauthTokenVersion === "<redacted>", "redacted state exposed the deployment token version");
   assert(state.worker.deviceIdentity.privateJwk.d === activePrivateBefore && state.worker.deviceIdentity.publicJwk,
     "redactState mutated the persisted device identity instead of a projection copy");
+
+  const home = os.homedir();
+  if (home && (process.platform === "darwin" || process.platform === "win32")) {
+    const upperHomePath = path.join(home.toUpperCase(), "workspace");
+    const casedRedacted = redactState({ workspace: { path: upperHomePath }, nested: [home.toLowerCase()] });
+    assert(casedRedacted.workspace.path === `~${path.sep}workspace`,
+      "redactState failed case-insensitive home path redaction");
+    assert(casedRedacted.nested[0] === "~",
+      "redactState failed exact lowercase home path redaction");
+  }
 
   const support = supportStateProjection({ ...state, schemaVersion: 5, policy: { profile: "full", origin: "explicit", revision: 5 } });
   const supportJson = JSON.stringify(support);

@@ -11,6 +11,9 @@ assert.equal(valid.sent, null, "pairing bootstrap ran before the user confirmed 
 assert.equal(valid.location.hash, "");
 assert(!valid.replacement.includes("grant") && !valid.replacement.includes("#"), "pairing history replacement retained the bootstrap secret");
 assert.match(valid.status.textContent, /Confirm pairing/, "pairing page did not request explicit confirmation");
+valid.click({ isTrusted: false });
+assert.equal(valid.sent, null, "pairing content script accepted an untrusted synthetic click");
+assert.equal(valid.button.disabled, false, "untrusted synthetic click disabled the pairing button");
 valid.click();
 assert.deepEqual(valid.sent, { type: "pair_bootstrap", port: 39393, grant });
 assert.deepEqual(valid.events, ["strip", "send"], "pairing content script disclosed the fragment before removing it from the page URL");
@@ -98,11 +101,11 @@ function runPairing(href, options = {}) {
   });
   vm.runInContext(source, context, { filename: "pairing.js" });
   return {
-    events, location, status,
+    events, location, status, button,
     get sent() { return sent; },
     get replacement() { return replacement; },
     get replacedLocation() { return replacedLocation; },
-    click() { if (!button.disabled) button.listener?.(); },
+    click(event = { isTrusted: true }) { if (!button.disabled) button.listener?.(event); },
     onMessage(message) {
       let result;
       listener?.(message, {}, (value) => { result = structuredClone(value); });
