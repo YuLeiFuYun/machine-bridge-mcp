@@ -36,7 +36,7 @@ import { McpTaskService } from "./mcp/tasks.ts";
 import { closeWebSocketQuietly } from "./room/websocket-protocol.ts";
 import { DaemonWebSocketController } from "./daemon/websocket-controller.ts";
 
-const SERVER_VERSION = "3.0.0-beta.222";
+const SERVER_VERSION = "3.0.0-beta.223";
 
 const MCP_SERVER_INFO = mcpServerInfo(SERVER_VERSION);
 

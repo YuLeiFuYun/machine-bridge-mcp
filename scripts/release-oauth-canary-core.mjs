@@ -262,12 +262,8 @@ async function verifyBrowserNavigateAuthorize({ fetchImpl, origin, authorizePara
   if (!refreshMatch) {
     throw new Error("release OAuth canary browser authorization redirect page omitted meta refresh redirect");
   }
-  const refreshUrl = refreshMatch[1]
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
+  const HTML_ENTITIES = { "&amp;": "&", "&quot;": "\"", "&#39;": "'", "&lt;": "<", "&gt;": ">" };
+  const refreshUrl = refreshMatch[1].replace(/&(amp|quot|#39|lt|gt);/g, (entity) => HTML_ENTITIES[entity]);
   validateAuthorizeRedirectUrl(refreshUrl, origin, stateValue);
 }
 

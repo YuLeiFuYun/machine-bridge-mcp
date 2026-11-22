@@ -468,7 +468,7 @@ export function cleanupIsolatedWorktreeDir(worktreeDir, workspace = "", runtimeD
       // Fall back to direct removal and prune below.
     }
   }
-  try { rmSync(worktreeDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  try { rmSync(worktreeDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); } catch { /* best-effort cleanup */ }
   if (repoWorkspace) {
     try {
       const gitCommand = resolveTrustedGitExecutable({ workspace: repoWorkspace, ...(runtimeDir ? { runtimeDir } : {}) });

@@ -530,7 +530,7 @@ export async function verifyCommand(args = {}) {
   const catalogOk = digest === serverMetadata.toolCatalogSha256;
   const catalogCheck = { ok: catalogOk, tool_count: toolCatalog.length, schema_generation: Number(serverMetadata.toolSchemaGeneration), ...(catalogOk ? {} : { error: "tool_catalog digest does not match server-metadata.json" }) };
 
-  let extensionCheck = { ok: false, version: null };
+  let extensionCheck;
   try {
     const manifest = JSON.parse(readFileSync(join(packageRoot, "browser-extension", "manifest.json"), "utf8"));
     const extOk = manifest?.manifest_version === 3 && typeof manifest?.version === "string" && manifest.version.length > 0;

@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 import { BrowserOperationService } from "../src/local/automation/browser-operation-service.mjs";
@@ -24,8 +25,9 @@ import { dispatchWorkerToolCall, inspectWorkerToolCall } from "../src/worker/mcp
 import { jobMonitorRenderTool, serverInfoTool, workspaceTools } from "../src/worker/mcp/tool-catalog.ts";
 import { buildServerInfoResult, MCP_SERVER_CAPABILITIES } from "../src/worker/room/server-info.ts";
 import { MCP_PROTOCOL_VERSION, serverImplementation } from "../src/shared/mcp-protocol.mjs";
-import { ManagedJobManager } from "../src/local/jobs/manager.mjs";
+import { terminateManagedJobActiveChild } from "../src/local/jobs/execution.mjs";
 import { validatePlan } from "../src/local/jobs/plan.mjs";
+import { createManagedJobTestManager, managedJobTestRunnerForCoordinatorRoot, waitForJob, waitForPidExit } from "./fixtures/managed-jobs/common.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 
 const execFileAsync = promisify(execFile);
@@ -297,7 +299,7 @@ test("CLI verify and pair commands validate arguments, emit structured JSON, and
     await assert.rejects(() => pairCommand({ ttl: "10" }), /60 and 3600/);
     await assert.rejects(() => pairCommand({ role: "superuser" }), /reviewer, editor, operator, owner/);
 
-    const binPath = new URL("../bin/machine-mcp.mjs", import.meta.url).pathname;
+    const binPath = fileURLToPath(new URL("../bin/machine-mcp.mjs", import.meta.url));
     const { stdout: pairStdout } = await execFileAsync(process.execPath, [binPath, "pair", "--state-dir", tempState, "--ttl", "120", "--role", "editor", "--json"]);
     const cliTicket = JSON.parse(pairStdout);
     assert.equal(cliTicket.role, "editor");
@@ -479,7 +481,7 @@ test("server_info exposes schema_drift and authority_delta in local and Worker p
   };
   const workerBase = {
     serverName: serverMetadata.name,
-    serverVersion: "3.0.0-beta.222",
+    serverVersion: "3.0.0-beta.223",
     base: "https://example.workers.dev",
     oauth: {},
     daemon: { connected: true, count: 1, tool_count: 4, tools: ["read_file", "git_status", "write_file", "exec_command"] },
@@ -516,6 +518,8 @@ test("managed jobs support isolated_worktree and clean up detached worktrees in 
   const root = mkdtempSync(join(tmpdir(), "mbm-worktree-job-"));
   const workspace = join(root, "repo");
   const jobRoot = join(root, "jobs");
+  const coordinatorRoot = join(root, "resource-coordinator");
+  let manager = null;
   mkdirSync(workspace, { recursive: true });
   try {
     const git = resolveTrustedGitExecutable({ workspace });
@@ -537,12 +541,13 @@ test("managed jobs support isolated_worktree and clean up detached worktrees in 
     });
     assert.equal(validPlan.isolated_worktree, true);
 
-    const manager = new ManagedJobManager({
+    manager = createManagedJobTestManager({
       jobRoot,
       workspace,
       policy: { profile: "full", origin: "explicit", allowWrite: true, execMode: "shell", minimalEnv: false, unrestrictedPaths: true, exposeAbsolutePaths: true },
       authorizeTool() {},
       recover: false,
+      runnerSpawnProcess: managedJobTestRunnerForCoordinatorRoot(coordinatorRoot),
     });
 
     const accepted = manager.start({
@@ -560,12 +565,7 @@ test("managed jobs support isolated_worktree and clean up detached worktrees in 
       ],
     });
 
-    let read = manager.read({ job_id: accepted.job_id });
-    const deadline = Date.now() + 20_000;
-    while ((read.status === "queued" || read.status === "running" || read.status === "cleaning") && Date.now() < deadline) {
-      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 50); });
-      read = manager.read({ job_id: accepted.job_id });
-    }
+    const read = await waitForJob(manager, accepted.job_id, new Set(["succeeded"]), 60_000);
     assert.equal(read.status, "succeeded");
     const stepStdout = String(read.result?.steps?.[0]?.stdout || "").trim();
     assert.match(stepStdout, /worktree$/);
@@ -575,7 +575,8 @@ test("managed jobs support isolated_worktree and clean up detached worktrees in 
     const worktreeCount = worktreeList.split(/\r?\n/).filter((line) => line.startsWith("worktree ")).length;
     assert.equal(worktreeCount, 1);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    manager?.stopRunnerExitRecovery();
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -759,7 +760,7 @@ test("Extension network redaction, BrowserOperationService wire normalization, a
 test("Worker authority_delta excludes monitor/server_info, /mcp rejects 2025-11-25, and /mcp/gemini isolates stateless instructions", async () => {
   const info = buildServerInfoResult({
     serverName: serverMetadata.name,
-    serverVersion: "3.0.0-beta.222",
+    serverVersion: "3.0.0-beta.223",
     base: "https://example.workers.dev",
     oauth: {},
     daemon: { connected: true, count: 1, tool_count: 5, tools: ["read_file", "server_info", "render_job_monitor", "write_file"] },
@@ -871,12 +872,14 @@ test("Managed job worktree preflight/finally cleanup, read-only CLI verify/pair,
     execFileSync(git, ["add", "."], { cwd: gitWs, encoding: "utf8" });
     execFileSync(git, ["commit", "-m", "init"], { cwd: gitWs, encoding: "utf8" });
 
-    const manager = new ManagedJobManager({
+    const runnerSpawnProcess = managedJobTestRunnerForCoordinatorRoot(join(tmp, "resource-coordinator"));
+    const manager = createManagedJobTestManager({
       jobRoot: join(tmp, "jobs"),
       workspace: join(gitWs, "sub"),
       policy: { profile: "full", origin: "explicit", allowWrite: true, execMode: "shell", minimalEnv: false, unrestrictedPaths: true, exposeAbsolutePaths: true },
       authorizeTool() {},
       recover: false,
+      runnerSpawnProcess,
     });
     const job = manager.start({
       name: "failing-worktree-cleanup",
@@ -884,12 +887,7 @@ test("Managed job worktree preflight/finally cleanup, read-only CLI verify/pair,
       steps: [{ name: "fail", argv: [process.execPath, "-e", "process.exit(2)"] }],
       finally_steps: [{ name: "fin", argv: [process.execPath, "-e", "console.log(process.cwd())"] }],
     });
-    let st = manager.read({ job_id: job.job_id });
-    const deadline = Date.now() + 20_000;
-    while ((st.status === "queued" || st.status === "running" || st.status === "cleaning") && Date.now() < deadline) {
-      await new Promise((r) => { setTimeout(r, 50); });
-      st = manager.read({ job_id: job.job_id });
-    }
+    const st = await waitForJob(manager, job.job_id, new Set(["failed"]), 60_000);
     assert.equal(st.status, "failed");
     assert.equal(st.result.finally_steps[0].code, 0);
     assert.match(String(st.result.finally_steps[0].stdout), /worktree[\\/]sub/);
@@ -915,34 +913,30 @@ test("Managed job worktree preflight/finally cleanup, read-only CLI verify/pair,
         assert.equal(existsSync(wtDir), true);
         const pidFile = JSON.parse(readFileSync(join(recJobDir, "runner.pid"), "utf8"));
         try { process.kill(pidFile.pid, "SIGKILL"); } catch {}
-        const exitDeadline = Date.now() + 5_000;
-        while (Date.now() < exitDeadline) {
-          let alive = true;
-          try { process.kill(pidFile.pid, 0); } catch { alive = false; }
-          if (!alive) break;
-          await new Promise((r) => { setTimeout(r, 25); });
-        }
+        await waitForPidExit(pidFile.pid, 10_000);
         const statusPath = join(recJobDir, "status.json");
         const stale = JSON.parse(readFileSync(statusPath, "utf8"));
         stale.updated_at = new Date(Date.now() - 60_000).toISOString();
         writeFileSync(statusPath, `${JSON.stringify(stale, null, 2)}\n`, { mode: 0o600 });
         if (deleteBeforeRecover) {
-          rmSync(wtDir, { recursive: true, force: true });
+          await terminateManagedJobActiveChild(join(recJobDir, "active-child.json"));
+          rmSync(wtDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
         }
-        const recoveryMgr = new ManagedJobManager({
+        const recoveryMgr = createManagedJobTestManager({
           jobRoot: join(tmp, "jobs"),
           workspace: join(gitWs, "sub"),
           policy: { profile: "full", origin: "explicit", allowWrite: true, execMode: "shell", minimalEnv: false, unrestrictedPaths: true, exposeAbsolutePaths: true },
           authorizeTool() {},
           recover: true,
+          runnerSpawnProcess,
         });
         recoveryManagers.push(recoveryMgr);
-        let recState = recoveryMgr.read({ job_id: recJob.job_id });
-        const recDeadline = Date.now() + 20_000;
-        while ((recState.status === "queued" || recState.status === "running" || recState.status === "interrupted" || recState.status === "cleaning") && Date.now() < recDeadline) {
-          await new Promise((r) => { setTimeout(r, 50); });
-          recState = recoveryMgr.read({ job_id: recJob.job_id });
-        }
+        const recState = await waitForJob(
+          recoveryMgr,
+          recJob.job_id,
+          new Set([deleteBeforeRecover ? "recovery_failed" : "recovered"]),
+          60_000,
+        );
         if (deleteBeforeRecover) {
           assert.equal(recState.status, "recovery_failed");
           assert.equal(existsSync(join(gitWs, "sub", "rec-marker.txt")), false);
@@ -1042,6 +1036,6 @@ test("Managed job worktree preflight/finally cleanup, read-only CLI verify/pair,
     assert.equal(budgetedObs.capture.screenshot, true);
     assert.equal(budgetedObs.set_of_marks, undefined);
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });

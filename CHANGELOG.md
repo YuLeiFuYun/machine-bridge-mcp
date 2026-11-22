@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0-beta.222 - 2026-11-21
+## 3.0.0-beta.223 - 2026-11-22
 
 - Refactor `src/local/` and `src/worker/` into focused domain submodules (`src/local/{agent,automation,cli,core,deploy,files,git,jobs,process,runtime,state,transport}`, `src/worker/{daemon,mcp,oauth,room}`), expand `@ts-check` coverage, and split large automation/runtime/job modules into single-purpose units.
 - Add `browser_network_log` (bounded 200-entry CDP ring buffer with credential/header redaction and 10 s command timeout), per-caller `tab_owner` / `owned_by_caller` tracking, `computer_observe` `include_marks` Set-of-Marks and `unlabeled_interactive_count` DOM telemetry, plus standalone `verify` and `pair` CLI commands.
