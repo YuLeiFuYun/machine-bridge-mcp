@@ -14,7 +14,7 @@ import {
   publishCurrentNpmPackage,
   runNpmPublicationProcess,
 } from "../scripts/publish-npm.mjs";
-import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "../scripts/source-dependency-tree.mjs";
+import { sourceDependencyTreeInstallArguments, sourceDependencyTreeInstallTimeoutMs } from "../scripts/lib/verification.mjs";
 
 expectThrow(() => assertNpmPublicationAuthorized({ argv: ["prerelease"] }), "explicit owner authorization");
 assert(

@@ -1,6 +1,6 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 
 const MAX_PACKAGE_MANIFEST_BYTES = 2 * 1024 * 1024;
 

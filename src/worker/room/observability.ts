@@ -1,0 +1,214 @@
+import { isSensitiveLogFieldName, sanitizePortableLogText } from "../../shared/log-redaction.mjs";
+
+const MAX_ERROR_CODES = 64;
+
+const MAX_TOOLS = 128;
+
+export type DaemonTerminalResultDisposition =
+  | "committed"
+  | "owner_missing_acknowledged"
+  | "stale_connection_rejected";
+
+export class WorkerObservability {
+  private readonly startedAt = performance.now();
+  private readonly requests = { total: 0, successful: 0, client_error: 0, server_error: 0 };
+  private readonly calls = { started: 0, completed: 0, failed: 0, cancelled: 0, timed_out: 0 };
+  private readonly terminalResults = {
+    committed: 0, owner_missing_acknowledged: 0, stale_connection_rejected: 0,
+  };
+  private readonly sockets = { candidates: 0, authenticated: 0, ready: 0, disconnected: 0, protocol_errors: 0 };
+  private readonly continuity = { planned_drains: 0, planned_drain_calls: 0, last_planned_drain_at: null as string | null, last_socket_disconnect_at: null as string | null };
+  private readonly oauthRefresh = { rotated: 0, retry_issued: 0, retry_exhausted: 0, family_revoked: 0, rejected: 0 };
+  private readonly runtimeAlarm = { sets: 0, deletes: 0, noops: 0 };
+  private readonly errors = new Map<string, number>();
+  private readonly tools = new Map<string, { started: number; completed: number; failed: number; active: number }>();
+
+  requestFinished(status: number): void {
+    this.requests.total += 1;
+    if (status >= 500) this.requests.server_error += 1;
+    else if (status >= 400) this.requests.client_error += 1;
+    else this.requests.successful += 1;
+  }
+
+  callStarted(tool: string): void {
+    this.calls.started += 1;
+    const metric = this.toolMetric(tool);
+    metric.started += 1;
+    metric.active += 1;
+  }
+
+  callFinished(tool: string, code = ""): void {
+    const metric = this.toolMetric(tool);
+    metric.active = Math.max(0, metric.active - 1);
+    if (!code) {
+      this.calls.completed += 1;
+      metric.completed += 1;
+      return;
+    }
+    this.calls.failed += 1;
+    metric.failed += 1;
+    if (code === "cancelled") this.calls.cancelled += 1;
+    if (code === "timeout") this.calls.timed_out += 1;
+    this.incrementError(code);
+  }
+
+  daemonTerminalResult(disposition: DaemonTerminalResultDisposition): void {
+    this.terminalResults[disposition] += 1;
+  }
+  recordError(code: string): void { this.incrementError(code); }
+
+  socketCandidate(): void { this.sockets.candidates += 1; }
+  socketAuthenticated(): void { this.sockets.authenticated += 1; }
+  socketReady(): void { this.sockets.ready += 1; }
+  socketDisconnected(): void { this.sockets.disconnected += 1; this.continuity.last_socket_disconnect_at = new Date().toISOString(); }
+  daemonPlannedDrain(calls: number): void {
+    this.continuity.planned_drains += 1;
+    this.continuity.planned_drain_calls += Math.max(0, Math.floor(Number(calls) || 0));
+    this.continuity.last_planned_drain_at = new Date().toISOString();
+  }
+  socketProtocolError(code: string): void {
+    this.sockets.protocol_errors += 1;
+    this.incrementError(code || "protocol_error");
+  }
+
+  oauthRefreshEvent(event: "rotated" | "retry_issued" | "retry_exhausted" | "family_revoked" | "rejected"): void {
+    this.oauthRefresh[event] += 1;
+  }
+
+  runtimeAlarmMutation(action: "set" | "delete" | "noop"): void {
+    if (action === "set") this.runtimeAlarm.sets += 1;
+    else if (action === "delete") this.runtimeAlarm.deletes += 1;
+    else this.runtimeAlarm.noops += 1;
+  }
+
+  snapshot(): Record<string, unknown> {
+    return {
+      uptime_ms: Math.max(0, performance.now() - this.startedAt),
+      metric_scope: {
+        lifecycle: "current_worker_isolate",
+        request_scoped_calls: true,
+        counters_may_not_balance_across_isolate_restarts: true,
+      },
+      requests: { ...this.requests },
+      calls: { ...this.calls },
+      terminal_results: { ...this.terminalResults },
+      sockets: { ...this.sockets },
+      continuity: { ...this.continuity },
+      oauth_refresh: { ...this.oauthRefresh },
+      runtime_alarm: { ...this.runtimeAlarm },
+      errors: Object.fromEntries([...this.errors.entries()].sort(([left], [right]) => left.localeCompare(right))),
+      tools: Object.fromEntries([...this.tools.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, metric]) => [name, { ...metric }])),
+    };
+  }
+
+  event(level: "info" | "warn" | "error", event: string, fields: Record<string, unknown> = {}): void {
+    const entry = {
+      ...sanitizeFields(fields),
+      timestamp: new Date().toISOString(),
+      level,
+      component: "worker",
+      event: sanitizeName(event),
+    };
+    const text = JSON.stringify(entry);
+    if (level === "error") console.error(text);
+    else if (level === "warn") console.warn(text);
+    else console.log(text);
+  }
+
+  private toolMetric(tool: string): { started: number; completed: number; failed: number; active: number } {
+    let name = sanitizeName(tool) || "unknown";
+    if (!this.tools.has(name) && this.tools.size >= MAX_TOOLS - 1) name = "other";
+    if (!this.tools.has(name)) this.tools.set(name, { started: 0, completed: 0, failed: 0, active: 0 });
+    return this.tools.get(name)!;
+  }
+
+  private incrementError(code: string): void {
+    let key = sanitizeName(code) || "execution_failed";
+    if (!this.errors.has(key) && this.errors.size >= MAX_ERROR_CODES - 1) key = "other";
+    this.errors.set(key, (this.errors.get(key) ?? 0) + 1);
+  }
+}
+
+function sanitizeName(value: unknown): string {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9._-]/g, "_").slice(0, 128);
+}
+
+function sanitizeFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(fields).slice(0, 32)) {
+    const safeKey = sanitizeName(key);
+    if (!safeKey) continue;
+    if (isSensitiveLogFieldName(key)) {
+      out[safeKey] = "<redacted>";
+      continue;
+    }
+    if (typeof value === "boolean" || typeof value === "number" || value === null) out[safeKey] = value;
+    else if (typeof value === "string") out[safeKey] = sanitizePortableLogText(value, { maxChars: 256 });
+  }
+  return out;
+}
+type EdgeLogLevel = "warn" | "error";
+
+type EdgeLogWriter = (level: EdgeLogLevel, text: string) => void;
+
+export function createThrottledEdgeLogger(options: {
+  intervalMs?: number;
+  monotonicNow?: () => number;
+  wallNow?: () => number;
+  write?: EdgeLogWriter;
+} = {}): (level: EdgeLogLevel, event: string, fields?: Record<string, unknown>) => boolean {
+  const intervalMs = positiveInterval(options.intervalMs, 60_000);
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+  const wallNow = options.wallNow ?? Date.now;
+  const write = options.write ?? defaultWrite;
+  let nextAt = 0;
+  let suppressed = 0;
+  return (level, event, fields = {}) => {
+    const current = monotonicNow();
+    if (current < nextAt) {
+      suppressed += 1;
+      return false;
+    }
+    const entry = {
+      ...safeFields(fields),
+      ...(suppressed > 0 ? { suppressed } : {}),
+      timestamp: new Date(wallNow()).toISOString(),
+      level,
+      component: "worker-edge",
+      event: safeName(event),
+    };
+    suppressed = 0;
+    nextAt = current + intervalMs;
+    write(level, JSON.stringify(entry));
+    return true;
+  };
+}
+
+function safeFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(fields).slice(0, 16)) {
+    const name = safeName(key);
+    if (!name) continue;
+    if (isSensitiveLogFieldName(key)) {
+      out[name] = "<redacted>";
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean" || value === null) out[name] = value;
+    else if (typeof value === "string") out[name] = sanitizePortableLogText(value, { maxChars: 160 });
+  }
+  return out;
+}
+
+function safeName(value: unknown): string {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9._-]/g, "_").slice(0, 96);
+}
+
+function positiveInterval(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function defaultWrite(level: EdgeLogLevel, text: string): void {
+  if (level === "error") console.error(text);
+  else console.warn(text);
+}

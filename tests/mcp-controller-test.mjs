@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
-import { McpController } from "../src/worker/mcp-controller.ts";
-import { MCP_SERVER_CAPABILITIES } from "../src/worker/worker-mcp-config.ts";
+import { CODE_MODE_SDK_RESOURCE_URI } from "../src/shared/help-resources.mjs";
+import { MCP_2025_PROTOCOL_VERSION, McpController } from "../src/worker/mcp/controller.ts";
+import { MCP_SERVER_CAPABILITIES } from "../src/worker/room/server-info.ts";
 import {
   MAX_ACTIVE_MCP_SUBSCRIPTIONS, MAX_ACTIVE_MCP_SUBSCRIPTIONS_PER_ACCOUNT,
   MAX_OPENED_MCP_SUBSCRIPTION_ACCOUNTS, McpSubscriptionCapacity,
-} from "../src/worker/mcp-subscription-capacity.ts";
-import { McpSubscriptionRegistry } from "../src/worker/mcp-subscription-registry.ts";
-import { McpRequestCancellationRegistry } from "../src/worker/mcp-request-cancellation.ts";
-import { removedProtocolResponse } from "../src/worker/mcp-removed-protocol.ts";
+} from "../src/worker/mcp/subscriptions.ts";
+import { McpSubscriptionRegistry } from "../src/worker/mcp/subscriptions.ts";
+import { McpRequestCancellationRegistry } from "../src/worker/mcp/request-cancellation.ts";
+import { removedProtocolResponse } from "../src/worker/mcp/http-contract.ts";
 import { MCP_PROTOCOL_VERSION, serverImplementation } from "../src/shared/mcp-protocol.mjs";
-import { MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER } from "../src/worker/mcp-stream-proxy-contract.ts";
-import { JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID } from "../src/worker/mcp-job-monitor-ui.ts";
-import { serverInfoTool, workspaceTools } from "../src/worker/tool-catalog.ts";
-import { WorkerToolError } from "../src/worker/errors.ts";
+import { MCP_STREAM_PROXY_ID_HEADER, MCP_STREAM_PROXY_MODE_HEADER } from "../src/worker/mcp/response-proxy.ts";
+import { JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID } from "../src/worker/mcp/job-monitor.ts";
+import { serverInfoTool, workspaceTools } from "../src/worker/mcp/tool-catalog.ts";
+import { WorkerToolError } from "../src/worker/room/errors.ts";
 
 const STREAM_ID = `stream_${"A".repeat(43)}`;
 const authorized = {
@@ -87,15 +88,40 @@ const controller = new McpController({
   },
 });
 
-const geminiTools = await controller.handleGeminiRequest({
-  request: new Request("https://example.test/mcp/gemini", {
+const geminiInit = await controller.handleRequest({
+  request: new Request("https://example.test/mcp", {
     method: "POST",
-    headers: { "MCP-Protocol-Version": "2025-11-25" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" }),
+    headers: { "MCP-Protocol-Version": MCP_2025_PROTOCOL_VERSION },
+    body: "{}",
   }),
+  body: {
+    jsonrpc: "2.0",
+    id: "init-2025",
+    method: "initialize",
+    params: { protocolVersion: MCP_2025_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "stateless", version: "1" } },
+  },
   base: "https://example.test",
   authorized,
-  bodyLimitBytes: 1024,
+  proxyMode: "",
+  protocolMode: MCP_2025_PROTOCOL_VERSION,
+  mcpPath: "/mcp",
+});
+assert.equal(geminiInit.status, 200);
+const geminiInitBody = await geminiInit.json();
+assert.equal(geminiInitBody.result.instructions, "Use tools.");
+
+const geminiTools = await controller.handleRequest({
+  request: new Request("https://example.test/mcp/gemini", {
+    method: "POST",
+    headers: { "MCP-Protocol-Version": MCP_2025_PROTOCOL_VERSION },
+    body: "{}",
+  }),
+  body: { jsonrpc: "2.0", id: 0, method: "tools/list" },
+  base: "https://example.test",
+  authorized,
+  proxyMode: "",
+  protocolMode: MCP_2025_PROTOCOL_VERSION,
+  mcpPath: "/mcp/gemini",
 });
 assert.equal(geminiTools.status, 200);
 const geminiResult = await geminiTools.json();
@@ -103,15 +129,18 @@ assert.equal(geminiResult.id, 0);
 assert.deepEqual(Object.keys(geminiResult.result), ["tools"]);
 assert.equal(geminiResult.result.tools[0].name, "server_info");
 
-const geminiCall = await controller.handleGeminiRequest({
+const geminiCall = await controller.handleRequest({
   request: new Request("https://example.test/mcp/gemini", {
     method: "POST",
-    headers: { "MCP-Protocol-Version": "2025-11-25" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } } }),
+    headers: { "MCP-Protocol-Version": MCP_2025_PROTOCOL_VERSION },
+    body: "{}",
   }),
+  body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_info", arguments: { detail: "summary" } } },
   base: "https://example.test",
   authorized,
-  bodyLimitBytes: 1024,
+  proxyMode: "",
+  protocolMode: MCP_2025_PROTOCOL_VERSION,
+  mcpPath: "/mcp/gemini",
 });
 assert.equal(geminiCall.status, 200);
 assert.equal(calls.at(-1)?.name, "server_info");
@@ -141,9 +170,12 @@ assert.equal(cancellations.length, 2);
 assert.equal(cancellations[0], undefined);
 assert.match(cancellations[1], /^stream:stream_/);
 
-const notification = await handle({ jsonrpc: "2.0", method: "tools/list", params: {} });
-assert.equal(notification.status, 404);
-assert.equal((await notification.json()).error.code, -32601);
+const notification = await handle({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+assert.equal(notification.status, 202);
+assert.equal(await notification.text(), "");
+const idlessRequest = await handle({ jsonrpc: "2.0", method: "tools/list", params: {} });
+assert.equal(idlessRequest.status, 400);
+assert.equal((await idlessRequest.json()).error.code, -32600);
 const nullId = await handle(request("tools/list", {}, null));
 assert.equal(nullId.status, 400);
 assert.equal((await nullId.json()).error.code, -32600);
@@ -181,9 +213,9 @@ const missingResourceText = await missingResource.text();
 assert.equal(JSON.parse(missingResourceText).error.code, -32602);
 assert(!missingResourceText.includes("owned-private-") && Buffer.byteLength(missingResourceText) < 1024,
   "unknown resource error reflected private input or grew with its URI");
-const removed = await handle(request("initialize", {}));
-assert.equal(removed.status, 404);
-assert.equal((await removed.json()).error.code, -32601);
+const unknownMethod = await handle(request("private/unknown", {}));
+assert.equal(unknownMethod.status, 200);
+assert.equal((await unknownMethod.json()).error.code, -32601);
 
 const missingName = await jsonResult(await handle(request("tools/call", { arguments: {} }), { accept: "application/json" }));
 assert.equal(missingName.error.code, -32602);
@@ -274,12 +306,13 @@ assert.equal(staleReadPollSchema.result.structuredContent.error.code, "invalid_r
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.side_effects_started, false);
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
 assert.equal(staleReadPollSchema.result.structuredContent.error.details.validation_issues[0].instancePath, "/wait_ms");
-assert(staleReadPollSchema.result.structuredContent.error.message.includes("one-second limit")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("next_blocking_poll_after_ms")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("same MCP call")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("instead of rapid retrying")
-  && staleReadPollSchema.result.structuredContent.error.message.includes("run_process/read_job")
-  && !staleReadPollSchema.result.structuredContent.error.message.includes("short polling"),
+const staleReadPollMessage = staleReadPollSchema.result.structuredContent.error.message;
+assert(/one-second limit/.test(staleReadPollMessage)
+  && /next_blocking_poll_after_ms/.test(staleReadPollMessage)
+  && /same MCP call/.test(staleReadPollMessage)
+  && /instead of rapid retrying/.test(staleReadPollMessage)
+  && /run_process\/read_job/.test(staleReadPollMessage)
+  && !/short polling/.test(staleReadPollMessage),
 "stale read_process compatibility guidance lost server-paced follow-up limits");
 const staleReadJobSchema = await jsonResult(await handle(request("tools/call", {
   name: "read_job", arguments: { job_id: `job_${"j".repeat(24)}`, recovery_key: `mcp_jr_${"r".repeat(43)}`, wait_ms: 300000 },
@@ -289,9 +322,10 @@ assert.equal(staleReadJobSchema.result.structuredContent.error.code, "invalid_re
 assert.equal(staleReadJobSchema.result.structuredContent.error.details.side_effects_started, false);
 assert.equal(staleReadJobSchema.result.structuredContent.error.details.schema_refresh_recommended, true);
 assert.equal(staleReadJobSchema.result.structuredContent.error.details.validation_issues[0].instancePath, "/wait_ms");
-assert(staleReadJobSchema.result.structuredContent.error.message.includes("refresh tools/list")
-  && staleReadJobSchema.result.structuredContent.error.message.includes("same durable job")
-  && staleReadJobSchema.result.structuredContent.error.message.includes("server-paced read_job"),
+const staleReadJobMessage = staleReadJobSchema.result.structuredContent.error.message;
+assert(/refresh tools\/list/.test(staleReadJobMessage)
+  && /same durable job/.test(staleReadJobMessage)
+  && /server-paced read_job/.test(staleReadJobMessage),
 "stale read_job compatibility guidance lost refresh/continuation semantics");
 const malformedReadPoll = await jsonResult(await handle(request("tools/call", {
   name: "read_process", arguments: { session_id: "proc_synthetic", wait_ms: "5000" },
@@ -534,6 +568,61 @@ const brokenText = await broken.text();
 assert(brokenText.includes('"code":-32603'));
 assert(!brokenText.includes("private dispatcher failure"));
 assert(errors.includes("mcp_stream_dispatch_failed"));
+
+// notifications/cancelled aborts an in-flight tools/call for the same account/client/requestId.
+{
+  let observedAbort = false;
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const cancellableController = new McpController({
+    capabilities: MCP_SERVER_CAPABILITIES, serverInfo, instructions: "Use tools.",
+    supportedVersions: [MCP_PROTOCOL_VERSION], discoveryTtlMs: 0, toolListTtlMs: 0,
+    tools: () => [serverInfoTool, ...workspaceTools],
+    recordError: () => {}, cancelClientRequest: async () => {},
+    callTool: async (callInput) => {
+      markStarted();
+      await new Promise((resolve) => {
+        if (callInput.signal.aborted) { observedAbort = true; resolve(); return; }
+        callInput.signal.addEventListener("abort", () => { observedAbort = true; resolve(); }, { once: true });
+      });
+      return { ok: true };
+    },
+  });
+  const inflight = cancellableController.handleRequest({
+    ...input(request("tools/call", { name: "server_info", arguments: { detail: "summary" } }, "cancel-me")),
+  });
+  await started;
+  const cancelRes = await cancellableController.handleRequest({
+    ...input({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: "cancel-me" } }),
+  });
+  assert.equal(cancelRes.status, 202);
+  await inflight;
+  assert.equal(observedAbort, true, "notifications/cancelled did not abort an in-flight tools/call");
+}
+
+// Role-filtered Code Mode SDK declaration resource returns cacheScope: "private" with concrete output types.
+{
+  const roleAwareController = new McpController({
+    capabilities: MCP_SERVER_CAPABILITIES, serverInfo, instructions: "Use tools.",
+    supportedVersions: [MCP_PROTOCOL_VERSION], discoveryTtlMs: 0, toolListTtlMs: 0,
+    tools: (currentAuthorized) => currentAuthorized.role === "reviewer"
+      ? [serverInfoTool, workspaceTools.find((t) => t.name === "read_file")].filter(Boolean)
+      : [serverInfoTool, ...workspaceTools],
+    recordError: () => {}, cancelClientRequest: async () => {}, callTool: async () => ({}),
+  });
+  const reviewerSdk = await jsonResult(await roleAwareController.handleRequest({
+    request: new Request("https://example.test/mcp", { method: "POST", headers: { accept: "application/json" }, body: "{}" }),
+    body: request("resources/read", { uri: CODE_MODE_SDK_RESOURCE_URI }),
+    base: "https://example.test",
+    authorized: { ...authorized, role: "reviewer" },
+    proxyMode: "",
+  }));
+  assert.equal(reviewerSdk.result.cacheScope, "private");
+  const sdkText = String(reviewerSdk.result.contents?.[0]?.text || "");
+  assert(sdkText.includes("function server_info(") && sdkText.includes("function read_file("));
+  assert(!sdkText.includes("function write_file("), "reviewer SDK leaked unpermitted write_file signature");
+  assert(sdkText.includes("Promise<{ name: string;"), "SDK resource did not project concrete outputSchema return type");
+}
 
 console.log("MCP controller test ok");
 

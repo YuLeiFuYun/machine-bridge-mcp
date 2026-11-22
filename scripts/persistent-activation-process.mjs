@@ -1,7 +1,7 @@
 import { normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
-import { EXECUTION_SURFACE, executionSurface } from "../src/local/execution-surface.mjs";
-import { runCf as defaultRunCf } from "../src/local/shell.mjs";
-import { ensureCfAuthenticated } from "../src/local/cf-authentication.mjs";
+import { EXECUTION_SURFACE, executionSurface } from "../src/local/core/authority.mjs";
+import { runCf as defaultRunCf } from "../src/local/deploy/shell.mjs";
+import { ensureCfAuthenticated } from "../src/local/deploy/cf-project.mjs";
 
 export function assertPersistentActivationExecutionSurface(environment = process.env) {
   const surface = executionSurface(environment);

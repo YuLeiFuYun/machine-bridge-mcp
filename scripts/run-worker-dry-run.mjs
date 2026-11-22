@@ -1,9 +1,9 @@
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { withCfProject } from "../src/local/cf-project.mjs";
-import { workerDeploymentSourceSnapshot } from "../src/local/worker-deployment-fingerprint.mjs";
-import { runCf } from "../src/local/shell.mjs";
+import { withCfProject } from "../src/local/deploy/cf-project.mjs";
+import { workerDeploymentSourceSnapshot } from "../src/local/deploy/worker-deployment.mjs";
+import { runCf } from "../src/local/deploy/shell.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export async function runWorkerDryRun(options = {}) {

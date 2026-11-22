@@ -32,6 +32,7 @@ const SCOPE = "machine-bridge-mcp offline_access";
 testEntrypointRejectsUnrecordedOverrides();
 testEntrypointRejectsNodeStartupOptions();
 await testSuccessfulFlowAndCleanup();
+await testGeminiFlowAndCleanup();
 await testCanaryRequiresExistingOwner();
 await testStaleSyntheticStateIsReclaimed();
 await testSyntheticNameCollisionFailsClosed();
@@ -82,29 +83,39 @@ async function testSuccessfulFlowAndCleanup() {
       const path = new URL(url).pathname;
       assert.equal(init.redirect, path === "/oauth/authorize" ? "manual" : "error",
         `release canary used the wrong redirect policy for ${path}`);
-      if (path === "/oauth/register") return json({ client_id: CLIENT_ID }, 201);
-      if (path === "/oauth/authorize") {
-        const body = new URLSearchParams(init.body);
-        const location = new URL(RELEASE_OAUTH_CANARY_CALLBACK);
-        location.searchParams.set("code", CODE);
-        location.searchParams.set("state", body.get("state"));
-        location.searchParams.set("iss", ORIGIN);
-        return new Response(null, { status: 303, headers: { location: String(location) } });
+      if (path === "/oauth/authorize" && init.method === "GET") {
+        return new Response("<html><form></form></html>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "content-security-policy": "default-src 'none'; form-action 'self'",
+          },
+        });
       }
-      if (path === "/oauth/token") {
+      if (path === "/oauth/authorize" && init.headers?.["sec-fetch-mode"] === "navigate") {
+        assert.equal(init.headers["sec-fetch-site"], "same-origin");
+        assert.match(String(init.headers?.accept || ""), /text\/html/i);
+        assert.equal(init.headers.origin, ORIGIN);
         const body = new URLSearchParams(init.body);
-        if (body.get("grant_type") === "authorization_code") {
-          assert.equal(body.get("code_verifier")?.length, 43);
-          return json({ access_token: ACCESS, refresh_token: REFRESH, token_type: "Bearer", scope: SCOPE });
-        }
-        assert.equal(body.get("refresh_token"), REFRESH);
-        return json({ access_token: NEXT_ACCESS, refresh_token: NEXT_REFRESH, token_type: "Bearer", scope: SCOPE });
+        const location = `${RELEASE_OAUTH_CANARY_CALLBACK}?code=${CODE}&state=${body.get("state")}&iss=${encodeURIComponent(ORIGIN)}`;
+        const escaped = location.replace(/&/g, "&amp;");
+        return new Response(`<!doctype html><html><head><meta http-equiv="refresh" content="0;url=${escaped}"></head></html>`, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
       }
       if (path === "/mcp") {
         assert.match(String(init.headers.authorization), /^Bearer mcp_at_/);
-        return json({ jsonrpc: "2.0", id: JSON.parse(init.body).id, result: { structuredContent: { version: VERSION } } });
+        const parsed = JSON.parse(init.body);
+        if (parsed.method === "notifications/cancelled") {
+          assert.equal(init.headers["MCP-Protocol-Version"], "2026-07-28");
+          assert.equal(init.headers["Mcp-Method"], "notifications/cancelled");
+          assert.equal(parsed.params?._meta?.["io.modelcontextprotocol/protocolVersion"], "2026-07-28");
+          return new Response(null, { status: 202 });
+        }
+        return json({ jsonrpc: "2.0", id: parsed.id, result: { structuredContent: { version: VERSION } } });
       }
-      throw new Error(`unexpected canary request path: ${path}`);
+      return successfulFetch(url, init);
     },
   });
   assert.deepEqual(result, {
@@ -118,7 +129,29 @@ async function testSuccessfulFlowAndCleanup() {
   assert.deepEqual(admin.removedClients, [CLIENT_ID]);
   assert.deepEqual(admin.removedAccounts, [ACCOUNT_ID]);
   assert.equal(requests.filter(({ url }) => url.endsWith("/oauth/token")).length, 2);
-  assert.equal(requests.filter(({ url }) => url.endsWith("/mcp")).length, 2);
+  assert.equal(requests.filter(({ url }) => url.endsWith("/mcp")).length, 3);
+}
+
+async function testGeminiFlowAndCleanup() {
+  const admin = fakeAdmin();
+  const requests = [];
+  const result = await runReleaseOAuthCanaryFlow({
+    admin,
+    workerUrl: ORIGIN,
+    packageName: "machine-bridge-mcp",
+    packageVersion: VERSION,
+    randomBytesImpl: deterministicRandomBytes,
+    gemini: true,
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), init });
+      return successfulFetch(url, init);
+    },
+  });
+  assert.equal(result.workerVersion, VERSION);
+  assert.equal(result.refreshedMcp, true);
+  assert.equal(requests.filter(({ url }) => url.endsWith("/mcp/gemini")).length, 5);
+  assert.deepEqual(admin.removedClients, [CLIENT_ID]);
+  assert.deepEqual(admin.removedAccounts, [ACCOUNT_ID]);
 }
 
 async function testCanaryRequiresExistingOwner() {
@@ -190,14 +223,7 @@ async function testFailureStillCleansTemporaryState() {
     randomBytesImpl: deterministicRandomBytes,
     fetchImpl: async (url, init) => {
       const path = new URL(url).pathname;
-      if (path === "/oauth/register") return json({ client_id: CLIENT_ID }, 201);
-      if (path === "/oauth/authorize") {
-        const body = new URLSearchParams(init.body);
-        return new Response(null, {
-          status: 303,
-          headers: { location: `${RELEASE_OAUTH_CANARY_CALLBACK}?code=${CODE}&state=${body.get("state")}&iss=${encodeURIComponent(ORIGIN)}` },
-        });
-      }
+      if (path === "/oauth/register" || path === "/oauth/authorize") return successfulFetch(url, init);
       if (path === "/oauth/token") return json({ error: "server_error" }, 500);
       throw new Error(`unexpected request after failed token exchange: ${path}`);
     },
@@ -289,11 +315,25 @@ async function successfulFetch(url, init) {
   const path = new URL(url).pathname;
   if (path === "/oauth/register") return json({ client_id: CLIENT_ID }, 201);
   if (path === "/oauth/authorize") {
+    if (init.method === "GET") {
+      return new Response("<html><form></form></html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "default-src 'none'; form-action 'self'",
+        },
+      });
+    }
     const body = new URLSearchParams(init.body);
-    return new Response(null, {
-      status: 303,
-      headers: { location: `${RELEASE_OAUTH_CANARY_CALLBACK}?code=${CODE}&state=${body.get("state")}&iss=${encodeURIComponent(ORIGIN)}` },
-    });
+    const location = `${RELEASE_OAUTH_CANARY_CALLBACK}?code=${CODE}&state=${body.get("state")}&iss=${encodeURIComponent(ORIGIN)}`;
+    if (init.headers?.["sec-fetch-mode"] === "navigate") {
+      const escaped = location.replace(/&/g, "&amp;");
+      return new Response(`<!doctype html><html><head><meta http-equiv="refresh" content="0;url=${escaped}"></head></html>`, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+    return new Response(null, { status: 303, headers: { location } });
   }
   if (path === "/oauth/token") {
     const body = new URLSearchParams(init.body);
@@ -301,7 +341,24 @@ async function successfulFetch(url, init) {
       ? json({ access_token: ACCESS, refresh_token: REFRESH, token_type: "Bearer", scope: SCOPE })
       : json({ access_token: NEXT_ACCESS, refresh_token: NEXT_REFRESH, token_type: "Bearer", scope: SCOPE });
   }
-  if (path === "/mcp") return json({ jsonrpc: "2.0", id: JSON.parse(init.body).id, result: { structuredContent: { version: VERSION } } });
+  if (path === "/mcp") {
+    const parsed = JSON.parse(init.body);
+    if (parsed.method === "notifications/cancelled") return new Response(null, { status: 202 });
+    return json({ jsonrpc: "2.0", id: parsed.id, result: { structuredContent: { version: VERSION } } });
+  }
+  if (path === "/mcp/gemini") {
+    const parsed = JSON.parse(init.body);
+    if (parsed.method === "initialize") {
+      return json({ jsonrpc: "2.0", id: parsed.id, result: { protocolVersion: "2025-11-25", capabilities: {} } });
+    }
+    if (parsed.method === "notifications/initialized") return new Response(null, { status: 202 });
+    if (parsed.method === "tools/list") {
+      return json({ jsonrpc: "2.0", id: parsed.id, result: { tools: [{ name: "server_info" }] } });
+    }
+    if (parsed.method === "tools/call") {
+      return json({ jsonrpc: "2.0", id: parsed.id, result: { structuredContent: { version: VERSION } } });
+    }
+  }
   throw new Error(`unexpected canary request path: ${path}`);
 }
 

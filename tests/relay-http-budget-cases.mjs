@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
 import { DAEMON_HTTP_RELAY_TTL_SECONDS } from "../src/shared/daemon-auth.mjs";
-import { DaemonHttpRegistry } from "../src/worker/daemon-http-registry.ts";
-import { scheduleRuntimeAlarm, processRuntimeAlarm } from "../src/worker/runtime-alarm.ts";
-import { consumeBoundedNonce } from "../src/worker/nonce-store.ts";
+import { DaemonHttpRegistry } from "../src/worker/daemon/http-channel.ts";
+import { scheduleRuntimeAlarm, processRuntimeAlarm } from "../src/worker/room/runtime-alarm.ts";
+import { consumeBoundedNonce } from "../src/worker/oauth/dpop.ts";
 
 // Executes the production idle HTTP registry, nonce store and alarm scheduler.
 // Counts API mutations, not provider billable rows or a whole-account budget.

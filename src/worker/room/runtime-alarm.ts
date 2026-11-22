@@ -1,0 +1,176 @@
+import { DAEMON_HELLO_TIMEOUT_MS, daemonLivenessDeadlineMs, daemonReadyDeadlineMs } from "../daemon/liveness.ts";
+import type { DaemonChannel } from "../daemon/channel.ts";
+import type { DaemonRegistry } from "../daemon/registry.ts";
+import type { PendingCallRegistry } from "./pending-calls.ts";
+
+type InvalidateDaemonSocket = (
+  socket: WebSocket,
+  message: string,
+  closeReason: string,
+  errorCode?: string,
+) => Promise<void>;
+
+interface RuntimeAlarmContext {
+  storage: AlarmStorage;
+  pending: PendingCallRegistry;
+  daemonRegistry: DaemonRegistry;
+  invalidateDaemonSocket: InvalidateDaemonSocket;
+  invalidateDaemonChannel: (channel: DaemonChannel, message: string, errorCode?: string) => Promise<void>;
+  onScheduleError: (error: unknown) => void;
+  onAlarmMutation?: (action: "set" | "delete" | "noop") => void;
+}
+
+export async function processRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
+  await context.pending.expireDue();
+  let nextDeadline = Number.POSITIVE_INFINITY;
+  for (const socket of context.daemonRegistry.candidateSockets()) {
+    const attachment = context.daemonRegistry.attachment(socket);
+    const connectedAt = Date.parse(attachment?.connectedAt ?? "");
+    const deadline = connectedAt + DAEMON_HELLO_TIMEOUT_MS;
+    if (!Number.isFinite(connectedAt) || deadline <= now) {
+      await context.invalidateDaemonSocket(
+        socket,
+        "daemon did not complete authentication",
+        "daemon hello timeout",
+        "daemon_hello_timeout",
+      );
+      continue;
+    }
+    nextDeadline = Math.min(nextDeadline, deadline);
+  }
+  for (const socket of context.daemonRegistry.probingSockets()) {
+    const attachment = context.daemonRegistry.attachment(socket);
+    const readyDeadline = daemonReadyDeadlineMs(attachment);
+    const liveDeadline = daemonLivenessDeadlineMs(attachment);
+    if (!Number.isFinite(readyDeadline) || !Number.isFinite(liveDeadline) || Math.min(readyDeadline, liveDeadline) <= now) {
+      await context.invalidateDaemonSocket(
+        socket,
+        "daemon did not complete end-to-end readiness verification",
+        "daemon ready timeout",
+        "daemon_ready_timeout",
+      );
+      continue;
+    }
+    nextDeadline = Math.min(nextDeadline, readyDeadline, liveDeadline);
+  }
+  for (const socket of context.daemonRegistry.readyRoleSockets()) {
+    const deadline = daemonLivenessDeadlineMs(context.daemonRegistry.readyAttachment(socket));
+    if (!Number.isFinite(deadline) || deadline <= now) {
+      await context.invalidateDaemonSocket(socket, "daemon became unresponsive", "daemon liveness timeout");
+      continue;
+    }
+    nextDeadline = Math.min(nextDeadline, deadline);
+  }
+  if (context.daemonRegistry.http) {
+    context.daemonRegistry.httpCandidates(now);
+    for (const channel of context.daemonRegistry.http.staleOwned(now)) {
+      await context.invalidateDaemonChannel(channel, "HTTPS fallback became unresponsive", "daemon_liveness_timeout");
+    }
+    nextDeadline = Math.min(nextDeadline, context.daemonRegistry.http.nextDeadline(now));
+  }
+  nextDeadline = Math.min(nextDeadline, pendingAlarmDeadline(context, now));
+  await writeEarliestRuntimeAlarm({
+    storage: context.storage,
+    nextDeadline,
+    now,
+    onError: context.onScheduleError,
+    onMutation: context.onAlarmMutation,
+  });
+}
+
+export async function scheduleRuntimeAlarm(context: RuntimeAlarmContext, now = Date.now()): Promise<void> {
+  try {
+    let nextDeadline = Number.POSITIVE_INFINITY;
+    for (const socket of context.daemonRegistry.candidateSockets()) {
+      const connectedAt = Date.parse(context.daemonRegistry.attachment(socket)?.connectedAt ?? "");
+      if (!Number.isFinite(connectedAt)) {
+        await context.invalidateDaemonSocket(
+          socket,
+          "daemon candidate timestamp is invalid",
+          "invalid daemon candidate timestamp",
+          "daemon_hello_timeout",
+        );
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, connectedAt + DAEMON_HELLO_TIMEOUT_MS);
+    }
+    for (const socket of context.daemonRegistry.probingSockets()) {
+      const attachment = context.daemonRegistry.attachment(socket);
+      const readyDeadline = daemonReadyDeadlineMs(attachment);
+      const liveDeadline = daemonLivenessDeadlineMs(attachment);
+      if (!Number.isFinite(readyDeadline) || !Number.isFinite(liveDeadline)) {
+        await context.invalidateDaemonSocket(
+          socket,
+          "daemon readiness state is invalid",
+          "daemon ready timeout",
+          "daemon_ready_timeout",
+        );
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, readyDeadline, liveDeadline);
+    }
+    for (const socket of context.daemonRegistry.readyRoleSockets()) {
+      const deadline = daemonLivenessDeadlineMs(context.daemonRegistry.readyAttachment(socket));
+      if (!Number.isFinite(deadline)) {
+        await context.invalidateDaemonSocket(socket, "daemon became unresponsive", "invalid daemon liveness timestamp");
+        continue;
+      }
+      nextDeadline = Math.min(nextDeadline, deadline);
+    }
+    if (context.daemonRegistry.http) {
+      context.daemonRegistry.httpCandidates(now);
+      nextDeadline = Math.min(nextDeadline, context.daemonRegistry.http.nextDeadline(now));
+    }
+    const currentAlarm = await context.storage.getAlarm();
+    nextDeadline = Math.min(nextDeadline, pendingAlarmDeadline(context, now));
+    await writeEarliestRuntimeAlarm({
+      storage: context.storage, nextDeadline, now, currentAlarm,
+      onError: context.onScheduleError, onMutation: context.onAlarmMutation,
+    });
+  } catch (error) {
+    try { context.onScheduleError(error); }
+    catch { /* The error observer must not recursively fail the Durable Object alarm callback. */ }
+  }
+}
+
+function pendingAlarmDeadline(context: RuntimeAlarmContext, now: number): number {
+  const delay = context.pending.nextDeadlineDelayMs();
+  return Number.isFinite(delay) ? now + Math.max(1, Math.ceil(delay)) : Number.POSITIVE_INFINITY;
+}
+export interface AlarmStorage {
+  getAlarm(): Promise<number | null>;
+  setAlarm(scheduledTime: number | Date): Promise<void>;
+  deleteAlarm(): Promise<void>;
+}
+
+export async function writeEarliestRuntimeAlarm(input: {
+  storage: AlarmStorage;
+  nextDeadline: number;
+  now: number;
+  onError: (error: unknown) => void;
+  onMutation?: (action: "set" | "delete" | "noop") => void;
+  currentAlarm?: number | null;
+}): Promise<void> {
+  try {
+    const current = input.currentAlarm === undefined ? await input.storage.getAlarm() : input.currentAlarm;
+    if (!Number.isFinite(input.nextDeadline)) {
+      if (current === null) {
+        input.onMutation?.("noop");
+        return;
+      }
+      await input.storage.deleteAlarm();
+      input.onMutation?.("delete");
+      return;
+    }
+    const target = Math.max(input.now, input.nextDeadline);
+    if (current !== null && current > input.now && current <= target) {
+      input.onMutation?.("noop");
+      return;
+    }
+    await input.storage.setAlarm(target);
+    input.onMutation?.("set");
+  } catch (error) {
+    try { input.onError(error); }
+    catch { /* Alarm persistence already failed; observer failure cannot repair that storage outcome. */ }
+  }
+}

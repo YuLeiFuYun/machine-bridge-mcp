@@ -1,5 +1,5 @@
-import { BoundedOutput } from "../../src/local/bounded-output.mjs";
-import { createChildProcessSettlement } from "../../src/local/child-process-settlement.mjs";
+import { BoundedOutput } from "../../src/local/files/workspace-transaction.mjs";
+import { createChildProcessSettlement } from "../../src/local/process/settlement.mjs";
 
 export function waitForFixtureExit(child, timeoutMs = 10_000) {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();

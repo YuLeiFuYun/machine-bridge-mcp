@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 import { normalizePackRecord } from "./release-acceptance.mjs";
 import { parseReleaseVersion } from "./release-channel.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { publishedPackageManifest } from "../src/shared/published-package.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";
 

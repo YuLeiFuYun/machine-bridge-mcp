@@ -1,9 +1,10 @@
 (() => {
   if (globalThis.__machineBridgeDevtoolsSession) return;
   const ATTACH_TIMEOUT_MS = 5_000;
-  const COMMAND_TIMEOUT_MS = 5_000;
+  const COMMAND_TIMEOUT_MS = 10_000;
   const DETACH_TIMEOUT_MS = 1_500;
   const tabQueues = new Map();
+  const attachGenerations = new Map();
   async function run(tabId, operation, options = {}) {
     if (!Number.isInteger(tabId) || tabId < 1) throw new Error("DevTools session requires a valid tab");
     if (typeof operation !== "function") throw new Error("DevTools session requires an operation");
@@ -13,15 +14,29 @@
       return withDebugger(tabId, operation);
     });
     tabQueues.set(tabId, current);
-    try { return await current; } finally { if (tabQueues.get(tabId) === current) tabQueues.delete(tabId); }
+    try { return await current; } finally {
+      if (tabQueues.get(tabId) === current) {
+        tabQueues.delete(tabId);
+        attachGenerations.delete(tabId);
+      }
+    }
   }
   async function withDebugger(tabId, operation) {
     const target = { tabId };
+    const generation = (attachGenerations.get(tabId) || 0) + 1;
+    attachGenerations.set(tabId, generation);
     let attached = false;
     const attach = Promise.resolve().then(() => chrome.debugger.attach(target, "1.3"));
     try {
       try { await deadline(attach, ATTACH_TIMEOUT_MS, "DevTools attach"); attached = true; }
-      catch (error) { if (error?.machineBridgeDevtoolsTimeout === true) attach.then(() => detachQuietly(target), () => {}); throw error; }
+      catch (error) {
+        if (error?.machineBridgeDevtoolsTimeout === true) {
+          attach.then(() => {
+            if (attachGenerations.get(tabId) === generation) return detachQuietly(target);
+          }, () => {});
+        }
+        throw error;
+      }
       const send = (method, params = {}) => deadline(
         Promise.resolve().then(() => chrome.debugger.sendCommand(target, method, params)), COMMAND_TIMEOUT_MS, `DevTools command ${method}`,
       );

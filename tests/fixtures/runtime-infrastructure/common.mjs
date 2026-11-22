@@ -1,4 +1,4 @@
-import { BridgeError } from "../../../src/local/errors.mjs";
+import { BridgeError } from "../../../src/local/core/errors.mjs";
 
 export const PROCESS_FIXTURE_TIMEOUT_MS = 30_000;
 

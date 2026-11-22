@@ -1,5 +1,5 @@
 // @ts-check
-import serverMetadata from "./server-metadata.json" with { type: "json" };
+import helpResourcesContent from "./help-resources-content.json" with { type: "json" };
 import toolCatalog from "./tool-catalog.json" with { type: "json" };
 import { projectToolTypeScriptDeclarations } from "./tool-groups.mjs";
 
@@ -49,16 +49,18 @@ export function helpResourceMimeType(uri) {
 
 /**
  * @param {unknown} uri
+ * @param {ReadonlyArray<Record<string, any>> | null} [toolsOverride]
  * @returns {string | null}
  */
-export function readHelpResource(uri) {
+export function readHelpResource(uri, toolsOverride = null) {
   if (typeof uri !== "string") return null;
   if (uri === CODE_MODE_SDK_RESOURCE_URI) {
+    if (Array.isArray(toolsOverride)) return projectToolTypeScriptDeclarations(toolsOverride);
     if (!cachedSdkDeclarations) cachedSdkDeclarations = projectToolTypeScriptDeclarations(toolCatalog);
     return cachedSdkDeclarations;
   }
-  const helpMap = /** @type {Record<string, string> | undefined} */ (serverMetadata.helpResources);
-  if (helpMap && Object.hasOwn(helpMap, uri)) {
+  const helpMap = /** @type {Record<string, string>} */ (helpResourcesContent);
+  if (Object.hasOwn(helpMap, uri)) {
     return helpMap[uri];
   }
   return null;

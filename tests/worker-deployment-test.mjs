@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createDeviceIdentity } from "../src/local/device-identity.mjs";
+import { createDeviceIdentity } from "../src/local/state/device-identity.mjs";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,7 +10,7 @@ import {
   extractWorkerUrl,
   workerDeploymentFingerprint,
   workerUrlMatchesName,
-} from "../src/local/worker-deployment.mjs";
+} from "../src/local/deploy/worker-deployment.mjs";
 import {
   requestWorkerHealthJson,
   retryWorkerHealth,
@@ -20,9 +20,9 @@ import {
   workerHealthRequiresRedeploy,
   workerHealthUrl,
   workerHealthUserReason,
-} from "../src/local/worker-health.mjs";
-import { proxyAgentForHttp, proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
-import { ensureWorkerSecrets, loadState, saveState } from "../src/local/state.mjs";
+} from "../src/local/transport/network-proxy.mjs";
+import { proxyAgentForHttp, proxyAgentForWebSocket } from "../src/local/transport/network-proxy.mjs";
+import { ensureWorkerSecrets, loadState, saveState } from "../src/local/state/state.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const version = "9.8.7";

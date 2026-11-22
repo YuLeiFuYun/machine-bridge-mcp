@@ -1,5 +1,5 @@
 import { webcrypto } from "node:crypto";
-import { normalizedHtu } from "../src/worker/dpop.ts";
+import { normalizedHtu } from "../src/worker/oauth/dpop.ts";
 
 export async function createDpopFixture() {
   const keys = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);

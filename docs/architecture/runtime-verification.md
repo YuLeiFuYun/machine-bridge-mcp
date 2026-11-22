@@ -6,8 +6,7 @@ remain owned by [Release integrity](release-integrity.md).
 
 ### Recovery and delivery boundaries
 
-The relay connection owns transport lifecycle, while liveness policy is decomposed instead of accumulating in that class: `relay-liveness.mjs` composes transport and application monitors; `relay-liveness-actions.mjs` owns suspect/recovered/hard-failure effects; `relay-heartbeat.mjs` owns timer and event-loop-stall scheduling; `relay-heartbeat-transport-state.mjs` advances transport probe/confirmation phases; `relay-heartbeat-options.mjs` normalizes bounded timing; `relay-probe-dispatch.mjs` owns sender-dispatch identity/race state and `relay-probe-dispatch-metrics.mjs` its bounded diagnostics; `relay-probe-deadline.mjs` owns the post-dispatch Pong deadline; `relay-transport-confirmation.mjs` owns the second-stage application-confirmation state; `relay-transport-probe.mjs` owns socket-generation fencing plus bounded sender backlog while `relay-transport-probe-send.mjs` owns low-level Ping/fallback dispatch.
-`relay-transport-error-state.mjs`, `relay-heartbeat-stall.mjs`, `relay-connect-timing.mjs`, `relay-connection-classification.mjs`, and `relay-diagnostics.mjs` retain their error, stall, connect-timing, classification, and public-projection responsibilities.
+The relay connection owns transport lifecycle, while liveness policy is decomposed instead of accumulating in that class: `src/local/transport/relay-heartbeat.mjs` owns transport/application liveness monitors, timer and event-loop-stall scheduling, sender-dispatch fencing, Pong deadlines, and second-stage application confirmation; `src/local/transport/relay-classification.mjs` and `src/local/transport/relay-diagnostics.mjs` own close/error classification, connect-timing, and public diagnostic projections.
 Application proxy selection is intentionally separated from the operating-system network path.
 Reconnect backoff is bounded at fifteen seconds, but each WebSocket connect attempt now has a thirty-second per-attempt connect budget because live successful upgrades were observed within roughly fourteen seconds of the former fifteen-second cutoff.
 Transport liveness requests a protocol probe after five seconds.
@@ -21,7 +20,7 @@ Runtime cleanup precedes nonzero exit, after which installed service supervision
 
 Exclusive lock publication is itself a two-name hard-link commit: after the complete staging inode is linked at the final lock path and before the private staging alias is removed, `nlink` is transiently two.
 Process/startup locks, owner-state locks, managed-job transition/recovery locks, browser pairing creation, and managed-job runner claims are the only current consumers allowed to bridge that internal window with the shared fixed multiple-link retry.
-If that window survives a publisher crash, `exclusive-publication-recovery.mjs` does not delete the alias: it opens the canonical target first, opens only candidates in the reserved internal staging grammar, requires exactly one same-generation/same-inode two-link alias, rechecks the held target descriptor, and returns the exact filesystem identity as a bounded read token.
+If that window survives a publisher crash, `src/local/core/exclusive-file.mjs` does not delete the alias: it opens the canonical target first, opens only candidates in the reserved internal staging grammar, requires exactly one same-generation/same-inode two-link alias, rechecks the held target descriptor, and returns the exact filesystem identity as a bounded read token.
 Default readers still reject multiple links.
 A stale owner may remove only the canonical target after the usual owner/token/generation proof, potentially leaving the owner-only internal alias until the containing state/job generation is retired.
 Runner claims use the same no-follow path-identity boundary and never gain general hard-link acceptance.
@@ -33,7 +32,7 @@ Security-audit writes, obsolete authorization-state migration cleanup, daemon/st
 Workspace trust-state recovery requires a complete canonical envelope before its recovery marker is removed.
 
 Static package identity is separate from persistence ownership.
-`package-identity.mjs` is the single local source for package root/name/version and shared application name; CLI, stdio, Worker-deployment helpers, browser identity, shell integration, and trust checks do not reparse the root package manifest independently.
+`src/local/core/timing.mjs` is the single local source for package root/name/version and shared application name; CLI, stdio, Worker-deployment helpers, browser identity, shell integration, and trust checks do not reparse the root package manifest independently.
 State-root/profile/workspace path and hash semantics remain deliberately in `state.mjs`, where platform/environment injection, canonical workspace identity, case-folding, schemas, locks, recovery, and removal share one contract.
 The unused divergent `state-locations.mjs` experiment was removed; a future extraction is valid only when real consumers migrate and parity tests prove identical path semantics.
 
@@ -55,7 +54,7 @@ Managed-job file semantics distinguish Machine Bridge-owned control state from u
 Runner and manager processes legitimately publish/read `status.json` concurrently via atomic replacement, so managed-job JSON reads alone may retry the stable `MBM_IDENTITY_CHANGED` condition up to four times; the final snapshot still requires no-follow path identity and single-link evidence, and exhausted churn remains an error rather than absence.
 Internal plan/status JSON and transition/recovery locks are no-follow identity-verified reads and reject multiple hard links; explicit external plan/resource inputs remain ordinary bounded no-follow files so legitimate user hard links are not rejected merely because internal ownership state is stricter.
 Browser resource injection uses the exact bytes returned by the validating resource snapshot; it never validates one open and injects a second open.
-Browser pairing schema/token validation lives only in `browser-pairing-store.mjs`; CLI status/pairing commands consume a port-only projection and do not parse or return pairing credentials.
+Browser pairing schema/token validation lives only in `src/local/automation/browser-pairing.mjs`; CLI status/pairing commands consume a port-only projection and do not parse or return pairing credentials.
 
 
 Managed-job terminal persistence is an ordered recoverable protocol, not a collection of ignored cleanup calls.
@@ -95,3 +94,9 @@ To prevent mechanical line-count and substring assertions from impeding domain r
 ### Worker runtime type seed lifecycle and integrity
 
 The deterministic Worker configuration type seed (`toolchain/worker-runtime-types-seed.b64`) is a Brotli-compressed Base64 artifact generated via `scripts/generate-worker-types.mjs`. It guarantees reproducible Worker type generation across offline and air-gapped environments. When bindings or configurations in `wrangler.jsonc` legitimately change, maintainers refresh the seed using `node scripts/generate-worker-types.mjs --refresh-runtime-seed`. The seed is verified by `tests/worker-types-generator-test.mjs` and must never be committed without corresponding configuration diff review.
+
+### Idle-sleep, reconnect, and observation bounds
+
+On macOS, `src/local/core/idle-sleep-assertions.mjs` manages `/usr/bin/caffeinate` recovery with fixed 1/5/30-second backoff; in activity-bearing modes (`activity` and `ac-continuous`), the fixed thirty-minute inactivity grace begins only after the last handler/process-session activity settles. Remote account managed-job runners remain independently bound to the runner PID with the same self-healing assertion boundary.
+
+When a call arrives with no verified daemon channel, `src/worker/daemon/ready-waiters.ts` waits at most fifteen seconds (never exceeding the call execution budget). `DaemonLastObservation` (`src/worker/daemon/channel.ts`) owns one in-memory, privacy-bounded last-verified-channel observation so `server_info.daemon.previous_connection` remains useful while offline without acting as authority or routing state. An explicit stop while the first connection is still waiting for readiness settles as cancelled rather than hanging, and pending operation/reconnect delays are positive finite integers bounded by the relay contract so malformed internal timing cannot become an infinite timer.

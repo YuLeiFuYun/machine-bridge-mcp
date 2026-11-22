@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { BridgeError } from "../src/local/errors.mjs";
-import { ProcessExecutionService } from "../src/local/process-execution.mjs";
-import { MacosBackgroundInputService } from "../src/local/macos-background-input.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
+import { ProcessExecutionService } from "../src/local/process/execution.mjs";
+import { MacosBackgroundInputService } from "../src/local/automation/macos-background-input.mjs";
 import {
   processCancellationFailure,
   processChildErrorFailure,
   processPostSpawnFailure,
   processPreSpawnFailure,
   processTimeoutFailure,
-} from "../src/local/process-nonreplayable-settlement.mjs";
-import { ProcessTracker } from "../src/local/process-tracker.mjs";
-import { prepareDurableShellProcess } from "../src/local/durable-process-spec.mjs";
+} from "../src/local/process/settlement.mjs";
+import { ProcessTracker } from "../src/local/process/tracker.mjs";
+import { prepareDurableShellProcess } from "../src/local/runtime/call-helpers.mjs";
 
 class FixtureChild extends EventEmitter {
   constructor(pid) {

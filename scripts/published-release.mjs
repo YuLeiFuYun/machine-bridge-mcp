@@ -1,5 +1,5 @@
-import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { resolveTrustedGithubCli } from "./lib/trusted-github-cli.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { githubReleaseByTagEndpoint, normalizeGithubReleaseAsset } from "./github-release-asset.mjs";
 import { isTransientNetworkFailure, runNetworkCommand } from "./network-retry.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";

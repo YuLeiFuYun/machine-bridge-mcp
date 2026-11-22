@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { MCP_PROTOCOL_VERSION } from "../src/shared/mcp-protocol.mjs";
-import { generateAccountPassword } from "../src/local/account-admin.mjs";
+import { generateAccountPassword } from "../src/local/state/account-admin.mjs";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const SMALL_JSON_LIMIT = 64 * 1024;
@@ -63,32 +63,28 @@ export async function runReleaseOAuthCanaryFlow({
     }
     clientId = registration.client_id;
 
+    await verifyAuthorizationPageCsp({ fetchImpl, origin, clientId, challenge, scope, resource, stateValue });
+    const authorizeParams = {
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: RELEASE_OAUTH_CANARY_CALLBACK,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      scope,
+      resource,
+      state: stateValue,
+      account_name: accountName,
+      account_password: password,
+    };
     const authorizeResponse = await fetchBounded(fetchImpl, "authorization", `${origin}/oauth/authorize`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", "user-agent": "machine-bridge-mcp-release-canary" },
-      body: new URLSearchParams({
-        response_type: "code",
-        client_id: clientId,
-        redirect_uri: RELEASE_OAUTH_CANARY_CALLBACK,
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        scope,
-        resource,
-        state: stateValue,
-        account_name: accountName,
-        account_password: password,
-      }),
+      body: new URLSearchParams(authorizeParams),
       redirect: "manual",
     });
     if (authorizeResponse.status !== 303) throw new Error(`release OAuth canary authorization failed with HTTP ${authorizeResponse.status}`);
-    const location = authorizeResponse.headers.get("location");
-    if (!location) throw new Error("release OAuth canary authorization omitted the redirect location");
-    const redirect = new URL(location);
-    const code = redirect.searchParams.get("code") || "";
-    if (redirect.origin + redirect.pathname !== RELEASE_OAUTH_CANARY_CALLBACK || redirect.searchParams.get("state") !== stateValue
-        || redirect.searchParams.get("iss") !== origin || !/^mcp_code_[A-Za-z0-9_-]{43}$/.test(code)) {
-      throw new Error("release OAuth canary authorization redirect failed validation");
-    }
+    const code = validateAuthorizeRedirectUrl(authorizeResponse.headers.get("location"), origin, stateValue);
+    await verifyBrowserNavigateAuthorize({ fetchImpl, origin, authorizeParams, stateValue });
 
     const token = await fetchBoundedJson(fetchImpl, "authorization-code token exchange", `${origin}/oauth/token`, {
       method: "POST",
@@ -108,6 +104,7 @@ export async function runReleaseOAuthCanaryFlow({
 
     if (gemini) await verifyGeminiDiscovery(fetchImpl, resource, accessToken);
     const firstInfo = await callServerInfo(fetchImpl, resource, accessToken, 1, gemini);
+    if (!gemini) await verifyUnifiedMcpCancellation({ fetchImpl, resource, accessToken });
     workerVersion = typeof firstInfo?.version === "string" ? firstInfo.version : "";
     if (workerVersion !== version) throw new Error("release OAuth canary authenticated MCP reached the wrong Worker version");
 
@@ -211,6 +208,108 @@ export function normalizeCanaryWorkerUrl(value) {
     throw new Error("release OAuth canary requires a credential-free HTTPS Worker origin");
   }
   return url.origin;
+}
+
+async function verifyAuthorizationPageCsp({ fetchImpl, origin, clientId, challenge, scope, resource, stateValue }) {
+  const url = new URL(`${origin}/oauth/authorize`);
+  for (const [key, value] of Object.entries({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: RELEASE_OAUTH_CANARY_CALLBACK,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    scope,
+    resource,
+    state: stateValue,
+  })) {
+    url.searchParams.set(key, value);
+  }
+  const response = await fetchBounded(fetchImpl, "authorization page GET", url.toString(), {
+    method: "GET",
+    headers: { "user-agent": "machine-bridge-mcp-release-canary" },
+    redirect: "manual",
+  });
+  if (response.status !== 200) throw new Error(`release OAuth canary authorization page GET failed with HTTP ${response.status}`);
+  const csp = response.headers.get("content-security-policy") || "";
+  if (!/form-action\s+'self'/.test(csp)) {
+    throw new Error("release OAuth canary authorization page CSP did not lock form-action to 'self'");
+  }
+  await readBoundedText(response, SMALL_JSON_LIMIT, "authorization page HTML");
+}
+
+async function verifyBrowserNavigateAuthorize({ fetchImpl, origin, authorizeParams, stateValue }) {
+  const response = await fetchBounded(fetchImpl, "browser navigation authorization", `${origin}/oauth/authorize`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "user-agent": "machine-bridge-mcp-release-canary",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-site": "same-origin",
+      origin,
+    },
+    body: new URLSearchParams(authorizeParams),
+    redirect: "manual",
+  });
+  if (response.status !== 200) {
+    throw new Error(`release OAuth canary browser navigation authorization failed with HTTP ${response.status}`);
+  }
+  const html = await readBoundedText(response, SMALL_JSON_LIMIT, "browser authorization redirect page");
+  if (/<script\b/i.test(html)) {
+    throw new Error("release OAuth canary browser authorization redirect page contained a script tag");
+  }
+  const refreshMatch = html.match(/<meta\s+http-equiv=["']refresh["']\s+content=["']\s*0\s*;\s*url=([^"']+)["']/i);
+  if (!refreshMatch) {
+    throw new Error("release OAuth canary browser authorization redirect page omitted meta refresh redirect");
+  }
+  const HTML_ENTITIES = { "&amp;": "&", "&quot;": "\"", "&#39;": "'", "&lt;": "<", "&gt;": ">" };
+  const refreshUrl = refreshMatch[1].replace(/&(amp|quot|#39|lt|gt);/g, (entity) => HTML_ENTITIES[entity]);
+  validateAuthorizeRedirectUrl(refreshUrl, origin, stateValue);
+}
+
+function validateAuthorizeRedirectUrl(location, origin, stateValue) {
+  if (!location) throw new Error("release OAuth canary authorization omitted the redirect location");
+  const redirect = new URL(location);
+  const code = redirect.searchParams.get("code") || "";
+  if (redirect.origin + redirect.pathname !== RELEASE_OAUTH_CANARY_CALLBACK || redirect.searchParams.get("state") !== stateValue
+      || redirect.searchParams.get("iss") !== origin || !/^mcp_code_[A-Za-z0-9_-]{43}$/.test(code)) {
+    throw new Error("release OAuth canary authorization redirect failed validation");
+  }
+  return code;
+}
+
+async function verifyUnifiedMcpCancellation({ fetchImpl, resource, accessToken }) {
+  const response = await fetchBounded(fetchImpl, "notifications/cancelled", resource, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${accessToken}`,
+      "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+      "Mcp-Method": "notifications/cancelled",
+      "user-agent": "machine-bridge-mcp-release-canary",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: {
+        requestId: 99,
+        reason: "release_canary_probe",
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
+          "io.modelcontextprotocol/clientCapabilities": {},
+          "io.modelcontextprotocol/clientInfo": { name: "machine-bridge-mcp-release-canary", version: "1" },
+        },
+      },
+    }),
+  });
+  if (response.status !== 202) {
+    throw new Error(`release OAuth canary notifications/cancelled failed with HTTP ${response.status}`);
+  }
+  const text = response.body ? await readBoundedText(response, SMALL_JSON_LIMIT, "notifications/cancelled response") : "";
+  if (text !== "") {
+    throw new Error("release OAuth canary notifications/cancelled returned a non-empty response body");
+  }
 }
 
 const GEMINI_PROTOCOL_VERSION = "2025-11-25";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { BrowserOperationService } from "../src/local/browser-operation-service.mjs";
-import { browserPairingLaunchCommand } from "../src/local/browser-command.mjs";
+import { BrowserOperationService } from "../src/local/automation/browser-operation-service.mjs";
+import { browserPairingLaunchCommand } from "../src/local/automation/browser-commands.mjs";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 

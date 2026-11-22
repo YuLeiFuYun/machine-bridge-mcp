@@ -1,5 +1,5 @@
-import { ComputerUseManager } from "../../../src/local/computer-use.mjs";
-import { applicationProcessIdentityChanged } from "../../../src/local/computer-use-dispatch-settlement.mjs";
+import { ComputerUseManager } from "../../../src/local/automation/computer-use.mjs";
+import { applicationProcessIdentityChanged } from "../../../src/local/automation/computer-use-contracts.mjs";
 
 export const PNG_A_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 export const PNG_B_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z7WQAAAAASUVORK5CYII=";

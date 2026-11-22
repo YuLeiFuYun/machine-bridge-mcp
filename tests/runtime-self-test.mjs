@@ -1,11 +1,11 @@
 import { link, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime.mjs";
-import { policyProfile } from "../src/local/policy.mjs";
-import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process-tree.mjs";
-import { sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
-import { createDeviceIdentity } from "../src/local/device-identity.mjs";
+import { LocalRuntime, MAX_COMMAND_BYTES, MAX_WRITE_BYTES, sha256 } from "../src/local/runtime/runtime.mjs";
+import { policyProfile } from "../src/local/core/policy.mjs";
+import { DEFAULT_PROCESS_OWNERSHIP_CHECK_BUDGET_MS, DEFAULT_PROCESS_TERMINATION_GRACE_MS } from "../src/local/process/tree-facade.mjs";
+import { sampleProcessStartTimesAsync } from "../src/local/process/identity.mjs";
+import { createDeviceIdentity } from "../src/local/state/device-identity.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 import { relayOwnerContext } from "./fixtures/authority-context.mjs";
 
@@ -309,12 +309,16 @@ export async function runtimeSelfTest() {
       name: "account-owned-job",
       steps: [{ argv: [process.execPath, "-e", "process.exit(0)"] }],
     }, relayContext(ownerAuthorization));
-    const otherJobs = await fullAuthority.executeTool("list_jobs", {}, relayContext(otherReviewerAuthorization));
-    if (otherJobs.jobs.some((job) => job.job_id === ownedJob.job_id)) throw new Error("managed job leaked across account ownership");
-    await expectReject(
-      () => fullAuthority.executeTool("read_job", { job_id: ownedJob.job_id }, relayContext(otherReviewerAuthorization)),
-      "belongs to another account",
-    );
+    for (const [tool, toolArgs] of [
+      ["list_jobs", {}],
+      ["read_job", { job_id: ownedJob.job_id }],
+      ["cancel_job", { job_id: ownedJob.job_id }],
+    ]) {
+      await expectReject(
+        () => fullAuthority.executeTool(tool, toolArgs, relayContext(otherReviewerAuthorization)),
+        "reserved for the owner account",
+      );
+    }
 
     const largeProcess = await restricted.executeTool("run_process", {
       argv: [process.execPath, "-e", "process.stdout.write('R'.repeat(100000) + 'RUNTIME-TAIL')"],

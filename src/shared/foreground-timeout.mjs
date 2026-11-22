@@ -5,7 +5,7 @@ const CONFIGURABLE_FOREGROUND_TOOLS = new Set([
   "inspect_local_application", "operate_local_application", "browser_list_tabs",
   "browser_manage_tabs", "browser_wait", "browser_get_source", "browser_inspect_page",
   "browser_action", "browser_fill_form", "browser_screenshot", "browser_upload_files",
-  "computer_observe", "computer_act",
+  "computer_observe", "computer_act", "browser_network_log",
 ]);
 
 const REMOTE_DURABLE_PROCESS_TOOLS = new Set([

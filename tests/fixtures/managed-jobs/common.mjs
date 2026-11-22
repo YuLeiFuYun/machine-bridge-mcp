@@ -4,12 +4,12 @@ import { readFile, rm, stat, writeFile } from "node:fs/promises";
 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ManagedJobManager } from "../../../src/local/managed-jobs.mjs";
+import { ManagedJobManager } from "../../../src/local/jobs/manager.mjs";
 
-import { withResourceTransactionLock } from "../../../src/local/resource-transaction-lock.mjs";
+import { withResourceTransactionLock } from "../../../src/local/process/resource-waiters.mjs";
 
-import { processState } from "../../../src/local/process-identity.mjs";
-import { terminalStatusFromResult } from "../../../src/local/managed-job-terminal.mjs";
+import { processState } from "../../../src/local/process/identity.mjs";
+import { terminalStatusFromResult } from "../../../src/local/jobs/terminal-base.mjs";
 import serverMetadata from "../../../src/shared/server-metadata.json" with { type: "json" };
 
 export const MANAGED_JOB_TEST_WAIT_MS = 480_000;
@@ -21,7 +21,7 @@ export const MANAGED_JOB_TREE_READY_MS = 10_000;
 export const RECOVERY_RESOURCE_LOCK_HOLD_MS = 5_500;
 export const TOOL_SCHEMA_GENERATION = Number(serverMetadata.toolSchemaGeneration);
 
-export const runnerEntry = fileURLToPath(new URL("../../../src/local/job-runner.mjs", import.meta.url));
+export const runnerEntry = fileURLToPath(new URL("../../../src/local/jobs/runner.mjs", import.meta.url));
 export const runnerResourceHook = new URL("../managed-job-resource-hook.mjs", import.meta.url).href;
 
 export function assert(condition, message) {

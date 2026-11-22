@@ -1,8 +1,8 @@
 import { webcrypto } from "node:crypto";
 import {
   consumeDpopProof, jwkThumbprint, normalizedHtu, verifyDpopProof,
-} from "../src/worker/dpop.ts";
-import { authorizeMcpRequest } from "../src/worker/mcp-access.ts";
+} from "../src/worker/oauth/dpop.ts";
+import { authorizeMcpRequest } from "../src/worker/mcp/access.ts";
 
 class MemoryStorage {
   constructor() { this.values = new Map(); }

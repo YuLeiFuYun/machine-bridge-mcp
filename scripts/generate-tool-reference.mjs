@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
-import { escapeMarkdownTableCell, normalizeLineEndings } from "./markdown.mjs";
+import { escapeMarkdownTableCell, normalizeLineEndings } from "./lib/verification.mjs";
 
 const root = new URL("../", import.meta.url);
 const catalogUrl = new URL("src/shared/tool-catalog.json", root);

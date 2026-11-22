@@ -6,9 +6,9 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { readLoopbackJson } from "../src/local/loopback-health.mjs";
-import { workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
-import { parseArgs } from "../src/local/cli-options.mjs";
+import { readLoopbackJson } from "../src/local/transport/network-proxy.mjs";
+import { workspaceDaemonOwnsPlatformAutostart } from "../src/local/transport/daemon-process.mjs";
+import { parseArgs } from "../src/local/cli/cli-activate.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const entry = resolve(root, "bin", "machine-mcp.mjs");

@@ -3,11 +3,11 @@ import { lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { prepareHardenedNpm } from "../src/local/hardened-npm.mjs";
-import { createHardenedNpmLauncher } from "../src/local/hardened-npm-launcher.mjs";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { validateNpmAudit } from "../src/local/npm-audit-report.mjs";
+import { prepareHardenedNpm } from "../src/local/deploy/hardened-npm.mjs";
+import { createHardenedNpmLauncher } from "../src/local/deploy/hardened-npm.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
+import { validateNpmAudit } from "../src/local/deploy/npm.mjs";
 import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

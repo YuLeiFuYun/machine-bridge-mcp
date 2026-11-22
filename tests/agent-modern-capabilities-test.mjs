@@ -3,14 +3,14 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PERSISTENT_MEMORY_FILE, readPersistentMemory } from "../src/local/agent-memory.mjs";
-import { applyUpdateHunks } from "../src/local/patch.mjs";
-import { BridgeError } from "../src/local/errors.mjs";
-import { publicProcessToolResult } from "../src/local/process-result-projection.mjs";
-import { extractWorkspaceOutline } from "../src/local/symbol-outline.mjs";
-import { inspectSyntax, inspectSyntaxWarning, WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
-import { buildBrowserObservation, projectSetOfMarks, renderSetOfMarksSvg } from "../src/local/computer-use-observation.mjs";
-import { ToolExecutor, validateToolArguments } from "../src/local/tool-executor.mjs";
+import { PERSISTENT_MEMORY_FILE, readPersistentMemory } from "../src/local/agent/agent-memory.mjs";
+import { applyUpdateHunks } from "../src/local/core/patch.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
+import { publicProcessToolResult } from "../src/local/process/settlement.mjs";
+import { extractWorkspaceOutline } from "../src/local/agent/symbol-outline.mjs";
+import { inspectSyntax, inspectSyntaxWarning, WorkspaceFileService } from "../src/local/files/workspace-file-service.mjs";
+import { buildBrowserObservation, projectSetOfMarks, renderSetOfMarksSvg } from "../src/local/automation/computer-use-observation.mjs";
+import { ToolExecutor, validateToolArguments } from "../src/local/runtime/tool-executor.mjs";
 import { MCP_TEXT_PROJECTION_KEY } from "../src/shared/result-projection.mjs";
 import { CODE_MODE_SDK_RESOURCE_URI, HELP_RESOURCES, helpResourceMimeType, readHelpResource } from "../src/shared/help-resources.mjs";
 import { CORE_CORNERSTONE_TOOL_NAMES, projectToolTypeScriptDeclarations } from "../src/shared/tool-groups.mjs";
@@ -23,7 +23,7 @@ test("projectToolTypeScriptDeclarations projects compact TypeScript SDK signatur
   });
   assert.match(declarations, /^declare namespace mbm \{/);
   assert.match(declarations, /function read_file\(args: \{ path: string;/);
-  assert.match(declarations, /function server_info\(args\?: \{ detail\?: "summary" \| "full" \}\): Promise<Record<string, unknown>>;/);
+  assert.match(declarations, /function server_info\(args\?: \{ detail\?: "summary" \| "full"; client_tool_schema_generation\?: number \}\): Promise<\{ name: string;/);
   assert.doesNotMatch(declarations, /function browser_action\(/);
   assert.equal(HELP_RESOURCES.some((item) => item.uri === CODE_MODE_SDK_RESOURCE_URI), true);
   assert.equal(helpResourceMimeType(CODE_MODE_SDK_RESOURCE_URI), "application/typescript");
@@ -287,6 +287,37 @@ test("WorkspaceFileService enforces verify_syntax pre-commit gate on file write 
     const patch = ["*** Begin Patch", "*** Add File: " + patchPath, "+" + boundaryJson, "*** End Patch"].join("\n");
     await assert.rejects(() => service.applyPatch({ patch, verify_syntax: true }), oversized);
     assert.equal((await service.applyPatch({ patch })).syntax_check, "skipped_too_large");
+
+    // TS legacy decorators & .js CJS top-level return parse cleanly, while CJS top-level await still warns.
+    assert.equal(inspectSyntax("legacy.ts", "@Component({})\nexport class App {}\n").status, "ok");
+    assert.equal(inspectSyntax("cjs-return.js", "const x = 1;\nreturn;\n").status, "ok");
+    assert.equal(inspectSyntax("bad-cjs-await.cjs", "await Promise.resolve(1);\n").status, "warning");
+
+    // verify_syntax: true always emits syntax_check ("ok" / "not_applicable") across write/edit/patch.
+    const verifiedOk = await service.writeFile({ path: join(temp, "verified.mjs"), content: "export const ok = 1;\n", verify_syntax: true });
+    assert.equal(verifiedOk.syntax_check, "ok");
+    const verifiedTxt = await service.writeFile({ path: join(temp, "notes.txt"), content: "plain\n", verify_syntax: true });
+    assert.equal(verifiedTxt.syntax_check, "not_applicable");
+    const verifiedEdit = await service.editFile({ path: join(temp, "verified.mjs"), old_text: "ok = 1", new_text: "ok = 2", verify_syntax: true });
+    assert.equal(verifiedEdit.syntax_check, "ok");
+
+    // Decode with ignoreBOM: true so leading UTF-8 BOM bytes stay intact across read/edit hash preconditions,
+    // and allow blank separator lines at the end of *** Add File: blocks.
+    const bomPath = join(temp, "bom.txt");
+    await writeFile(bomPath, "\uFEFFhello\n", "utf8");
+    assert.equal((await service.readFile({ path: bomPath })).content, "\uFEFFhello\n");
+    const addBlankPatch = [
+      "*** Begin Patch",
+      `*** Add File: ${join(temp, "added-with-gap.txt")}`,
+      "+line one",
+      "",
+      `*** Add File: ${join(temp, "second-added.txt")}`,
+      "+line two",
+      "",
+      "*** End Patch",
+    ].join("\n");
+    const patchedGap = await service.applyPatch({ patch: addBlankPatch, verify_syntax: true });
+    assert.equal(patchedGap.syntax_check, "not_applicable");
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => {});
   }

@@ -6,7 +6,7 @@ import { discoverForegroundDaemonRecovery, foregroundPid } from "../scripts/fore
 import { assertPersistentActivationExecutionSurface, persistentActivationSpawnOptions, persistentCandidateFailureMessage, preflightPersistentActivationWorkerAuth, validateActivationRecoveryPayload } from "../scripts/persistent-activation-process.mjs";
 import { inspectGlobalPackageInstallation } from "../scripts/global-package-installation.mjs";
 import { canonicalActivationRecoveryDetail, normalizeActivationRecovery } from "../src/shared/activation-recovery.mjs";
-import { EXECUTION_SURFACE } from "../src/local/execution-surface.mjs";
+import { EXECUTION_SURFACE } from "../src/local/core/authority.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-prerelease-activation-"));
 try {

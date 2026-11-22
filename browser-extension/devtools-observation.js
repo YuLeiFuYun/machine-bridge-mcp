@@ -418,12 +418,269 @@
     return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
   }
 
+  const MAX_NETWORK_ENTRIES = 200;
+  const MAX_NETWORK_TABS = 64;
+  const SENSITIVE_HEADER_PATTERN = /(?:authorization|cookie|token|secret|api[-_]?key|apikey|passw|session|credential|signature|jwt|bearer|csrf|xsrf|www-authenticate|proxy-authenticate|private[-_]?key)/i;
+  const SENSITIVE_QUERY_PATTERN = /(?:token|secret|api[-_]?key|apikey|passw|auth|session|cred|sig|signature|jwt|^(?:code|key)$)/i;
+  const networkLogsByTab = new Map();
+
+  if (typeof chrome !== "undefined" && chrome?.tabs?.onRemoved && typeof chrome.tabs.onRemoved.addListener === "function") {
+    chrome.tabs.onRemoved.addListener((removedTabId) => {
+      networkLogsByTab.delete(removedTabId);
+    });
+  }
+
+  function getTabNetworkBuffer(tabId) {
+    let buffer = networkLogsByTab.get(tabId);
+    if (!buffer) {
+      if (networkLogsByTab.size >= MAX_NETWORK_TABS) {
+        const oldestKey = networkLogsByTab.keys().next().value;
+        if (oldestKey !== undefined) networkLogsByTab.delete(oldestKey);
+      }
+      buffer = [];
+      networkLogsByTab.set(tabId, buffer);
+    }
+    return buffer;
+  }
+
+  function pushTabNetworkEntry(tabId, entry) {
+    const buffer = getTabNetworkBuffer(tabId);
+    buffer.push(entry);
+    if (buffer.length > MAX_NETWORK_ENTRIES) buffer.splice(0, buffer.length - MAX_NETWORK_ENTRIES);
+    return entry;
+  }
+
+  function redactFragment(hash) {
+    if (!hash || hash === "#") return hash;
+    const body = hash.slice(1);
+    if (!body.includes("=")) {
+      return /(?:eyJ|token|secret|auth|session|bearer)/i.test(body) || body.length >= 24 ? "#[REDACTED]" : hash;
+    }
+    const parts = body.split("&").map((part) => {
+      const eq = part.indexOf("=");
+      if (eq < 0) return part;
+      const key = part.slice(0, eq);
+      let decoded = key;
+      try { decoded = decodeURIComponent(key); } catch { /* keep raw key */ }
+      return SENSITIVE_QUERY_PATTERN.test(decoded) ? `${key}=[REDACTED]` : part;
+    });
+    return `#${parts.join("&")}`;
+  }
+
+  function redactNetworkUrl(rawUrl) {
+    if (typeof rawUrl !== "string" || !rawUrl) return "";
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.username) parsed.username = "[REDACTED]";
+      if (parsed.password) parsed.password = "[REDACTED]";
+      for (const name of [...parsed.searchParams.keys()]) {
+        if (SENSITIVE_QUERY_PATTERN.test(name)) parsed.searchParams.set(name, "[REDACTED]");
+      }
+      if (parsed.hash) parsed.hash = redactFragment(parsed.hash);
+      return parsed.toString().slice(0, 2048);
+    } catch {
+      return "[REDACTED_INVALID_URL]";
+    }
+  }
+
+  function redactNetworkHeaders(headers) {
+    const out = Object.create(null);
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) return out;
+    let count = 0;
+    for (const [key, value] of Object.entries(headers)) {
+      if (count >= 40) break;
+      const lower = String(key).toLowerCase();
+      if (SENSITIVE_HEADER_PATTERN.test(lower)) {
+        out[key] = "[REDACTED]";
+      } else if (lower === "referer" || lower === "referrer" || lower === "location") {
+        out[key] = redactNetworkUrl(String(value ?? ""));
+      } else {
+        out[key] = String(value ?? "").slice(0, 256);
+      }
+      count += 1;
+    }
+    return out;
+  }
+
+  function recordCdpNetworkEvent(tabId, byRequestId, method, eventParams) {
+    const requestId = protocolString(eventParams?.requestId, 200);
+    if (!requestId) return;
+    if (method === "Network.requestWillBeSent") {
+      if (eventParams?.redirectResponse && byRequestId.has(requestId)) {
+        const prior = byRequestId.get(requestId);
+        const redir = eventParams.redirectResponse;
+        if (typeof redir.status === "number") prior.status = redir.status;
+        if (redir.mimeType) prior.mime_type = protocolString(redir.mimeType, 128);
+        prior.response_headers = redactNetworkHeaders(redir.headers);
+      }
+      const req = eventParams?.request || {};
+      const entry = pushTabNetworkEntry(tabId, {
+        request_id: requestId,
+        url: redactNetworkUrl(req.url),
+        method: protocolString(req.method, 32) || "GET",
+        resource_type: protocolString(eventParams?.type, 64),
+        status: null,
+        mime_type: "",
+        request_headers: redactNetworkHeaders(req.headers),
+        response_headers: Object.create(null),
+        failed: false,
+        error_text: "",
+        encoded_data_length: null,
+      });
+      byRequestId.set(requestId, entry);
+      return;
+    }
+    if (method === "Network.responseReceived") {
+      const res = eventParams?.response || {};
+      let entry = byRequestId.get(requestId);
+      if (!entry) {
+        entry = pushTabNetworkEntry(tabId, {
+          request_id: requestId,
+          url: redactNetworkUrl(res.url),
+          method: "GET",
+          resource_type: protocolString(eventParams?.type, 64),
+          status: null,
+          mime_type: "",
+          request_headers: Object.create(null),
+          response_headers: Object.create(null),
+          failed: false,
+          error_text: "",
+          encoded_data_length: null,
+        });
+        byRequestId.set(requestId, entry);
+      }
+      if (typeof res.status === "number") entry.status = res.status;
+      if (res.mimeType) entry.mime_type = protocolString(res.mimeType, 128);
+      if (res.url && !entry.url) entry.url = redactNetworkUrl(res.url);
+      entry.response_headers = redactNetworkHeaders(res.headers);
+      return;
+    }
+    const existing = byRequestId.get(requestId);
+    if (!existing) return;
+    if (method === "Network.loadingFinished" && typeof eventParams?.encodedDataLength === "number") {
+      existing.encoded_data_length = eventParams.encodedDataLength;
+    } else if (method === "Network.loadingFailed") {
+      existing.failed = true;
+      existing.error_text = bounded(eventParams?.errorText || "loading_failed", 200);
+    }
+  }
+
+  async function resolveNetworkLogTabId(rawTabId) {
+    if (rawTabId !== undefined && rawTabId !== null) {
+      if (!Number.isSafeInteger(rawTabId) || rawTabId < 1) throw new Error("tabId is invalid");
+      return rawTabId;
+    }
+    if (typeof chrome?.tabs?.query === "function") {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const active = Array.isArray(tabs) ? tabs[0] : null;
+      if (Number.isSafeInteger(active?.id) && active.id >= 1) return active.id;
+    }
+    throw new Error("tabId is invalid");
+  }
+
+  async function waitWithAbort(waitMs, tabId, state) {
+    if (waitMs <= 0 || typeof globalThis.setTimeout !== "function") return;
+    await new Promise((resolveWait) => {
+      let settled = false;
+      let cancelCheckTimer = null;
+      let detachApi = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (cancelCheckTimer !== null && typeof globalThis.clearInterval === "function") {
+          globalThis.clearInterval(cancelCheckTimer);
+        }
+        if (detachApi) detachApi.removeListener(onDetach);
+        resolveWait();
+      };
+      const onDetach = (source) => {
+        if (source?.tabId === tabId) finish();
+      };
+      if (typeof chrome !== "undefined" && chrome?.debugger?.onDetach && typeof chrome.debugger.onDetach.addListener === "function") {
+        detachApi = chrome.debugger.onDetach;
+        detachApi.addListener(onDetach);
+      }
+      if (state && typeof globalThis.setInterval === "function" && waitMs > 50) {
+        cancelCheckTimer = globalThis.setInterval(() => {
+          if (state.cancelled) finish();
+        }, 50);
+      }
+      globalThis.setTimeout(finish, waitMs);
+    });
+  }
+
+  async function networkLog(tabIdOrParams = {}, maybeOptions = {}, maybeState = null) {
+    const isNumericTarget = typeof tabIdOrParams === "number";
+    const options = isNumericTarget ? (maybeOptions || {}) : (tabIdOrParams || {});
+    const state = isNumericTarget ? maybeState : maybeOptions;
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new Error("DevTools networkLog options are invalid");
+    }
+    const rawTabId = isNumericTarget ? tabIdOrParams : (options.tabId !== undefined ? options.tabId : options.tab_id);
+    const tabId = await resolveNetworkLogTabId(rawTabId);
+    const clear = exactBoolean(options.clear, "clear", false);
+    const limit = exactBoundedInteger(options.limit, "limit", 50, 1, MAX_NETWORK_ENTRIES);
+    const explicitWait = options.waitMs !== undefined ? options.waitMs : options.wait_ms;
+    const waitMs = exactBoundedInteger(explicitWait, "wait_ms", clear ? 0 : 250, 0, 5000);
+    const urlPrefix = options.urlPrefix !== undefined ? options.urlPrefix : options.url_prefix;
+    if (urlPrefix !== undefined) {
+      if (typeof urlPrefix !== "string" || urlPrefix.length > 2048 || urlPrefix.includes("\u0000")) {
+        throw new Error("url_prefix must be a bounded string");
+      }
+    }
+    const statusMin = options.statusMin ?? options.status_min;
+    if (statusMin !== undefined && (!Number.isSafeInteger(statusMin) || statusMin < 100 || statusMin > 599)) {
+      throw new Error("status_min must be an integer from 100 to 599");
+    }
+    throwIfCancelled(state);
+    if (clear) networkLogsByTab.delete(tabId);
+
+    const session = globalThis.__machineBridgeDevtoolsSession;
+    if (!session?.run) throw new Error("DevTools session module is unavailable");
+    const byRequestId = new Map();
+    if (!clear || waitMs > 0) {
+      await session.run(tabId, async ({ send }) => {
+        throwIfCancelled(state);
+        const onEvent = (source, method, eventParams) => {
+          if (source?.tabId !== tabId) return;
+          recordCdpNetworkEvent(tabId, byRequestId, method, eventParams);
+        };
+        const eventApi = typeof chrome !== "undefined" ? chrome?.debugger?.onEvent : null;
+        if (eventApi && typeof eventApi.addListener === "function") eventApi.addListener(onEvent);
+        try {
+          await send("Network.enable");
+          throwIfCancelled(state);
+          await waitWithAbort(waitMs, tabId, state);
+          throwIfCancelled(state);
+        } finally {
+          if (eventApi && typeof eventApi.removeListener === "function") eventApi.removeListener(onEvent);
+        }
+      }, { beforeAttach: () => throwIfCancelled(state) });
+    }
+
+    const buffer = networkLogsByTab.get(tabId) || [];
+    const matched = buffer.filter((entry) => {
+      if (urlPrefix && !entry.url.startsWith(urlPrefix)) return false;
+      if (statusMin !== undefined && (typeof entry.status !== "number" || entry.status < statusMin)) return false;
+      return true;
+    });
+    const entries = matched.slice(-limit);
+    return {
+      tab_id: tabId,
+      total_buffered: buffer.length,
+      returned: entries.length,
+      truncated: matched.length > entries.length,
+      cleared: clear,
+      entries,
+    };
+  }
+
   function throwIfCancelled(state) {
     if (state?.cancelled) throw new Error("browser request cancelled");
   }
 
   Object.defineProperty(globalThis, "__machineBridgeDevtoolsObservation", {
-    value: Object.freeze({ capture, geometryByBackendNode, flattenFrameTree }),
+    value: Object.freeze({ capture, geometryByBackendNode, flattenFrameTree, networkLog }),
     configurable: false,
   });
 })();

@@ -53,6 +53,27 @@ const adopted = snakeCase.filter((token) => toolNames.has(token));
 assert.ok(adopted.length >= 15,
   `expected ${REVIEW_DOCUMENT} to reference at least 15 shipped tools, found ${adopted.length}`);
 
+// Validate tool-prefixed backticked identifiers across handwritten docs so renamed or
+// removed tools cannot linger in prose guides either.
+const TOOL_PREFIX_RE = /^(?:read|write|edit|apply|delete|move|copy|list|search|find|symbol|git|exec|run|start|cancel|stage|browser|app|computer|project|agent|session|diagnose|server|resolve|generate|claim|render)_[a-z0-9_]+$/;
+const EXCLUDED_DOC_NAMES = new Set(["TOOL_REFERENCE.md", "POLICY_REFERENCE.md", "COMPARATIVE_REVIEW.md", "components.md"]);
+const repoSearchCorpus = [
+  sourceText,
+  ...walk(join(root, "scripts")).map((file) => readFileSync(file, "utf8")),
+  ...walk(join(root, "browser-extension")).map((file) => readFileSync(file, "utf8")),
+].join("\n");
+for (const docFile of walkMarkdown(join(root, "docs"))) {
+  const name = docFile.slice(join(root, "docs").length + 1);
+  if (EXCLUDED_DOC_NAMES.has(name.split("/").pop())) continue;
+  const text = readFileSync(docFile, "utf8");
+  const docQuoted = [...new Set([...text.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)].map((m) => m[1]))];
+  const bad = docQuoted.filter((token) =>
+    TOOL_PREFIX_RE.test(token)
+    && !toolNames.has(token)
+    && !new RegExp(`(?<![\\w-])${token}(?![\\w-])`).test(repoSearchCorpus));
+  assert.deepEqual(bad, [], `docs/${name} references unknown tool-like identifier(s): ${bad.join(", ")}`);
+}
+
 // The dependency sentence is the other documented claim that drifted: it must match the
 // exact set in package.json, not only its size.
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -77,6 +98,16 @@ console.log(`comparative review references ok (${adopted.length} shipped tools, 
 
 function occursInSource(identifier) {
   return new RegExp(`(?<![\\w-])${identifier}(?![\\w-])`).test(sourceText);
+}
+
+function walkMarkdown(directory) {
+  const result = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const file = join(directory, entry.name);
+    if (entry.isDirectory()) result.push(...walkMarkdown(file));
+    else if (entry.name.endsWith(".md")) result.push(file);
+  }
+  return result.sort();
 }
 
 function walk(directory) {

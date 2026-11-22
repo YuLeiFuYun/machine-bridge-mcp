@@ -8,19 +8,19 @@ import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utim
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../../../src/local/managed-jobs.mjs";
+import { activeManagedJobs, inspectResourceFile, launchRunner, ManagedJobManager } from "../../../src/local/jobs/manager.mjs";
 
 
 
-import { normalizeResourceRegistry } from "../../../src/local/managed-job-plan.mjs";
-import { managedRunnerEnvironment } from "../../../src/local/managed-job-runner.mjs";
-import {  publishProvisionalRunnerClaim } from "../../../src/local/managed-job-runner-claim.mjs";
+import { normalizeResourceRegistry } from "../../../src/local/jobs/plan.mjs";
+import { managedRunnerEnvironment } from "../../../src/local/jobs/runner-lifecycle.mjs";
+import {  publishProvisionalRunnerClaim } from "../../../src/local/jobs/runner-claim.mjs";
 
-import {  acquireJobTransitionLock } from "../../../src/local/managed-job-lock.mjs";
+import {  acquireJobTransitionLock } from "../../../src/local/jobs/directory.mjs";
 
 
-import { EXECUTION_SURFACE } from "../../../src/local/execution-surface.mjs";
-import { currentProcessStartTimeMs, processStartTimeMs, processState } from "../../../src/local/process-identity.mjs";
+import { EXECUTION_SURFACE } from "../../../src/local/core/authority.mjs";
+import { currentProcessStartTimeMs, processStartTimeMs, processState } from "../../../src/local/process/identity.mjs";
 import "../../../src/shared/server-metadata.json" with { type: "json" };
 import {
   assert, expectThrow, delay, exists, withFixtureResourceTransactionLock, createManagedJobTestManager,

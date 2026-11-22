@@ -14,8 +14,8 @@ import {
   optionalInteger,
   optionalString,
   validateNavigationUrl,
-} from "../src/local/browser-command.mjs";
-import { publicError } from "../src/local/errors.mjs";
+} from "../src/local/automation/browser-commands.mjs";
+import { publicError } from "../src/local/core/errors.mjs";
 
 assert(normalizeBrowserAction("double_click") === "double_click", "double-click action was rejected");
 assert(normalizeBrowserAction("type_text") === "type_text", "type-text action was rejected");

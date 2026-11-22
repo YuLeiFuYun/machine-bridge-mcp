@@ -1,4 +1,4 @@
-import { stopAndRemoveAutostart } from "../src/local/service-lifecycle.mjs";
+import { stopAndRemoveAutostart } from "../src/local/deploy/service-support.mjs";
 
 await successOrderTest();
 await platformFailureTest();

@@ -6,12 +6,12 @@ import { performance } from "node:perf_hooks";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runFixtureChild, stopFixtureChild, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
-import { BrowserBridgeManager } from "../src/local/browser-bridge.mjs";
-import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
-import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { currentProcessStartTimeMs, inspectProcessInstance, parseLinuxBootTimeMs, parseLinuxProcessStartTicks, parseLinuxProcessStartTime } from "../src/local/process-identity.mjs";
-import { retryProcessLockIdentityReadSync } from "../src/local/process-lock-read-retry.mjs";
-import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state.mjs";
+import { BrowserBridgeManager } from "../src/local/automation/browser-bridge.mjs";
+import { createExclusiveFileSync, removeOwnedJsonFileSync, replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
+import { ManagedJobManager } from "../src/local/jobs/manager.mjs";
+import { currentProcessStartTimeMs, inspectProcessInstance, parseLinuxBootTimeMs, parseLinuxProcessStartTicks, parseLinuxProcessStartTime } from "../src/local/process/identity.mjs";
+import { retryProcessLockIdentityReadSync } from "../src/local/process/settlement.mjs";
+import { acquireMachineServiceLock, acquireMachineServiceLockWithWait, acquireMaintenanceLock, acquireStartupLock, acquireStartupLockWithWait, defaultFirstRunWorkspace, defaultStateRoot, loadGlobalConfig, loadState, machineServiceControlRoot, machineServiceLockPath, readDaemonLockOwner } from "../src/local/state/state.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const MAINTENANCE_HOLDER_READY_MS = 30_000;
@@ -85,7 +85,7 @@ async function atomicExclusiveCreateTest() {
   const target = join(directory, "winner.json");
   const barrier = join(directory, "go");
   const helper = join(directory, "contender.mjs");
-  const moduleUrl = pathToFileURL(join(root, "src", "local", "exclusive-file.mjs")).href;
+  const moduleUrl = pathToFileURL(join(root, "src", "local", "core", "exclusive-file.mjs")).href;
   await writeFile(helper, `import { existsSync } from "node:fs";\nimport { createExclusiveFileSync } from ${JSON.stringify(moduleUrl)};\nconst [target, barrier, id] = process.argv.slice(2);\nif (process.env.NODE_V8_COVERAGE) throw new Error("process-lock helper inherited NODE_V8_COVERAGE");\nwhile (!existsSync(barrier)) await new Promise((r) => { setTimeout(r, 2); });\ntry { createExclusiveFileSync(target, JSON.stringify({ id, payload: "x".repeat(8192) }) + "\\n"); process.exit(0); }\ncatch (error) { if (error?.code === "EEXIST") process.exit(3); throw error; }\n`, "utf8");
   const children = Array.from({ length: EXCLUSIVE_CONTENDER_COUNT }, (_, index) => spawnFixtureNode([helper, target, barrier, String(index)], {
     stdio: ["ignore", "ignore", "pipe"],
@@ -189,7 +189,7 @@ async function atomicReplacementTest() {
   const target = join(directory, "state.json");
   replaceFileAtomicallySync(target, `${JSON.stringify({ revision: 0, payload: "x".repeat(8192) })}\n`);
   const helper = join(directory, "replace-loop.mjs");
-  const moduleUrl = pathToFileURL(join(root, "src", "local", "exclusive-file.mjs")).href;
+  const moduleUrl = pathToFileURL(join(root, "src", "local", "core", "exclusive-file.mjs")).href;
   await writeFile(helper, `import { replaceFileAtomicallySync } from ${JSON.stringify(moduleUrl)};\nconst target = process.argv[2];\nfor (let revision = 1; revision <= 250; revision += 1) replaceFileAtomicallySync(target, JSON.stringify({ revision, payload: 'x'.repeat(8192) }) + '\\n');\n`, "utf8");
   const child = spawnFixtureNode([helper, target], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
   const result = await runFixtureChild(child, {
@@ -315,7 +315,7 @@ async function daemonReadinessLockTest() {
   const lock = acquireStartupLock(state, { operation: "readiness-fixture" });
   assert(lock.acquired, "readiness fixture could not acquire startup lock");
   lock.release();
-  const { acquireDaemonLock, daemonLockPathForState, readDaemonLockOwner } = await import("../src/local/state.mjs");
+  const { acquireDaemonLock, daemonLockPathForState, readDaemonLockOwner } = await import("../src/local/state/state.mjs");
   const daemon = acquireDaemonLock(state, { mode: "service", version: "3.0.0-test" });
   assert(daemon.acquired && daemon.owner.startupReady === false && daemon.owner.startupReadyAt === null,
     "daemon lock did not begin with unverified startup readiness");
@@ -374,7 +374,7 @@ async function startupWaitTest() {
   const stateRoot = join(temp, "wait-state");
   await mkdir(workspace, { recursive: true });
   const helper = join(workspace, "hold-lock.mjs");
-  const stateUrl = pathToFileURL(join(root, "src", "local", "state.mjs")).href;
+  const stateUrl = pathToFileURL(join(root, "src", "local", "state", "state.mjs")).href;
   await writeFile(helper, `import { acquireStartupLock, loadState } from ${JSON.stringify(stateUrl)};\nconst [workspace, stateRoot] = process.argv.slice(2);\nconst state = loadState(workspace, { stateDir: stateRoot });\nconst lock = acquireStartupLock(state, { operation: "fixture" });\nif (!lock.acquired) process.exit(4);\nprocess.stdout.write("ready\\n");\nsetTimeout(() => { lock.release(); process.exit(0); }, 1000);\n`, "utf8");
   const child = spawnFixtureNode([helper, workspace, stateRoot], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const result = await runFixtureChild(child, {
@@ -438,7 +438,7 @@ async function maintenanceLockTest() {
   ownStartup.release();
 
   const helper = join(workspace, "maintenance-load.mjs");
-  const stateUrl = pathToFileURL(join(root, "src", "local", "state.mjs")).href;
+  const stateUrl = pathToFileURL(join(root, "src", "local", "state", "state.mjs")).href;
   await writeFile(helper, `import { loadState } from ${JSON.stringify(stateUrl)};
 const [workspace, stateRoot] = process.argv.slice(2);
 try { loadState(workspace, { stateDir: stateRoot }); process.exit(0); } catch (error) { process.stderr.write(String(error?.message || error)); process.exit(7); }

@@ -3,9 +3,9 @@ import { once } from "node:events";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runExecutable } from "../src/local/shell.mjs";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { runExecutable } from "../src/local/deploy/shell.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 import { releaseDiagnostic } from "./release-diagnostic.mjs";
 
 const MAX_PROXY_REQUEST_BYTES = 16 * 1024 * 1024;

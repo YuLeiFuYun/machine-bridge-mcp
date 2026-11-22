@@ -5,8 +5,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
-import { withHardenedNpmLauncher } from "../src/local/hardened-npm-launcher.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
+import { withHardenedNpmLauncher } from "../src/local/deploy/hardened-npm.mjs";
 import {
   ensureHardenedNpm,
   HARDENED_NPM_ARTIFACTS,
@@ -14,11 +14,11 @@ import {
   hardenedNpmIdentity,
   prepareHardenedNpm,
   verifyHardenedNpm,
-} from "../src/local/hardened-npm.mjs";
-import { downloadHardenedNpmArtifact } from "../src/local/hardened-npm-download.mjs";
-import { createHardenedDownloadTimeout } from "../src/local/hardened-npm-download-timeout.mjs";
-import { createHardenedNpmSession, settleHardenedNpmSession } from "../scripts/hardened-npm-session.mjs";
-import { operationalErrorCode, throwOperationalOrIntegrity } from "../src/local/private-toolchain-integrity.mjs";
+} from "../src/local/deploy/hardened-npm.mjs";
+import { downloadHardenedNpmArtifact } from "../src/local/deploy/hardened-npm.mjs";
+import { createHardenedDownloadTimeout } from "../src/local/deploy/hardened-npm.mjs";
+import { createHardenedNpmSession, settleHardenedNpmSession } from "../scripts/lib/npm.mjs";
+import { operationalErrorCode, throwOperationalOrIntegrity } from "../src/local/deploy/cf-network-integrity.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mbm-hardened-npm-test-"));
 try {

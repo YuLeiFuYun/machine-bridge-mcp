@@ -1,4 +1,4 @@
-import { createServiceCommand } from "../src/local/cli-service.mjs";
+import { createServiceCommand } from "../src/local/cli/cli-activate.mjs";
 
 const outputs = [];
 const exits = [];

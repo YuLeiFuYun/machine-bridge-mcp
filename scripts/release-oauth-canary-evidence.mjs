@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 
 export const RELEASE_OAUTH_CANARY_SCHEMA_VERSION = 1;
 const MAX_EVIDENCE_BYTES = 16 * 1024;

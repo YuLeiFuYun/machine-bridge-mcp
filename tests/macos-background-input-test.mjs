@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { BridgeError } from "../src/local/errors.mjs";
-import { APPLICATION_OPERATION_REASON } from "../src/local/computer-use-dispatch-settlement.mjs";
-import { MacosBackgroundInputService, applicationBackgroundInputConfiguration } from "../src/local/macos-background-input.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
+import { APPLICATION_OPERATION_REASON } from "../src/local/automation/computer-use-contracts.mjs";
+import { MacosBackgroundInputService, applicationBackgroundInputConfiguration } from "../src/local/automation/macos-background-input.mjs";
 
 await buildsOnceAndProjectsSuccessfulClick();
+await rebuildsWhenSourceChangesOrSidecarIsLegacy();
 await projectsPublicPidKeyboardWithoutVisualOptIn();
 await classifiesPublicPidKeyboardSettlement();
 await projectsSuccessfulDoubleClick();
@@ -549,6 +550,48 @@ async function cachesProbeStateAndSupportsExplicitReprobe() {
     assert.equal(probeRuns, 2);
     assert.equal(service.status().available, true);
     assert.equal(service.status().error, "");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function rebuildsWhenSourceChangesOrSidecarIsLegacy() {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(path.join(tmpdir(), "mbm-bg-input-rebuild-"));
+  const sourceRoot = path.join(root, "src-root");
+  const swiftDir = path.join(sourceRoot, "native", "macos");
+  const swiftPath = path.join(swiftDir, "MachineBridgeBackgroundInput.swift");
+  const cacheRoot = path.join(root, "cache");
+  let compileCount = 0;
+  const runProcess = async (cmd, argv, _timeoutMs, _allowFailure, _maxOutput, _context, _cwd, stdin) => {
+    if (cmd === "/usr/bin/xcrun") {
+      compileCount += 1;
+      const output = argv[argv.indexOf("-o") + 1];
+      await writeFile(output, `synthetic-helper-v${compileCount}\n`, "utf8");
+      await chmod(output, 0o700);
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    JSON.parse(stdin);
+    return { code: 0, stdout: `${JSON.stringify({ ok: true, backend: "skylight-experimental", dispatch_started: false })}\n`, stderr: "" };
+  };
+  try {
+    await mkdir(swiftDir, { recursive: true });
+    await writeFile(swiftPath, "// swift v1\n", "utf8");
+    const service = new MacosBackgroundInputService({ runProcess, cacheRoot, platform: "darwin", sourceRoot });
+    await service.probe({}, { force: true });
+    assert.equal(compileCount, 1, "initial build did not compile once");
+    await service.probe({}, { force: true });
+    assert.equal(compileCount, 1, "cached build recompiled even though Swift source did not change");
+
+    await writeFile(swiftPath, "// swift v2\n", "utf8");
+    await service.probe({}, { force: true });
+    assert.equal(compileCount, 2, "modifying Swift source did not invalidate the cached binary");
+    const sidecar = JSON.parse(await readFile(path.join(cacheRoot, "background-input-current.sha256"), "utf8"));
+    assert.equal(sidecar.schema_version, 1);
+
+    await writeFile(path.join(cacheRoot, "background-input-current.sha256"), `${"a".repeat(64)}\n`, "utf8");
+    await service.probe({}, { force: true });
+    assert.equal(compileCount, 3, "legacy plain-hex sidecar did not trigger a clean rebuild");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

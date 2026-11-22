@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
-import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, relayOutageUserAction, welcomeMismatch } from "../src/local/relay-connection.mjs";
-import { classifyRelayTransportError, observeTlsLookup } from "../src/local/relay-connection-support.mjs";
-import { scheduleRelayReconnect, scheduleRelayReconnectBackoffReset, settleRelayReconnectBackoffOnClose } from "../src/local/relay-reconnect.mjs";
-import { classifyRelayTransportErrorReason } from "../src/local/relay-transport-error-state.mjs";
-import { RelayTransportConfirmation } from "../src/local/relay-transport-confirmation.mjs";
-import { proxyAgentForWebSocket } from "../src/local/network-proxy.mjs";
+import { acknowledgementMismatch, readinessMismatch, RelayConnection, isSupersededClose, reconnectDelay, relayCloseCategory, relayOutageUserAction, welcomeMismatch } from "../src/local/transport/relay-connection.mjs";
+import { classifyRelayTransportError, observeTlsLookup } from "../src/local/transport/relay-classification.mjs";
+import { scheduleRelayReconnect, scheduleRelayReconnectBackoffReset, settleRelayReconnectBackoffOnClose } from "../src/local/transport/relay-classification.mjs";
+import { classifyRelayTransportErrorReason } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { RelayTransportConfirmation } from "../src/local/transport/relay-heartbeat.mjs";
+import { proxyAgentForWebSocket } from "../src/local/transport/network-proxy.mjs";
 
 // Keep direct/default relay cases hermetic from the owner machine's persisted service route.
 delete process.env.MBM_RELAY_PROXY;

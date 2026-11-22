@@ -5,9 +5,9 @@ const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk
 import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import vm from "node:vm";
-import { BrowserComputerObservationService } from "../src/local/browser-computer-observation-service.mjs";
-import { BrowserOperationService } from "../src/local/browser-operation-service.mjs";
-import { BridgeError } from "../src/local/errors.mjs";
+import { BrowserComputerObservationService } from "../src/local/automation/browser-observation.mjs";
+import { BrowserOperationService } from "../src/local/automation/browser-operation-service.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
 
 const contractSource = await readFile(new URL("../browser-extension/browser-operation-contract.js", import.meta.url), "utf8");
 const source = await readFile(new URL("../browser-extension/browser-operations.js", import.meta.url), "utf8");

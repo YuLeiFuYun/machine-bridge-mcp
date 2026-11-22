@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isUtf8 } from "node:buffer";
 import { execFileSync } from "node:child_process";
-import { resolveTrustedGitExecutable } from "../../src/local/trusted-git-executable.mjs";
+import { resolveTrustedGitExecutable } from "../../src/local/core/trusted-executable.mjs";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,10 +18,19 @@ const docs = [
   join(root, "CODE_OF_CONDUCT.md"),
   join(root, "SUPPORT.md"),
   join(root, "GOVERNANCE.md"),
-  ...readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => join(root, "docs", name)),
-  ...readdirSync(join(root, "docs", "architecture")).filter((name) => name.endsWith(".md"))
-    .map((name) => join(root, "docs", "architecture", name)),
+  ...collectMarkdownFiles(join(root, "docs")),
 ];
+
+function collectMarkdownFiles(directory) {
+  if (!existsSync(directory)) return [];
+  const results = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const target = join(directory, entry.name);
+    if (entry.isDirectory()) results.push(...collectMarkdownFiles(target));
+    else if (entry.isFile() && entry.name.endsWith(".md")) results.push(target);
+  }
+  return results.sort();
+}
 for (const file of docs) validateRelativeLinks(file);
 validateCurrentMcpDeliveryDocumentation();
 validateCurrentMaintenanceDocumentation();
@@ -124,15 +133,18 @@ function validateCurrentMcpDeliveryDocumentation() {
   }
 
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  for (const obsolete of ["stateless initialization compatibility", "`2025-06-18` and `2025-11-25`", "Remote initialization compatibility is stateless"]) {
-    if (readme.includes(obsolete)) throw new Error(`README.md retained removed initialization compatibility: ${obsolete}`);
+  for (const obsolete of [
+    "`2025-06-18` and `2025-11-25`",
+    "resumes MCP sessions across HTTP disconnects",
+    "SSE event identifiers are cursors",
+  ]) {
+    if (readme.includes(obsolete)) throw new Error(`README.md retained removed session/replay semantics: ${obsolete}`);
   }
   for (const required of [
-    "MCP `2026-07-28` for both stdio and remote HTTP",
-    "Removed protocol requests fail closed",
-    "must reconnect with MCP `2026-07-28`",
+    "HTTP streams are request-scoped and non-resumable",
+    "Removed session/replay semantics never execute",
   ]) {
-    if (!readme.includes(required)) throw new Error(`README.md lost current-only MCP semantics: ${required}`);
+    if (!readme.includes(required)) throw new Error(`README.md lost current-only MCP delivery semantics: ${required}`);
   }
 
   const overview = readFileSync(join(root, "docs", "OVERVIEW.md"), "utf8");
@@ -146,8 +158,8 @@ function validateCurrentMaintenanceDocumentation() {
   const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
   const headings = [...changelog.matchAll(/^## /gm)];
   const activeReleaseHeading = `## ${packageJson.version} - `;
-  if (headings.length !== 2 || !changelog.includes(activeReleaseHeading) || !changelog.includes("## Historical releases")) {
-    throw new Error("CHANGELOG.md must contain only the package-version active release section plus the historical-release pointer");
+  if (headings.length < 2 || !changelog.includes(activeReleaseHeading)) {
+    throw new Error("CHANGELOG.md must lead with the package-version active release section plus prior release history");
   }
   const audit = readFileSync(join(root, "docs", "AUDIT.md"), "utf8");
   if (Buffer.byteLength(audit, "utf8") > 16 * 1024 || !audit.includes("# Current audit status") || !audit.includes("Historical findings")) {

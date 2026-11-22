@@ -1,15 +1,15 @@
-import { stopSystemdService } from "../src/local/service.mjs";
+import { stopSystemdService } from "../src/local/deploy/service.mjs";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary, systemdStatusSummary } from "../src/local/service-status.mjs";
-import { runServiceRestartHandoff, serviceRestartHandoffMain } from "../src/local/service-restart-handoff.mjs";
-import { waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "../src/local/service-convergence.mjs";
-import { scheduleServiceRestart, serviceControlEnvironment } from "../src/local/service-restart-scheduler.mjs";
-import { restartWindowsTask, startWindowsTask } from "../src/local/windows-service.mjs";
-import { stopOwnedPlatformService } from "../src/local/service-ownership.mjs";
+import { LAUNCHD_MISSING_SERVICE_CODE, launchdStatusSummary, systemdStatusSummary } from "../src/local/deploy/service-support.mjs";
+import { runServiceRestartHandoff, serviceRestartHandoffMain } from "../src/local/deploy/service-handoff.mjs";
+import { waitForInactiveStatus, waitForStableActiveStatus, waitForStatus } from "../src/local/deploy/service-support.mjs";
+import { scheduleServiceRestart, serviceControlEnvironment } from "../src/local/deploy/service-handoff.mjs";
+import { restartWindowsTask, startWindowsTask } from "../src/local/deploy/service-platforms.mjs";
+import { stopOwnedPlatformService } from "../src/local/deploy/service-contracts.mjs";
 
 await testDetachedScheduler();
 await testHandoffExecution();

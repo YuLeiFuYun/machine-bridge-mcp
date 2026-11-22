@@ -3,13 +3,15 @@ import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAST_CHECK_TASKS, SERIAL_FAST_CHECK_TASKS, checkTasks } from "./check-plan.mjs";
-import { COVERAGE_FIXTURE_TESTS, directNodeInvocation, runVerificationPlan } from "./check-runner.mjs";
-import { captureCoverageGeneration } from "./coverage-generation.mjs";
-import { rerunVerificationUnderIdleSleepGuard } from "./verification-idle-sleep-guard.mjs";
-import { runWithStableGeneration } from "./verification-generation-guard.mjs";
+import { COVERAGE_FIXTURE_TESTS, directNodeTestFiles, runVerificationPlan } from "./check-runner.mjs";
+import {
+  assertHostCapabilities,
+  captureCoverageGeneration,
+  rerunVerificationUnderIdleSleepGuard,
+  runWithStableGeneration,
+} from "./lib/verification.mjs";
 import { releaseDiagnostic } from "./release-diagnostic.mjs";
-import { readBundleTaskTimeouts } from "./workflow-bundle-timeouts.mjs";
-import { assertHostCapabilities } from "./verification-capabilities.mjs";
+import { readBundleTaskTimeouts } from "./lib/release.mjs";
 import {
   captureVerificationRunGeneration,
   captureVerifiedSourceGeneration,
@@ -103,10 +105,7 @@ function createFullCoverageContext(projectRoot, planTasks, coverageTasks) {
 
 function coverageTasksForPlan(planTasks, scripts) {
   const coverageFixtures = new Set(COVERAGE_FIXTURE_TESTS);
-  return new Set(planTasks.filter((task) => {
-    const direct = directNodeInvocation(task, scripts);
-    return direct && coverageFixtures.has(direct.args[0]);
-  }));
+  return new Set(planTasks.filter((task) => directNodeTestFiles(task, scripts).some((file) => coverageFixtures.has(file))));
 }
 
 function createFullCoverageTaskEnvironments(fullCoverage, coverageTasks) {

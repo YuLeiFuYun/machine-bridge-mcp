@@ -49,7 +49,7 @@ Application observations contain:
 Surface-specific arguments are strict.
 Browser-only arguments are rejected for application observations and application-only arguments are rejected for browser observations.
 
-Browser observations accept `set_of_marks=true`.
+Observations accept `include_marks=true` on browser and application surfaces (alias `set_of_marks=true` on browser) and report `unlabeled_interactive_count` for visible controls lacking accessible names.
 The response then carries `set_of_marks` (numbered marks with bounds, centre, role, name, and target/ref links) and, when at least one mark exists, `set_of_marks_svg`: a self-contained overlay using the observation viewport size.
 The SVG is generated locally from already-projected numeric geometry; it is a visual aid for the caller and never grants dispatch authority.
 Marks and overlay are bounded by the same element budget as the observation itself, and the SVG is omitted rather than truncated when the projection is empty.

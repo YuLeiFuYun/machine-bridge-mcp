@@ -1,8 +1,9 @@
+import { EventEmitter } from "node:events";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { cloudflareCommand, executionEnv, runExecutable, wranglerCommand } from "../src/local/shell.mjs";
+import { cloudflareCommand, executionEnv, runExecutable, wranglerCommand } from "../src/local/deploy/shell.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-wrangler-command-"));
 try {
@@ -56,6 +57,35 @@ try {
   if (deniedSpawn.code !== 127 || deniedSpawn.timed_out || deniedSpawn.termination_settled !== true
       || !deniedSpawn.stderr.includes("synthetic spawn denied")) {
     throw new Error("allowFailure did not convert a synchronous spawn denial into a bounded command result");
+  }
+
+  // runExecutable uses attachChildProcessSettlement and clears escalation timers on close.
+  const settledResult = await runExecutable("synthetic-command", [], {
+    capture: true,
+    spawnProcess() {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.exitCode = null;
+      child.signalCode = null;
+      queueMicrotask(() => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      });
+      return child;
+    },
+  });
+  if (settledResult.code !== 0 || settledResult.timed_out !== false || settledResult.termination_settled !== true) {
+    throw new Error("runExecutable settlement failed on fake child process");
+  }
+  const timedOutResult = await runExecutable(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
+    capture: true,
+    allowFailure: true,
+    timeoutMs: 25,
+  });
+  if (timedOutResult.code !== 124 || timedOutResult.timed_out !== true) {
+    throw new Error("runExecutable did not settle timeout cleanly on child close");
   }
   if (process.platform !== "win32") {
     const target = join(root, "real-wrangler.js");

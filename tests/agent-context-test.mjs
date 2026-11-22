@@ -1,10 +1,10 @@
 import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { AgentContextManager, parseSkillMetadata } from "../src/local/agent-context.mjs";
-import { LocalRuntime } from "../src/local/runtime.mjs";
-import { capabilityFingerprint, publicSkillWarnings } from "../src/local/agent-context-projection.mjs";
-import { automaticPackageCommands, packageScriptCommand } from "../src/local/project-package.mjs";
+import { AgentContextManager, parseSkillMetadata } from "../src/local/agent/agent-context.mjs";
+import { LocalRuntime } from "../src/local/runtime/runtime.mjs";
+import { capabilityFingerprint, publicSkillWarnings } from "../src/local/agent/agent-contract.mjs";
+import { automaticPackageCommands, packageScriptCommand } from "../src/local/files/project.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-agent-context-"));

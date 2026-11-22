@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { stat, writeFile } from "node:fs/promises";
-import { AppAutomationManager } from "../src/local/app-automation.mjs";
-import { BridgeError, publicError } from "../src/local/errors.mjs";
+import { AppAutomationManager } from "../src/local/automation/app-automation.mjs";
+import { BridgeError, publicError } from "../src/local/core/errors.mjs";
 
 defaultVisualBackendIsDisabled();
 await experimentalBackendRequiresSuccessfulProbe();

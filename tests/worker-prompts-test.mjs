@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { dispatchWorkerPromptOperation } from "../src/worker/mcp-prompts.ts";
-import { McpController } from "../src/worker/mcp-controller.ts";
+import { dispatchWorkerPromptOperation } from "../src/worker/mcp/prompts.ts";
+import { McpController } from "../src/worker/mcp/controller.ts";
 
 const dummyToken = {
   accountId: "acc-1",

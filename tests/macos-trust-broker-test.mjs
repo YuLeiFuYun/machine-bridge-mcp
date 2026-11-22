@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
-import { createDeviceIdentity } from "../src/local/device-identity.mjs";
+import { createDeviceIdentity } from "../src/local/state/device-identity.mjs";
 import {
   buildDevelopmentTrustBrokerBinary,
   configuredMacosTrustBrokerPath,
@@ -12,7 +12,7 @@ import {
   isMacosSecureDeviceRoot,
   probeProvisionedMacosTrustBroker,
   signWithMacosSecureDeviceRoot,
-} from "../src/local/macos-trust-broker.mjs";
+} from "../src/local/state/macos-trust-broker.mjs";
 
 const root = mkdtempSync(path.join(tmpdir(), "mbm-trust-broker-"));
 const nativeLstatSync = fs.lstatSync;
@@ -379,7 +379,8 @@ function testNativeKeyProvenance(fixtureRoot) {
     .replaceAll("SecItemCopyMatching(", "fixtureCopyMatching(")
     .replaceAll("SecItemDelete(", "fixtureDelete(")
     .replaceAll("SecKeyCreateRandomKey(", "fixtureCreateRandomKey(")
-    .replaceAll("SecKeyCopyAttributes(", "fixtureKeyAttributes(");
+    .replaceAll("SecKeyCopyAttributes(", "fixtureKeyAttributes(")
+    .replaceAll("SecureEnclave.isAvailable", "fixtureSecureEnclaveAvailable()");
   const driver = path.join(fixtureRoot, "owned-key-provenance.swift");
   const fixtureBinary = path.join(fixtureRoot, "owned-key-provenance");
   writeFileSync(driver, producer + String.raw`
@@ -387,9 +388,14 @@ private var lookupStatus: OSStatus = errSecSuccess
 private var lookupValue: CFTypeRef?
 private var ownedKey: SecKey!
 private var hardwareAttributes = false
+private var fixtureSeAvailable = true
 private var generationCount = 0
 private var deletionCount = 0
 private var lastDelete: NSDictionary?
+
+private func fixtureSecureEnclaveAvailable() -> Bool {
+    fixtureSeAvailable
+}
 
 private func fixtureCopyMatching(_ query: CFDictionary, _ result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
     let attributes = query as NSDictionary
@@ -451,14 +457,18 @@ private struct OwnedTrustBrokerFixture {
         try deletePrivateKey(tag: "owned-fixture")
         precondition(deletionCount == 0)
         expectFailure({ _ = try ensurePrivateKey(tag: "owned-fixture") }, "not a Secure Enclave")
-        precondition(generationCount == 2, "missing key did not take only availability and creation paths")
+        precondition(generationCount == 1, "missing key did not take only creation path via SecureEnclave.isAvailable")
+        fixtureSeAvailable = false
+        expectFailure({ _ = try ensurePrivateKey(tag: "owned-fixture") }, "Secure Enclave is unavailable")
+        precondition(generationCount == 1, "unavailable Secure Enclave still invoked key generation")
+        fixtureSeAvailable = true
         lookupStatus = errSecSuccess
         lookupValue = "invalid reference" as CFString
         expectFailure({ _ = try loadPrivateKey(tag: "owned-fixture", prompt: nil, allowInteraction: false) }, "invalid key reference")
         lookupValue = software
         hardwareAttributes = true // Synthetic attributes only; no actual Secure Enclave enrollment.
         let retained = try ensurePrivateKey(tag: "owned-fixture")
-        precondition(CFEqual(retained, software) && generationCount == 2)
+        precondition(CFEqual(retained, software) && generationCount == 1)
         try deletePrivateKey(tag: "owned-fixture")
         precondition(deletionCount == 1)
         let references = lastDelete?[kSecMatchItemList] as? [SecKey]

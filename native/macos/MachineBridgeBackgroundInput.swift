@@ -82,8 +82,11 @@ private final class SkyLightSymbols {
     let getProcessForPid: GetProcessForPidFn
 
     init?() {
-        guard let sky = dlopen(skyLightPath, RTLD_LAZY | RTLD_GLOBAL),
-              let hi = dlopen(hiServicesPath, RTLD_LAZY | RTLD_GLOBAL) else { return nil }
+        guard let sky = dlopen(skyLightPath, RTLD_LAZY | RTLD_GLOBAL) else { return nil }
+        guard let hi = dlopen(hiServicesPath, RTLD_LAZY | RTLD_GLOBAL) else {
+            dlclose(sky)
+            return nil
+        }
         func load<T>(_ handle: UnsafeMutableRawPointer, _ name: String, _: T.Type) -> T? {
             guard let pointer = dlsym(handle, name) else { return nil }
             return unsafeBitCast(pointer, to: T.self)
@@ -93,7 +96,11 @@ private final class SkyLightSymbols {
               let setIntegerField = load(sky, "SLEventSetIntegerValueField", SetIntegerFieldFn.self),
               let postEventRecord = load(sky, "SLPSPostEventRecordTo", PostEventRecordFn.self),
               let getFrontProcess = load(sky, "_SLPSGetFrontProcess", GetFrontProcessFn.self),
-              let getProcessForPid = load(hi, "GetProcessForPID", GetProcessForPidFn.self) else { return nil }
+              let getProcessForPid = load(hi, "GetProcessForPID", GetProcessForPidFn.self) else {
+            dlclose(hi)
+            dlclose(sky)
+            return nil
+        }
         self.sky = sky
         self.hi = hi
         self.postToPid = postToPid
@@ -540,16 +547,84 @@ private func cursorLocation() -> CGPoint? {
     NSEvent.mouseLocation
 }
 
+private func postFocusEventRecord(
+    _ symbols: SkyLightSymbols,
+    pid: pid_t,
+    windowId: UInt32,
+    focusFlag: UInt8
+) -> Bool {
+    var psn = [UInt8](repeating: 0, count: 8)
+    guard psn.withUnsafeMutableBytes({ symbols.getProcessForPid(pid, $0.baseAddress) == 0 }) else {
+        return false
+    }
+    var record = [UInt8](repeating: 0, count: 0xF8)
+    record[0x04] = 0xF8
+    record[0x08] = 0x0D
+    let littleEndian = windowId.littleEndian
+    withUnsafeBytes(of: littleEndian) { bytes in
+        for index in 0..<4 { record[0x3C + index] = bytes[index] }
+    }
+    record[0x8A] = focusFlag
+    return psn.withUnsafeBytes { targetPsn in
+        record.withUnsafeBytes { body in symbols.postEventRecord(targetPsn.baseAddress, body.baseAddress) == 0 }
+    }
+}
+
 private func restoreFrontmostIfNeeded(
-    priorFront: NSRunningApplication?, targetApplication: NSRunningApplication, focusDispatched: Bool
+    _ symbols: SkyLightSymbols,
+    targetPid: pid_t,
+    windowId: UInt32,
+    priorFront: NSRunningApplication?,
+    targetApplication: NSRunningApplication,
+    focusDispatched: Bool
 ) -> Bool {
     guard focusDispatched,
-          let priorFront, !priorFront.isEqual(targetApplication), !priorFront.isTerminated,
-          let current = NSWorkspace.shared.frontmostApplication, current.isEqual(targetApplication) else { return false }
-    return priorFront.activate(options: [])
+          let priorFront, !priorFront.isEqual(targetApplication), !priorFront.isTerminated else { return false }
+    if !targetApplication.isTerminated {
+        _ = postFocusEventRecord(symbols, pid: targetPid, windowId: windowId, focusFlag: 0x02)
+    }
+    let symFocusRestored = postFocusEventRecord(symbols, pid: priorFront.processIdentifier, windowId: 0, focusFlag: 0x01)
+    if let current = NSWorkspace.shared.frontmostApplication, current.isEqual(targetApplication) {
+        return priorFront.activate(options: []) || symFocusRestored
+    }
+    return symFocusRestored
 }
 
-private func click(_ request: Request, symbols: SkyLightSymbols) -> Response {
+private func invalidWindowRequestResponse() -> Response {
+    Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
+             frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
+             dispatch_started: false, error: "invalid_request_before_dispatch")
+}
+
+private struct VerifiedWindowTarget {
+    let pid: pid_t
+    let windowId: UInt32
+    let screenX: Double
+    let screenY: Double
+    let localX: Double
+    let localY: Double
+    let expectedBounds: CGRect
+    let targetApplication: NSRunningApplication
+    let frameworkTransport: PointerTransport
+    let transport: PointerTransport
+    let priorFront: NSRunningApplication?
+    let focusDispatched: Bool
+    let source: CGEventSource
+
+    func boundaryStillValid() -> Bool {
+        inputBoundaryStillValid(
+            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
+            frameworkTransport: frameworkTransport, priorFront: priorFront, focusDispatched: focusDispatched
+        )
+    }
+}
+
+private func withVerifiedWindowTarget(
+    _ request: Request,
+    symbols: SkyLightSymbols,
+    pointerTransportOverride: PointerTransport? = nil,
+    body: (VerifiedWindowTarget, inout Bool) throws -> Void
+) -> Response {
     guard let rawPid = request.pid, rawPid > 0,
           let processGeneration = request.process_generation,
           let windowId = request.window_id, windowId > 0,
@@ -557,345 +632,12 @@ private func click(_ request: Request, symbols: SkyLightSymbols) -> Response {
           let screenY = request.screen_y, screenY.isFinite,
           let localX = request.local_x, localX.isFinite,
           let localY = request.local_y, localY.isFinite,
-          let windowX = request.window_x, windowX.isFinite,
-          let windowY = request.window_y, windowY.isFinite,
-          let windowWidth = request.window_width, windowWidth > 0, windowWidth.isFinite,
-          let windowHeight = request.window_height, windowHeight > 0, windowHeight.isFinite,
-          localX >= 0, localY >= 0, localX < windowWidth, localY < windowHeight,
-          (request.click_count ?? 1) >= 1, (request.click_count ?? 1) <= 2 else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
-                        dispatch_started: false, error: "invalid_request_before_dispatch")
-    }
-    let pid = pid_t(rawPid)
-    guard let targetApplication = runningApplication(pid: pid, expectedGeneration: processGeneration) else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
-                        dispatch_started: false, error: "process_generation_changed_before_dispatch")
-    }
-    let clickCount = request.click_count ?? 1
-    let transport = pointerTransport(application: targetApplication)
-    let frameworkTransport = transport
-    let clickSubtype: Int64 = switch transport {
-    case .skyLight: 3
-    case .publicCGEvent: 0
-    }
-    let expectedBounds = CGRect(x: windowX, y: windowY, width: windowWidth, height: windowHeight)
-    guard frontWindowStillMatches(pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds) else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: false, cursor_preserved: nil,
-                        dispatch_started: false, error: "front_window_changed_before_dispatch")
-    }
-
-    let cursorBefore = cursorLocation()
-    let priorFront = NSWorkspace.shared.frontmostApplication
-    let focusPreparation = prepareFocusIfNeeded(
-        symbols, pid: pid, windowId: windowId, frameworkTransport: transport,
-        priorFront: priorFront, targetApplication: targetApplication
-    )
-    guard focusPreparation.ok else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: focusPreparation.dispatchStarted,
-                        error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "focus_without_raise_unavailable_before_dispatch")
-    }
-    if focusPreparation.dispatchStarted { usleep(50_000) }
-    guard skyLightInputStillAuthorized(
-        frameworkTransport: transport, priorFront: priorFront,
-        targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-    ) else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: focusPreparation.dispatchStarted,
-                        error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "frontmost_changed_before_input")
-    }
-    guard let source = CGEventSource(stateID: .hidSystemState) else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: focusPreparation.dispatchStarted,
-                        error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "event_source_unavailable_before_dispatch")
-    }
-
-    let clickGroup = Int64(UInt32.random(in: 1...UInt32.max))
-    var pointerDispatchStarted = false
-    var downSent = false
-    var upSent = true
-    var activeClickState: Int64 = 0
-    do {
-        guard inputBoundaryStillValid(
-            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-            frameworkTransport: frameworkTransport, priorFront: priorFront,
-            focusDispatched: focusPreparation.dispatchStarted
-        ) else {
-            throw NSError(domain: "MachineBridgeBackgroundInput", code: 11)
-        }
-        try sendMouseEvent(.mouseMoved, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                           screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                           clickState: 0, phase: 2, clickGroup: clickGroup, transport: transport, subtype: clickSubtype)
-        pointerDispatchStarted = true
-        usleep(15_000)
-        for clickState in 1...clickCount {
-            activeClickState = Int64(clickState)
-            guard inputBoundaryStillValid(
-                pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-                frameworkTransport: frameworkTransport, priorFront: priorFront,
-                focusDispatched: focusPreparation.dispatchStarted
-            ) else {
-                throw NSError(domain: "MachineBridgeBackgroundInput", code: 12)
-            }
-            try sendMouseEvent(.leftMouseDown, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                               screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                               clickState: activeClickState, phase: 3, clickGroup: clickGroup, transport: transport, subtype: clickSubtype)
-            pointerDispatchStarted = true
-            downSent = true
-            upSent = false
-            usleep(28_000)
-            guard inputBoundaryStillValid(
-                pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-                frameworkTransport: frameworkTransport, priorFront: priorFront,
-                focusDispatched: focusPreparation.dispatchStarted
-            ) else {
-                throw NSError(domain: "MachineBridgeBackgroundInput", code: 13)
-            }
-            try sendMouseEvent(.leftMouseUp, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                               screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                               clickState: activeClickState, phase: 3, clickGroup: clickGroup, transport: transport, subtype: clickSubtype)
-            pointerDispatchStarted = true
-            upSent = true
-            downSent = false
-            if clickState < clickCount { usleep(55_000) }
-        }
-    } catch {
-        if downSent && !upSent && processInstanceStillMatches(pid: pid, application: targetApplication) {
-            try? sendMouseEvent(.leftMouseUp, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                                screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                                clickState: activeClickState, phase: 3, clickGroup: clickGroup, transport: transport, subtype: clickSubtype)
-        }
-        let dispatchStarted = focusPreparation.dispatchStarted || pointerDispatchStarted
-        let restored = restoreFrontmostIfNeeded(priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted)
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: dispatchStarted,
-                        error: dispatchStarted ? "dispatch_outcome_unknown" : "input_unavailable_before_dispatch")
-    }
-
-    usleep(50_000)
-    let restored = restoreFrontmostIfNeeded(priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted)
-    let cursorAfter = cursorLocation()
-    let cursorPreserved: Bool? = {
-        guard let cursorBefore, let cursorAfter else { return nil }
-        return hypot(cursorBefore.x - cursorAfter.x, cursorBefore.y - cursorAfter.y) <= 0.5
-    }()
-    return Response(ok: true, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                    frontmost_restored: restored, front_window_validated: true, cursor_preserved: cursorPreserved,
-                    dispatch_started: true, error: nil, input_transport: transport.label)
-}
-
-private func drag(_ request: Request, symbols: SkyLightSymbols) -> Response {
-    guard let rawPid = request.pid, rawPid > 0,
-          let processGeneration = request.process_generation,
-          let windowId = request.window_id, windowId > 0,
-          let screenX = request.screen_x, screenX.isFinite,
-          let screenY = request.screen_y, screenY.isFinite,
-          let localX = request.local_x, localX.isFinite,
-          let localY = request.local_y, localY.isFinite,
-          let destinationScreenX = request.destination_screen_x, destinationScreenX.isFinite,
-          let destinationScreenY = request.destination_screen_y, destinationScreenY.isFinite,
-          let destinationLocalX = request.destination_local_x, destinationLocalX.isFinite,
-          let destinationLocalY = request.destination_local_y, destinationLocalY.isFinite,
-          let windowX = request.window_x, windowX.isFinite,
-          let windowY = request.window_y, windowY.isFinite,
-          let windowWidth = request.window_width, windowWidth > 0, windowWidth.isFinite,
-          let windowHeight = request.window_height, windowHeight > 0, windowHeight.isFinite,
-          localX >= 0, localY >= 0, destinationLocalX >= 0, destinationLocalY >= 0,
-          localX < windowWidth, localY < windowHeight,
-          destinationLocalX < windowWidth, destinationLocalY < windowHeight else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
-                        dispatch_started: false, error: "invalid_request_before_dispatch")
-    }
-    let pid = pid_t(rawPid)
-    guard let targetApplication = runningApplication(pid: pid, expectedGeneration: processGeneration) else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
-                        dispatch_started: false, error: "process_generation_changed_before_dispatch")
-    }
-    let transport = pointerTransport(application: targetApplication)
-    let frameworkTransport = transport
-    let expectedBounds = CGRect(x: windowX, y: windowY, width: windowWidth, height: windowHeight)
-    guard frontWindowStillMatches(pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds) else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: false, cursor_preserved: nil,
-                        dispatch_started: false, error: "front_window_changed_before_dispatch")
-    }
-
-    let cursorBefore = cursorLocation()
-    let priorFront = NSWorkspace.shared.frontmostApplication
-    let focusPreparation = prepareFocusIfNeeded(
-        symbols, pid: pid, windowId: windowId, frameworkTransport: transport,
-        priorFront: priorFront, targetApplication: targetApplication
-    )
-    guard focusPreparation.ok else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: focusPreparation.dispatchStarted,
-                        error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "focus_without_raise_unavailable_before_dispatch")
-    }
-    if focusPreparation.dispatchStarted { usleep(50_000) }
-    guard skyLightInputStillAuthorized(
-        frameworkTransport: transport, priorFront: priorFront,
-        targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-    ) else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: focusPreparation.dispatchStarted,
-                        error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "frontmost_changed_before_input")
-    }
-    guard let source = CGEventSource(stateID: .hidSystemState) else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: focusPreparation.dispatchStarted,
-                        error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "event_source_unavailable_before_dispatch")
-    }
-
-    let clickGroup = Int64(UInt32.random(in: 1...UInt32.max))
-    var pointerDispatchStarted = false
-    var downSent = false
-    var upSent = false
-    var lastScreenX = screenX
-    var lastScreenY = screenY
-    var lastLocalX = localX
-    var lastLocalY = localY
-    do {
-        guard inputBoundaryStillValid(
-            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-            frameworkTransport: frameworkTransport, priorFront: priorFront,
-            focusDispatched: focusPreparation.dispatchStarted
-        ) else {
-            throw NSError(domain: "MachineBridgeBackgroundInput", code: 2)
-        }
-        try sendMouseEvent(.mouseMoved, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                           screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                           clickState: 0, phase: 2, clickGroup: clickGroup, transport: transport, subtype: 0)
-        pointerDispatchStarted = true
-        usleep(15_000)
-        guard inputBoundaryStillValid(
-            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-            frameworkTransport: frameworkTransport, priorFront: priorFront,
-            focusDispatched: focusPreparation.dispatchStarted
-        ) else {
-            throw NSError(domain: "MachineBridgeBackgroundInput", code: 3)
-        }
-        try sendMouseEvent(.leftMouseDown, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                           screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                           clickState: 1, phase: 3, clickGroup: clickGroup, transport: transport, subtype: 0)
-        pointerDispatchStarted = true
-        downSent = true
-        usleep(16_000)
-
-        let steps = 8
-        for step in 1...steps {
-            guard inputBoundaryStillValid(
-                pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-                frameworkTransport: frameworkTransport, priorFront: priorFront,
-                focusDispatched: focusPreparation.dispatchStarted
-            ) else {
-                throw NSError(domain: "MachineBridgeBackgroundInput", code: 4)
-            }
-            let ratio = Double(step) / Double(steps)
-            lastScreenX = screenX + (destinationScreenX - screenX) * ratio
-            lastScreenY = screenY + (destinationScreenY - screenY) * ratio
-            lastLocalX = localX + (destinationLocalX - localX) * ratio
-            lastLocalY = localY + (destinationLocalY - localY) * ratio
-            try sendMouseEvent(.leftMouseDragged, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                               screenX: lastScreenX, screenY: lastScreenY, localX: lastLocalX, localY: lastLocalY,
-                               clickState: 1, phase: 3, clickGroup: clickGroup, transport: transport, subtype: 0)
-            pointerDispatchStarted = true
-            usleep(16_000)
-        }
-        guard inputBoundaryStillValid(
-            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-            frameworkTransport: frameworkTransport, priorFront: priorFront,
-            focusDispatched: focusPreparation.dispatchStarted
-        ) else {
-            throw NSError(domain: "MachineBridgeBackgroundInput", code: 5)
-        }
-        usleep(30_000)
-        try sendMouseEvent(.leftMouseUp, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                           screenX: destinationScreenX, screenY: destinationScreenY,
-                           localX: destinationLocalX, localY: destinationLocalY,
-                           clickState: 1, phase: 3, clickGroup: clickGroup, transport: transport, subtype: 0)
-        pointerDispatchStarted = true
-        upSent = true
-    } catch {
-        if downSent && !upSent && processInstanceStillMatches(pid: pid, application: targetApplication) {
-            try? sendMouseEvent(.leftMouseUp, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                                screenX: lastScreenX, screenY: lastScreenY, localX: lastLocalX, localY: lastLocalY,
-                                clickState: 1, phase: 3, clickGroup: clickGroup, transport: transport, subtype: 0)
-        }
-        let dispatchStarted = focusPreparation.dispatchStarted || pointerDispatchStarted
-        let restored = restoreFrontmostIfNeeded(priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted)
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                        frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
-                        dispatch_started: dispatchStarted,
-                        error: dispatchStarted ? "dispatch_outcome_unknown" : "input_unavailable_before_dispatch")
-    }
-
-    usleep(50_000)
-    let restored = restoreFrontmostIfNeeded(priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted)
-    let cursorAfter = cursorLocation()
-    let cursorPreserved: Bool? = {
-        guard let cursorBefore, let cursorAfter else { return nil }
-        return hypot(cursorBefore.x - cursorAfter.x, cursorBefore.y - cursorAfter.y) <= 0.5
-    }()
-    return Response(ok: true, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
-                    frontmost_restored: restored, front_window_validated: true, cursor_preserved: cursorPreserved,
-                    dispatch_started: true, error: nil, input_transport: transport.label)
-}
-
-private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
-    guard let rawPid = request.pid, rawPid > 0,
-          let processGeneration = request.process_generation,
-          let windowId = request.window_id, windowId > 0,
-          let screenX = request.screen_x, screenX.isFinite,
-          let screenY = request.screen_y, screenY.isFinite,
-          let localX = request.local_x, localX.isFinite,
-          let localY = request.local_y, localY.isFinite,
-          let requestedDeltaX = request.delta_x, requestedDeltaX.isFinite, abs(requestedDeltaX) <= 10_000,
-          let requestedDeltaY = request.delta_y, requestedDeltaY.isFinite, abs(requestedDeltaY) <= 10_000,
           let windowX = request.window_x, windowX.isFinite,
           let windowY = request.window_y, windowY.isFinite,
           let windowWidth = request.window_width, windowWidth > 0, windowWidth.isFinite,
           let windowHeight = request.window_height, windowHeight > 0, windowHeight.isFinite,
           localX >= 0, localY >= 0, localX < windowWidth, localY < windowHeight else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
-                        dispatch_started: false, error: "invalid_request_before_dispatch")
-    }
-    let wheelX = Int32((-requestedDeltaX).rounded())
-    let wheelY = Int32((-requestedDeltaY).rounded())
-    guard wheelX != 0 || wheelY != 0 else {
-        return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
-                        frontmost_restored: nil, front_window_validated: nil, cursor_preserved: nil,
-                        dispatch_started: false, error: "invalid_request_before_dispatch")
+        return invalidWindowRequestResponse()
     }
     let pid = pid_t(rawPid)
     guard let targetApplication = runningApplication(pid: pid, expectedGeneration: processGeneration) else {
@@ -904,7 +646,7 @@ private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
                         dispatch_started: false, error: "process_generation_changed_before_dispatch")
     }
     let frameworkTransport = pointerTransport(application: targetApplication)
-    let transport: PointerTransport = .skyLight
+    let transport = pointerTransportOverride ?? frameworkTransport
     let expectedBounds = CGRect(x: windowX, y: windowY, width: windowWidth, height: windowHeight)
     guard frontWindowStillMatches(pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds) else {
         return Response(ok: false, backend: "skylight-experimental", focus_without_raise: nil,
@@ -918,10 +660,14 @@ private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
         symbols, pid: pid, windowId: windowId, frameworkTransport: frameworkTransport,
         priorFront: priorFront, targetApplication: targetApplication
     )
-    guard focusPreparation.ok else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
+    func restoreFocus() -> Bool {
+        restoreFrontmostIfNeeded(
+            symbols, targetPid: pid, windowId: windowId, priorFront: priorFront,
+            targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
         )
+    }
+    guard focusPreparation.ok else {
+        let restored = restoreFocus()
         return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
                         frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
                         dispatch_started: focusPreparation.dispatchStarted,
@@ -932,53 +678,32 @@ private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
         frameworkTransport: frameworkTransport, priorFront: priorFront,
         targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
     ) else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
+        let restored = restoreFocus()
         return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
                         frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
                         dispatch_started: focusPreparation.dispatchStarted,
                         error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "frontmost_changed_before_input")
     }
     guard let source = CGEventSource(stateID: .hidSystemState) else {
-        let restored = restoreFrontmostIfNeeded(
-            priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted
-        )
+        let restored = restoreFocus()
         return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
                         frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
                         dispatch_started: focusPreparation.dispatchStarted,
                         error: focusPreparation.dispatchStarted ? "dispatch_outcome_unknown" : "event_source_unavailable_before_dispatch")
     }
 
+    let context = VerifiedWindowTarget(
+        pid: pid, windowId: windowId, screenX: screenX, screenY: screenY, localX: localX, localY: localY,
+        expectedBounds: expectedBounds, targetApplication: targetApplication,
+        frameworkTransport: frameworkTransport, transport: transport, priorFront: priorFront,
+        focusDispatched: focusPreparation.dispatchStarted, source: source
+    )
     var pointerDispatchStarted = false
     do {
-        let clickGroup = Int64(UInt32.random(in: 1...UInt32.max))
-        guard inputBoundaryStillValid(
-            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-            frameworkTransport: frameworkTransport, priorFront: priorFront,
-            focusDispatched: focusPreparation.dispatchStarted
-        ) else {
-            throw NSError(domain: "MachineBridgeBackgroundInput", code: 7)
-        }
-        try sendMouseEvent(.mouseMoved, symbols: symbols, source: source, pid: pid, windowId: windowId,
-                           screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                           clickState: 0, phase: 2, clickGroup: clickGroup, transport: transport, subtype: 0)
-        pointerDispatchStarted = true
-        usleep(12_000)
-        guard inputBoundaryStillValid(
-            pid: pid, application: targetApplication, windowId: windowId, expected: expectedBounds,
-            frameworkTransport: frameworkTransport, priorFront: priorFront,
-            focusDispatched: focusPreparation.dispatchStarted
-        ) else {
-            throw NSError(domain: "MachineBridgeBackgroundInput", code: 8)
-        }
-        try sendScrollEvent(symbols: symbols, source: source, pid: pid, windowId: windowId,
-                            screenX: screenX, screenY: screenY, localX: localX, localY: localY,
-                            deltaX: wheelX, deltaY: wheelY, transport: transport)
-        pointerDispatchStarted = true
+        try body(context, &pointerDispatchStarted)
     } catch {
         let dispatchStarted = focusPreparation.dispatchStarted || pointerDispatchStarted
-        let restored = restoreFrontmostIfNeeded(priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted)
+        let restored = restoreFocus()
         return Response(ok: false, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
                         frontmost_restored: restored, front_window_validated: true, cursor_preserved: nil,
                         dispatch_started: dispatchStarted,
@@ -986,7 +711,7 @@ private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
     }
 
     usleep(50_000)
-    let restored = restoreFrontmostIfNeeded(priorFront: priorFront, targetApplication: targetApplication, focusDispatched: focusPreparation.dispatchStarted)
+    let restored = restoreFocus()
     let cursorAfter = cursorLocation()
     let cursorPreserved: Bool? = {
         guard let cursorBefore, let cursorAfter else { return nil }
@@ -995,6 +720,145 @@ private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
     return Response(ok: true, backend: "skylight-experimental", focus_without_raise: focusPreparation.dispatchStarted,
                     frontmost_restored: restored, front_window_validated: true, cursor_preserved: cursorPreserved,
                     dispatch_started: true, error: nil, input_transport: transport.label)
+}
+
+private func click(_ request: Request, symbols: SkyLightSymbols) -> Response {
+    let clickCount = request.click_count ?? 1
+    guard clickCount >= 1, clickCount <= 2 else { return invalidWindowRequestResponse() }
+    return withVerifiedWindowTarget(request, symbols: symbols) { target, pointerDispatchStarted in
+        let clickSubtype: Int64 = switch target.transport {
+        case .skyLight: 3
+        case .publicCGEvent: 0
+        }
+        let clickGroup = Int64(UInt32.random(in: 1...UInt32.max))
+        var downSent = false
+        var upSent = true
+        var activeClickState: Int64 = 0
+        do {
+            guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 11) }
+            try sendMouseEvent(.mouseMoved, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                               screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                               clickState: 0, phase: 2, clickGroup: clickGroup, transport: target.transport, subtype: clickSubtype)
+            pointerDispatchStarted = true
+            usleep(15_000)
+            for clickState in 1...clickCount {
+                activeClickState = Int64(clickState)
+                guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 12) }
+                try sendMouseEvent(.leftMouseDown, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                                   screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                                   clickState: activeClickState, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: clickSubtype)
+                pointerDispatchStarted = true
+                downSent = true
+                upSent = false
+                usleep(28_000)
+                guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 13) }
+                try sendMouseEvent(.leftMouseUp, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                                   screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                                   clickState: activeClickState, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: clickSubtype)
+                pointerDispatchStarted = true
+                upSent = true
+                downSent = false
+                if clickState < clickCount { usleep(55_000) }
+            }
+        } catch {
+            if downSent && !upSent && processInstanceStillMatches(pid: target.pid, application: target.targetApplication) {
+                try? sendMouseEvent(.leftMouseUp, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                                    screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                                    clickState: activeClickState, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: clickSubtype)
+            }
+            throw error
+        }
+    }
+}
+
+private func drag(_ request: Request, symbols: SkyLightSymbols) -> Response {
+    guard let destinationScreenX = request.destination_screen_x, destinationScreenX.isFinite,
+          let destinationScreenY = request.destination_screen_y, destinationScreenY.isFinite,
+          let destinationLocalX = request.destination_local_x, destinationLocalX.isFinite,
+          let destinationLocalY = request.destination_local_y, destinationLocalY.isFinite,
+          let windowWidth = request.window_width, let windowHeight = request.window_height,
+          destinationLocalX >= 0, destinationLocalY >= 0,
+          destinationLocalX < windowWidth, destinationLocalY < windowHeight else {
+        return invalidWindowRequestResponse()
+    }
+    return withVerifiedWindowTarget(request, symbols: symbols) { target, pointerDispatchStarted in
+        let clickGroup = Int64(UInt32.random(in: 1...UInt32.max))
+        var downSent = false
+        var upSent = false
+        var lastScreenX = target.screenX
+        var lastScreenY = target.screenY
+        var lastLocalX = target.localX
+        var lastLocalY = target.localY
+        do {
+            guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 2) }
+            try sendMouseEvent(.mouseMoved, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                               screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                               clickState: 0, phase: 2, clickGroup: clickGroup, transport: target.transport, subtype: 0)
+            pointerDispatchStarted = true
+            usleep(15_000)
+            guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 3) }
+            try sendMouseEvent(.leftMouseDown, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                               screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                               clickState: 1, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: 0)
+            pointerDispatchStarted = true
+            downSent = true
+            usleep(16_000)
+
+            let steps = 8
+            for step in 1...steps {
+                guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 4) }
+                let ratio = Double(step) / Double(steps)
+                lastScreenX = target.screenX + (destinationScreenX - target.screenX) * ratio
+                lastScreenY = target.screenY + (destinationScreenY - target.screenY) * ratio
+                lastLocalX = target.localX + (destinationLocalX - target.localX) * ratio
+                lastLocalY = target.localY + (destinationLocalY - target.localY) * ratio
+                try sendMouseEvent(.leftMouseDragged, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                                   screenX: lastScreenX, screenY: lastScreenY, localX: lastLocalX, localY: lastLocalY,
+                                   clickState: 1, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: 0)
+                pointerDispatchStarted = true
+                usleep(16_000)
+            }
+            guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 5) }
+            usleep(30_000)
+            try sendMouseEvent(.leftMouseUp, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                               screenX: destinationScreenX, screenY: destinationScreenY,
+                               localX: destinationLocalX, localY: destinationLocalY,
+                               clickState: 1, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: 0)
+            pointerDispatchStarted = true
+            upSent = true
+        } catch {
+            if downSent && !upSent && processInstanceStillMatches(pid: target.pid, application: target.targetApplication) {
+                try? sendMouseEvent(.leftMouseUp, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                                    screenX: lastScreenX, screenY: lastScreenY, localX: lastLocalX, localY: lastLocalY,
+                                    clickState: 1, phase: 3, clickGroup: clickGroup, transport: target.transport, subtype: 0)
+            }
+            throw error
+        }
+    }
+}
+
+private func scroll(_ request: Request, symbols: SkyLightSymbols) -> Response {
+    guard let requestedDeltaX = request.delta_x, requestedDeltaX.isFinite, abs(requestedDeltaX) <= 10_000,
+          let requestedDeltaY = request.delta_y, requestedDeltaY.isFinite, abs(requestedDeltaY) <= 10_000 else {
+        return invalidWindowRequestResponse()
+    }
+    let wheelX = Int32((-requestedDeltaX).rounded())
+    let wheelY = Int32((-requestedDeltaY).rounded())
+    guard wheelX != 0 || wheelY != 0 else { return invalidWindowRequestResponse() }
+    return withVerifiedWindowTarget(request, symbols: symbols, pointerTransportOverride: .skyLight) { target, pointerDispatchStarted in
+        let clickGroup = Int64(UInt32.random(in: 1...UInt32.max))
+        guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 7) }
+        try sendMouseEvent(.mouseMoved, symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                           screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                           clickState: 0, phase: 2, clickGroup: clickGroup, transport: target.transport, subtype: 0)
+        pointerDispatchStarted = true
+        usleep(12_000)
+        guard target.boundaryStillValid() else { throw NSError(domain: "MachineBridgeBackgroundInput", code: 8) }
+        try sendScrollEvent(symbols: symbols, source: target.source, pid: target.pid, windowId: target.windowId,
+                            screenX: target.screenX, screenY: target.screenY, localX: target.localX, localY: target.localY,
+                            deltaX: wheelX, deltaY: wheelY, transport: target.transport)
+        pointerDispatchStarted = true
+    }
 }
 
 guard let line = readLine(), let data = line.data(using: .utf8), let request = try? JSONDecoder().decode(Request.self, from: data) else {

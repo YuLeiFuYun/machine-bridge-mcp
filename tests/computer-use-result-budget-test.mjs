@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { BridgeError } from "../src/local/errors.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
 import {
   RESULT_BUDGET_OMISSION_REASON,
   assertObservationResultFits,
@@ -8,7 +8,7 @@ import {
   observationResult,
   omitApplicationScreenshotForResultBudget,
   omitBrowserScreenshotForResultBudget,
-} from "../src/local/computer-use-result-budget.mjs";
+} from "../src/local/automation/computer-use-result-budget.mjs";
 
 const tinyImage = { type: "image", data: "AA==", mimeType: "image/png" };
 const browser = {

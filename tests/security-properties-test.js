@@ -5,11 +5,11 @@ import fc from "fast-check";
 import {
   MAX_BROWSER_MESSAGE_BYTES,
   parseBrowserSocketMessage,
-} from "../src/local/browser-extension-protocol.mjs";
-import { allToolNames, normalizePolicy, toolsForPolicy } from "../src/local/policy.mjs";
-import { MAX_COMMAND_BYTES, validateArgv } from "../src/local/process-contract.mjs";
-import { runExecutable } from "../src/local/shell.mjs";
-import { resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/managed-job-directory.mjs";
+} from "../src/local/automation/browser-extension-protocol.mjs";
+import { allToolNames, normalizePolicy, toolsForPolicy } from "../src/local/core/policy.mjs";
+import { MAX_COMMAND_BYTES, validateArgv } from "../src/local/process/execution.mjs";
+import { runExecutable } from "../src/local/deploy/shell.mjs";
+import { resolveManagedJobDirectory, resolveManagedJobRootIfPresent } from "../src/local/jobs/directory.mjs";
 
 fc.assert(fc.property(
   fc.uint8Array({ maxLength: 1024 }),

@@ -1,4 +1,4 @@
-import { ResourceCoordinator as ProductionResourceCoordinator } from "../../src/local/resource-admission.mjs";
+import { ResourceCoordinator as ProductionResourceCoordinator } from "../../src/local/process/resource-admission.mjs";
 import { healthyResourceHost } from "./healthy-resource-host.mjs";
 
 export class ResourceCoordinator extends ProductionResourceCoordinator {

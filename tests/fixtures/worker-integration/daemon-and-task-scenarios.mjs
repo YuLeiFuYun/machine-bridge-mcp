@@ -1,9 +1,9 @@
 import "node:path";
 import { randomBytes } from "node:crypto";
-import { createDaemonPreflightHeaders } from "../../../src/local/device-identity.mjs";
+import { createDaemonPreflightHeaders } from "../../../src/local/state/device-identity.mjs";
 
 
-import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp-subscription-contract.ts";
+import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp/subscriptions.ts";
 
 import {
   connectDaemon, rejectedDaemonUpgradeStatus, sendDaemonHello, beginDaemonHello,
@@ -245,7 +245,7 @@ export async function runDaemonAndTaskScenarios(context, authState) {
   assert(!replayMarkerMessages.stop().includes("tool_call"), "removed Last-Event-ID replay marker reached the daemon");
 
   const removedPing = await currentMcpCall(base, ownerAccessToken, 9103, "ping", {});
-  assert(removedPing.response.status === 404 && removedPing.body.error?.code === -32601,
+  assert(removedPing.response.status === 200 && removedPing.body.error?.code === -32601,
     "current HTTP retained removed ping semantics");
 
   const invalidSubscription = await currentMcpCall(base, ownerAccessToken, 9111, "subscriptions/listen", {});
@@ -316,8 +316,8 @@ export async function runDaemonAndTaskScenarios(context, authState) {
       },
     }),
   });
-  assert(currentNotification.response.status === 404 && currentNotification.body.error?.code === -32601,
-    "current HTTP accepted a stdio-only cancellation notification");
+  assert(currentNotification.response.status === 202 && currentNotification.body.unparsed === "",
+    "current HTTP did not accept notifications/cancelled with 202 empty body");
 
   const duplicateRelaySequence = waitForWsMessageSequence(candidateDaemon, ["tool_call", "tool_call"], 10_000);
   const duplicateCurrentA = currentMcpCall(base, ownerAccessToken, 9110, "tools/call", {
@@ -964,7 +964,7 @@ export async function runDaemonAndTaskScenarios(context, authState) {
     headers: currentMcpHeaders(ownerAccessToken, "tools/call", "server_info"),
     body: JSON.stringify(idlessBody),
   });
-  assert(idlessToolCall.response.status === 404 && idlessToolCall.body.error?.code === -32601
+  assert(idlessToolCall.response.status === 400 && idlessToolCall.body.error?.code === -32600
     && !idlessMessages.stop().includes("tool_call"),
   "Worker accepted tools/call as a notification or dispatched it without a request id");
 
@@ -1008,7 +1008,10 @@ export async function runDaemonAndTaskScenarios(context, authState) {
 
   const operatorTools = await callToolsList(base, operatorToken, 273);
   assert(operatorTools.some((tool) => tool.name === "list_dir"), "operator lost ordinary workspace inspection");
-  const forbiddenOperatorTools = ["exec_command", "run_local_command", "run_process", "start_process", "read_process", "write_process", "kill_process", "stage_job", "start_job"];
+  const forbiddenOperatorTools = [
+    "exec_command", "run_local_command", "run_process", "start_process", "read_process", "write_process", "kill_process",
+    "stage_job", "start_job", "list_jobs", "read_job", "cancel_job",
+  ];
   assert(!operatorTools.some((tool) => forbiddenOperatorTools.includes(tool.name)),
     "operator tools/list exposed an arbitrary process or persistent execution tool");
   const operatorDeniedMessages = captureWsMessageTypes(candidateDaemon);
@@ -1020,6 +1023,9 @@ export async function runDaemonAndTaskScenarios(context, authState) {
     ["read_process", { session_id: "unknown" }],
     ["write_process", { session_id: "unknown", data: "input" }],
     ["kill_process", { session_id: "unknown" }],
+    ["list_jobs", {}],
+    ["read_job", { job_id: "job_unknown" }],
+    ["cancel_job", { job_id: "job_unknown" }],
   ];
   for (let index = 0; index < operatorDeniedCalls.length; index += 1) {
     const [name, arguments_] = operatorDeniedCalls[index];

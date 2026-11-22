@@ -27,6 +27,7 @@
     if (method === "fill_form") return fillForm(params, state);
     if (method === "upload_files") return uploadFiles(params, state);
     if (method === "screenshot") return screenshot(params, state);
+    if (method === "network_log") return globalThis.__machineBridgeDevtoolsObservation.networkLog(params, state);
     throw new Error(`unknown browser method: ${method}`);
   }
   

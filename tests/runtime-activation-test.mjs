@@ -1,5 +1,5 @@
-import { activatePersistentRuntime, waitForActivatedRuntime } from "../src/local/runtime-activation.mjs";
-import { BridgeError } from "../src/local/errors.mjs";
+import { activatePersistentRuntime, waitForActivatedRuntime } from "../src/local/runtime/runtime-activation.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
 
 await testValidationAndPreflightFailures();
 await testRestartabilityPreflightFailureIsZeroMutation();

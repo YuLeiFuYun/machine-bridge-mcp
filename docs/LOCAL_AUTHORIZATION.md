@@ -65,7 +65,7 @@ Examples:
 - an operator may edit ordinary workspace files but cannot execute arbitrary programs remotely;
 - an owner may use shell, unrestricted paths, browser/application automation, resources, and managed jobs when enabled by the daemon policy.
 
-Risk classification still runs for every consequential request. It supplies structured audit metadata and enforces hard boundaries; it is not a mechanism for temporary privilege escalation.
+Risk classification still runs for every consequential request (`scope`, `category`, and `reversibility`: `reversible`, `partially_reversible`, or `irreversible`). It supplies structured audit metadata, session taint advisories after untrusted browser reads, and `server_info.authority_delta` capability summaries; it enforces hard boundaries rather than temporary privilege escalation.
 
 ## Hard boundaries
 
@@ -123,7 +123,7 @@ Expected interaction frequency:
 - an independent account-management command: no prompt with a portable root, or one prompt with a provisioned Secure Enclave root;
 - root rotation: one explicit operation, with user presence only when the provisioned broker requires it.
 
-Every platform uses the portable P-256 provider unless an explicitly configured non-exportable platform provider has been installed and validated. `server_info.security.device_root` reports the active provider and whether the root key is exportable.
+Every platform uses the portable P-256 provider unless an explicitly configured non-exportable platform provider has been installed and validated. `server_info.trust.device_root` reports the active provider and whether the root key is exportable.
 
 ## DPoP
 

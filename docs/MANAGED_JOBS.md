@@ -283,7 +283,7 @@ machine-mcp job submit plan.json
 
 `job submit` is an explicit local operator action; it does not consume or promote a staged MCP draft.
 
-The plan format is the same object accepted by `start_job`. Each main or finally step defaults to a ten-minute execution timeout and may explicitly request up to six hours (`timeout_seconds=21600`); resource admission happens before that execution timer begins. This permits one continuous command to run beyond 100 minutes without splitting it merely to satisfy an orchestration timeout.
+The plan format is the same object accepted by `start_job`. Optional `isolated_worktree: true` runs steps inside a disposable temporary Git worktree branched from `HEAD`, remaps relative step `cwd`, and removes the worktree during terminal cleanup. Each main or finally step defaults to a ten-minute execution timeout and may explicitly request up to six hours (`timeout_seconds=21600`); resource admission happens before that execution timer begins. This permits one continuous command to run beyond 100 minutes without splitting it merely to satisfy an orchestration timeout.
 
 ### Uncertain submission retries
 

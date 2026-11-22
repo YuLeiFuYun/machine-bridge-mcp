@@ -2,7 +2,7 @@ import { link, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { realpath } from "node:fs/promises";
-import { WorkspaceFileService } from "../src/local/workspace-file-service.mjs";
+import { WorkspaceFileService } from "../src/local/files/workspace-file-service.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-workspace-search-security-"));
 let workspace = join(root, "workspace");

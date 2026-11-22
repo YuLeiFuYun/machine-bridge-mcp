@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const GENERATED_DOCUMENTS = new Set([
   "docs/POLICY_REFERENCE.md",
   "docs/TOOL_REFERENCE.md",
+  "docs/architecture/components.md",
 ]);
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const baseline = JSON.parse(readFileSync(join(root, "tests", "architecture", "documentation-budget.json"), "utf8"));

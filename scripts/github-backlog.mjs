@@ -3,8 +3,8 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveTrustedGitExecutable } from "../src/local/trusted-git-executable.mjs";
-import { resolveTrustedGithubCli } from "../src/local/trusted-github-cli.mjs";
+import { resolveTrustedGitExecutable } from "../src/local/core/trusted-executable.mjs";
+import { resolveTrustedGithubCli } from "./lib/trusted-github-cli.mjs";
 import { releaseCommandFailure, releaseDiagnosticEvent } from "./release-diagnostic.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");

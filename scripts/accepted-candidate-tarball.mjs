@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 import { CANDIDATE_MANIFEST_SCHEMA_VERSION, validateCandidateManifest } from "./release-candidate-manifest.mjs";
 import { packProject, verifyTarball } from "./release-acceptance.mjs";
 import { computePromotionContentDigest } from "./promotion-digest.mjs";

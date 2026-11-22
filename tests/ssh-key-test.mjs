@@ -2,8 +2,8 @@ import { chmod, copyFile, link, mkdtemp, readFile, rm, stat, symlink, unlink, wr
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateSshKeyPair, inspectSshKeyPair, removeGeneratedSshKeyPair } from "../src/local/ssh-key.mjs";
-import { generateRegisteredSshKey } from "../src/local/resource-operations.mjs";
+import { generateSshKeyPair, inspectSshKeyPair, removeGeneratedSshKeyPair } from "../src/local/state/ssh-key.mjs";
+import { generateRegisteredSshKey } from "../src/local/runtime/resource-operations.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-ssh-key-test-"));
 try {

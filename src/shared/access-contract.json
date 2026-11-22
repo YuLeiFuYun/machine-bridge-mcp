@@ -13,7 +13,10 @@
     "write_process",
     "kill_process",
     "stage_job",
-    "start_job"
+    "start_job",
+    "list_jobs",
+    "read_job",
+    "cancel_job"
   ],
   "roles": {
     "reviewer": {

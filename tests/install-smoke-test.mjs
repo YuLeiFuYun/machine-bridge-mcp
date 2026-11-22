@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { packProject } from "../scripts/release-acceptance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,12 +100,12 @@ async function assertInstalledDefaultStartup(installedPackage, temp) {
     ? join(appData, "machine-bridge-mcp")
     : join(stateHome, "machine-bridge-mcp");
 
-  const { setSelectedWorkspace } = await import(pathToFileURL(join(installedPackage, "src", "local", "state.mjs")).href);
+  const { setSelectedWorkspace } = await import(pathToFileURL(join(installedPackage, "src", "local", "state", "state.mjs")).href);
   const selectedWorkspace = process.platform === "win32" ? join(home, "MachineBridge") : workspace;
   mkdirSync(selectedWorkspace, { recursive: true });
   setSelectedWorkspace(selectedWorkspace, stateRoot);
   const startupHarness = join(temp, "startup-probe.mjs");
-  const cliModuleUrl = pathToFileURL(join(installedPackage, "src", "local", "cli.mjs")).href;
+  const cliModuleUrl = pathToFileURL(join(installedPackage, "src", "local", "cli", "cli.mjs")).href;
   writeFileSync(startupHarness, `import { main } from ${JSON.stringify(cliModuleUrl)};
 try {
   await main([], {

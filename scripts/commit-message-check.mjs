@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import process from "node:process";
-import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
+import { createTrustedGitResolver } from "../src/local/core/trusted-executable.mjs";
 
 const gitExecutable = createTrustedGitResolver({ workspace: process.cwd() });
 

@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { defaultStateRoot, expandHome } from "../src/local/state.mjs";
-import { replaceFileAtomicallySync } from "../src/local/exclusive-file.mjs";
-import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "../src/local/secure-file.mjs";
+import { defaultStateRoot, expandHome } from "../src/local/state/state.mjs";
+import { replaceFileAtomicallySync } from "../src/local/core/exclusive-file.mjs";
+import { ensureOwnerOnlyDirectorySync, readBoundedRegularFileSync } from "../src/local/core/secure-file.mjs";
 import { normalizeActivationRecovery as normalizeSharedActivationRecovery } from "../src/shared/activation-recovery.mjs";
 import { assertSoakEligiblePrerelease } from "./release-channel.mjs";
 

@@ -8,36 +8,36 @@ import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { activeManagedJobs, ManagedJobManager } from "../../../src/local/managed-jobs.mjs";
-import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../../../src/local/managed-job-hosted-status.mjs";
+import { activeManagedJobs, ManagedJobManager } from "../../../src/local/jobs/manager.mjs";
+import { hostedManagedJobListStatus, hostedManagedJobStatus } from "../../../src/local/jobs/projection.mjs";
 import {
   managedJobReadNonterminalProgressMinimumMs, managedJobReadWaitMs, waitForManagedJobRead,
-} from "../../../src/local/managed-job-read-wait.mjs";
+} from "../../../src/local/jobs/projection.mjs";
 import {
   DEPENDENCY_STATE_READ_RECOVERY_GRACE_MS, managedJobDependencySucceeded, readManagedJobDependencyStatus,
   waitForManagedJobDependencies,
-} from "../../../src/local/managed-job-dependencies.mjs";
-import { managedJobDependencyCount, managedJobDependencyLabel } from "../../../src/local/managed-job-dependency-metadata.mjs";
+} from "../../../src/local/jobs/dependencies.mjs";
+import { managedJobDependencyCount, managedJobDependencyLabel } from "../../../src/local/jobs/dependencies.mjs";
 import {
   managedJobActiveChildRecoveryReady, publishManagedJobActiveChild, terminateManagedJobActiveChild,
-} from "../../../src/local/managed-job-active-child.mjs";
-import { MAX_JOBS, MAX_LISTED_JOBS } from "../../../src/local/managed-job-capacity.mjs";
+} from "../../../src/local/jobs/execution.mjs";
+import { MAX_JOBS, MAX_LISTED_JOBS } from "../../../src/local/jobs/capacity.mjs";
 import {
   TRANSIENT_PROCESS_PENDING_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_GRACE_MS, TRANSIENT_PROCESS_RECOVERY_SLOTS,
   transientProcessUndeliveredRecoveryProtected, transientProcessWithinRecoveryGrace,
-} from "../../../src/local/managed-job-retention-policy.mjs";
-import { clearTransientProcessRecoveryPending } from "../../../src/local/managed-job-transient-recovery.mjs";
-import { NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS } from "../../../src/local/managed-job-transient-recovery-capacity.mjs";
-import { managedJobIdempotencyDigest } from "../../../src/local/managed-job-idempotency.mjs";
-import { readJson as readManagedJobJson, resourceErrorClass } from "../../../src/local/managed-job-storage.mjs";
-import { validatePlan } from "../../../src/local/managed-job-plan.mjs";
-import { publicStatus, reviewablePlan } from "../../../src/local/managed-job-projection.mjs";
-import { runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../../../src/local/managed-job-runner.mjs";
-import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../../../src/local/managed-job-runner-claim.mjs";
-import { createManagedJobRunnerExitRecovery } from "../../../src/local/managed-job-runner-exit-recovery.mjs";
-import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal } from "../../../src/local/managed-job-terminal.mjs";
-import { acquireJobCapacityLock, acquireJobTransitionLock } from "../../../src/local/managed-job-lock.mjs";
-import { managedJobTransitionConflict } from "../../../src/local/managed-job-state-validation.mjs";
+} from "../../../src/local/jobs/terminal-base.mjs";
+import { clearTransientProcessRecoveryPending } from "../../../src/local/jobs/retention.mjs";
+import { NON_OWNER_TRANSIENT_PENDING_RECOVERY_SLOTS } from "../../../src/local/jobs/transient-recovery-capacity.mjs";
+import { managedJobIdempotencyDigest } from "../../../src/local/jobs/execution.mjs";
+import { readJson as readManagedJobJson, resourceErrorClass } from "../../../src/local/jobs/directory.mjs";
+import { validatePlan } from "../../../src/local/jobs/plan.mjs";
+import { publicStatus, reviewablePlan } from "../../../src/local/jobs/projection.mjs";
+import { runnerProcessIsCurrent, runnerProcessIsCurrentAsync } from "../../../src/local/jobs/runner-lifecycle.mjs";
+import { confirmRunnerClaim, publishProvisionalRunnerClaim, readManagedJobRunnerClaim } from "../../../src/local/jobs/runner-claim.mjs";
+import { createManagedJobRunnerExitRecovery } from "../../../src/local/jobs/runner-lifecycle.mjs";
+import { ACTIVE_JOB_STATES, managedJobFinalStatus, persistManagedJobTerminal } from "../../../src/local/jobs/terminal-base.mjs";
+import { acquireJobCapacityLock, acquireJobTransitionLock } from "../../../src/local/jobs/directory.mjs";
+import { managedJobTransitionConflict } from "../../../src/local/jobs/redaction.mjs";
 
 import "../../../src/shared/server-metadata.json" with { type: "json" };
 import {
@@ -1057,7 +1057,7 @@ async function testManagedJobAccountRecoveryCapacity() {
     concurrentManager.createJob({ name: `concurrent quota ${index}`, steps: [{ argv: [process.execPath, "-e", ""] }] },
       { launch: false, retentionClass: "transient_process" }, accountA);
   }
-  const moduleUrl = new URL("../../../src/local/managed-jobs.mjs", import.meta.url).href;
+  const moduleUrl = new URL("../../../src/local/jobs/manager.mjs", import.meta.url).href;
   const childSource = `
     import { ManagedJobManager } from ${JSON.stringify(moduleUrl)};
     const [jobRoot, workspace, clientChar] = process.argv.slice(1);

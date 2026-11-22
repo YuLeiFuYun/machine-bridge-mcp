@@ -1,83 +1,83 @@
 import nodeAssert from "node:assert/strict";
-import { handleOuterWorkerFetch } from "../../../src/worker/worker-entry.ts";
-import { DaemonHttpChannel } from "../../../src/worker/daemon-http-channel.ts";
-import { normalizeDaemonHttpExchange } from "../../../src/worker/daemon-http-protocol.ts";
-import { queueDaemonHttpRevocations } from "../../../src/worker/authority-revocations.ts";
-import { PendingCallRegistry } from "../../../src/worker/pending-calls.ts";
-import { pendingCallReconnectSettlement } from "../../../src/worker/pending-call-reconnect-settlement.ts";
+import { handleOuterWorkerFetch } from "../../../src/worker/room/entry.ts";
+import { DaemonHttpChannel } from "../../../src/worker/daemon/http-channel.ts";
+import { normalizeDaemonHttpExchange } from "../../../src/worker/daemon/http-controller.ts";
+import { queueDaemonHttpRevocations } from "../../../src/worker/oauth/authority-revocations.ts";
+import { PendingCallRegistry } from "../../../src/worker/room/pending-calls.ts";
+import { pendingCallReconnectSettlement } from "../../../src/worker/room/pending-calls.ts";
 import {
   MAX_PENDING_READ_JOB_CALLS_PER_ACCOUNT,
   pendingCapacityProjection,
-} from "../../../src/worker/pending-call-capacity.ts";
-import { DaemonSocketRegistry } from "../../../src/worker/daemon-sockets.ts";
-import { DaemonRegistry } from "../../../src/worker/daemon-registry.ts";
-import { settleDaemonProvenMissingCalls } from "../../../src/worker/daemon-ready-messages.ts";
-import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../../../src/worker/daemon-ready-waiters.ts";
-import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "../../../src/worker/daemon-ready-dispatch.ts";
-import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../../../src/worker/daemon-recovery-budget.ts";
-import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../../../src/worker/daemon-relay-diagnostics.ts";
-import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../../../src/worker/runtime-alarm.ts";
-import { respondWithoutDurableObject } from "../../../src/worker/worker-static-routes.ts";
-import { createThrottledEdgeLogger } from "../../../src/worker/worker-edge-log.ts";
+} from "../../../src/worker/room/pending-calls.ts";
+import { DaemonSocketRegistry } from "../../../src/worker/daemon/sockets.ts";
+import { DaemonRegistry } from "../../../src/worker/daemon/registry.ts";
+import { settleDaemonProvenMissingCalls } from "../../../src/worker/daemon/ready-messages.ts";
+import { cancelReadyDaemonAuthority, notifyReadyDaemon, readyDaemonWaiterSnapshot, waitForReadyDaemon } from "../../../src/worker/daemon/ready-waiters.ts";
+import { immediateReadyDaemonForDispatch, readyDaemonForDispatch } from "../../../src/worker/daemon/ready-waiters.ts";
+import { daemonReconnectExpiry, daemonToolTimeoutBudgetAfterDelay } from "../../../src/worker/daemon/ready-waiters.ts";
+import { relayDiagnosticsAfterReady, sanitizeDaemonRelayDiagnostics } from "../../../src/worker/daemon/relay-diagnostics.ts";
+import { processRuntimeAlarm, scheduleRuntimeAlarm } from "../../../src/worker/room/runtime-alarm.ts";
+import { respondWithoutDurableObject } from "../../../src/worker/room/entry.ts";
+import { createThrottledEdgeLogger } from "../../../src/worker/room/observability.ts";
 import {
   admitGlobalStatefulRequest, admitStatefulRequest, durableObjectQuotaResponse, isDurableObjectQuotaError,
   outerWorkerErrorClass, statefulRateLimitKey, statefulRouteClass, workerGatewayErrorResponse,
-} from "../../../src/worker/worker-edge-guard.ts";
-import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../../../src/worker/tool-timeout.ts";
-import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../../../src/worker/managed-job-read-timeout.ts";
-import { daemonToolRedeliveryArguments } from "../../../src/worker/daemon-tool-redelivery.ts";
-import { issueManagedJobCapability, verifyManagedJobCapability } from "../../../src/worker/managed-job-capability.ts";
-import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../../../src/worker/managed-job-hosted-authority.ts";
-import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../../../src/worker/tool-catalog.ts";
-import { staleSchemaGuidanceResult } from "../../../src/worker/mcp-stale-schema-guidance.ts";
-import { workerAuthorityContext, workerToolsForRole } from "../../../src/worker/worker-tool-authority.ts";
-import { daemonToolRecovery } from "../../../src/worker/tool-call-recovery.ts";
+} from "../../../src/worker/room/entry.ts";
+import { daemonToolTimeoutBudget, isRemoteDurableProcessTool, remoteForegroundDefaultSeconds, remoteForegroundMaximumSeconds, REMOTE_DURABLE_PROCESS_DEFAULT_TIMEOUT_SECONDS, REMOTE_DURABLE_PROCESS_MAXIMUM_TIMEOUT_SECONDS, REMOTE_FOREGROUND_TIMEOUT_SECONDS } from "../../../src/worker/room/tool-timeout.ts";
+import { managedJobReadArgumentsWithinExecutionBudget, managedJobReadExecutionBudgetHasHeadroom } from "../../../src/worker/room/managed-job-contract.ts";
+import { daemonToolRedeliveryArguments } from "../../../src/worker/room/managed-job-hosted.ts";
+import { issueManagedJobCapability, verifyManagedJobCapability } from "../../../src/worker/room/managed-job-contract.ts";
+import { hostedManagedJobDaemonArguments, projectHostedManagedJobResult } from "../../../src/worker/room/managed-job-hosted.ts";
+import { jobMonitorClaimTool, jobMonitorReadTool, jobMonitorRenderTool, serverInfoTool, validateWorkerToolArguments, workerToolParameterHeaders, workerToolSchemaGeneration, workspaceTools } from "../../../src/worker/mcp/tool-catalog.ts";
+import { staleSchemaGuidanceResult } from "../../../src/worker/mcp/stale-schema.ts";
+import { workerAuthorityContext, workerToolsForRole } from "../../../src/worker/mcp/tool-authority.ts";
+import { daemonToolRecovery } from "../../../src/worker/room/tool-timeout.ts";
 import relayContract from "../../../src/shared/relay-contract.json" with { type: "json" };
 import {
   daemonCallNotReceivedAfterReconnectError, daemonToolError, dispatchedDaemonCancellationError, dispatchedDaemonDisconnectError,
   dispatchedDaemonPlannedDrainError, dispatchedDaemonTimeoutError, publicWorkerToolError, revokedDaemonAuthorityError, WorkerToolError,
-} from "../../../src/worker/errors.ts";
-import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../../../src/worker/policy.ts";
-import { WorkerObservability } from "../../../src/worker/observability.ts";
+} from "../../../src/worker/room/errors.ts";
+import { policyAllowsAvailability, sanitizeDaemonPolicy, sanitizeDaemonTools } from "../../../src/worker/room/policy.ts";
+import { WorkerObservability } from "../../../src/worker/room/observability.ts";
 import {
   readWorkerContinuityEvidence, recordWorkerClientCancellation, recordWorkerPlannedDrain, recordWorkerSocketDisconnect,
-} from "../../../src/worker/worker-continuity-evidence.ts";
-import { daemonStatusSnapshot } from "../../../src/worker/daemon-status.ts";
-import { DaemonLastObservation } from "../../../src/worker/daemon-last-observation.ts";
-import { buildServerInfoResult, serverInfoDetail } from "../../../src/worker/server-info.ts";
-import { remoteToolDeliveryContract } from "../../../src/worker/server-info-tool-delivery.ts";
-import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp-subscription-contract.ts";
+} from "../../../src/worker/daemon/continuity-evidence.ts";
+import { daemonStatusSnapshot } from "../../../src/worker/daemon/registry.ts";
+import { DaemonLastObservation } from "../../../src/worker/daemon/channel.ts";
+import { buildServerInfoResult, serverInfoDetail } from "../../../src/worker/room/server-info.ts";
+import { remoteToolDeliveryContract } from "../../../src/worker/room/server-info.ts";
+import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp/subscriptions.ts";
 import {
   JOB_MONITOR_RESOURCE_URI, MCP_APP_MIME_TYPE, MCP_UI_EXTENSION_ID,
   managedJobMonitorResource, managedJobMonitorResources, supportsManagedJobMonitor,
-} from "../../../src/worker/mcp-job-monitor-ui.ts";
+} from "../../../src/worker/mcp/job-monitor.ts";
 import {
   ManagedJobMonitorClaimStore, cancelManagedJobMonitorClaimsIfAvailable, claimManagedJobMonitor,
   hasManagedJobMonitorClaim, hasManagedJobMonitorClaimIfAvailable, issueManagedJobMonitorIfAvailable,
-} from "../../../src/worker/mcp-job-monitor-claims.ts";
+} from "../../../src/worker/mcp/job-monitor.ts";
 import {
   JOB_MONITOR_CLAIM_TOOL, JOB_MONITOR_READ_TOOL, JOB_MONITOR_RENDER_TOOL,
   managedJobMonitorReadDaemonArguments, renderManagedJobMonitor,
-} from "../../../src/worker/mcp-job-monitor-tools.ts";
-import { projectManagedJobMonitorStatus } from "../../../src/worker/mcp-job-monitor-status.ts";
-import { workerBodyLimitBytes } from "../../../src/worker/worker-runtime-config.ts";
-import { retainWorkerTask } from "../../../src/worker/worker-task-lifetime.ts";
-import { applyCors, corsPreflight, searchParamsObject, workerErrorClass } from "../../../src/worker/http.ts";
+} from "../../../src/worker/mcp/job-monitor.ts";
+import { projectManagedJobMonitorStatus } from "../../../src/worker/mcp/job-monitor.ts";
+import { workerBodyLimitBytes } from "../../../src/worker/room/entry.ts";
+import { retainWorkerTask } from "../../../src/worker/room/entry.ts";
+import { applyCors, corsPreflight, searchParamsObject, workerErrorClass } from "../../../src/worker/room/http.ts";
 import {
   asObject, isJsonRpcRequest, isJsonRpcResponse, requiredString, rpcError, rpcResult,
   textToolResult,
-} from "../../../src/worker/mcp-jsonrpc.ts";
+} from "../../../src/worker/mcp/jsonrpc.ts";
 import {
   closeWebSocketQuietly, daemonErrorCloseCode, daemonResumeMissingCallIds, isObjectRecord, rejectDaemonMessage,
   sendWebSocketQuietly, trySendWebSocket,
-} from "../../../src/worker/websocket-protocol.ts";
+} from "../../../src/worker/room/websocket-protocol.ts";
 import {
   DAEMON_LIVENESS_TIMEOUT_MS,
   daemonLivenessDeadlineMs,
   isFreshDaemonCandidate,
   isLiveDaemonAttachment,
   withDaemonLastSeenAt,
-} from "../../../src/worker/daemon-liveness.ts";
+} from "../../../src/worker/daemon/liveness.ts";
 
 const SYNTHETIC_REFRESH_TOKEN = `mcp_rt_${"r".repeat(43)}`;
 const SYNTHETIC_ACCOUNT_ID = `acct_${"a".repeat(43)}`;

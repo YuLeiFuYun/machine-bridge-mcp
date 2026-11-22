@@ -5,9 +5,9 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { replaceFileSync } from "../src/local/atomic-fs.mjs";
-import { releaseBrowserExtensionPath } from "../src/local/browser-extension-path.mjs";
-import { ensureOwnerOnlyDirectorySync, inspectPathIfPresentSync, openRegularFileSync } from "../src/local/secure-file.mjs";
+import { replaceFileSync } from "../src/local/core/exclusive-file.mjs";
+import { releaseBrowserExtensionPath } from "../src/local/automation/browser-extension-protocol.mjs";
+import { ensureOwnerOnlyDirectorySync, inspectPathIfPresentSync, openRegularFileSync } from "../src/local/core/secure-file.mjs";
 
 const MANIFEST = "manifest.json";
 const MAX_EXTENSION_FILES = 256;

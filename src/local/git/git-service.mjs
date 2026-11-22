@@ -1,0 +1,205 @@
+import { randomBytes } from "node:crypto";
+import { stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { BridgeError } from "../core/errors.mjs";
+import { STRUCTURED_GIT_FIXED_ENVIRONMENT } from "../process/settlement.mjs";
+import { createStructuredGitCommit, assertStructuredGitConfigSafe, resolveGitMetadataBoundary } from "./git-safety.mjs";
+import { assertGitMetadataTreesSafe, parseStructuredGitLog } from "./git-contracts.mjs";
+import { clampInteger } from "../../shared/numbers.mjs";
+import { pathEntryIfExists } from "../core/filesystem-identity.mjs";
+import { readBoundedRegularFileSync } from "../core/secure-file.mjs";
+import { gitCommandPrefix, structuredGitDiff, structuredGitShow } from "./git-content.mjs";
+
+export const MAX_GIT_COMMIT_MESSAGE_BYTES = 64 * 1024;
+
+const STRUCTURED_GIT_ENVIRONMENT = STRUCTURED_GIT_FIXED_ENVIRONMENT;
+
+export class GitService {
+  constructor({ resolveExistingPath, resolveWritePath, displayPath, runInternalProcess, gitExecutable, maximumBytes, disabledHooksPath = "" }) {
+    this.resolveExistingPath = resolveExistingPath;
+    this.resolveWritePath = typeof resolveWritePath === "function" ? resolveWritePath : resolveExistingPath;
+    this.displayPath = displayPath;
+    this.runInternalProcess = runInternalProcess;
+    this.gitExecutable = typeof gitExecutable === "function" ? gitExecutable : () => String(gitExecutable || "");
+    this.maximumBytes = maximumBytes;
+    this.disabledHooksPath = String(disabledHooksPath || "");
+  }
+
+  async status(args = {}, context = {}) {
+    const git = await this.context(args.path || ".", context);
+    if (!git.ok) throw gitRepositoryError(git);
+    await this.assertSafeConfig(git, context, true);
+    const commandArgs = [...gitCommandPrefix(git), "-c", "status.submoduleSummary=false", "status", "--short", "--branch", "--ignore-submodules=all"];
+    if (git.pathspec) commandArgs.push("--", git.pathspec);
+    const result = await this.runInternalProcess(
+      this.gitExecutable(), commandArgs, 30_000, true, 512 * 1024, context, git.root, null, STRUCTURED_GIT_ENVIRONMENT,
+    );
+    return { ...result, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
+  }
+
+  async diff(args = {}, context = {}) {
+    const git = await this.context(args.path || ".", context);
+    if (!git.ok) throw gitRepositoryError(git);
+    await this.assertSafeConfig(git, context, args.staged !== true);
+    return structuredGitDiff({
+      args, context, git, maximumBytes: this.maximumBytes, displayPath: this.displayPath,
+      runInternalProcess: this.runInternalProcess, gitExecutable: this.gitExecutable(),
+      environment: STRUCTURED_GIT_ENVIRONMENT,
+    });
+  }
+
+  async log(args = {}, context = {}) {
+    const git = await this.context(args.path || ".", context);
+    if (!git.ok) throw gitRepositoryError(git);
+    await this.assertSafeConfig(git, context, false);
+    const maxCount = clampInteger(args.max_count, 20, 1, 100);
+    const format = "%H%x1f%h%x1f%aI%x1f%an%x1f%ae%x1f%s%x1e";
+    const commandArgs = [...gitCommandPrefix(git), "-c", "log.showSignature=false", "log", "--no-show-signature", `--max-count=${maxCount}`, `--format=${format}`];
+    if (git.pathspec) commandArgs.push("--", git.pathspec);
+    const result = await this.runInternalProcess(
+      this.gitExecutable(), commandArgs, 30_000, true, 1024 * 1024, context, git.root, null, STRUCTURED_GIT_ENVIRONMENT,
+    );
+    const commits = parseStructuredGitLog(
+      result.stdout,
+      args.include_author_email === true,
+      { truncated: Number(result.stdout_truncated_bytes || 0) > 0 },
+    );
+    return { code: result.code, stderr: result.stderr, commits, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
+  }
+
+  async show(args = {}, context = {}) {
+    const git = await this.context(args.path || ".", context);
+    if (!git.ok) throw gitRepositoryError(git);
+    await this.assertSafeConfig(git, context, false);
+    return structuredGitShow({
+      args, context, git, maximumBytes: this.maximumBytes, displayPath: this.displayPath,
+      runInternalProcess: this.runInternalProcess, gitExecutable: this.gitExecutable(),
+      environment: STRUCTURED_GIT_ENVIRONMENT,
+    });
+  }
+
+  async commit(args = {}, context = {}) {
+    const message = validateCommitMessage(args.message);
+    const git = await this.context(args.path || ".", context);
+    if (!git.ok) throw new BridgeError("execution_failed", "Git commit requires a repository path");
+    await this.assertSafeConfig(git, context, true);
+    for (const target of new Set([git.root, git.gitDir, git.commonDir, git.objectDir, ...git.metadataPaths])) {
+      await this.resolveWritePath(target, context);
+    }
+    const disabledHooksPath = this.disabledHooksPath || join(tmpdir(), `machine-bridge-mcp-disabled-hooks-${randomBytes(16).toString("hex")}`);
+    if (!isAbsolute(disabledHooksPath)) throw new BridgeError("integrity_error", "Git commit hook isolation path is unavailable");
+    await createStructuredGitCommit({
+      git,
+      message,
+      disabledHooksPath,
+      runInternalProcess: this.runInternalProcess,
+      gitExecutable: this.gitExecutable,
+      context,
+      environment: STRUCTURED_GIT_ENVIRONMENT,
+    });
+    return { code: 0, committed: true, path: this.displayPath(git.target, context), gitRoot: this.displayPath(git.root, context) };
+  }
+
+  assertSafeConfig(git, context, inspectWorkingTree) {
+    return assertStructuredGitConfigSafe({
+      git,
+      inspectWorkingTree,
+      resolveExistingPath: this.resolveExistingPath,
+      runInternalProcess: this.runInternalProcess,
+      gitExecutable: this.gitExecutable,
+      context,
+      environment: STRUCTURED_GIT_ENVIRONMENT,
+    });
+  }
+
+  async context(inputPath, context = {}) {
+    const target = await this.resolveExistingPath(inputPath, context);
+    const info = await stat(target);
+    const cwd = info.isDirectory() ? target : dirname(target);
+    const repository = await this.discoverRepository(cwd, context);
+    if (!repository) return { ok: false, target, result: { code: 128, stdout: "", stderr: "not a Git repository within the permitted path boundary" } };
+    const repoRelative = relative(repository.root, target);
+    if (repoRelative.startsWith(`..${sep}`) || repoRelative === ".." || isAbsolute(repoRelative)) {
+      return { ok: false, target, result: { code: 128, stdout: "", stderr: "target is outside the detected git repository" } };
+    }
+    return { ok: true, target, ...repository, pathspec: repoRelative || "" };
+  }
+
+  async discoverRepository(start, context = {}) {
+    let root = await this.resolveExistingPath(start, context);
+    while (true) {
+      const marker = join(root, ".git");
+      const entry = await pathEntryIfExists(marker);
+      if (entry) {
+        if (entry.isSymbolicLink()) throw new BridgeError("path_boundary", "Git metadata marker must not be a symbolic link");
+        let gitDir;
+        if (entry.isDirectory()) gitDir = await this.resolveExistingPath(marker, context);
+        else if (entry.isFile()) {
+          const value = readGitPathFile(marker, "Git metadata pointer", true);
+          gitDir = await this.resolveExistingPath(isAbsolute(value) ? value : resolve(root, value), context);
+        } else throw new BridgeError("invalid_request", "Git metadata marker must be a directory or regular pointer file");
+        const gitInfo = await stat(gitDir);
+        if (!gitInfo.isDirectory()) throw new BridgeError("invalid_request", "Git metadata directory is unavailable");
+        const commonDir = await this.resolveCommonDirectory(gitDir, context);
+        const metadata = await resolveGitMetadataBoundary({
+          gitDir,
+          commonDir,
+          resolveExistingPath: this.resolveExistingPath,
+          context,
+        });
+        if (requiresMetadataTreeScan(context)) {
+          await assertGitMetadataTreesSafe([metadata.objectDir, ...metadata.alternateObjectDirs, ...metadata.metadataPaths], { signal: context.signal });
+        }
+        return { root, gitDir, commonDir, ...metadata };
+      }
+      const parent = dirname(root);
+      if (parent === root) return null;
+      try { root = await this.resolveExistingPath(parent, context); }
+      catch (error) { if (error?.code === "path_boundary") return null; throw error; }
+    }
+  }
+
+  async resolveCommonDirectory(gitDir, context = {}) {
+    const marker = join(gitDir, "commondir");
+    const entry = await pathEntryIfExists(marker);
+    if (!entry) return gitDir;
+    if (entry.isSymbolicLink() || !entry.isFile()) throw new BridgeError("path_boundary", "Git common-directory pointer must be a regular file");
+    const value = readGitPathFile(marker, "Git common-directory pointer", false);
+    const commonDir = await this.resolveExistingPath(isAbsolute(value) ? value : resolve(gitDir, value), context);
+    const info = await stat(commonDir);
+    if (!info.isDirectory()) throw new BridgeError("invalid_request", "Git common directory is unavailable");
+    return commonDir;
+  }
+}
+
+function requiresMetadataTreeScan(context) {
+  return Boolean(context?.authority) && context.authority.effectivePolicy?.unrestrictedPaths !== true;
+}
+
+function gitRepositoryError(git) {
+  return new BridgeError("execution_failed", git.result.stderr, {
+    details: { side_effects_started: false, execution_started: false },
+  });
+}
+
+function readGitPathFile(file, label, gitdirPrefix) {
+  const buffer = readBoundedRegularFileSync(file, 4096, label, {
+    verifyPathIdentity: true,
+    rejectMultipleLinks: true,
+  });
+  const text = buffer.toString("utf8");
+  const pattern = gitdirPrefix ? /^gitdir: ([^\r\n\0]+)\r?\n?$/ : /^([^\r\n\0]+)\r?\n?$/;
+  const match = pattern.exec(text);
+  if (!match || !match[1]) throw new BridgeError("invalid_request", `${label} is invalid`);
+  return match[1];
+}
+
+function validateCommitMessage(value) {
+  if (typeof value !== "string" || !value.trim()) throw new BridgeError("invalid_request", "Git commit message is required");
+  if (value.includes("\0")) throw new BridgeError("invalid_request", "Git commit message contains a NUL byte");
+  if (Buffer.byteLength(value, "utf8") > MAX_GIT_COMMIT_MESSAGE_BYTES) {
+    throw new BridgeError("limit_exceeded", `Git commit message exceeds ${MAX_GIT_COMMIT_MESSAGE_BYTES} bytes`);
+  }
+  return value;
+}

@@ -6,13 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../../../src/local/device-identity.mjs";
-import { createDaemonHttpRelayHeaders } from "../../../src/local/daemon-http-relay-auth.mjs";
-import { accountAdminRequestHeaders } from "../../../src/local/account-admin.mjs";
-import { workerToolsForRole } from "../../../src/worker/worker-tool-authority.ts";
-import { terminateProcessTreeWithEscalation } from "../../../src/local/process-tree.mjs";
+import { createDaemonAuthentication, createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../../../src/local/state/device-identity.mjs";
+import { createDaemonHttpRelayHeaders } from "../../../src/local/transport/daemon-http-relay-protocol.mjs";
+import { accountAdminRequestHeaders } from "../../../src/local/state/account-admin.mjs";
+import { workerToolsForRole } from "../../../src/worker/mcp/tool-authority.ts";
+import { terminateProcessTreeWithEscalation } from "../../../src/local/process/tree-facade.mjs";
 import serverMetadata from "../../../src/shared/server-metadata.json" with { type: "json" };
-import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp-subscription-contract.ts";
+import { MCP_TOOL_LIST_SUBSCRIPTION_LEASE_MS } from "../../../src/worker/mcp/subscriptions.ts";
 
 
 export const integrationContext = {

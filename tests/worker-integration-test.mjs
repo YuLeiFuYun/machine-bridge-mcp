@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+import { createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/state/device-identity.mjs";
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
 import { openPort, appendBounded, sleep, withTimeout, terminate, configureWorkerIntegration, WORKER_INTEGRATION_WS_MESSAGE_WAIT_MS } from "./fixtures/worker-integration/common.mjs";
 import { runOAuthAndProtocolScenarios } from "./fixtures/worker-integration/oauth-and-protocol-scenarios.mjs";

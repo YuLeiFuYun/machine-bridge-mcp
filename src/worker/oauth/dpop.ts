@@ -1,0 +1,240 @@
+import { JWK_THUMBPRINT_PATTERN } from "./contracts.ts";
+
+const DPOP_WINDOW_SECONDS = 5 * 60;
+
+const MAX_DPOP_JTIS = 4096;
+
+export interface VerifiedDpopProof {
+  jkt: string;
+  jti: string;
+  issuedAt: number;
+  replayKey: string;
+  expiresAt: number;
+}
+
+export async function verifyDpopProof(input: {
+  request: Request;
+  expectedMethod?: string;
+  expectedUrl?: string;
+  accessToken?: string;
+  expectedJkt?: string;
+  now?: number;
+}): Promise<VerifiedDpopProof | null> {
+  const encoded = input.request.headers.get("DPoP") || "";
+  if (!encoded) return null;
+  const [headerPart, payloadPart, signaturePart, ...extraParts] = encoded.split(".");
+  if (!headerPart || !payloadPart || !signaturePart || extraParts.length) return null;
+  if (![headerPart, payloadPart, signaturePart].every((part) => /^[A-Za-z0-9_-]+$/.test(part))) return null;
+  const header = decodeJson(headerPart);
+  const payload = decodeJson(payloadPart);
+  const signature = decodeBase64Url(signaturePart, 64);
+  if (!header || !payload || !signature) return null;
+  if (header.typ !== "dpop+jwt" || header.alg !== "ES256" || !plainRecord(header.jwk)) return null;
+  if (header.crit !== undefined || header.b64 !== undefined) return null;
+  const publicJwk = publicP256Jwk(header.jwk);
+  if (!publicJwk) return null;
+  const now = Number.isSafeInteger(input.now) ? Number(input.now) : Math.floor(Date.now() / 1000);
+  const issuedAt = payload.iat;
+  const jti = payload.jti;
+  if (typeof issuedAt !== "number" || typeof jti !== "string") return null;
+  if (!Number.isSafeInteger(issuedAt) || Math.abs(now - issuedAt) > DPOP_WINDOW_SECONDS) return null;
+  if (!/^[A-Za-z0-9._~-]{16,200}$/.test(jti)) return null;
+  if (typeof payload.htm !== "string" || typeof payload.htu !== "string") return null;
+  const expectedMethod = (input.expectedMethod || input.request.method).toUpperCase();
+  try {
+    if (payload.htm !== expectedMethod
+        || normalizedHtu(payload.htu) !== normalizedHtu(input.expectedUrl || input.request.url)) return null;
+  } catch { return null; }
+  const jkt = await jwkThumbprint(publicJwk);
+  if (input.expectedJkt && (!JWK_THUMBPRINT_PATTERN.test(input.expectedJkt) || input.expectedJkt !== jkt)) return null;
+  if (input.accessToken) {
+    const ath = payload.ath;
+    if (typeof ath !== "string") return null;
+    if (ath !== await sha256Base64Url(input.accessToken)) return null;
+  } else if (payload.ath !== undefined) {
+    return null;
+  }
+  try {
+    const key = await crypto.subtle.importKey("jwk", publicJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    const verified = await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      signature as unknown as BufferSource,
+      new TextEncoder().encode(`${headerPart}.${payloadPart}`),
+    );
+    if (!verified) return null;
+  } catch {
+    return null;
+  }
+  const replayKey = await sha256Base64Url(`${jkt}\0${jti}`);
+  return {
+    jkt,
+    jti,
+    issuedAt,
+    replayKey,
+    expiresAt: Math.max(now + 1, issuedAt + DPOP_WINDOW_SECONDS),
+  };
+}
+
+export async function consumeDpopProof(
+  storage: DurableObjectStorage | DpopNonceStorage,
+  proof: VerifiedDpopProof,
+  now = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  if (!proof || !JWK_THUMBPRINT_PATTERN.test(proof.replayKey) || !Number.isSafeInteger(proof.expiresAt) || proof.expiresAt <= now) return false;
+  return consumeBoundedNonce(storage, {
+    key: "dpop-proof-jtis",
+    nonce: proof.replayKey,
+    expiresAt: proof.expiresAt,
+    now,
+    noncePattern: JWK_THUMBPRINT_PATTERN,
+    maximum: MAX_DPOP_JTIS,
+    maxFutureSeconds: DPOP_WINDOW_SECONDS * 2,
+  });
+}
+
+type DpopNonceStorage = {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  put(key: string, value: unknown): Promise<void>;
+};
+
+export async function jwkThumbprint(jwk: JsonWebKey): Promise<string> {
+  const publicJwk = publicP256Jwk(jwk);
+  if (!publicJwk) throw new Error("DPoP public key is invalid");
+  const canonical = JSON.stringify({ crv: publicJwk.crv, kty: publicJwk.kty, x: publicJwk.x, y: publicJwk.y });
+  return sha256Base64Url(canonical);
+}
+
+export function normalizedHtu(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) {
+    throw new Error("DPoP target URI is invalid");
+  }
+  if (url.username || url.password || url.hash) throw new Error("DPoP target URI is invalid");
+  return `${url.origin}${url.pathname}`;
+}
+
+function publicP256Jwk(value: unknown): JsonWebKey | null {
+  if (!plainRecord(value) || value.kty !== "EC" || value.crv !== "P-256" || value.d !== undefined) return null;
+  if (typeof value.x !== "string" || typeof value.y !== "string") return null;
+  if (!/^[A-Za-z0-9_-]{42,44}$/.test(value.x) || !/^[A-Za-z0-9_-]{42,44}$/.test(value.y)) return null;
+  return { kty: "EC", crv: "P-256", x: value.x, y: value.y, ext: true, key_ops: ["verify"] };
+}
+
+function decodeJson(value: string): Record<string, unknown> | null {
+  const bytes = decodeBase64Url(value);
+  if (!bytes || bytes.byteLength > 16 * 1024) return null;
+  try {
+    const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return plainRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeBase64Url(value: string, expectedBytes?: number): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  try {
+    const binary = atob(padded);
+    if (expectedBytes !== undefined && binary.length !== expectedBytes) return null;
+    const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return base64Url(new Uint8Array(digest));
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function plainRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+interface NonceStorage {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  put(key: string, value: unknown): Promise<void>;
+}
+
+interface TransactionalNonceStorage extends NonceStorage {
+  transaction<T>(callback: (transaction: NonceStorage) => Promise<T>): Promise<T>;
+}
+
+interface NonceOptions {
+  key: string;
+  nonce: string;
+  expiresAt: number;
+  now: number;
+  noncePattern: RegExp;
+  maximum: number;
+  maxFutureSeconds: number;
+}
+
+export async function consumeBoundedNonce(
+  storage: DurableObjectStorage | NonceStorage,
+  options: NonceOptions,
+): Promise<boolean> {
+  validateOptions(options);
+  const consume = (target: NonceStorage) => consumeInStorage(target, options);
+  if (hasTransactions(storage)) return storage.transaction(consume);
+  return consume(storage);
+}
+
+async function consumeInStorage(
+  storage: NonceStorage,
+  options: NonceOptions,
+): Promise<boolean> {
+  const raw = await storage.get<unknown>(options.key);
+  if (raw !== undefined
+      && !validNonceRecord(raw, options.noncePattern, options.maximum, options.now + options.maxFutureSeconds)) return false;
+  const nonces: Record<string, number> = raw ? { ...raw as Record<string, number> } : {};
+  for (const [nonce, expiresAt] of Object.entries(nonces)) {
+    if (expiresAt <= options.now) delete nonces[nonce];
+  }
+  if (nonces[options.nonce]) return false;
+  if (Object.keys(nonces).length >= options.maximum) return false;
+  nonces[options.nonce] = options.expiresAt;
+  await storage.put(options.key, nonces);
+  return true;
+}
+
+function validateOptions(options: NonceOptions): void {
+  if (!/^[a-z][a-z0-9-]{1,127}$/.test(options.key)) throw new Error("nonce-store key is invalid");
+  if (!options.noncePattern.test(options.nonce)) throw new Error("nonce-store nonce is invalid");
+  if (!Number.isSafeInteger(options.now) || options.now <= 0) throw new Error("nonce-store current time is invalid");
+  if (!Number.isSafeInteger(options.maximum) || options.maximum < 1 || options.maximum > 4096) throw new Error("nonce-store maximum is invalid");
+  const latestExpiry = options.now + options.maxFutureSeconds;
+  if (!Number.isSafeInteger(options.maxFutureSeconds) || options.maxFutureSeconds < 1 || !Number.isSafeInteger(latestExpiry)) {
+    throw new Error("nonce-store future window is invalid");
+  }
+  if (!Number.isSafeInteger(options.expiresAt) || options.expiresAt <= options.now || options.expiresAt > latestExpiry) {
+    throw new Error("nonce-store expiration is invalid");
+  }
+}
+
+function validNonceRecord(value: unknown, noncePattern: RegExp, maximum: number, latestExpiry: number): value is Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  let count = 0;
+  for (const nonce in value) {
+    if (!Object.hasOwn(value, nonce)) continue;
+    count += 1;
+    if (count > maximum) return false;
+    const expiresAt = (value as Record<string, unknown>)[nonce];
+    if (!noncePattern.test(nonce) || !Number.isSafeInteger(expiresAt) || Number(expiresAt) <= 0 || Number(expiresAt) > latestExpiry) return false;
+  }
+  return true;
+}
+
+function hasTransactions(storage: DurableObjectStorage | NonceStorage): storage is TransactionalNonceStorage {
+  return typeof (storage as Partial<TransactionalNonceStorage>).transaction === "function";
+}

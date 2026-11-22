@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertStructuredGitCommitStateClear } from "../src/local/git-operation-state.mjs";
+import { assertStructuredGitCommitStateClear } from "../src/local/git/git-contracts.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-git-operation-state-"));
 const markers = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_START", "rebase-apply", "rebase-merge", "sequencer"];

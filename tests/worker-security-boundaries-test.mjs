@@ -1,35 +1,35 @@
 import nodeAssert from "node:assert/strict";
-import { verifyDpopProof } from "../src/worker/dpop.ts";
-import { verifyP256Signature } from "../src/worker/device-session-verifier.ts";
-import { handleDaemonHttpRelay } from "../src/worker/daemon-http-controller.ts";
-import { DaemonRegistry } from "../src/worker/daemon-registry.ts";
-import { WorkerObservability } from "../src/worker/observability.ts";
-import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
-import { accountAdminAuthorized, handleAccountAdminOperation } from "../src/worker/account-admin.ts";
-import { discardRequestBody, readBoundedText } from "../src/worker/http.ts";
-import { handleOAuthClientAdminOperation } from "../src/worker/oauth-client-admin.ts";
-import { OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
-import { currentOAuthTokenAuthority, exchangeOAuthToken } from "../src/worker/oauth-tokens.ts";
+import { verifyDpopProof } from "../src/worker/oauth/dpop.ts";
+import { verifyP256Signature } from "../src/worker/oauth/device-session-verifier.ts";
+import { handleDaemonHttpRelay } from "../src/worker/daemon/http-controller.ts";
+import { DaemonRegistry } from "../src/worker/daemon/registry.ts";
+import { WorkerObservability } from "../src/worker/room/observability.ts";
+import { createDaemonHttpRelayHeaders } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { accountAdminAuthorized, handleAccountAdminOperation } from "../src/worker/oauth/account-admin.ts";
+import { discardRequestBody, readBoundedText } from "../src/worker/room/http.ts";
+import { handleOAuthClientAdminOperation } from "../src/worker/oauth/client-admin.ts";
+import { OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth/contracts.ts";
+import { currentOAuthTokenAuthority, exchangeOAuthToken } from "../src/worker/oauth/oauth-tokens.ts";
 import {
   acknowledgeAuthorityRevocation, authorityRevocationWireMessage, authorityRevocations, putWithAuthorityRevocation,
-} from "../src/worker/authority-revocations.ts";
+} from "../src/worker/oauth/authority-revocations.ts";
 import { normalizeAuthorityRevocation, recordMatchesAuthorityRevocation } from "../src/shared/authority-revocation.mjs";
-import { deriveRefreshReplacementPair } from "../src/worker/oauth-token-derivation.ts";
+import { deriveRefreshReplacementPair } from "../src/worker/oauth/token-issuance.ts";
 import {
   loadOAuthRefreshStore,
   recordConsumedRefreshToken,
   revokeOAuthRefreshFamily,
-} from "../src/worker/oauth-refresh-families.ts";
-import { oauthRefreshPersistenceEntries, saveOAuthRefreshStore } from "../src/worker/oauth-refresh-persistence.ts";
+} from "../src/worker/oauth/refresh-families.ts";
+import { oauthRefreshPersistenceEntries, saveOAuthRefreshStore } from "../src/worker/oauth/token-issuance.ts";
 import {
   createAccount,
   emptyOAuthRefreshStore,
   emptyOAuthStore,
   pkceS256,
   sha256Hex,
-} from "../src/worker/oauth-state.ts";
-import { accountAdminRequestHeaders, generateAccountPassword } from "../src/local/account-admin.mjs";
-import { createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
+} from "../src/worker/oauth/state.ts";
+import { accountAdminRequestHeaders, generateAccountPassword } from "../src/local/state/account-admin.mjs";
+import { createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/state/device-identity.mjs";
 import { createDpopFixture, createDpopProof } from "./test-dpop-proof.mjs";
 
 const BASE = "https://bridge.example.test";

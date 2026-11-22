@@ -1,5 +1,5 @@
-import { commandMatchText, recommendTools, relevanceScore, tokenize } from "../src/local/capability-ranking.mjs";
-import { MAX_TOOL_SELECTION_TEXT_CHARACTERS, toolSelectionText } from "../src/local/execution-routing.mjs";
+import { commandMatchText, recommendTools, relevanceScore, tokenize } from "../src/local/core/authority.mjs";
+import { MAX_TOOL_SELECTION_TEXT_CHARACTERS, toolSelectionText } from "../src/local/runtime/call-registry.mjs";
 
 assert(relevanceScore("create a skill", "Skill creator workflow", "skill-creator") > relevanceScore("create a skill", "frontend design", "frontend-design"), "identity weighting does not prefer the named capability");
 assert(relevanceScore("创建技能", "create skill creator", "skill-creator") > 0, "Chinese intent aliases do not match English metadata");

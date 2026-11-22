@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { DaemonHttpRelayConnection } from "../src/local/daemon-http-relay-connection.mjs";
-import { postDaemonHttpRelay } from "../src/local/daemon-http-relay-request.mjs";
-import { relayRetryAfterMs } from "../src/local/daemon-http-retry-policy.mjs";
+import { DaemonHttpRelayConnection } from "../src/local/transport/daemon-http-relay.mjs";
+import { postDaemonHttpRelay } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { relayRetryAfterMs } from "../src/local/transport/relay-recovery.mjs";
 import relayContract from "../src/shared/relay-contract.json" with { type: "json" };
-import { createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/device-identity.mjs";
-import { createDaemonHttpRelayHeaders } from "../src/local/daemon-http-relay-auth.mjs";
-import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon-http-auth.ts";
-import { consumeDaemonPreflightNonce, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
+import { createDaemonPreflightHeaders, createDeviceIdentity, createDeviceSessionIdentity, publicDeviceJwkJson } from "../src/local/state/device-identity.mjs";
+import { createDaemonHttpRelayHeaders } from "../src/local/transport/daemon-http-relay-protocol.mjs";
+import { verifyDaemonHttpRelayRequest } from "../src/worker/daemon/http-controller.ts";
+import { consumeDaemonPreflightNonce, verifyDaemonPreflight } from "../src/worker/daemon/auth.ts";
 import { DAEMON_HTTP_RELAY_TTL_SECONDS, DAEMON_PREFLIGHT_TTL_SECONDS } from "../src/shared/daemon-auth.mjs";
 
 export async function testRelayRetryPolicy(fixture) {

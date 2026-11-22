@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLocalAdminCommands } from "../src/local/cli-local-admin.mjs";
-import { loadOrCreatePairing, readBrowserPairing, savePairing } from "../src/local/browser-pairing-store.mjs";
-import { loadState } from "../src/local/state.mjs";
+import { createLocalAdminCommands } from "../src/local/cli/cli-admin.mjs";
+import { loadOrCreatePairing, readBrowserPairing, savePairing } from "../src/local/automation/browser-pairing.mjs";
+import { loadState } from "../src/local/state/state.mjs";
 
 const stateRoot = await mkdtemp(join(tmpdir(), "mbm-browser-cli-state-"));
 const workspace = await mkdtemp(join(tmpdir(), "mbm-browser-cli-workspace-"));

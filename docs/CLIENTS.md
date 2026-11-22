@@ -117,6 +117,7 @@ Claude Desktop, Cursor, and many generic clients use a shape similar to:
         "--profile",
         "full"
       ]
+    }
   }
 }
 ```

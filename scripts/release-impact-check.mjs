@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { compareReleaseVersions, parseReleaseVersion } from "./release-channel.mjs";
 import { releaseDiagnostic } from "./release-diagnostic.mjs";
-import { createTrustedGitResolver } from "../src/local/trusted-git-executable.mjs";
+import { createTrustedGitResolver } from "../src/local/core/trusted-executable.mjs";
 
 const VERSION_TAG = /^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
@@ -46,7 +46,7 @@ if (compareReleaseVersions(current, latest) <= 0) {
 }
 
 const changelog = readFileSync(new URL("CHANGELOG.md", root), "utf8");
-const heading = new RegExp(`^## ${escapeRegExp(pkg.version)}(?:\\s+-[^\\n]*)?$`, "m");
+const heading = new RegExp(`^## ${RegExp.escape(pkg.version)}(?:\\s+-[^\\n]*)?$`, "m");
 if (!heading.test(changelog)) fail(`CHANGELOG.md has no section for ${pkg.version}`);
 
 process.stderr.write(`release impact check ok: ${packageRelevant.length} npm-package file(s) changed since ${latestTag}; next npm version ${pkg.version}\n`);
@@ -73,10 +73,6 @@ function git(args) {
 
 function lines(value) {
   return value ? value.split("\n").map((item) => item.trim()).filter(Boolean) : [];
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function fail(message) {

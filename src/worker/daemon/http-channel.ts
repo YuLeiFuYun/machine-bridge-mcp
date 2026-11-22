@@ -1,0 +1,207 @@
+import relayContract from "../../shared/relay-contract.json" with { type: "json" };
+import { DAEMON_CHANNEL_OPEN, type DaemonChannel } from "./channel.ts";
+import type { DaemonAttachment } from "./channel.ts";
+import { relayDiagnosticsAfterReady } from "./relay-diagnostics.ts";
+import { randomToken } from "../oauth/state.ts";
+
+type SequencedMessage = Readonly<{ seq: number; payload: unknown; bytes: number }>;
+
+export class DaemonHttpChannel implements DaemonChannel {
+  readonly daemonTransport = "https" as const;
+  readonly sessionId: string;
+  readonly activationToken: string;
+  readonly attachment: DaemonAttachment;
+  private activatedAtMs = 0;
+  private verifiedReadyAtMs = 0;
+  private lastSeenAtMs: number;
+  private nextWorkerSeq = 1;
+  private acknowledgedWorkerSeq = 0;
+  private acknowledgedDaemonSeq = 0;
+  private queuedBytes = 0;
+  private readonly outbound: SequencedMessage[] = [];
+  private closed = false;
+
+  constructor(input: {
+    sessionId: string;
+    activationToken: string;
+    attachment: DaemonAttachment;
+    now?: number;
+  }) {
+    this.sessionId = input.sessionId;
+    this.activationToken = input.activationToken;
+    this.attachment = input.attachment;
+    this.lastSeenAtMs = input.now ?? Date.now();
+  }
+
+  get readyState(): number { return !this.closed && this.verifiedReadyAtMs > 0 ? DAEMON_CHANNEL_OPEN : 0; }
+  get lastSeenMs(): number { return this.lastSeenAtMs; }
+  get activatedMs(): number { return this.activatedAtMs; }
+  get isActivated(): boolean { return !this.closed && this.activatedAtMs > 0; }
+  get daemonSequence(): number { return this.acknowledgedDaemonSeq; }
+  get queuedMessageCount(): number { return this.outbound.length; }
+
+  activate(now = Date.now()): void {
+    if (this.closed) throw new Error("HTTP daemon channel is closed");
+    this.activatedAtMs = now;
+    this.touch(now);
+    this.attachment.role = "probing";
+  }
+
+  verifyReady(now = Date.now()): void {
+    if (!this.isActivated) throw new Error("HTTP daemon channel was not activated");
+    this.verifiedReadyAtMs = now;
+    this.touch(now);
+    this.attachment.role = "daemon";
+    this.attachment.connectedAt = new Date(now).toISOString();
+    this.attachment.relayDiagnostics = relayDiagnosticsAfterReady(
+      this.attachment.relayDiagnostics,
+      this.attachment.connectedAt,
+    );
+  }
+
+  touch(now = Date.now()): void {
+    this.lastSeenAtMs = now;
+    this.attachment.lastSeenAt = new Date(now).toISOString();
+  }
+
+  send(data: string, deferWhenFull = false): boolean {
+    if (!this.isActivated) throw new Error("HTTP daemon channel is not activated");
+    const bytes = new TextEncoder().encode(data).byteLength;
+    if (bytes > relayContract.httpFallbackMaximumMessageBytes
+        || this.outbound.length >= relayContract.httpFallbackMaximumQueuedMessages
+        || this.queuedBytes + bytes > relayContract.httpFallbackMaximumQueuedBytes) {
+      if (deferWhenFull) return false;
+      throw new Error("HTTP daemon relay queue capacity exceeded");
+    }
+    let payload: unknown;
+    try { payload = JSON.parse(data); } catch { throw new Error("HTTP daemon relay message is not JSON"); }
+    this.outbound.push(Object.freeze({ seq: this.nextWorkerSeq++, payload, bytes }));
+    this.queuedBytes += bytes;
+    return true;
+  }
+
+  hasQueuedRevocation(id: unknown): boolean {
+    return this.outbound.some(({ payload }) =>
+      (payload as Record<string, unknown>)?.type === "authority_revoke"
+      && (payload as Record<string, unknown>).revocation_id === id);
+  }
+
+  acknowledgeWorker(sequence: number): boolean {
+    if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence >= this.nextWorkerSeq) return false;
+    if (sequence <= this.acknowledgedWorkerSeq) return true;
+    this.acknowledgedWorkerSeq = sequence;
+    for (let head = this.outbound[0]; head !== undefined && head.seq <= sequence; head = this.outbound[0]) {
+      this.queuedBytes -= head.bytes; this.outbound.shift();
+    }
+    return true;
+  }
+
+  outboundMessages(): Array<{ seq: number; payload: unknown }> {
+    const selected: Array<{ seq: number; payload: unknown }> = [];
+    // Fixed response fields fit within 512 bytes; count sequence wrappers and separators too.
+    let bytes = 512;
+    for (const message of this.outbound) {
+      const entry = { seq: message.seq, payload: message.payload };
+      const encodedBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength + 1;
+      if (bytes + encodedBytes > relayContract.httpFallbackMaximumEnvelopeBytes) break;
+      selected.push(entry);
+      bytes += encodedBytes;
+    }
+    return selected;
+  }
+
+  acceptDaemonSequence(sequence: number): "new" | "duplicate" | "gap" {
+    if (!Number.isSafeInteger(sequence) || sequence <= 0) return "gap";
+    if (sequence <= this.acknowledgedDaemonSeq) return "duplicate";
+    if (sequence !== this.acknowledgedDaemonSeq + 1) return "gap";
+    return "new";
+  }
+
+  commitDaemonSequence(sequence: number): void {
+    if (sequence !== this.acknowledgedDaemonSeq + 1) throw new Error("HTTP daemon sequence commit is not contiguous");
+    this.acknowledgedDaemonSeq = sequence;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.outbound.length = 0;
+    this.queuedBytes = 0;
+  }
+}
+export class DaemonHttpRegistry {
+  private readonly channels = new Map<string, DaemonHttpChannel>();
+
+  beginCandidate(sessionId: string, attachment: DaemonAttachment, now = Date.now()): DaemonHttpChannel | undefined {
+    const existing = this.channels.get(sessionId);
+    if (existing) { existing.touch(now); return existing; }
+    this.pruneCandidates(now);
+    if (this.channels.size >= 2) {
+      const oldest = [...this.channels.values()]
+        .filter((channel) => !channel.isActivated)
+        .sort((a, b) => a.lastSeenMs - b.lastSeenMs)[0];
+      if (!oldest) return undefined;
+      this.close(oldest);
+    }
+    const channel = new DaemonHttpChannel({
+      sessionId, activationToken: randomToken("activate"), attachment, now,
+    });
+    this.channels.set(sessionId, channel);
+    return channel;
+  }
+
+  get(sessionId: string): DaemonHttpChannel | undefined { return this.channels.get(sessionId); }
+
+  readyChannels(now = Date.now()): DaemonHttpChannel[] {
+    return [...this.channels.values()]
+      .filter((channel) => channel.readyState === 1
+        && now - channel.lastSeenMs < relayContract.httpFallbackLivenessTimeoutMs)
+      .sort((left, right) => right.activatedMs - left.activatedMs);
+  }
+
+  candidates(now = Date.now()): DaemonHttpChannel[] {
+    this.pruneCandidates(now);
+    return [...this.channels.values()].filter((channel) => channel.readyState !== 1
+      && now - channel.lastSeenMs < relayContract.httpFallbackLivenessTimeoutMs);
+  }
+
+  activate(sessionId: string, activationToken: string, now = Date.now()): DaemonHttpChannel | undefined {
+    const channel = this.channels.get(sessionId);
+    if (!channel || channel.activationToken !== activationToken) return undefined;
+    channel.activate(now);
+    return channel;
+  }
+
+  attachment(channel: DaemonHttpChannel): DaemonAttachment | undefined {
+    return this.channels.get(channel.sessionId) === channel ? channel.attachment : undefined;
+  }
+
+  close(channel: DaemonHttpChannel): boolean {
+    if (this.channels.get(channel.sessionId) !== channel) return false;
+    this.channels.delete(channel.sessionId);
+    channel.close();
+    return true;
+  }
+
+  staleReady(now = Date.now()): DaemonHttpChannel[] {
+    return [...this.channels.values()].filter((channel) => channel.readyState === 1
+      && now - channel.lastSeenMs >= relayContract.httpFallbackLivenessTimeoutMs);
+  }
+
+  staleOwned(now = Date.now()): DaemonHttpChannel[] {
+    return [...this.channels.values()].filter((channel) => channel.isActivated
+      && now - channel.lastSeenMs >= relayContract.httpFallbackLivenessTimeoutMs);
+  }
+
+  nextDeadline(now = Date.now()): number {
+    const deadlines = [...this.channels.values()].map((channel) => channel.lastSeenMs + relayContract.httpFallbackLivenessTimeoutMs);
+    return deadlines.length > 0 ? Math.max(now + 1, Math.min(...deadlines)) : Number.POSITIVE_INFINITY;
+  }
+
+  private pruneCandidates(now = Date.now()): void {
+    for (const channel of [...this.channels.values()]) {
+      if (channel.isActivated) continue;
+      if (now - channel.lastSeenMs < relayContract.httpFallbackLivenessTimeoutMs) continue;
+      this.close(channel);
+    }
+  }
+}

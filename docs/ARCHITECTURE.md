@@ -215,13 +215,13 @@ If verification is ambiguous, the next start compares the same fingerprint and p
 Owner-authorized candidate activation adds the missing end-to-end evidence: device preflight, signed challenge authentication, and readiness probing.
 An explicit authentication rejection after current-version health permits one same-name redeployment with the unchanged selected identity; ordinary timeout, proxy, TLS, network, and temporary health failures do not.
 
-`worker-health.mjs` owns bounded health I/O: exact HTTPS `workers.dev` origin and Worker-name validation, environment-proxy selection, request timeout, redirect rejection, response-size limit, JSON/identity/version validation, and coarse error classification.
-`network-proxy.mjs` is shared by remote HTTP health probes and relay construction.
+`src/local/transport/network-proxy.mjs` (`workerHealth`) owns bounded health I/O: exact HTTPS `workers.dev` origin and Worker-name validation, environment-proxy selection, request timeout, redirect rejection, response-size limit, JSON/identity/version validation, and coarse error classification.
+`src/local/transport/network-proxy.mjs` is shared by remote HTTP health probes and relay construction.
 Worker health continues to honor the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` model.
 Relay WebSocket additionally accepts the relay-only `MBM_RELAY_PROXY` override: a non-empty value selects that HTTP(S) proxy before standard environment resolution, while an empty value restores the standard model.
 Signed HTTP fallback inherits the same relay override by default, but `MBM_RELAY_FALLBACK_PROXY` can select a different explicit HTTP(S) proxy or, when present and empty, restore standard environment resolution for only that fallback.
 Proxy URLs and credentials are never exposed.
-Local browser-broker health uses `loopback-health.mjs`, which accepts only canonical `http://127.0.0.1:<port>/healthz`, disables agent reuse, bounds the response, and deliberately bypasses environment proxies.
+Local browser-broker health uses `src/local/transport/network-proxy.mjs` (`readLoopbackJson`), which accepts only canonical `http://127.0.0.1:<port>/healthz`, disables agent reuse, bounds the response, and deliberately bypasses environment proxies.
 Definitive stale evidence is retried for propagation and then permits a same-name redeploy; timeout, TLS, network, proxy, and temporary server failure remain ambiguous and fail without upload.
 
 Worker-name mutation is a separate identity transition.
@@ -249,7 +249,7 @@ Independent handshake and readiness deadlines terminate candidates that authenti
 Once authenticated, `RelayLiveness` sends a protocol-level WebSocket Ping every five seconds.
 The full ten-second Pong deadline begins only after the sender write callback proves the control frame left the local queue.
 Ping/application-send completions are fenced to the exact current WebSocket generation, so a callback from a superseded socket cannot mutate the replacement connection; a Ping callback that never completes has its own thirty-second local dispatch bound and becomes `relay_transport_send_timeout` even when the receive direction remains active.
-Reaching that first-stage deadline no longer immediately kills a ready WSS: `relay-transport-confirmation.mjs` opens one bounded fifteen-second application-confirmation window and emits the existing JSON heartbeat only after the connection is fully ready.
+Reaching that first-stage deadline no longer immediately kills a ready WSS: `src/local/transport/relay-heartbeat.mjs` opens one bounded fifteen-second application-confirmation window and emits the existing JSON heartbeat only after the connection is fully ready.
 A later protocol Pong or the explicit JSON application `pong` is bidirectional transport proof and clears suspicion; unrelated application messages update receive-side liveness only and cannot prove that daemon-to-Worker writes are succeeding.
 `ResilientRelayConnection` keeps HTTPS fallback stopped while WSS is verified healthy.
 During first-stage transport suspicion it concurrently prewarms signed HTTPS in standby without Worker-side takeover; confirmed WSS recovery stops that prewarm, while a real disconnect upgrades it to exact-generation takeover and preempts any stale standby request.
@@ -307,10 +307,13 @@ A process/isolate loss therefore does not gain delivery durability from the alar
 ## Persistence
 
 Local state and global config are owner-only, versioned, and size-bounded.
+State schema version 6 records named accounts, policy origin/revision, and local resource metadata in addition to the capability fields.
 Security-state discovery treats only `ENOENT` as absence; permission, I/O, wrong-type, symbolic-link, hard-link, and identity failures stop before any empty-state fallback or replacement.
 Shared persistence primitives write a complete private temporary file, `fsync` it, and either hard-link it for an exclusive claim or atomically replace the destination.
 POSIX private-directory setup is descriptor-first and fail-closed; browser pairing reuses this boundary even when an existing state root was created with permissive modes.
 Machine-level browser pairing state is owner-only and shared across workspace runtimes through the local broker; its bearer token is not part of workspace state responses.
+Fixed `page-automation.js` is injected into selected frames for snapshot-version-3 semantics, per-document epochs, stable refs, bounded DOM/text traversal, actionability checks, open-Shadow-DOM traversal, structured DOM operations, multi-field forms, and resource-backed file inputs.
+Because that browser profile and active-tab focus are shared machine state, the Worker-hosted schema requires an explicit `tab_id` for browser content/action/form/screenshot/upload calls and `computer_observe(surface="browser")`; local surfaces retain active-tab defaults.
 `worker-secret-file.mjs` owns the complete ephemeral Worker deployment-secret lifecycle, including process-start-bound names, exact file identity, stale-owner classification, and cleanup-error propagation.
 State, managed-job manager, detached runner, browser pairing, and service definitions share the same flushed atomic-replacement primitive.
 Only classified transient Windows sharing failures are retried, using a bounded thirty-two-attempt exponential schedule with jitter; the implementation never deletes the destination as a retry fallback, so readers are not intentionally exposed to a missing-file interval.
@@ -367,9 +370,9 @@ Hosted Claude remote connectors originate from Anthropic infrastructure and Copi
 ## Observability
 
 Public health exposes only server identity and version.
-Worker daemon status is projected by `daemon-status.ts`; `BridgeRoom` first reclaims stale sockets and then delegates the pure ready-socket/attachment mapping, keeping Durable Object lifecycle ownership separate from status formatting.
-Daemon WebSocket admission, authentication/readiness, verified handover, message dispatch, and close/error handling are owned by `daemon-websocket-controller.ts`. The Worker composition root remains the Durable Object authority owner and `index.ts` is pinned to a 640-line ceiling so protocol state-machine growth cannot silently return to the root.
-`worker-tool-authority.ts` owns the pure role-visible tool catalog and effective-tool/authority projection so `BridgeRoom` does not duplicate that policy while orchestrating Durable Object lifecycle.
+Worker daemon status is projected by `src/worker/daemon/registry.ts`; `BridgeRoom` first reclaims stale sockets and then delegates the pure ready-socket/attachment mapping, keeping Durable Object lifecycle ownership separate from status formatting.
+Daemon WebSocket admission, authentication/readiness, verified handover, message dispatch, and close/error handling are owned by `src/worker/daemon/websocket-controller.ts`. The Worker composition root remains the Durable Object authority owner and `index.ts` is pinned to a 640-line ceiling so protocol state-machine growth cannot silently return to the root.
+`src/worker/mcp/tool-authority.ts` owns the pure role-visible tool catalog and effective-tool/authority projection so `BridgeRoom` does not duplicate that policy while orchestrating Durable Object lifecycle.
 Authenticated `server_info` has an explicit post-authorization projection boundary.
 The owner account may request the full diagnostic graph, including exact daemon/effective tool membership, bounded Worker and local runtime activity, resource alias names without paths or values, managed-job aggregates, the current daemon connection plus its sanitized preceding-reconnect summary, local execution guardrails, and privacy-preserving capability-routing evidence.
 A non-owner receives the same effective policy and service-health facts but not cross-principal activity or owner-capability inventory: local resource names/counts are hidden, managed-job/process-session aggregates are principal-filtered, global task/tool/call/process/audit activity is replaced by an explicit `activity_hidden_by_authority` marker, stable device-root key identity is hidden, Worker pending/socket/observability activity is hidden while static capacity is retained, and `daemon.tools` is replaced by its count plus `tools_hidden_by_authority`.
@@ -389,7 +392,7 @@ Owner-local registered commands may still use their explicit local manifest time
 Remote `diagnose_runtime` is owner-only because its fixed probes intentionally expose machine-wide control-plane activity; it explicitly reports that its own request reached the daemon, projects `runtime.idle_sleep_guard` only as supported/enabled/active/grace/error-class state without argv, paths, PIDs, tool names, or tool content, and, on macOS, projects the default route into a coarse VPN/TUN interception class without returning interface or endpoint data.
 
 Read-only filesystem fan-out has its own bounded domain helpers.
-`directory-metadata.mjs` resolves at most 16 independent directory metadata observations concurrently; `workspace-search.mjs` reads at most 16 independent search files concurrently.
+`src/local/core/filesystem-identity.mjs` resolves at most 16 independent directory metadata observations concurrently; `src/local/files/workspace-search.mjs` reads at most 16 independent search files concurrently.
 Both use settled batches but consume results in original enumeration/walk order, so `list_dir` ordering, `search_text` match ordering, `max_files`/`max_matches`, truncation, cancellation, and error visibility remain equivalent to the previous sequential semantics.
 A prefetched later failure is not allowed to escape after an earlier item has already satisfied the caller's stop condition.
 Write concurrency remains governed separately by canonical path mutation reservations and transaction commit rules.
@@ -424,7 +427,7 @@ toolchain are specified in [Release integrity](architecture/release-integrity.md
 delivery, and verification invariants that those gates depend on are in
 [Runtime and verification boundaries](architecture/runtime-verification.md). The publishing
 procedure is in [Releasing](RELEASING.md); engineering practices and repository invariants are
-in [Engineering](ENGINEERING.md), [Project standards](PROJECT_STANDARDS.md), and
+in [Engineering](ENGINEERING.md) and
 [Testing](TESTING.md). Agent context, multi-agent coordination, and comparative design rationale
 are documented in [Agent context](AGENT_CONTEXT.md), [Multi-agent patterns](MULTI_AGENT.md), and
 [Comparative review](COMPARATIVE_REVIEW.md); the gates are unchanged by where they are documented.

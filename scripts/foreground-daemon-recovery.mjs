@@ -1,9 +1,9 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { inspectProcessInstance, processCommandLine, splitProcessCommandLine } from "../src/local/process-identity.mjs";
+import { inspectProcessInstance, processCommandLine, splitProcessCommandLine } from "../src/local/process/identity.mjs";
 import {
   daemonLockPathForState, loadState, readDaemonLockOwner, resolveWorkspace, selectedWorkspace,
-} from "../src/local/state.mjs";
+} from "../src/local/state/state.mjs";
 
 const FOREGROUND_PID = /foreground daemon is active \(pid (\d+)\)/i;
 

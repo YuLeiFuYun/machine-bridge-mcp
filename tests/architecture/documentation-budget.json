@@ -1,5 +1,5 @@
 {
-  "totalWords": 145000,
+  "totalWords": 133000,
   "files": {
     "AGENTS.md": 1500,
     "README.md": 4200,
@@ -8,9 +8,9 @@
     "docs/ARCHITECTURE.md": 7100,
     "docs/AUDIT.md": 1900,
     "docs/CLIENTS.md": 4000,
-    "docs/COMPARATIVE_REVIEW.md": 2700,
+    "docs/COMPARATIVE_REVIEW.md": 2800,
     "docs/COMPUTER_USE.md": 11800,
-    "docs/ENGINEERING.md": 5500,
+    "docs/ENGINEERING.md": 11000,
     "docs/GETTING_STARTED.md": 3100,
     "docs/LOCAL_AUTHORIZATION.md": 1800,
     "docs/LOCAL_AUTOMATION.md": 3000,
@@ -21,14 +21,16 @@
     "docs/OPERATIONS.md": 17800,
     "docs/OVERVIEW.md": 1350,
     "docs/PRIVACY.md": 4100,
-    "docs/PROJECT_STANDARDS.md": 5500,
     "docs/RELEASING.md": 5800,
     "docs/TESTING.md": 11500,
     "docs/THREAT_MODEL.md": 5100,
     "docs/UPGRADING.md": 2750,
-    "docs/architecture/components.md": 9200,
     "docs/architecture/process-model.md": 5700,
     "docs/architecture/release-integrity.md": 1650,
-    "docs/architecture/runtime-verification.md": 2100
+    "docs/architecture/runtime-verification.md": 2100,
+    "docs/help/browser-and-apps.md": 200,
+    "docs/help/diagnostics-and-relay.md": 700,
+    "docs/help/managed-jobs.md": 2650,
+    "docs/help/security-and-authority.md": 450
   }
 }

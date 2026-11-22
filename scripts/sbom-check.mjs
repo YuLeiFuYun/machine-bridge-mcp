@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
-import { nestedNpmEnvironment } from "../src/local/npm-environment.mjs";
+import { nestedNpmEnvironment } from "../src/local/deploy/npm.mjs";
 import { releaseCommandFailure } from "./release-diagnostic.mjs";
 
 const MAX_SBOM_BYTES = 4 * 1024 * 1024;

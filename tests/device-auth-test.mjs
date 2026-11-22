@@ -11,11 +11,11 @@ import {
   validateDeviceIdentity,
   validatePublicDeviceRoot,
   validateDeviceSessionIdentity,
-} from "../src/local/device-identity.mjs";
+} from "../src/local/state/device-identity.mjs";
 import { canonicalPublicJwk, deviceSessionCertificateTranscript } from "../src/shared/device-session-auth.mjs";
 import { daemonAuthTranscript, daemonHttpRelayTranscript, daemonPreflightTranscript } from "../src/shared/daemon-auth.mjs";
-import { consumeDaemonPreflightNonce, createDaemonChallenge, sanitizeDaemonChallengeAttachment, verifyDaemonAuthentication, verifyDaemonPreflight } from "../src/worker/daemon-auth.ts";
-import { consumeBoundedNonce } from "../src/worker/nonce-store.ts";
+import { consumeDaemonPreflightNonce, createDaemonChallenge, sanitizeDaemonChallengeAttachment, verifyDaemonAuthentication, verifyDaemonPreflight } from "../src/worker/daemon/auth.ts";
+import { consumeBoundedNonce } from "../src/worker/oauth/dpop.ts";
 
 const workerOrigin = "https://bridge.example.com";
 const server = "machine-bridge-mcp";

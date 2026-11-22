@@ -3,21 +3,21 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join, win32 as winPath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runExecutable } from "../src/local/shell.mjs";
-import { currentProcessStartTimeMs, sampleProcessStartTimesAsync } from "../src/local/process-identity.mjs";
-import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/daemon-process.mjs";
-import { acquireRuntimeStartServiceLock, assertNoActiveJobsForUninstall, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli.mjs";
+import { runExecutable } from "../src/local/deploy/shell.mjs";
+import { currentProcessStartTimeMs, sampleProcessStartTimesAsync } from "../src/local/process/identity.mjs";
+import { acquireDaemonLockWithTakeover, inspectWorkspaceDaemon, stopWorkspaceServiceDaemon, workspaceDaemonOwnsPlatformAutostart } from "../src/local/transport/daemon-process.mjs";
+import { acquireRuntimeStartServiceLock, assertNoActiveJobsForUninstall, cleanupRuntimeStartFailure, installAutostartBestEffort, isIdempotentDaemonOnlyStart, runtimeStartRequiresMachineServiceLock, isSupportedNodeVersion, isSupportedNpmVersion, npmVersionCommand, parseArgs, resolvePolicy, validateCommandOptions, validateLoggingOptions, validatePositionals, workerHealthUserReason } from "../src/local/cli/cli.mjs";
 import { runtimeSelfTest } from "./runtime-self-test.mjs";
 import { runFixtureChild, stopFixtureChild, waitForFixtureExit, waitForFixtureReady } from "./fixtures/child-fixture.mjs";
-import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/log.mjs";
-import { ManagedJobManager } from "../src/local/managed-jobs.mjs";
-import { ResourceCoordinator } from "../src/local/resource-admission.mjs";
-import { resourceCommandProfile } from "../src/local/resource-command-profile.mjs";
-import { isTerminalManagedJobStatus } from "../src/local/managed-job-terminal.mjs";
-import { knownProfileStates, knownWorkerNames } from "../src/local/state-inventory.mjs";
-import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/service.mjs";
-import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/tools.mjs";
-import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensureWorkerSecrets, ensureWorkspaceDirectory, loadGlobalConfig, loadState, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state.mjs";
+import { classifyOperationalError, formatFields, sanitizeLogText } from "../src/local/core/log.mjs";
+import { ManagedJobManager } from "../src/local/jobs/manager.mjs";
+import { ResourceCoordinator } from "../src/local/process/resource-admission.mjs";
+import { resourceCommandProfile } from "../src/local/process/resource-command-profile.mjs";
+import { isTerminalManagedJobStatus } from "../src/local/jobs/terminal-base.mjs";
+import { knownProfileStates, knownWorkerNames } from "../src/local/cli/state-inventory.mjs";
+import { daemonArgs, launchdPlist, launchdServiceTarget, serviceEnvironmentPath, stableNodeExecutable, systemdQuote, systemdUnit, trimAutostartLogs } from "../src/local/deploy/service.mjs";
+import { allToolNames, assertCanonicalFullPolicy, MCP_PROTOCOL_VERSION, toolsForPolicy } from "../src/local/runtime/observability.mjs";
+import { acquireDaemonLock, acquireStartupLock, defaultFirstRunWorkspace, ensureWorkerSecrets, ensureWorkspaceDirectory, loadGlobalConfig, loadState, redactState, removeStateRoot, resolveWorkspace, saveState, selectedWorkspace, setSelectedWorkspace, validateStateRootForRemoval } from "../src/local/state/state.mjs";
 
 const CLI_FIXTURE_TIMEOUT_MS = 60_000;
 const MANAGED_JOB_CLI_FIXTURE_TIMEOUT_MS = 120_000;
@@ -408,7 +408,7 @@ async function daemonTakeoverSelfTest() {
   const stateRoot = await mkdtemp(join(tmpdir(), "mbm-takeover-state-"));
   const workspace = await mkdtemp(join(tmpdir(), "mbm-takeover-workspace-"));
   const fixture = join(workspace, "daemon-fixture.mjs");
-  const stateModuleUrl = new URL("../src/local/state.mjs", import.meta.url).href;
+  const stateModuleUrl = new URL("../src/local/state/state.mjs", import.meta.url).href;
   await writeFile(fixture, `import { acquireDaemonLock, loadState } from ${JSON.stringify(stateModuleUrl)};
 const args = process.argv.slice(2);
 if (process.env.NODE_V8_COVERAGE) { process.stderr.write("daemon fixture inherited NODE_V8_COVERAGE"); process.exit(8); }
@@ -1544,8 +1544,8 @@ async function ciBootstrapSelfTest() {
     throw new Error("fresh-checkout npm bootstrap regression is missing from the fast gate");
   }
   const bootstrap = await readFile(new URL("../scripts/prepare-pinned-npm.mjs", import.meta.url), "utf8");
-  const hardenedNpm = await readFile(new URL("../src/local/hardened-npm.mjs", import.meta.url), "utf8");
-  const hardenedNpmDownload = await readFile(new URL("../src/local/hardened-npm-download.mjs", import.meta.url), "utf8");
+  const hardenedNpm = await readFile(new URL("../src/local/deploy/hardened-npm.mjs", import.meta.url), "utf8");
+  const hardenedNpmDownload = await readFile(new URL("../src/local/deploy/hardened-npm.mjs", import.meta.url), "utf8");
   if (!bootstrap.includes("prepareHardenedNpm")
       || !hardenedNpm.includes("npm-12.0.2.tgz") || !hardenedNpm.includes("sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9Ql")
       || !hardenedNpm.includes("undici-6.28.0.tgz")
@@ -1622,15 +1622,33 @@ async function shellSelfTest() {
 async function workerSourceSelfTest() {
   const source = await readFile(new URL("../src/worker/index.ts", import.meta.url), "utf8");
   const workerModules = await Promise.all([
-    "pending-calls.ts", "policy.ts", "errors.ts", "http.ts", "oauth-state.ts", "oauth-tokens.ts",
-    "oauth-token-issuance.ts", "oauth-refresh-exchange.ts", "oauth-refresh-persistence.ts", "oauth-controller.ts", "oauth-authorization-page.ts", "authority-revocations.ts", "observability.ts", "tool-timeout.ts", "daemon-liveness.ts", "daemon-websocket-controller.ts",
-    "daemon-sockets.ts", "daemon-socket-attachment.ts", "runtime-alarm.ts", "runtime-alarm-storage.ts",
-    "mcp-jsonrpc.ts", "mcp-http-contract.ts", "mcp-controller.ts",
-    "mcp-response-stream.ts", "mcp-response-proxy.ts", "mcp-http-accept.ts", "mcp-removed-protocol.ts",
-    "worker-mcp-config.ts", "mcp-stream-proxy-contract.ts", "websocket-protocol.ts",
+    "room/pending-calls.ts",
+    "room/policy.ts",
+    "room/errors.ts",
+    "room/http.ts",
+    "oauth/state.ts",
+    "oauth/oauth-tokens.ts",
+    "oauth/token-issuance.ts",
+    "oauth/controller.ts",
+    "oauth/authorization-page.ts",
+    "oauth/authority-revocations.ts",
+    "room/observability.ts",
+    "room/tool-timeout.ts",
+    "daemon/liveness.ts",
+    "daemon/websocket-controller.ts",
+    "daemon/sockets.ts",
+    "daemon/channel.ts",
+    "room/runtime-alarm.ts",
+    "mcp/jsonrpc.ts",
+    "mcp/http-contract.ts",
+    "mcp/controller.ts",
+    "mcp/response-stream.ts",
+    "mcp/response-proxy.ts",
+    "room/server-info.ts",
+    "room/websocket-protocol.ts",
   ].map((name) => readFile(new URL(`../src/worker/${name}`, import.meta.url), "utf8")));
   const combinedSource = [source, ...workerModules].join("\n");
-  for (const module of ["mcp-jsonrpc", "websocket-protocol"]) {
+  for (const module of ["mcp/jsonrpc", "room/websocket-protocol"]) {
     if (!source.includes(`./${module}.ts`)) throw new Error(`Worker index lost protocol boundary module: ${module}`);
   }
   const unawaitedAsyncRoutes = [

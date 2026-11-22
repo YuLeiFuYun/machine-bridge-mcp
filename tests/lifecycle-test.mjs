@@ -1,5 +1,5 @@
-import { BridgeError } from "../src/local/errors.mjs";
-import { LifecycleController } from "../src/local/lifecycle.mjs";
+import { BridgeError } from "../src/local/core/errors.mjs";
+import { LifecycleController } from "../src/local/runtime/call-helpers.mjs";
 
 let now = 10;
 const lifecycle = new LifecycleController("test-runtime", () => now++);

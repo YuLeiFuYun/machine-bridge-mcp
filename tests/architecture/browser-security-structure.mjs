@@ -8,10 +8,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 // These source-shape checks are supplemental architecture guards. Behavior and failure semantics are tested separately.
 const localAutomationFiles = [
-  join(root, "src", "local", "app-automation.mjs"),
-  join(root, "src", "local", "app-automation-macos-jxa.mjs"),
-  join(root, "src", "local", "browser-bridge.mjs"),
-  join(root, "src", "local", "browser-operation-service.mjs"),
+  join(root, "src", "local", "automation", "app-automation.mjs"),
+  join(root, "src", "local", "automation", "app-macos-jxa.mjs"),
+  join(root, "src", "local", "automation", "browser-bridge.mjs"),
+  join(root, "src", "local", "automation", "browser-operation-service.mjs"),
   join(root, "browser-extension", "service-worker.js"),
   join(root, "browser-extension", "broker-auth.js"),
   join(root, "browser-extension", "pairing-bootstrap.js"),
@@ -31,8 +31,8 @@ for (const file of localAutomationFiles) {
   }
 }
 const extensionManifest = JSON.parse(readFileSync(join(root, "browser-extension", "manifest.json"), "utf8"));
-const extensionIdentitySource = readFileSync(join(root, "src", "local", "browser-extension-identity.mjs"), "utf8");
-const brokerServerSource = readFileSync(join(root, "src", "local", "browser-broker-server.mjs"), "utf8");
+const extensionIdentitySource = readFileSync(join(root, "src", "local", "automation", "browser-commands.mjs"), "utf8");
+const brokerServerSource = readFileSync(join(root, "src", "local", "automation", "browser-broker.mjs"), "utf8");
 if (extensionManifest.manifest_version !== 3 || !extensionManifest.permissions?.includes("scripting") || !extensionManifest.permissions?.includes("alarms") || !extensionManifest.permissions?.includes("debugger")) {
   throw new Error("packaged browser extension is missing required Manifest V3 capabilities");
 }
@@ -59,8 +59,8 @@ const browserErrorBoundarySource = readFileSync(join(root, "browser-extension", 
 const browserOperationContractSource = readFileSync(join(root, "browser-extension", "browser-operation-contract.js"), "utf8");
 const browserOperationsSource = readFileSync(join(root, "browser-extension", "browser-operations.js"), "utf8");
 const pageAutomationSource = readFileSync(join(root, "browser-extension", "page-automation.js"), "utf8");
-const localToolResultBoundarySource = readFileSync(join(root, "src", "local", "tool-result-boundary.mjs"), "utf8");
-const browserRequestSettlementSource = readFileSync(join(root, "src", "local", "browser-request-settlement.mjs"), "utf8");
+const localToolResultBoundarySource = readFileSync(join(root, "src", "local", "runtime", "call-registry.mjs"), "utf8");
+const browserRequestSettlementSource = readFileSync(join(root, "src", "local", "automation", "browser-extension-protocol.mjs"), "utf8");
 const localAutomationDocsSource = readFileSync(join(root, "docs", "LOCAL_AUTOMATION.md"), "utf8");
 const architectureDocsSource = architectureDocumentation;
 if (!pageAutomationSource.includes("snapshot_version: 3")
@@ -70,22 +70,22 @@ if (!pageAutomationSource.includes("snapshot_version: 3")
     || architectureDocsSource.includes("snapshot-version-2 semantics")) {
   throw new Error("browser snapshot version and architecture/local-automation documentation drifted apart");
 }
-const appAutomationSource = readFileSync(join(root, "src", "local", "app-automation.mjs"), "utf8");
-const appAutomationJxaSource = readFileSync(join(root, "src", "local", "app-automation-macos-jxa.mjs"), "utf8");
-const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli-local-admin.mjs"), "utf8");
+const appAutomationSource = readFileSync(join(root, "src", "local", "automation", "app-automation.mjs"), "utf8");
+const appAutomationJxaSource = readFileSync(join(root, "src", "local", "automation", "app-macos-jxa.mjs"), "utf8");
+const cliLocalAdminSource = readFileSync(join(root, "src", "local", "cli", "cli-admin.mjs"), "utf8");
 const workerSource = readFileSync(join(root, "src", "worker", "index.ts"), "utf8");
-const workerReadyMessagesSource = readFileSync(join(root, "src", "worker", "daemon-ready-messages.ts"), "utf8");
-const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "websocket-protocol.ts"), "utf8");
-const workerObservabilitySource = readFileSync(join(root, "src", "worker", "observability.ts"), "utf8");
-const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth-controller.ts"), "utf8");
-const workerOAuthPageSource = readFileSync(join(root, "src", "worker", "oauth-authorization-page.ts"), "utf8");
-const workerHttpSource = readFileSync(join(root, "src", "worker", "http.ts"), "utf8");
-const workerStaticRoutesSource = readFileSync(join(root, "src", "worker", "worker-static-routes.ts"), "utf8");
+const workerReadyMessagesSource = readFileSync(join(root, "src", "worker", "daemon", "ready-messages.ts"), "utf8");
+const workerWebSocketProtocolSource = readFileSync(join(root, "src", "worker", "room", "websocket-protocol.ts"), "utf8");
+const workerObservabilitySource = readFileSync(join(root, "src", "worker", "room", "observability.ts"), "utf8");
+const workerOAuthControllerSource = readFileSync(join(root, "src", "worker", "oauth", "controller.ts"), "utf8");
+const workerOAuthPageSource = readFileSync(join(root, "src", "worker", "oauth", "authorization-page.ts"), "utf8");
+const workerHttpSource = readFileSync(join(root, "src", "worker", "room", "http.ts"), "utf8");
+const workerStaticRoutesSource = readFileSync(join(root, "src", "worker", "room", "entry.ts"), "utf8");
 const oauthBrowserNavigationSource = readFileSync(join(root, "tests", "oauth-browser-navigation-test.mjs"), "utf8");
-const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "tool-timeout.ts"), "utf8");
+const workerToolTimeoutSource = readFileSync(join(root, "src", "worker", "room", "tool-timeout.ts"), "utf8");
 const sharedForegroundTimeoutSource = readFileSync(join(root, "src", "shared", "foreground-timeout.mjs"), "utf8");
 
-if (!workerToolTimeoutSource.includes('from "../shared/foreground-timeout.mjs"')
+if (!workerToolTimeoutSource.includes('from "../../shared/foreground-timeout.mjs"')
     || !sharedForegroundTimeoutSource.includes('"browser_manage_tabs", "browser_wait", "browser_get_source"')
     || !sharedForegroundTimeoutSource.includes('"browser_screenshot", "browser_upload_files"')) {
   throw new Error("shared foreground timeout classification omits browser_upload_files or lost Worker ownership");
@@ -112,29 +112,21 @@ if (!workerStaticRoutesSource.includes("isMcpResourcePath(path)")
 if (!workerSource.includes('request.method === "OPTIONS"') || !workerSource.includes("corsPreflight(request, base, extraOrigins, workerToolParameterHeaders)")) {
   throw new Error("Worker no longer gates browser CORS preflight through the exact-origin policy");
 }
-if (!workerHttpSource.includes("authorizationFormActionSources(formActionOrigin)") || !workerHttpSource.includes("const sources = [url.origin]") || !workerHttpSource.includes("form-action ${formAction}")) {
-  throw new Error("authorization HTML no longer constrains form navigation to normalized validated origins");
+if (!workerHttpSource.includes("form-action 'self'")) {
+  throw new Error("authorization HTML no longer locks form-action CSP to 'self'");
 }
-if (!workerHttpSource.includes('url.hostname === "consent.azure-apim.net"')
-  || !workerHttpSource.includes('url.hostname.endsWith(".consent.azure-apim.net")')
-  || !workerHttpSource.includes('sources.push("https://*.consent.azure-apim.net", "https://copilotstudio.microsoft.com")')) {
-  throw new Error("authorization HTML no longer permits only validated Microsoft consent callbacks to use the complete Power Platform callback chain");
+if (/consent\.azure-apim\.net|copilotstudio\.microsoft\.com|\*\.(?:google\.com|gemini\.google|googleusercontent\.com)/.test(workerHttpSource)) {
+  throw new Error("authorization HTML retained brittle provider CSP exceptions");
 }
-if (!hasSemanticImport(workerOAuthControllerSource, "./oauth-authorization-page.ts", { requiredSymbols: ["authorizationPage", "authorizationRedirectPage"] })
-  || !hasSemanticImport(workerOAuthControllerSource, "./http.ts", { requiredSymbols: ["prefersHtmlDocument"] })
+if (!hasSemanticImport(workerOAuthControllerSource, "./authorization-page.ts", { requiredSymbols: ["authorizationPage", "authorizationRedirectPage"] })
+  || !hasSemanticImport(workerOAuthControllerSource, "../room/http.ts", { requiredSymbols: ["isBrowserNavigationRequest"] })
   || findSemanticCalls(workerOAuthControllerSource, { callee: "authorizationRedirectPage" }).length === 0
-  || findSemanticCalls(workerOAuthControllerSource, { callee: "prefersHtmlDocument" }).length === 0
+  || findSemanticCalls(workerOAuthControllerSource, { callee: "isBrowserNavigationRequest" }).length === 0
   || !/form-action 'none'/.test(workerOAuthPageSource)
   || !/"referrer-policy":\s*"no-referrer"/.test(workerOAuthPageSource)
   || !/http-equiv="refresh"/.test(workerOAuthPageSource)
-  || !/location\.protocol\s*!==\s*"https:"\s*&&\s*location\.protocol\s*!==\s*"http:"/.test(workerOAuthPageSource)
-  || /\*\.(?:google\.com|gemini\.google|googleusercontent\.com)/.test(workerHttpSource)) {
-  throw new Error("browser authorization handoff lost zero-script fail-closed protections or retained unnecessary provider wildcards");
-}
-if (!workerOAuthControllerSource.includes("./oauth-authorization-page.ts")
-    || !workerOAuthPageSource.includes("new URL(authorization.redirectUri).origin")
-    || !workerOAuthPageSource.includes("status, redirectOrigin")) {
-  throw new Error("authorization pages no longer bind CSP form navigation to the validated redirect origin");
+  || !/location\.protocol\s*!==\s*"https:"\s*&&\s*location\.protocol\s*!==\s*"http:"/.test(workerOAuthPageSource)) {
+  throw new Error("browser authorization handoff lost zero-script fail-closed protections or navigation detection");
 }
 if (!oauthBrowserNavigationSource.includes("negative control reached the first callback")
   || !oauthBrowserNavigationSource.includes("first-hop-only policy unexpectedly followed the regional redirect")
@@ -148,15 +140,15 @@ if (!cliLocalAdminSource.includes('readBrowserPairingPort(state.paths.stateRoot)
     || cliLocalAdminSource.includes("function readBrowserPairingState")) {
   throw new Error("browser CLI regained a duplicate pairing-state parser instead of the pairing-store projection");
 }
-const pairingStoreSource = readFileSync(join(root, "src", "local", "browser-pairing-store.mjs"), "utf8");
+const pairingStoreSource = readFileSync(join(root, "src", "local", "automation", "browser-pairing.mjs"), "utf8");
 for (const required of ["export function readBrowserPairingPort", "readPairing(file)", "readExclusivePublicationFileSync", "ownerPrivate: true"]) {
   if (!pairingStoreSource.includes(required)) throw new Error(`browser pairing-store projection lost secure bounded-state ownership: ${required}`);
 }
-const exclusivePublicationReadSource = readFileSync(join(root, "src", "local", "exclusive-publication-recovery.mjs"), "utf8");
+const exclusivePublicationReadSource = readFileSync(join(root, "src", "local", "core", "exclusive-file.mjs"), "utf8");
 for (const required of ["readBoundedRegularFileSync", "verifyPathIdentity: true", "rejectMultipleLinks: true", "allowedMultipleLinkIdentity: residueIdentity", "assertOwnerPrivateMode"]) {
   if (!exclusivePublicationReadSource.includes(required)) throw new Error(`browser pairing secure publication-read boundary regressed: ${required}`);
 }
-if (!appAutomationSource.includes('from "./app-automation-macos-jxa.mjs"')) {
+if (!appAutomationSource.includes('from "./app-macos-jxa.mjs"')) {
   throw new Error("application automation orchestration lost its dedicated macOS JXA implementation boundary");
 }
 if (!appAutomationJxaSource.includes("matchesList[payload.selector.index]")) {
@@ -205,7 +197,7 @@ if (!serviceWorkerSource.includes('BROWSER_EXTENSION_PROTOCOL = 3') || !serviceW
 if (!serviceWorkerSource.includes("extension_id: chrome.runtime.id")) throw new Error("browser extension hello no longer binds its runtime identity");
 for (const [name, source] of [
   ["src/worker/index.ts", workerSource],
-  ["src/worker/websocket-protocol.ts", workerWebSocketProtocolSource],
+  ["src/worker/room/websocket-protocol.ts", workerWebSocketProtocolSource],
   ["browser-extension/service-worker.js", serviceWorkerSource],
   ["browser-extension/browser-error-boundary.js", browserErrorBoundarySource],
 ]) {
@@ -216,14 +208,14 @@ for (const required of [
 ]) {
   if (!workerObservabilitySource.includes(required)) throw new Error(`Worker terminal-result observability lost disposition: ${required}`);
 }
-if (!workerSource.includes('from "./daemon-ready-messages.ts"')
+if (!workerSource.includes('from "./daemon/ready-messages.ts"')
     || !workerReadyMessagesSource.includes("pending.resultOwnership(body.id, channel)")
     || !workerReadyMessagesSource.includes('ownership === "missing"')
     || !workerReadyMessagesSource.includes('ownership === "missing" ? "owner_missing_acknowledged" : "stale_connection_rejected"')) {
   throw new Error("Worker result handling no longer separates acknowledged owner-missing late results from rejected stale connections");
 }
 
-if (!workerSource.includes('from "./websocket-protocol.ts"')
+if (!workerSource.includes('from "./room/websocket-protocol.ts"')
     || !workerWebSocketProtocolSource.includes("function sendWebSocketQuietly")
     || !workerWebSocketProtocolSource.includes("function closeWebSocketQuietly")) {
   throw new Error("Worker WebSocket best-effort cleanup is not centralized behind the protocol boundary");
@@ -231,7 +223,7 @@ if (!workerSource.includes('from "./websocket-protocol.ts"')
 if (!serviceWorkerSource.includes("function closeSocketQuietly") || !serviceWorkerSource.includes("function sendSocketQuietly") || !serviceWorkerSource.includes("function ignoreBrowserApiCall")) {
   throw new Error("browser extension best-effort cleanup is not centralized");
 }
-if (!readFileSync(join(root, "src", "local", "browser-bridge.mjs"), "utf8").includes("extension hello required; reload the extension")) throw new Error("browser broker lost stale-extension rejection guidance");
+if (!readFileSync(join(root, "src", "local", "automation", "browser-bridge.mjs"), "utf8").includes("extension hello required; reload the extension")) throw new Error("browser broker lost stale-extension rejection guidance");
 if (!serviceWorkerSource.includes("requires_manual_repair") || !serviceWorkerSource.includes("chrome.action.onClicked")) {
   throw new Error("browser extension no longer requires a user gesture to replace established pairing");
 }

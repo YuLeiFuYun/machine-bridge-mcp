@@ -4,10 +4,10 @@ import { renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chmodRegularFileIfIdentitySync, inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "../src/local/secure-file.mjs";
-import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "../src/local/filesystem-identity.mjs";
-import { removeOwnedJsonFileSync } from "../src/local/exclusive-file.mjs";
-import { preserveFileSnapshotSync } from "../src/local/file-snapshot-preservation.mjs";
+import { chmodRegularFileIfIdentitySync, inspectPathIfPresentSync, openRegularFileSync, readBoundedRegularFileSync, readBoundedRegularFileWithInfoSync, retryTransientMultipleLinksSync, unlinkRegularFileIfIdentitySync } from "../src/local/core/secure-file.mjs";
+import { exactFilesystemInteger, filesystemIdentity, filesystemTimeMs, sameFilesystemIdentity } from "../src/local/core/filesystem-identity.mjs";
+import { removeOwnedJsonFileSync } from "../src/local/core/exclusive-file.mjs";
+import { preserveFileSnapshotSync } from "../src/local/core/exclusive-file.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "mbm-secure-file-test-"));
 try {
@@ -45,7 +45,7 @@ try {
     const created = spawnSync("/usr/bin/mkfifo", [pipe], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" });
     if (created.status !== 0) throw new Error("native FIFO fixture could not create its own pipe");
     const sourceRoot = fileURLToPath(new URL("..", import.meta.url));
-    const program = 'import {pathToFileURL} from "node:url";import path from "node:path";const [source,pipe,kind]=process.argv.slice(1);try{if(kind==="sync"){const m=await import(pathToFileURL(path.join(source,"src/local/secure-file.mjs")));m.readBoundedRegularFileSync(pipe,128);}else{const m=await import(pathToFileURL(path.join(source,"src/local/workspace-file-service.mjs")));await m.readBoundedFile(pipe,128,"FIFO fixture");}throw new Error("special file accepted");}catch(e){if(!e.message.includes("not a regular file"))throw e;console.log("special-file-rejected");}';
+    const program = 'import {pathToFileURL} from "node:url";import path from "node:path";const [source,pipe,kind]=process.argv.slice(1);try{if(kind==="sync"){const m=await import(pathToFileURL(path.join(source,"src/local/core/secure-file.mjs")));m.readBoundedRegularFileSync(pipe,128);}else{const m=await import(pathToFileURL(path.join(source,"src/local/files/workspace-file-service.mjs")));await m.readBoundedFile(pipe,128,"FIFO fixture");}throw new Error("special file accepted");}catch(e){if(!e.message.includes("not a regular file"))throw e;console.log("special-file-rejected");}';
     for (const kind of ["sync", "async"]) {
       const result = spawnSync(process.execPath, ["--input-type=module", "-e", program, sourceRoot, pipe, kind], {
         encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", env: { ...process.env, NODE_V8_COVERAGE: "" },

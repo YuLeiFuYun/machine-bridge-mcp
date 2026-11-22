@@ -1,8 +1,8 @@
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
 import serverMetadata from "../src/shared/server-metadata.json" with { type: "json" };
-import { accountRoleToolNames } from "../src/local/account-access.mjs";
-import { buildExecutionRouting } from "../src/local/execution-routing.mjs";
-import { policyProfile } from "../src/local/policy.mjs";
+import { accountRoleToolNames } from "../src/local/state/account-admin.mjs";
+import { buildExecutionRouting } from "../src/local/runtime/call-registry.mjs";
+import { policyProfile } from "../src/local/core/policy.mjs";
 
 const shell = buildExecutionRouting("Use bash to inspect the repository, run tests, and debug the failing CLI", {
   policy: policyProfile("full"),
@@ -127,10 +127,18 @@ const operatorExistingJob = buildExecutionRouting("Inspect and cancel my existin
   policy: policyProfile("agent"),
   availableTools: accountRoleToolNames("operator"),
 });
-assert(operatorExistingJob.routes.some((route) => route.id === "managed-job"
-  && route.tools.includes("read_job") && route.tools.includes("cancel_job")
-  && !route.tools.includes("start_job")),
-"owner-only creation filtering removed legitimate existing-job control tools from the managed-job route");
+assert(operatorExistingJob.routes.every((route) => route.id !== "managed-job")
+  && !new Set(operatorExistingJob.recommended_tools).has("read_job")
+  && !new Set(operatorExistingJob.recommended_tools).has("cancel_job"),
+"owner-only managed-job hardening did not exclude managed-job tools from operator routing");
+const readCancelOnlyExistingJob = buildExecutionRouting("Inspect and cancel my existing managed job", {
+  policy: policyProfile("full"),
+  availableTools: ["server_info", "read_file", "list_jobs", "read_job", "cancel_job"],
+});
+assert(readCancelOnlyExistingJob.routes.some((route) => {
+  const tools = new Set(route.tools);
+  return route.id === "managed-job" && tools.has("read_job") && tools.has("cancel_job") && !tools.has("start_job");
+}), "managed-job creation filtering removed legitimate existing-job control tools from the managed-job route");
 
 const registered = buildExecutionRouting("Run the repository verification command", {
   policy: policyProfile("full"),

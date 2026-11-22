@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GitService } from "../src/local/git-service.mjs";
-import { structuredGitDiff, structuredGitShow } from "../src/local/git-content-service.mjs";
+import { GitService } from "../src/local/git/git-service.mjs";
+import { structuredGitDiff, structuredGitShow } from "../src/local/git/git-content.mjs";
 import catalog from "../src/shared/tool-catalog.json" with { type: "json" };
 import { compileToolArgumentValidators } from "../src/shared/tool-argument-validation.mjs";
 

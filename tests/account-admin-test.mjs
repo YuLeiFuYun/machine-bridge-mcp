@@ -1,8 +1,8 @@
-import { AccountAccessGate, accountRoleToolNames, normalizeAccountRole } from "../src/local/account-access.mjs";
-import { accountRoleToolNames as workerAccountRoleToolNames } from "../src/worker/access.ts";
-import { validateToolArguments } from "../src/local/tool-executor.mjs";
-import { AccountAdminClient, accountAdminRequestHeaders, accountRoleNames, generateAccountPassword } from "../src/local/account-admin.mjs";
-import { createDeviceIdentity, createDeviceSessionIdentity } from "../src/local/device-identity.mjs";
+import { AccountAccessGate, accountRoleToolNames, normalizeAccountRole } from "../src/local/state/account-admin.mjs";
+import { accountRoleToolNames as workerAccountRoleToolNames } from "../src/worker/oauth/authority.ts";
+import { validateToolArguments } from "../src/local/runtime/tool-executor.mjs";
+import { AccountAdminClient, accountAdminRequestHeaders, accountRoleNames, generateAccountPassword } from "../src/local/state/account-admin.mjs";
+import { createDeviceIdentity, createDeviceSessionIdentity } from "../src/local/state/device-identity.mjs";
 import { adminAuthTranscript } from "../src/shared/admin-auth.mjs";
 
 const roles = accountRoleNames();

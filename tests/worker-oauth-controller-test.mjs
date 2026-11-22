@@ -1,16 +1,16 @@
 import { pbkdf2Sync } from "node:crypto";
-import { normalizeAccountRole } from "../src/worker/access.ts";
-import { consumeAccountAdminNonce } from "../src/worker/account-admin.ts";
-import { OAuthController } from "../src/worker/oauth-controller.ts";
-import { authorizationPage, authorizationRedirectPage } from "../src/worker/oauth-authorization-page.ts";
-import { accountByName, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, sha256Hex, validateAuthorizationRequest, verifyAccountPassword } from "../src/worker/oauth-state.ts";
-import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth-refresh-families.ts";
-import { oauthRefreshPersistenceEntries } from "../src/worker/oauth-refresh-persistence.ts";
-import { isCurrentOAuthStore } from "../src/worker/oauth-store-validation.ts";
-import { saveOAuthStores } from "../src/worker/oauth-token-issuance.ts";
-import { prefersHtmlDocument, workerErrorClass } from "../src/worker/http.ts";
-import { authorityRevocations } from "../src/worker/authority-revocations.ts";
-import { MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth-client-contract.ts";
+import { normalizeAccountRole } from "../src/worker/oauth/authority.ts";
+import { consumeAccountAdminNonce, handleAccountAdminOperation } from "../src/worker/oauth/account-admin.ts";
+import { OAuthController } from "../src/worker/oauth/controller.ts";
+import { authorizationPage, authorizationRedirectPage } from "../src/worker/oauth/authorization-page.ts";
+import { accountByName, authorizationIdentity, createAccount, emptyOAuthRefreshStore, emptyOAuthStore, pruneAuthFailures, sha256Hex, updateAccount, validateAuthorizationRequest, verifyAccountPassword } from "../src/worker/oauth/state.ts";
+import { loadOAuthRefreshStore, recordConsumedRefreshToken } from "../src/worker/oauth/refresh-families.ts";
+import { oauthRefreshPersistenceEntries } from "../src/worker/oauth/token-issuance.ts";
+import { isCurrentOAuthStore } from "../src/worker/oauth/store-validation.ts";
+import { saveOAuthStores } from "../src/worker/oauth/token-issuance.ts";
+import { isBrowserNavigationRequest, prefersHtmlDocument, workerErrorClass } from "../src/worker/room/http.ts";
+import { authorityRevocations } from "../src/worker/oauth/authority-revocations.ts";
+import { MAX_OAUTH_CLIENTS, MAX_OAUTH_REDIRECT_URIS, OAUTH_CLIENT_REGISTRATION_REVISION } from "../src/worker/oauth/contracts.ts";
 
 const SERVER_NAME = "machine-bridge-mcp";
 const BASE = "https://bridge.example.test";
@@ -33,10 +33,51 @@ async function testHostedPasswordHashFallback() {
   try {
     const account = await createAccount({ name: "hosted-reviewer", role: "reviewer", password: PASSWORD, now: 1 });
     const salt = Buffer.from(account.password_salt, "base64url");
-    const reference = pbkdf2Sync(PASSWORD, salt, 210_000, 32, "sha256").toString("base64url");
-    assert(account.password_hash === `pbkdf2-sha256$210000$${reference}`, "hosted fallback changed the verifier bytes or work factor");
-    assert(await verifyAccountPassword(account, PASSWORD), "hosted fallback rejected an existing verifier");
-    assert(!(await verifyAccountPassword(account, `test_password_${"B".repeat(43)}`)), "hosted fallback accepted the wrong password");
+    const reference = pbkdf2Sync(PASSWORD, salt, 100_000, 32, "sha256").toString("base64url");
+    assert(account.password_hash === `pbkdf2-sha256$100000$${reference}`, "hosted native hash changed the verifier bytes or 100,000 work factor");
+    assert(await verifyAccountPassword(account, PASSWORD), "native 100,000 hash rejected the right password");
+    assert(!(await verifyAccountPassword(account, `test_password_${"B".repeat(43)}`)), "native 100,000 hash accepted the wrong password");
+
+    const legacySalt = Buffer.alloc(16, 7);
+    const legacyReference = pbkdf2Sync(PASSWORD, legacySalt, 210_000, 32, "sha256").toString("base64url");
+    const legacyAccount = {
+      ...account,
+      account_id: `acct_${"l".repeat(43)}`,
+      name: "legacy-reviewer",
+      password_salt: legacySalt.toString("base64url"),
+      password_hash: `pbkdf2-sha256$210000$${legacyReference}`,
+    };
+    assert(await verifyAccountPassword(legacyAccount, PASSWORD), "hosted fallback rejected an existing 210,000 verifier");
+    assert(!(await verifyAccountPassword(legacyAccount, `test_password_${"B".repeat(43)}`)), "hosted fallback accepted the wrong password");
+
+    const storage = new MemoryStorage();
+    const controller = createController(storage);
+    const registration = await controller.registerClient(registrationRequest("203.0.113.55"));
+    const client = await registration.json();
+    const store = await storage.get("oauth");
+    store.accounts[legacyAccount.account_id] = legacyAccount;
+    await storage.put("oauth", store);
+
+    const authorizeUrl = new URL(`${BASE}/oauth/authorize`);
+    for (const [key, value] of Object.entries({
+      response_type: "code",
+      client_id: client.client_id,
+      redirect_uri: REDIRECT,
+      code_challenge: "C".repeat(43),
+      code_challenge_method: "S256",
+      scope: `${SERVER_NAME} offline_access`,
+      resource: `${BASE}/mcp`,
+      state: "legacy-upgrade",
+    })) authorizeUrl.searchParams.set(key, value);
+
+    const authorized = await controller.authorizeSubmit(formRequest(authorizeUrl, {
+      account_name: legacyAccount.name,
+      account_password: PASSWORD,
+    }), BASE);
+    assert(authorized.status === 303, "legacy 210,000 account authorization did not succeed");
+    const upgradedStore = await storage.get("oauth");
+    assert(upgradedStore.accounts[legacyAccount.account_id].password_hash.startsWith("pbkdf2-sha256$100000$"),
+      "legacy 210,000 account hash was not transparently upgraded to pbkdf2-sha256$100000$ on login");
   } finally {
     if (original) Object.defineProperty(subtle, "deriveBits", original);
     else delete subtle.deriveBits;
@@ -297,10 +338,24 @@ async function testAuthorizationPageRendering() {
   });
   const authorizedBody = await authorized.text();
   const csp = authorized.headers.get("content-security-policy") || "";
-  assert(authorizedBody.includes("Client &lt;One&gt;") && authorizedBody.includes("<form"), "valid authorization page lost escaped client identity or submit form");
-  assert(authorizedBody.includes("Unverified dynamically registered client") && authorizedBody.includes("self-asserted"),
+  assert(/Client &lt;One&gt;/.test(authorizedBody) && /<form/.test(authorizedBody), "valid authorization page lost escaped client identity or submit form");
+  assert(/Unverified dynamically registered client/.test(authorizedBody) && /self-asserted/.test(authorizedBody),
     "first-use dynamic client was rendered as if its attacker-controlled display name were trusted");
-  assert(csp.includes(new URL(REDIRECT).origin), "authorization page did not bind CSP to the validated redirect origin");
+  assert(/form-action 'self'/.test(csp) && !new RegExp(RegExp.escape(new URL(REDIRECT).origin)).test(csp),
+    "authorization page did not lock form-action CSP to 'self'");
+  const quoted = authorizationPage({
+    request: new Request(`${BASE}/oauth/authorize?state=query-state`),
+    base: BASE,
+    serverName: "Bridge <'Srv'>",
+    authorization: {
+      client: { client_name: "Client 'Quote'" },
+      redirectUri: REDIRECT,
+      requestedResource: `${BASE}/mcp`,
+    },
+  });
+  const quotedBody = await quoted.text();
+  assert(quotedBody.includes("Bridge &lt;&#39;Srv&#39;&gt;") && quotedBody.includes("Client &#39;Quote&#39;"),
+    "authorization page did not escape single quotes in serverName or client_name");
 
   const localAuthorized = authorizationPage({
     request: new Request(`${BASE}/oauth/authorize?state=query-state`),
@@ -351,16 +406,14 @@ async function testAuthorizationPageRendering() {
     "https://oauth-redirect-sandbox.googleusercontent.com/r/test",
     "https://oauth-redirect-test.googleusercontent.com/a/test",
   ]) {
-    const origin = new URL(geminiRedirect).origin;
     const sources = formActionSourcesFor(geminiRedirect);
     assert(
-      sources.size === 2
+      sources.size === 1
         && sources.has("'self'")
-        && sources.has(origin)
         && !sources.has("https://*.google.com")
         && !sources.has("https://*.gemini.google")
         && !sources.has("https://*.googleusercontent.com"),
-      `Gemini authorization page CSP broadened beyond self and validated redirect origin for ${geminiRedirect}`,
+      `Gemini authorization page CSP broadened beyond 'self' for ${geminiRedirect}`,
     );
   }
 
@@ -379,9 +432,23 @@ async function testAuthorizationPageRendering() {
     assert(prefersHtmlDocument(request) === expected, `prefersHtmlDocument returned wrong value for Accept=${String(acceptHeader)}`);
   }
 
+  for (const [headers, expected] of [
+    [{ "sec-fetch-mode": "navigate" }, true],
+    [{ "sec-fetch-dest": "document" }, true],
+    [{ accept: "text/html" }, true],
+    [{ "sec-fetch-mode": "cors", accept: "text/html" }, true],
+    [{ "sec-fetch-mode": "same-origin", accept: "application/json" }, false],
+    [{ accept: "*/*" }, false],
+  ]) {
+    const request = new Request(`${BASE}/oauth/authorize`, { headers });
+    assert(isBrowserNavigationRequest(request) === expected,
+      `isBrowserNavigationRequest returned wrong value for headers=${JSON.stringify(headers)}`);
+  }
+
   const handoffLocation = new URL("https://oauth-redirect.googleusercontent.com/r/client?code=mcp_code_test&state=state-123&iss=https%3A%2F%2Fbridge.example.test");
-  const handoff = authorizationRedirectPage({ location: handoffLocation, clientName: "Google <Client>", serverName: SERVER_NAME });
+  const handoff = authorizationRedirectPage({ location: handoffLocation, clientName: "Google <Client>", serverName: "Bridge <'Srv'>" });
   const handoffHtml = await handoff.text();
+  assert(handoffHtml.includes("Bridge &lt;&#39;Srv&#39;&gt;"), "handoff page did not escape serverName");
   const handoffCsp = handoff.headers.get("content-security-policy") || "";
   assert(handoff.status === 200, `handoff page returned unexpected status ${handoff.status}`);
   assert(handoff.headers.get("content-type") === "text/html; charset=utf-8", "handoff page used wrong content-type");
@@ -977,6 +1044,171 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function testStageARedirectAndCsrfProtections() {
+  const storage = new MemoryStorage();
+  const controller = createController(storage);
+  for (const dangerousRedirect of [
+    `https://example.com/${"é".repeat(200)}`,
+    `https://example.com?${"a".repeat(1004)}`,
+  ]) {
+    const rejected = await controller.registerClient(new Request(`${BASE}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "CF-Connecting-IP": "203.0.113.80" },
+      body: JSON.stringify({ redirect_uris: [dangerousRedirect] }),
+    }));
+    assert(rejected.status === 400, `oversized canonical redirect URI was accepted: ${dangerousRedirect.slice(0, 40)}`);
+    await controller.oauthStore();
+  }
+
+  const registration = await controller.registerClient(registrationRequest("203.0.113.81"));
+  const client = await registration.json();
+  const store = await storage.get("oauth");
+  const now = Math.floor(Date.now() / 1000);
+  const account = await createAccount({ name: "csrf.owner", role: "owner", password: PASSWORD, now });
+  store.accounts[account.account_id] = account;
+  await storage.put("oauth", store);
+
+  const authorizeUrl = new URL(`${BASE}/oauth/authorize`);
+  for (const [key, value] of Object.entries({
+    response_type: "code",
+    client_id: client.client_id,
+    redirect_uri: REDIRECT,
+    code_challenge: "C".repeat(43),
+    code_challenge_method: "S256",
+    scope: `${SERVER_NAME} offline_access`,
+    resource: `${BASE}/mcp`,
+    state: "csrf-state",
+  })) authorizeUrl.searchParams.set(key, value);
+
+  for (const crossSiteHeaders of [
+    { Origin: "https://evil.test" },
+    { "Sec-Fetch-Site": "cross-site" },
+    { "Sec-Fetch-Mode": "no-cors" },
+  ]) {
+    const formBody = new URLSearchParams(authorizeUrl.searchParams);
+    formBody.set("account_name", account.name);
+    formBody.set("account_password", PASSWORD);
+    const blocked = await controller.authorizeSubmit(new Request(authorizeUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "CF-Connecting-IP": "203.0.113.81",
+        ...crossSiteHeaders,
+      },
+      body: formBody,
+    }), BASE);
+    assert(blocked.status === 403, `cross-site authorization submit was not rejected with 403: ${JSON.stringify(crossSiteHeaders)}`);
+    assert(Object.keys((await storage.get("oauth")).auth_failures).length === 0, "cross-site request polluted auth_failures");
+  }
+}
+
+async function testStageAIpv6EvictionAndPatchPreservation() {
+  const ip1 = await authorizationIdentity(new Request(`${BASE}/oauth/authorize`, {
+    headers: { "CF-Connecting-IP": "2001:db8:1234:5678::1" },
+  }), "token-version");
+  const ip2 = await authorizationIdentity(new Request(`${BASE}/oauth/authorize`, {
+    headers: { "CF-Connecting-IP": "2001:db8:1234:5678:9abc:def0:1:2" },
+  }), "token-version");
+  const ipOther = await authorizationIdentity(new Request(`${BASE}/oauth/authorize`, {
+    headers: { "CF-Connecting-IP": "2001:db8:1234:5679::1" },
+  }), "token-version");
+  assert(ip1 === ip2, "IPv6 addresses in the same /64 did not share one rate-limit identity");
+  assert(ip1 !== ipOther, "IPv6 addresses in different /64 prefixes collided");
+
+  const now = Math.floor(Date.now() / 1000);
+  const failureStore = emptyOAuthStore();
+  failureStore.auth_failures["hmac-sha256:1"] = { count: 10, window_started: now - 60, blocked_until: now + 900, last_attempt: now - 10 };
+  failureStore.auth_failures["hmac-sha256:2"] = { count: 2, window_started: now - 5, blocked_until: 0, last_attempt: now };
+  pruneAuthFailures(failureStore, 1, now);
+  assert("hmac-sha256:1" in failureStore.auth_failures && !("hmac-sha256:2" in failureStore.auth_failures),
+    "pruneAuthFailures evicted an active lockout ahead of an unblocked single failure");
+
+  const dcrStorage = new MemoryStorage();
+  const dcrController = createController(dcrStorage);
+  const fullStore = emptyOAuthStore();
+  const owner = await createAccount({ name: "cap.owner", role: "owner", password: PASSWORD, now });
+  fullStore.accounts[owner.account_id] = owner;
+  const oldestPendingId = `mcp_client_${"0".repeat(43)}`;
+  fullStore.clients[oldestPendingId] = {
+    client_id: oldestPendingId,
+    client_name: "Stale Pending",
+    redirect_uris: [REDIRECT],
+    created_at: now - 500,
+    last_used_at: now - 500,
+    has_been_authorized: false,
+    registration_identity: `hmac-sha256:${"0".repeat(64)}`,
+    registration_revision: OAUTH_CLIENT_REGISTRATION_REVISION,
+  };
+  for (let index = 1; index < MAX_OAUTH_CLIENTS; index += 1) {
+    const id = `mcp_client_${index.toString(36).padStart(43, "a")}`;
+    fullStore.clients[id] = {
+      client_id: id,
+      client_name: `Authorized ${index}`,
+      redirect_uris: [REDIRECT],
+      created_at: now - 100 + index,
+      last_used_at: now - 100 + index,
+      has_been_authorized: true,
+      registration_identity: `hmac-sha256:${index.toString(16).padStart(64, "0")}`,
+      registration_revision: OAUTH_CLIENT_REGISTRATION_REVISION,
+      trusted_account_id: owner.account_id,
+      trusted_account_version: 1,
+      trusted_role: "owner",
+      trusted_at: now - 100 + index,
+    };
+  }
+  await dcrStorage.put("oauth", fullStore);
+  const evictedResponse = await dcrController.registerClient(registrationRequest("198.51.100.77", "https://client.example.test/evictor"));
+  assert(evictedResponse.status === 201, "registerClient failed to evict the oldest unauthorized pending client at MAX_OAUTH_CLIENTS");
+  const afterEvict = await dcrStorage.get("oauth");
+  assert(!afterEvict.clients[oldestPendingId] && Object.keys(afterEvict.clients).length === MAX_OAUTH_CLIENTS,
+    "registerClient did not replace the evicted unauthorized client");
+  const replaced = Object.values(afterEvict.clients).find((entry) => entry.has_been_authorized === false);
+  replaced.has_been_authorized = true;
+  replaced.trusted_account_id = owner.account_id;
+  replaced.trusted_account_version = 1;
+  replaced.trusted_role = "owner";
+  replaced.trusted_at = now;
+  await dcrStorage.put("oauth", afterEvict);
+  const saturatedResponse = await dcrController.registerClient(registrationRequest("198.51.100.78", "https://client.example.test/overflow"));
+  assert(saturatedResponse.status === 503, "registerClient did not return 503 when all MAX_OAUTH_CLIENTS slots are authorized");
+
+  const patchStore = emptyOAuthStore();
+  patchStore.accounts[owner.account_id] = structuredClone(owner);
+  patchStore.accounts[owner.account_id].created_at = now + 100;
+  patchStore.accounts[owner.account_id].updated_at = now + 100;
+  const activeTokenKey = `sha256:${"e".repeat(64)}`;
+  patchStore.tokens[activeTokenKey] = {
+    client_id: `mcp_client_${"1".repeat(43)}`,
+    account_id: owner.account_id,
+    account_version: 1,
+    role: "owner",
+    scope: SERVER_NAME,
+    resource: `${BASE}/mcp`,
+    version: "token-version",
+    expires_at: now + 900,
+    family_id: `mcp_family_${"1".repeat(43)}`,
+  };
+  let savedRevocation;
+  const patchResponse = await handleAccountAdminOperation({
+    request: new Request(`${BASE}/admin/accounts`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account_id: owner.account_id, display_name: "Renamed Owner" }),
+    }),
+    operation: "accounts",
+    store: patchStore,
+    save: async (revocation) => { savedRevocation = revocation; },
+    now: now + 50,
+  });
+  assert(patchResponse.status === 200, "display_name-only account PATCH failed");
+  assert(patchStore.accounts[owner.account_id].version === 1, "display_name-only PATCH bumped account.version");
+  assert(patchStore.accounts[owner.account_id].updated_at === now + 100, "clock skew produced updated_at < created_at");
+  assert(activeTokenKey in patchStore.tokens && savedRevocation === undefined,
+    "display_name-only PATCH revoked active account credentials");
+  updateAccount(patchStore.accounts[owner.account_id], { role: "reviewer" }, now + 60);
+  assert(patchStore.accounts[owner.account_id].version === 2, "role change did not bump account.version");
+}
+
 await testStoreAndRegistration();
 await testHostedPasswordHashFallback();
 await testOAuthStoreCapacityBudget();
@@ -992,6 +1224,8 @@ await testOAuthStorePersistenceFailureClassification();
 await testAdminNonceStateFailsClosed();
 await testOAuthLockContainsCallbackFailure();
 await testInvalidStateFailsClosed();
+await testStageARedirectAndCsrfProtections();
+await testStageAIpv6EvictionAndPatchPreservation();
 console.log("worker OAuth controller test ok");
 
 {

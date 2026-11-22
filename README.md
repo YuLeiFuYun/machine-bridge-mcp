@@ -252,6 +252,8 @@ Common commands:
 machine-mcp
 machine-mcp status
 machine-mcp doctor
+machine-mcp verify [--json]
+machine-mcp pair [--ttl 300] [--role owner] [--json]
 machine-mcp workspace show|set|reset
 machine-mcp idle-sleep show|set MODE
 machine-mcp service status|install|start|stop|uninstall
@@ -342,10 +344,9 @@ Detailed release-governance instructions are source-repository maintenance mater
 - [Privacy hygiene](docs/PRIVACY.md)
 - [Architecture](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/ARCHITECTURE.md)
 - [Engineering](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/ENGINEERING.md)
-- [Project standards](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/PROJECT_STANDARDS.md)
 - [Testing](https://github.com/YuLeiFuYun/machine-bridge-mcp/blob/main/docs/TESTING.md)
 
-Architecture, engineering, testing, project-standard, release-governance, contribution, conduct, and governance documents remain available in the source repository but are not part of the npm consumer payload.
+Architecture, engineering, testing, release-governance, contribution, conduct, and governance documents remain available in the source repository but are not part of the npm consumer payload.
 
 ## Uninstall
 

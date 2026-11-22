@@ -3,11 +3,11 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { LocalRuntime } from "../src/local/runtime.mjs";
+import { LocalRuntime } from "../src/local/runtime/runtime.mjs";
 import { healthyResourceHost } from "./fixtures/healthy-resource-host.mjs";
-import { managedJobRecentActivity, managedJobRecoveryPriority, recentProcessRecoveryJobs } from "../src/local/managed-job-listing.mjs";
-import { classifyEffectStatus } from "../src/local/computer-use-verification.mjs";
-import { processStartTimeMs } from "../src/local/process-identity.mjs";
+import { managedJobRecentActivity, managedJobRecoveryPriority, recentProcessRecoveryJobs } from "../src/local/jobs/listing.mjs";
+import { classifyEffectStatus } from "../src/local/automation/computer-use-verification.mjs";
+import { processStartTimeMs } from "../src/local/process/identity.mjs";
 import { spawnManagedJobTestRunnerWithoutCoverage } from "./fixtures/managed-jobs/common.mjs";
 
 if (process.platform !== "win32" && processStartTimeMs(process.ppid) === null) {

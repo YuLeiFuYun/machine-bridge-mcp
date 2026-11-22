@@ -1,0 +1,322 @@
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { acquireDaemonLock, daemonLockPathForState, readDaemonLockOwner, resolveWorkspace } from "../state/state.mjs";
+import { createMonotonicDeadline } from "../core/timing.mjs";
+import { inspectProcessInstance, inspectProcessInstanceAsync, isPidAlive, processCommandLine, splitProcessCommandLine } from "../process/identity.mjs";
+
+const DEFAULT_TAKEOVER_TIMEOUT_MS = 15_000;
+
+const DEFAULT_TAKEOVER_POLL_MS = 100;
+
+const DEFAULT_FORCE_AFTER_MS = 2_000;
+
+export async function acquireDaemonLockWithTakeover(state, options = {}) {
+  const ownerMetadata = options.ownerMetadata || {};
+  const timeoutMs = boundedPositiveInt(options.timeoutMs, DEFAULT_TAKEOVER_TIMEOUT_MS);
+  const pollMs = boundedPositiveInt(options.pollMs, DEFAULT_TAKEOVER_POLL_MS);
+  let lock = acquireDaemonLock(state, ownerMetadata);
+  if (lock.acquired || !options.takeOverServiceOwner) return lock;
+
+  const stopped = await stopWorkspaceServiceDaemon(state, {
+    owner: lock.owner,
+    timeoutMs,
+    pollMs,
+    logger: options.logger,
+    reason: "foreground startup",
+    identityOptions: options.identityOptions,
+  });
+  if (!stopped.verified_service_daemon) return lock;
+  if (!stopped.ok) {
+    const pid = stopped.pid ? `pid ${stopped.pid}` : "unknown pid";
+    throw new Error(`background daemon did not release the workspace within ${Math.ceil(stopped.timeout_ms / 1000)} seconds (${pid}); run \`machine-mcp service stop\`, verify \`machine-mcp service status\`, and retry`);
+  }
+
+  // A terminated daemon can release its token immediately before the filesystem
+  // makes the lock removal visible to this process. Retry only this handoff.
+  const handoffDeadline = createMonotonicDeadline(Math.min(timeoutMs, 1_000));
+  do {
+    lock = acquireDaemonLock(state, ownerMetadata);
+    if (lock.acquired) {
+      options.logger?.info?.("background daemon stopped; foreground startup is taking over the workspace");
+      return lock;
+    }
+    if (lock.owner?.pid && isPidAlive(lock.owner.pid)) return lock;
+    await sleep(Math.min(pollMs, Math.max(1, handoffDeadline.remainingMs())));
+  } while (!handoffDeadline.expired());
+  return lock;
+}
+
+export async function stopWorkspaceServiceDaemon(state, options = {}) {
+  const timeoutMs = boundedPositiveInt(options.timeoutMs, DEFAULT_TAKEOVER_TIMEOUT_MS);
+  const pollMs = boundedPositiveInt(options.pollMs, DEFAULT_TAKEOVER_POLL_MS);
+  const forceAfterMs = Math.min(timeoutMs, boundedPositiveInt(options.forceAfterMs, DEFAULT_FORCE_AFTER_MS));
+  const logger = options.logger || { info() {}, warn() {} };
+  const deadline = createMonotonicDeadline(timeoutMs);
+  const signalled = new Map();
+  let owner = options.owner || readDaemonLockOwner(daemonLockPathForState(state));
+  let verified = false;
+  let lastOwner = owner;
+
+  while (true) {
+    if (owner?.pid && isPidAlive(owner.pid)) {
+      lastOwner = owner;
+      const identity = await inspectWorkspaceDaemonOwnerAsync(state, owner, options.identityOptions || {});
+      if (!identity.verified_service_daemon) {
+        return {
+          ok: false,
+          found: true,
+          verified_service_daemon: false,
+          reason: identity.reason,
+          timeout_ms: timeoutMs,
+          ...publicDaemonOwner(owner),
+        };
+      }
+      verified = true;
+      if (!signalled.has(Number(owner.pid))) {
+        const purpose = options.reason || "service stop";
+        logger.info?.(`stopping detached background daemon for ${purpose}`);
+        try {
+          process.kill(Number(owner.pid), "SIGTERM");
+        } catch (error) {
+          if (error?.code !== "ESRCH") {
+            return {
+              ok: false,
+              found: true,
+              verified_service_daemon: true,
+              reason: "signal_failed",
+              timeout_ms: timeoutMs,
+              ...publicDaemonOwner(owner),
+            };
+          }
+        }
+        signalled.set(Number(owner.pid), {
+          owner: { ...owner },
+          forceDeadline: createMonotonicDeadline(forceAfterMs),
+          forced: false,
+        });
+      }
+    }
+
+    for (const [pid, signalState] of signalled) {
+      if (signalState.forced || !signalState.forceDeadline.expired()) continue;
+      const current = await inspectDaemonProcessAsync(signalState.owner, options.identityOptions || {});
+      if (!current.current) continue;
+      const identity = await inspectWorkspaceDaemonOwnerAsync(state, signalState.owner, options.identityOptions || {});
+      if (!identity.verified_service_daemon) continue;
+      logger.warn?.("detached background daemon ignored graceful termination; forcing it to stop");
+      try {
+        process.kill(pid, "SIGKILL");
+        signalState.forced = true;
+      } catch (error) {
+        if (error?.code !== "ESRCH") {
+          return {
+            ok: false,
+            found: true,
+            verified_service_daemon: true,
+            reason: "force_signal_failed",
+            timeout_ms: timeoutMs,
+            ...publicDaemonOwner(signalState.owner),
+          };
+        }
+      }
+    }
+
+    const liveSignalled = [];
+    for (const [pid, signalState] of signalled) {
+      if ((await inspectDaemonProcessAsync(signalState.owner, options.identityOptions || {})).current) {
+        liveSignalled.push(pid);
+      }
+    }
+    const currentOwnerAlive = Boolean(
+      owner?.pid && (await inspectDaemonProcessAsync(owner, options.identityOptions || {})).current,
+    );
+    if (!currentOwnerAlive && liveSignalled.length === 0) break;
+
+    if (deadline.expired()) {
+      logger.warn?.(`detached background daemon did not stop within ${Math.ceil(timeoutMs / 1000)} seconds`);
+      const remainingPid = Number(owner?.pid) || liveSignalled[0] || null;
+      return {
+        ok: false,
+        found: true,
+        stopped: false,
+        verified_service_daemon: verified,
+        reason: "timeout",
+        timeout_ms: timeoutMs,
+        force_after_ms: forceAfterMs,
+        pid: remainingPid,
+        mode: publicDaemonMode(lastOwner),
+        version: typeof lastOwner?.version === "string" ? lastOwner.version : "unknown",
+      };
+    }
+    await sleep(Math.min(pollMs, Math.max(1, deadline.remainingMs())));
+    owner = readDaemonLockOwner(daemonLockPathForState(state));
+  }
+
+  // Reclaim a stale lock only through the normal token-aware primitive.
+  const staleCleanup = acquireDaemonLock(state, { mode: "service" });
+  if (staleCleanup.acquired) staleCleanup.release();
+  return {
+    ok: true,
+    found: verified,
+    stopped: verified,
+    verified_service_daemon: verified,
+    reason: verified ? "stopped" : "not_running",
+    timeout_ms: timeoutMs,
+    force_after_ms: forceAfterMs,
+    forced: [...signalled.values()].some((item) => item.forced),
+    ...(lastOwner ? publicDaemonOwner(lastOwner) : {}),
+  };
+}
+
+export function workspaceDaemonOwnsPlatformAutostart(status = {}) {
+  return status.alive === true
+    && status.verified_service_daemon === true
+    && status.mode === "service";
+}
+
+export function inspectWorkspaceDaemon(state, options = {}) {
+  const owner = readDaemonLockOwner(daemonLockPathForState(state));
+  if (!owner) return { present: false, alive: false, verified_service_daemon: false, startup_readiness_verified: false };
+  const alive = Boolean(owner.pid && isPidAlive(owner.pid));
+  let identity = alive
+    ? inspectWorkspaceDaemonOwner(state, owner, options)
+    : { verified_service_daemon: false, reason: "stale_lock" };
+  if (identity.verified_service_daemon && options.expectedVersion
+      && owner.version !== options.expectedVersion) {
+    identity = { verified_service_daemon: false, reason: "version_mismatch" };
+  }
+  if (identity.verified_service_daemon && options.expectedEntryScript
+      && !sameCanonicalFile(owner.entryScript, options.expectedEntryScript)) {
+    identity = { verified_service_daemon: false, reason: "entrypoint_mismatch" };
+  }
+  return {
+    present: true,
+    alive,
+    verified_service_daemon: identity.verified_service_daemon,
+    identity_reason: identity.reason,
+    startup_readiness_verified: identity.verified_service_daemon && owner.startupReady === true,
+    ...publicDaemonOwner(owner),
+  };
+}
+
+function inspectWorkspaceDaemonOwner(state, owner, options = {}) {
+  const precheck = precheckWorkspaceDaemonOwner(state, owner, options);
+  if (!precheck.ok) return precheck.result;
+  const processIdentity = inspectDaemonProcess(owner, options);
+  return verifyWorkspaceDaemonOwnerDetails(state, owner, processIdentity, options);
+}
+
+async function inspectWorkspaceDaemonOwnerAsync(state, owner, options = {}) {
+  const precheck = precheckWorkspaceDaemonOwner(state, owner, options);
+  if (!precheck.ok) return precheck.result;
+  const processIdentity = await inspectDaemonProcessAsync(owner, options);
+  return verifyWorkspaceDaemonOwnerDetails(state, owner, processIdentity, options);
+}
+
+function precheckWorkspaceDaemonOwner(state, owner, options = {}) {
+  if (!owner || owner.purpose !== "daemon") return { ok: false, result: { verified_service_daemon: false, reason: "invalid_lock_owner" } };
+  const pid = Number(owner.pid);
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return { ok: false, result: { verified_service_daemon: false, reason: "invalid_pid" } };
+  if (!sameCanonicalPath(owner.workspace, state.workspace.path)) return { ok: false, result: { verified_service_daemon: false, reason: "workspace_mismatch" } };
+  if (owner.mode === "foreground") return { ok: false, result: { verified_service_daemon: false, reason: "foreground_daemon" } };
+  if (owner.mode !== "service") return { ok: false, result: { verified_service_daemon: false, reason: "invalid_daemon_mode" } };
+  if (options.expectedNodeVersion && owner.nodeVersion !== String(options.expectedNodeVersion)) {
+    return { ok: false, result: { verified_service_daemon: false, reason: "node_version_mismatch" } };
+  }
+  return { ok: true, result: null };
+}
+
+function verifyWorkspaceDaemonOwnerDetails(state, owner, processIdentity, options = {}) {
+  if (!processIdentity.current) return { verified_service_daemon: false, reason: processIdentity.reason };
+  const pid = Number(owner.pid);
+  const injectedArgv = typeof options.processArgv === "function"
+    ? options.processArgv(pid, owner)
+    : options.processArgv;
+  const argv = Array.isArray(injectedArgv)
+    ? injectedArgv.map((value) => String(value))
+    : splitProcessCommandLine(processCommandLine(pid));
+  if (!argv.length) {
+    return { verified_service_daemon: false, reason: "service_identity_unavailable" };
+  }
+  if (options.expectedNodeExecutable && !sameCanonicalFile(argv[0], options.expectedNodeExecutable)) {
+    return { verified_service_daemon: false, reason: "node_executable_mismatch" };
+  }
+  const entryName = path.basename(String(owner.entryScript || "machine-mcp"));
+  const workspaceArg = commandFlagValue(argv, "--workspace");
+  const stateRootArg = commandFlagValue(argv, "--state-dir");
+  const entryMatches = argv.some((value) => {
+    const name = path.basename(value);
+    return name === entryName || name === "machine-mcp" || name === "machine-mcp.mjs";
+  });
+  const explicitIdentity = Boolean(workspaceArg && stateRootArg)
+    && sameCanonicalPath(workspaceArg, state.workspace.path)
+    && sameCanonicalPath(stateRootArg, state.paths.stateRoot);
+  const implicitIdentity = !workspaceArg && !stateRootArg;
+  const commonIdentity = argv.includes("--daemon-only") && entryMatches;
+  if (commonIdentity && explicitIdentity) {
+    return { verified_service_daemon: true, reason: "service_command" };
+  }
+  if (commonIdentity && implicitIdentity) {
+    return { verified_service_daemon: true, reason: "implicit_service_command" };
+  }
+  return { verified_service_daemon: false, reason: "command_mismatch" };
+}
+
+function inspectDaemonProcess(owner, options = {}) {
+  const inspect = typeof options.inspectProcess === "function" ? options.inspectProcess : inspectProcessInstance;
+  return inspect(owner);
+}
+
+async function inspectDaemonProcessAsync(owner, options = {}) {
+  if (typeof options.inspectProcess === "function") return options.inspectProcess(owner);
+  return inspectProcessInstanceAsync(owner);
+}
+
+function commandFlagValue(argv, name) {
+  const index = argv.indexOf(name);
+  return index >= 0 && index + 1 < argv.length ? argv[index + 1] : "";
+}
+
+function sameCanonicalPath(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  try {
+    const a = resolveWorkspace(left);
+    const b = resolveWorkspace(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return false;
+  }
+}
+
+function sameCanonicalFile(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  try {
+    const a = realpathSync(left);
+    const b = realpathSync(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return false;
+  }
+}
+
+function publicDaemonOwner(owner) {
+  return {
+    pid: Number(owner?.pid) || null,
+    mode: publicDaemonMode(owner),
+    version: typeof owner?.version === "string" ? owner.version : "unknown",
+  };
+}
+
+function publicDaemonMode(owner) {
+  return owner?.mode === "service" || owner?.mode === "foreground" ? owner.mode : "invalid";
+}
+
+function boundedPositiveInt(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, parsed) : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => { setTimeout(resolvePromise, ms); });
+}
