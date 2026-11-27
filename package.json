@@ -170,12 +170,12 @@
   },
   "devDependencies": {
     "@types/node": "26.6.6",
-    "cf": "1.0.0-rc.2",
+    "cf": "1.0.0-rc.4",
     "eslint": "10.15.0",
-    "fast-check": "4.10.3",
+    "fast-check": "4.11.0",
     "globals": "17.14.0",
     "typescript": "7.0.2",
-    "wrangler": "4.166.0"
+    "wrangler": "4.167.0"
   },
   "keywords": [
     "mcp",
